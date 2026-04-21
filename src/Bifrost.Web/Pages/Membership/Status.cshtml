@@ -1,0 +1,45 @@
+@page
+@model Bifrost.Web.Pages.Membership.StatusModel
+@{
+    ViewData["Title"] = "Membership status";
+}
+
+<section class="panel">
+    <span class="eyebrow">Membership gate</span>
+    <h1>Current access state</h1>
+    <p class="panel-intro">
+        Authentication and participation are separate on purpose. Bifrost only opens the member console
+        after a GitHub account has cleared the invite and approval gates.
+    </p>
+
+    <div class="status-banner">
+        <div class="inline-actions">
+            <span class="pill @Model.StatusTone">@Model.StatusLabel</span>
+            @if (Model.Actor.IsActiveMember)
+            {
+                <span class="pill success">Voting weight @Model.Actor.EffectiveVotingWeight</span>
+            }
+        </div>
+        <strong>@Model.Actor.DisplayName</strong>
+        <p class="muted">@Model.StatusMessage</p>
+    </div>
+
+    @if (Model.Invitation is not null)
+    {
+        <div class="callout success">
+            Invitation tracked for <code>@Model.Invitation.GitHubLogin</code>.
+            Issued @Model.Invitation.IssuedAtUtc.ToString("dd MMM yyyy") UTC.
+        </div>
+    }
+
+    <div class="panel-actions">
+        @if (Model.Actor.IsActiveMember)
+        {
+            <a class="button" asp-page="/App/Index">Open member console</a>
+        }
+        else
+        {
+            <a class="button secondary" asp-page="/Index">Back to overview</a>
+        }
+    </div>
+</section>

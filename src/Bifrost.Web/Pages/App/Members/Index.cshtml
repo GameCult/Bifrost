@@ -1,0 +1,155 @@
+@page
+@model Bifrost.Web.Pages.App.Members.IndexModel
+@{
+    ViewData["Title"] = "Members";
+}
+
+<section class="panel-grid">
+    <article class="panel">
+        <span class="eyebrow">Members</span>
+        <h1>Invite and approval gate</h1>
+        <p class="panel-intro">
+            Invite-first onboarding keeps the alpha intentionally small. Approval remains human
+            because trust and contributor accountability are product concerns, not just auth concerns.
+        </p>
+
+        @if (Model.Actor.CanManageMembership)
+        {
+            <form method="post" asp-page-handler="Invite">
+                <div asp-validation-summary="ModelOnly" class="validation-summary-errors"></div>
+                <div class="form-grid">
+                    <div class="field">
+                        <label asp-for="Input.GitHubLogin"></label>
+                        <input asp-for="Input.GitHubLogin" />
+                        <span asp-validation-for="Input.GitHubLogin"></span>
+                    </div>
+                    <div class="field">
+                        <label asp-for="Input.Notes"></label>
+                        <input asp-for="Input.Notes" />
+                        <span asp-validation-for="Input.Notes"></span>
+                    </div>
+                </div>
+                <div class="panel-actions">
+                    <button class="button" type="submit">Issue invite</button>
+                </div>
+            </form>
+        }
+        else
+        {
+            <div class="callout warning">
+                Only platform admins can issue invites or approve members.
+            </div>
+        }
+    </article>
+
+    <article class="table-panel">
+        <div class="panel-header" style="padding: 1.25rem 1.25rem 0;">
+            <div>
+                <h2>Current member records</h2>
+                <p class="table-meta">@Model.Users.Count authenticated GitHub identities tracked.</p>
+            </div>
+        </div>
+
+        @if (Model.Users.Count == 0)
+        {
+            <div class="empty-state" style="margin: 1.25rem;">No member records yet.</div>
+        }
+        else
+        {
+            <div class="table-shell">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Account</th>
+                            <th>Status</th>
+                            <th>Permissions</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var user in Model.Users)
+                        {
+                            <tr>
+                                <td>
+                                    <strong>@user.DisplayName</strong><br />
+                                    <span class="muted">@user.GitHubLogin</span>
+                                </td>
+                                <td>
+                                    <span class="pill">@user.Membership!.Status</span>
+                                </td>
+                                <td>
+                                    @(user.Membership.IsPlatformAdmin ? "Platform admin" : "Member")
+                                    <div class="muted">
+                                        Projects @(user.Membership.CanManageProjects ? "on" : "off"),
+                                        ledger @(user.Membership.CanManageLedger ? "on" : "off")
+                                    </div>
+                                </td>
+                                <td>
+                                    @if (Model.Actor.CanManageMembership && user.Membership.Status != MembershipStatus.Active)
+                                    {
+                                        <form method="post" asp-page-handler="Approve">
+                                            <input type="hidden" name="userAccountId" value="@user.Id" />
+                                            <button class="button secondary" type="submit">Approve</button>
+                                        </form>
+                                    }
+                                    else
+                                    {
+                                        <span class="muted">No action</span>
+                                    }
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </article>
+</section>
+
+<section class="table-panel" style="margin-top: 1.5rem;">
+    <div class="panel-header" style="padding: 1.25rem 1.25rem 0;">
+        <div>
+            <h2>Outstanding invites</h2>
+            <p class="table-meta">@Model.Invitations.Count active invitations tracked.</p>
+        </div>
+    </div>
+
+    @if (Model.Invitations.Count == 0)
+    {
+        <div class="empty-state" style="margin: 1.25rem;">No invitations yet.</div>
+    }
+    else
+    {
+        <div class="table-shell">
+            <table>
+                <thead>
+                    <tr>
+                        <th>GitHub login</th>
+                        <th>Issued</th>
+                        <th>Accepted</th>
+                        <th>Notes</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var invitation in Model.Invitations)
+                    {
+                        <tr>
+                            <td>@invitation.GitHubLogin</td>
+                            <td>@invitation.IssuedAtUtc.ToString("dd MMM yyyy HH:mm") UTC</td>
+                            <td>
+                                @(invitation.AcceptedAtUtc is null
+                                    ? "Waiting for sign-in"
+                                    : invitation.AcceptedAtUtc.Value.ToString("dd MMM yyyy HH:mm") + " UTC")
+                            </td>
+                            <td>@invitation.Notes</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+</section>
+
+@section Scripts {
+    <partial name="_ValidationScriptsPartial" />
+}

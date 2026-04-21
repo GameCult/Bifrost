@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Bifrost.Web/Bifrost.Web.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Bifrost.Web.Tests/Bifrost.Web.Tests.csproj" />
+  </Folder>
+</Solution>

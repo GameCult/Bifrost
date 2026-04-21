@@ -1,0 +1,32 @@
+@model DashboardSnapshot
+
+<div class="metric-grid" id="summary-cards">
+    <article class="metric-card">
+        <span>Active members</span>
+        <strong>@Model.ActiveMembers</strong>
+    </article>
+    <article class="metric-card">
+        <span>Open projects</span>
+        <strong>@Model.OpenProjects</strong>
+    </article>
+    <article class="metric-card">
+        <span>Open work items</span>
+        <strong>@Model.OpenWorkItems</strong>
+    </article>
+    <article class="metric-card">
+        <span>Open motions</span>
+        <strong>@Model.OpenMotions</strong>
+    </article>
+    <article class="metric-card">
+        <span>Pending approvals</span>
+        <strong>@Model.PendingMembershipApprovals</strong>
+    </article>
+    <article class="metric-card">
+        <span>Assigned to me</span>
+        <strong>@Model.AssignedToCurrentMember</strong>
+    </article>
+    <article class="metric-card">
+        <span>Approved nominal payout</span>
+        <strong>@Model.ApprovedNominalPayoutValue.ToString("0.##")</strong>
+    </article>
+</div>

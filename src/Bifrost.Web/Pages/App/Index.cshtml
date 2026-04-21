@@ -1,0 +1,92 @@
+@page "/App"
+@model Bifrost.Web.Pages.App.IndexModel
+@{
+    ViewData["Title"] = "Member console";
+}
+
+<section class="panel">
+    <div class="panel-header">
+        <div>
+            <span class="eyebrow">Member console</span>
+            <h1>Operational picture for @Model.Actor.DisplayName</h1>
+            <p class="panel-intro">
+                This view ties together the slices we care about first: who can participate,
+                what work is moving, what motions are open, and what ledger value is accruing.
+            </p>
+        </div>
+        <button class="button secondary"
+                hx-get="@Url.Page("/App/Index", "Summary")"
+                hx-target="#summary-cards"
+                hx-swap="outerHTML">
+            Refresh snapshot
+        </button>
+    </div>
+
+    <div id="summary-cards">
+        <partial name="_SummaryCards" model="Model.Snapshot" />
+    </div>
+</section>
+
+<section class="panel-grid">
+    <article class="panel">
+        <div class="panel-header">
+            <div>
+                <h2>Recent work</h2>
+                <p class="muted">Latest work item movement across projects.</p>
+            </div>
+            <a class="button ghost" asp-page="/App/WorkItems/Index">Manage work items</a>
+        </div>
+
+        @if (Model.Snapshot.RecentWorkItems.Count == 0)
+        {
+            <div class="empty-state">No work items exist yet.</div>
+        }
+        else
+        {
+            <div class="list-grid">
+                @foreach (var item in Model.Snapshot.RecentWorkItems)
+                {
+                    <div class="status-banner">
+                        <strong>@item.Title</strong>
+                        <span class="muted">@item.ProjectName</span>
+                        <div class="inline-actions">
+                            <span class="pill">@item.Status</span>
+                        </div>
+                    </div>
+                }
+            </div>
+        }
+    </article>
+
+    <article class="panel">
+        <div class="panel-header">
+            <div>
+                <h2>Open motions</h2>
+                <p class="muted">A quick read on governance traffic and current vote pressure.</p>
+            </div>
+            <a class="button ghost" asp-page="/App/Motions/Index">Review motions</a>
+        </div>
+
+        @if (Model.Snapshot.OpenMotionHighlights.Count == 0)
+        {
+            <div class="empty-state">No active motions yet.</div>
+        }
+        else
+        {
+            <div class="list-grid">
+                @foreach (var motion in Model.Snapshot.OpenMotionHighlights)
+                {
+                    <div class="motion-card">
+                        <h3>@motion.Title</h3>
+                        <div class="inline-actions">
+                            <span class="pill">@motion.Scope</span>
+                            <span class="pill success">For @motion.VotesFor</span>
+                            <span class="pill danger">Against @motion.VotesAgainst</span>
+                        </div>
+                        <p class="muted">Closes @motion.ClosesAtUtc.ToString("dd MMM yyyy HH:mm") UTC</p>
+                    </div>
+                }
+            </div>
+        }
+    </article>
+</section>

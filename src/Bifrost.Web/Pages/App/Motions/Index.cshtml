@@ -1,0 +1,107 @@
+@page
+@model Bifrost.Web.Pages.App.Motions.IndexModel
+@{
+    ViewData["Title"] = "Motions";
+}
+
+<section class="panel-grid">
+    <article class="panel">
+        <span class="eyebrow">Governance</span>
+        <h1>Open motions and voting</h1>
+        <p class="panel-intro">
+            Motions stay app-native here: no token theater, just explicit thresholds,
+            weighted votes, and an auditable trail of who changed what.
+        </p>
+
+        <form method="post" asp-page-handler="Create">
+            <div asp-validation-summary="ModelOnly" class="validation-summary-errors"></div>
+            <div class="form-grid">
+                <div class="field">
+                    <label asp-for="Input.Scope"></label>
+                    <select asp-for="Input.Scope" asp-items="Html.GetEnumSelectList<MotionScope>()"></select>
+                    <span asp-validation-for="Input.Scope"></span>
+                </div>
+                <div class="field">
+                    <label asp-for="Input.ProjectId"></label>
+                    <select asp-for="Input.ProjectId" asp-items="Model.ProjectOptions">
+                        <option value="">No project scope</option>
+                    </select>
+                    <span asp-validation-for="Input.ProjectId"></span>
+                </div>
+                <div class="field">
+                    <label asp-for="Input.ClosesAtUtc"></label>
+                    <input asp-for="Input.ClosesAtUtc" />
+                    <span asp-validation-for="Input.ClosesAtUtc"></span>
+                </div>
+            </div>
+            <div class="field">
+                <label asp-for="Input.Title"></label>
+                <input asp-for="Input.Title" />
+                <span asp-validation-for="Input.Title"></span>
+            </div>
+            <div class="field">
+                <label asp-for="Input.Summary"></label>
+                <textarea asp-for="Input.Summary"></textarea>
+                <span asp-validation-for="Input.Summary"></span>
+            </div>
+            <div class="panel-actions">
+                <button class="button" type="submit">Open motion</button>
+            </div>
+        </form>
+    </article>
+
+    <article class="panel">
+        <div class="panel-header">
+            <div>
+                <h2>Vote ledger</h2>
+                <p class="muted">Your current effective weight is @Model.Actor.EffectiveVotingWeight.</p>
+            </div>
+        </div>
+
+        @if (Model.Motions.Count == 0)
+        {
+            <div class="empty-state">No motions yet.</div>
+        }
+        else
+        {
+            <div class="motion-grid">
+                @foreach (var motion in Model.Motions)
+                {
+                    <article class="motion-card">
+                        <div class="inline-actions">
+                            <span class="pill">@motion.Scope</span>
+                            <span class="pill @motion.StatusTone">@motion.StatusLabel</span>
+                        </div>
+                        <h3>@motion.Title</h3>
+                        <p class="muted">@motion.Summary</p>
+                        <p class="muted">
+                            @motion.ProjectName
+                            · closes @motion.ClosesAtUtc.ToString("dd MMM yyyy HH:mm") UTC
+                        </p>
+                        <div class="inline-actions">
+                            <span class="pill success">For @motion.VotesFor</span>
+                            <span class="pill danger">Against @motion.VotesAgainst</span>
+                            <span class="pill">Abstain @motion.VotesAbstain</span>
+                        </div>
+                        <div class="vote-strip">
+                            @foreach (var choice in Enum.GetValues<VoteChoice>())
+                            {
+                                <form method="post" asp-page-handler="Vote">
+                                    <input type="hidden" name="motionId" value="@motion.Id" />
+                                    <input type="hidden" name="choice" value="@choice" />
+                                    <button class="button @(motion.CurrentUserVote == choice ? "warm" : "secondary")" type="submit">
+                                        Vote @choice
+                                    </button>
+                                </form>
+                            }
+                        </div>
+                    </article>
+                }
+            </div>
+        }
+    </article>
+</section>
+
+@section Scripts {
+    <partial name="_ValidationScriptsPartial" />
+}

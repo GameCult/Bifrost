@@ -4,7 +4,13 @@ Bifrost is the planned GameCult member, governance, and labor platform running u
 
 ## Status
 
-This repository is in planning/bootstrap only. It is intentionally a docs-first repo shell with no ASP.NET application code yet.
+This repository now includes the first implementation slice of the ASP.NET Core app:
+
+- Razor Pages app scaffold under `src/Bifrost.Web`
+- PostgreSQL-backed EF Core domain model for members, projects, work items, motions, and ledgers
+- GitHub OAuth wiring plus invite/approval-based membership gating
+- initial member console pages for projects, work items, motions, ledger activity, and member approvals
+- xUnit integration tests under `tests/Bifrost.Web.Tests`
 
 ## Chosen Stack
 
@@ -31,13 +37,21 @@ This repository is in planning/bootstrap only. It is intentionally a docs-first 
 
 ## Next Build Target
 
-The first implementation milestone should cover:
+The next build target is to deepen the first implementation milestone by adding:
 
-- authentication and membership gating
-- project and member models
-- work items from GitHub and internal sources
-- motions and votes
-- internal ledgers and payout proposal batches
+- database migrations and bootstrap seed/run instructions
+- GitHub issue and pull request sync
+- richer membership/admin role management
+- work item completion and ledger approval flow
+- payout proposal batch generation and review
+
+## Local Dev Notes
+
+- set `GitHubOAuth:ClientId` and `GitHubOAuth:ClientSecret` before using sign-in
+- set `Bootstrap:AdminGitHubLogins` with at least one GitHub login for the first active admin path
+- default connection string points at local PostgreSQL
+- build with `dotnet build Bifrost.slnx`
+- test with `DOTNET_ROLL_FORWARD=Major dotnet test Bifrost.slnx` if the machine only has the .NET 10 runtime installed
 
 ## Read First
 

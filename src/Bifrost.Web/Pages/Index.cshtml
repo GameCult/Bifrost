@@ -1,0 +1,67 @@
+@page
+@model IndexModel
+@{
+    ViewData["Title"] = "Bifrost";
+}
+
+<section class="hero">
+    <div class="hero-copy">
+        <span class="eyebrow">GameCult member alpha</span>
+        <h1>Bifrost is the operational bridge between projects, people, motions, and ledger truth.</h1>
+        <p class="lede">
+            This first slice keeps the product boring on purpose: GitHub sign-in, membership gating,
+            app-native governance, work tracking, and internal accounting in one server-rendered system.
+        </p>
+
+        @if (Model.Auth == "github-not-configured")
+        {
+            <div class="callout warning">
+                GitHub OAuth is not configured yet. Add <code>GitHubOAuth:ClientId</code> and
+                <code>GitHubOAuth:ClientSecret</code> before using sign-in.
+            </div>
+        }
+
+        <div class="hero-actions">
+            @if (Model.Actor.IsActiveMember)
+            {
+                <a class="button" asp-page="/App/Index">Open member console</a>
+            }
+            else if (User.Identity?.IsAuthenticated == true)
+            {
+                <a class="button" asp-page="/Membership/Status">Check membership status</a>
+            }
+            else
+            {
+                <a class="button" href="/auth/sign-in">Sign in with GitHub</a>
+            }
+
+            <a class="button secondary" href="https://github.com/GameCult/Bifrost">View repository</a>
+        </div>
+    </div>
+
+    <div class="hero-panel">
+        <h2>Current milestone</h2>
+        <ul class="stack-list">
+            <li>GitHub OAuth sign-in</li>
+            <li>Invite and approval gating</li>
+            <li>Projects and member records</li>
+            <li>GitHub-backed and internal work items</li>
+            <li>Motions, votes, and ledger activity</li>
+        </ul>
+
+        <div class="status-grid">
+            <article class="status-card">
+                <span>Host target</span>
+                <strong>bifrost.gamecult.org</strong>
+            </article>
+            <article class="status-card">
+                <span>Stack</span>
+                <strong>ASP.NET Core 8 + Razor Pages + HTMX</strong>
+            </article>
+            <article class="status-card">
+                <span>System of record</span>
+                <strong>PostgreSQL</strong>
+            </article>
+        </div>
+    </div>
+</section>

@@ -1,0 +1,140 @@
+@page
+@model Bifrost.Web.Pages.App.WorkItems.IndexModel
+@{
+    ViewData["Title"] = "Work items";
+}
+
+<section class="panel-grid">
+    <article class="panel">
+        <span class="eyebrow">Work items</span>
+        <h1>Internal and GitHub-backed work</h1>
+        <p class="panel-intro">
+            The goal here is one shared list with enough structure to support volunteering,
+            assignment, and later ledger attribution without turning task intake into ceremony.
+        </p>
+
+        <form method="post" asp-page-handler="Create">
+            <div asp-validation-summary="ModelOnly" class="validation-summary-errors"></div>
+            <div class="form-grid">
+                <div class="field">
+                    <label asp-for="Input.ProjectId"></label>
+                    <select asp-for="Input.ProjectId" asp-items="Model.ProjectOptions"></select>
+                    <span asp-validation-for="Input.ProjectId"></span>
+                </div>
+                <div class="field">
+                    <label asp-for="Input.Title"></label>
+                    <input asp-for="Input.Title" />
+                    <span asp-validation-for="Input.Title"></span>
+                </div>
+                <div class="field">
+                    <label asp-for="Input.EffortPoints"></label>
+                    <input asp-for="Input.EffortPoints" />
+                    <span asp-validation-for="Input.EffortPoints"></span>
+                </div>
+            </div>
+            <div class="field">
+                <label asp-for="Input.Summary"></label>
+                <textarea asp-for="Input.Summary"></textarea>
+                <span asp-validation-for="Input.Summary"></span>
+            </div>
+            <div class="panel-actions">
+                <button class="button" type="submit">Add work item</button>
+            </div>
+        </form>
+    </article>
+
+    <article class="table-panel">
+        <div class="panel-header" style="padding: 1.25rem 1.25rem 0;">
+            <div>
+                <h2>Queue</h2>
+                <p class="table-meta">@Model.WorkItems.Count tracked work items.</p>
+            </div>
+        </div>
+
+        @if (Model.WorkItems.Count == 0)
+        {
+            <div class="empty-state" style="margin: 1.25rem;">No work items yet.</div>
+        }
+        else
+        {
+            <div class="table-shell">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Work</th>
+                            <th>Status</th>
+                            <th>Claims</th>
+                            <th>Assignment</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var workItem in Model.WorkItems)
+                        {
+                            var hasClaim = workItem.VolunteerClaims.Any(x => x.UserAccountId == Model.Actor.UserAccount?.Id && x.Status == VolunteerClaimStatus.Active);
+                            <tr>
+                                <td>
+                                    <strong>@workItem.Title</strong><br />
+                                    <span class="muted">@workItem.Project.Name</span>
+                                    <p class="muted">@workItem.Summary</p>
+                                </td>
+                                <td>
+                                    <span class="pill">@workItem.Status</span><br />
+                                    <span class="muted">@workItem.EffortPoints.ToString("0.##") pts</span>
+                                </td>
+                                <td>
+                                    @if (workItem.VolunteerClaims.Count == 0)
+                                    {
+                                        <span class="muted">No claims yet.</span>
+                                    }
+                                    else
+                                    {
+                                        @foreach (var claim in workItem.VolunteerClaims)
+                                        {
+                                            <div>@claim.UserAccount.DisplayName <span class="muted">(@claim.Status)</span></div>
+                                        }
+                                    }
+
+                                    @if (!hasClaim)
+                                    {
+                                        <form method="post" asp-page-handler="Volunteer">
+                                            <input type="hidden" name="workItemId" value="@workItem.Id" />
+                                            <button class="button ghost" type="submit">Volunteer</button>
+                                        </form>
+                                    }
+                                </td>
+                                <td>
+                                    @if (workItem.AssignedToUserAccount is not null)
+                                    {
+                                        <strong>@workItem.AssignedToUserAccount.DisplayName</strong>
+                                    }
+                                    else
+                                    {
+                                        <span class="muted">Unassigned</span>
+                                    }
+
+                                    @if (Model.Actor.CanManageProjects && workItem.VolunteerClaims.Any(x => x.Status == VolunteerClaimStatus.Active))
+                                    {
+                                        <form method="post" asp-page-handler="Assign" class="inline-actions">
+                                            <input type="hidden" name="workItemId" value="@workItem.Id" />
+                                            <select name="userAccountId">
+                                                @foreach (var claim in workItem.VolunteerClaims.Where(x => x.Status == VolunteerClaimStatus.Active))
+                                                {
+                                                    <option value="@claim.UserAccountId">@claim.UserAccount.DisplayName</option>
+                                                }
+                                            </select>
+                                            <button class="button secondary" type="submit">Assign</button>
+                                        </form>
+                                    }
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </article>
+</section>
+
+@section Scripts {
+    <partial name="_ValidationScriptsPartial" />
+}

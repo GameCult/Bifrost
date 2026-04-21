@@ -1,0 +1,89 @@
+@page
+@model Bifrost.Web.Pages.App.Projects.IndexModel
+@{
+    ViewData["Title"] = "Projects";
+}
+
+<section class="panel-grid">
+    <article class="panel">
+        <span class="eyebrow">Projects</span>
+        <h1>Project containers</h1>
+        <p class="panel-intro">
+            Projects are the anchor for work items, motions, and ledger entries.
+            Keeping them explicit is what lets the rest of the system stay legible.
+        </p>
+
+        <form method="post" asp-page-handler="Create">
+            <div asp-validation-summary="ModelOnly" class="validation-summary-errors"></div>
+            <div class="form-grid">
+                <div class="field">
+                    <label asp-for="Input.Name"></label>
+                    <input asp-for="Input.Name" />
+                    <span asp-validation-for="Input.Name"></span>
+                </div>
+                <div class="field">
+                    <label asp-for="Input.Slug"></label>
+                    <input asp-for="Input.Slug" />
+                    <span class="hint">Leave blank to derive from the name.</span>
+                    <span asp-validation-for="Input.Slug"></span>
+                </div>
+            </div>
+            <div class="field">
+                <label asp-for="Input.Summary"></label>
+                <textarea asp-for="Input.Summary"></textarea>
+                <span asp-validation-for="Input.Summary"></span>
+            </div>
+            <div class="panel-actions">
+                <button class="button" type="submit">Create project</button>
+            </div>
+        </form>
+    </article>
+
+    <article class="table-panel">
+        <div class="panel-header" style="padding: 1.25rem 1.25rem 0;">
+            <div>
+                <h2>Current projects</h2>
+                <p class="table-meta">@Model.Projects.Count project containers tracked.</p>
+            </div>
+        </div>
+
+        @if (Model.Projects.Count == 0)
+        {
+            <div class="empty-state" style="margin: 1.25rem;">No projects yet.</div>
+        }
+        else
+        {
+            <div class="table-shell">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Status</th>
+                            <th>Owner</th>
+                            <th>Updated</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var project in Model.Projects)
+                        {
+                            <tr>
+                                <td>
+                                    <strong>@project.Name</strong><br />
+                                    <span class="muted">@project.Slug</span>
+                                    <p class="muted">@project.Summary</p>
+                                </td>
+                                <td><span class="pill">@project.Status</span></td>
+                                <td>@project.OwnerUserAccount.DisplayName</td>
+                                <td>@project.UpdatedAtUtc.ToString("dd MMM yyyy")</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </article>
+</section>
+
+@section Scripts {
+    <partial name="_ValidationScriptsPartial" />
+}

@@ -1,0 +1,154 @@
+@page
+@model Bifrost.Web.Pages.App.Ledger.IndexModel
+@{
+    ViewData["Title"] = "Ledger";
+}
+
+<section class="panel-grid">
+    <article class="panel">
+        <span class="eyebrow">Ledger</span>
+        <h1>Contribution and payout accounting</h1>
+        <p class="panel-intro">
+            The app does not pay anyone directly in v1. It records the accounting facts that make
+            payout review possible later, with explicit status and enough context to audit the trail.
+        </p>
+
+        <form method="post" asp-page-handler="Create">
+            <div asp-validation-summary="ModelOnly" class="validation-summary-errors"></div>
+            <div class="form-grid">
+                <div class="field">
+                    <label asp-for="Input.UserAccountId"></label>
+                    <select asp-for="Input.UserAccountId" asp-items="Model.MemberOptions"></select>
+                    <span asp-validation-for="Input.UserAccountId"></span>
+                </div>
+                <div class="field">
+                    <label asp-for="Input.EntryType"></label>
+                    <select asp-for="Input.EntryType" asp-items="Html.GetEnumSelectList<LedgerEntryType>()"></select>
+                    <span asp-validation-for="Input.EntryType"></span>
+                </div>
+                <div class="field">
+                    <label asp-for="Input.Status"></label>
+                    <select asp-for="Input.Status" asp-items="Html.GetEnumSelectList<LedgerEntryStatus>()"></select>
+                    <span asp-validation-for="Input.Status"></span>
+                </div>
+                <div class="field">
+                    <label asp-for="Input.ProjectId"></label>
+                    <select asp-for="Input.ProjectId" asp-items="Model.ProjectOptions">
+                        <option value="">No project</option>
+                    </select>
+                    <span asp-validation-for="Input.ProjectId"></span>
+                </div>
+                <div class="field">
+                    <label asp-for="Input.WorkItemId"></label>
+                    <select asp-for="Input.WorkItemId" asp-items="Model.WorkItemOptions">
+                        <option value="">No work item</option>
+                    </select>
+                    <span asp-validation-for="Input.WorkItemId"></span>
+                </div>
+                <div class="field">
+                    <label asp-for="Input.Points"></label>
+                    <input asp-for="Input.Points" />
+                    <span asp-validation-for="Input.Points"></span>
+                </div>
+                <div class="field">
+                    <label asp-for="Input.NominalAmount"></label>
+                    <input asp-for="Input.NominalAmount" />
+                    <span asp-validation-for="Input.NominalAmount"></span>
+                </div>
+            </div>
+            <div class="field">
+                <label asp-for="Input.Note"></label>
+                <textarea asp-for="Input.Note"></textarea>
+                <span asp-validation-for="Input.Note"></span>
+            </div>
+            <div class="panel-actions">
+                <button class="button" type="submit">Record entry</button>
+            </div>
+        </form>
+    </article>
+
+    <article class="panel">
+        <div class="panel-header">
+            <div>
+                <h2>Payout proposal preview</h2>
+                <p class="muted">Approved nominal values grouped by member.</p>
+            </div>
+        </div>
+
+        @if (Model.PayoutPreview.Count == 0)
+        {
+            <div class="empty-state">No approved ledger entries yet.</div>
+        }
+        else
+        {
+            <div class="preview-grid">
+                @foreach (var preview in Model.PayoutPreview)
+                {
+                    <article class="preview-card">
+                        <h3>@preview.MemberName</h3>
+                        <span class="pill">@preview.Points.ToString("0.##") pts</span>
+                        <p class="muted">Nominal value @preview.NominalAmount.ToString("0.##")</p>
+                    </article>
+                }
+            </div>
+        }
+    </article>
+</section>
+
+<section class="table-panel" style="margin-top: 1.5rem;">
+    <div class="panel-header" style="padding: 1.25rem 1.25rem 0;">
+        <div>
+            <h2>Recent ledger events</h2>
+            <p class="table-meta">@Model.LedgerEntries.Count entries in the current view.</p>
+        </div>
+    </div>
+
+    @if (Model.LedgerEntries.Count == 0)
+    {
+        <div class="empty-state" style="margin: 1.25rem;">No ledger activity yet.</div>
+    }
+    else
+    {
+        <div class="table-shell">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Member</th>
+                        <th>Type</th>
+                        <th>Value</th>
+                        <th>Status</th>
+                        <th>Context</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var entry in Model.LedgerEntries)
+                    {
+                        <tr>
+                            <td>@entry.UserAccount.DisplayName</td>
+                            <td>
+                                <span class="pill">@entry.EntryType</span>
+                            </td>
+                            <td>
+                                @entry.Points.ToString("0.##") pts<br />
+                                <span class="muted">@entry.NominalAmount.ToString("0.##") nominal</span>
+                            </td>
+                            <td><span class="pill">@entry.Status</span></td>
+                            <td>
+                                @entry.Project?.Name
+                                @if (entry.WorkItem is not null)
+                                {
+                                    <div class="muted">@entry.WorkItem.Title</div>
+                                }
+                                <div class="muted">@entry.Note</div>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+</section>
+
+@section Scripts {
+    <partial name="_ValidationScriptsPartial" />
+}
