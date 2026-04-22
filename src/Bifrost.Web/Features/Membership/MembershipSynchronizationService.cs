@@ -2,6 +2,7 @@ using System.Security.Claims;
 using Bifrost.Web.Configuration;
 using Bifrost.Web.Data;
 using Bifrost.Web.Domain;
+using Bifrost.Web.Features.Shared;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
@@ -26,7 +27,10 @@ public sealed class MembershipSynchronizationService(
 
         var userAccount = await dbContext.UserAccounts
             .Include(x => x.MemberProfile)
-            .Include(x => x.Membership)
+            .Include(x => x.Membership!)
+                .ThenInclude(x => x.RoleAssignments)
+            .Include(x => x.Membership!)
+                .ThenInclude(x => x.TierSnapshots)
             .SingleOrDefaultAsync(x => x.GitHubUserId == gitHubUserId, cancellationToken);
 
         var invitation = await dbContext.MembershipInvitations
@@ -47,6 +51,7 @@ public sealed class MembershipSynchronizationService(
                 LastSeenAtUtc = now,
                 MemberProfile = new MemberProfile
                 {
+                    Nickname = displayName ?? gitHubLogin,
                     Headline = "New member record",
                     UpdatedAtUtc = now
                 },
@@ -70,6 +75,7 @@ public sealed class MembershipSynchronizationService(
             userAccount.MemberProfile ??= new MemberProfile
             {
                 UserAccountId = userAccount.Id,
+                Nickname = userAccount.DisplayName,
                 Headline = "Imported from GitHub sign-in",
                 UpdatedAtUtc = now
             };
@@ -86,6 +92,11 @@ public sealed class MembershipSynchronizationService(
             }
         }
 
+        if (string.IsNullOrWhiteSpace(userAccount.MemberProfile!.Nickname))
+        {
+            userAccount.MemberProfile.Nickname = userAccount.DisplayName;
+        }
+
         if (invitation is not null && invitation.AcceptedByUserAccountId is null)
         {
             invitation.AcceptedByUserAccountId = userAccount.Id;
@@ -94,17 +105,34 @@ public sealed class MembershipSynchronizationService(
 
         if (IsBootstrapAdmin(gitHubLogin, bootstrapOptions.Value))
         {
-            userAccount.Membership!.Status = MembershipStatus.Active;
-            userAccount.Membership.IsPlatformAdmin = true;
-            userAccount.Membership.CanManageProjects = true;
-            userAccount.Membership.CanManageLedger = true;
-            userAccount.Membership.CanModerateMotions = true;
-            userAccount.Membership.ApprovedAtUtc ??= now;
+            PromoteToBootstrapAdmin(userAccount.Membership!, now);
+        }
+        else if (userAccount.Membership!.Status == MembershipStatus.Active)
+        {
+            ApplicationBootstrapper.EnsureRole(
+                userAccount.Membership,
+                MemberRole.StandardMember,
+                null,
+                now,
+                "Default active member role");
         }
 
         userAccount.MemberProfile!.UpdatedAtUtc = now;
 
         await dbContext.SaveChangesAsync(cancellationToken);
+    }
+
+    private static void PromoteToBootstrapAdmin(Bifrost.Web.Domain.Membership membership, DateTimeOffset now)
+    {
+        membership.Status = MembershipStatus.Active;
+        membership.IsPlatformAdmin = true;
+        membership.CanManageProjects = true;
+        membership.CanManageLedger = true;
+        membership.CanModerateMotions = true;
+        membership.ApprovedAtUtc ??= now;
+
+        ApplicationBootstrapper.EnsureRole(membership, MemberRole.PlatformAdmin, null, now, "Bootstrap admin");
+        ApplicationBootstrapper.EnsureRole(membership, MemberRole.StandardMember, null, now, "Default active member role");
     }
 
     private static bool TryReadGitHubIdentity(

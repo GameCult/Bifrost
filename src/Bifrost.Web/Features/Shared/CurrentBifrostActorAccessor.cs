@@ -38,7 +38,10 @@ public sealed class CurrentBifrostActorAccessor(
         var userAccount = await dbContext.UserAccounts
             .AsNoTracking()
             .Include(x => x.MemberProfile)
-            .Include(x => x.Membership)
+            .Include(x => x.Membership!)
+                .ThenInclude(x => x.RoleAssignments)
+            .Include(x => x.Membership!)
+                .ThenInclude(x => x.TierSnapshots)
             .SingleOrDefaultAsync(x => x.GitHubUserId == gitHubUserId, cancellationToken);
 
         return Cache(httpContext, new CurrentBifrostActor(true, userAccount));

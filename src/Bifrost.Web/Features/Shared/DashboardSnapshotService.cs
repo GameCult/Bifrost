@@ -8,16 +8,22 @@ public sealed class DashboardSnapshotService(BifrostDbContext dbContext, TimePro
 {
     public async Task<DashboardSnapshot> GetAsync(Guid? currentUserAccountId, CancellationToken cancellationToken)
     {
+        var now = timeProvider.GetUtcNow();
+
         var recentWorkItems = await dbContext.WorkItems
             .AsNoTracking()
             .Include(x => x.Project)
+            .Include(x => x.AssignedToUserAccount)
             .OrderByDescending(x => x.UpdatedAtUtc)
-            .Take(5)
+            .Take(6)
             .Select(x => new DashboardWorkItem(
+                x.Id,
                 x.Title,
                 x.Project.Name,
+                x.AssignedToUserAccount != null ? x.AssignedToUserAccount.DisplayName : "Unassigned",
                 x.Status.ToString(),
-                x.Id))
+                x.EstimatedHours,
+                x.WorkLogs.Sum(log => log.Hours)))
             .ToListAsync(cancellationToken);
 
         var openMotions = await dbContext.Motions
@@ -26,12 +32,14 @@ public sealed class DashboardSnapshotService(BifrostDbContext dbContext, TimePro
             .OrderBy(x => x.ClosesAtUtc)
             .Take(5)
             .Select(x => new DashboardMotion(
+                x.Id,
                 x.Title,
                 x.Scope.ToString(),
+                x.Category.ToString(),
                 x.Votes.Sum(v => v.Choice == VoteChoice.For ? v.Weight : 0),
                 x.Votes.Sum(v => v.Choice == VoteChoice.Against ? v.Weight : 0),
-                x.ClosesAtUtc,
-                x.Id))
+                x.ApprovalThreshold,
+                x.ClosesAtUtc))
             .ToListAsync(cancellationToken);
 
         var outstandingApprovals = await dbContext.Memberships
@@ -39,14 +47,58 @@ public sealed class DashboardSnapshotService(BifrostDbContext dbContext, TimePro
             .CountAsync(x => x.Status == MembershipStatus.PendingApproval, cancellationToken);
 
         var assignedToMe = currentUserAccountId is null
-            ? 0
+            ? []
             : await dbContext.WorkItems
                 .AsNoTracking()
-                .CountAsync(
-                    x => x.AssignedToUserAccountId == currentUserAccountId &&
-                         x.Status != WorkItemStatus.Done &&
-                         x.Status != WorkItemStatus.Archived,
-                    cancellationToken);
+                .Include(x => x.Project)
+                .Where(x => x.AssignedToUserAccountId == currentUserAccountId &&
+                            x.Status != WorkItemStatus.Completed &&
+                            x.Status != WorkItemStatus.Archived)
+                .OrderByDescending(x => x.UpdatedAtUtc)
+                .Take(5)
+                .Select(x => new DashboardLaneItem(x.Id, x.Title, x.Project.Name, x.Status.ToString(), x.TargetDateUtc))
+                .ToListAsync(cancellationToken);
+
+        var volunteeredByMe = currentUserAccountId is null
+            ? []
+            : await dbContext.VolunteerClaims
+                .AsNoTracking()
+                .Where(x => x.UserAccountId == currentUserAccountId && x.Status == VolunteerClaimStatus.Active)
+                .OrderByDescending(x => x.CreatedAtUtc)
+                .Take(5)
+                .Select(x => new DashboardLaneItem(
+                    x.WorkItemId,
+                    x.WorkItem.Title,
+                    x.WorkItem.Project.Name,
+                    x.WorkItem.Status.ToString(),
+                    x.WorkItem.TargetDateUtc))
+                .ToListAsync(cancellationToken);
+
+        var submittedByMe = currentUserAccountId is null
+            ? []
+            : await dbContext.WorkItems
+                .AsNoTracking()
+                .Include(x => x.Project)
+                .Where(x => x.AssignedToUserAccountId == currentUserAccountId &&
+                            (x.Status == WorkItemStatus.SubmittedForReview ||
+                             x.Status == WorkItemStatus.ChangesRequested ||
+                             x.Status == WorkItemStatus.Approved))
+                .OrderByDescending(x => x.UpdatedAtUtc)
+                .Take(5)
+                .Select(x => new DashboardLaneItem(x.Id, x.Title, x.Project.Name, x.Status.ToString(), x.TargetDateUtc))
+                .ToListAsync(cancellationToken);
+
+        var recentActivity = await dbContext.AuditEvents
+            .AsNoTracking()
+            .Include(x => x.ActorUserAccount)
+            .OrderByDescending(x => x.OccurredAtUtc)
+            .Take(8)
+            .Select(x => new DashboardActivity(
+                x.Action,
+                x.Detail,
+                x.ActorUserAccount != null ? x.ActorUserAccount.DisplayName : "System",
+                x.OccurredAtUtc))
+            .ToListAsync(cancellationToken);
 
         var payoutPreviewNominal = await dbContext.LedgerEntries
             .AsNoTracking()
@@ -56,13 +108,19 @@ public sealed class DashboardSnapshotService(BifrostDbContext dbContext, TimePro
         return new DashboardSnapshot(
             ActiveMembers: await dbContext.Memberships.AsNoTracking().CountAsync(x => x.Status == MembershipStatus.Active, cancellationToken),
             OpenProjects: await dbContext.Projects.AsNoTracking().CountAsync(x => x.Status == ProjectStatus.Active, cancellationToken),
-            OpenWorkItems: await dbContext.WorkItems.AsNoTracking().CountAsync(x => x.Status == WorkItemStatus.Open || x.Status == WorkItemStatus.Claimed || x.Status == WorkItemStatus.InProgress, cancellationToken),
-            OpenMotions: await dbContext.Motions.AsNoTracking().CountAsync(x => x.Status == MotionStatus.Open && x.ClosesAtUtc >= timeProvider.GetUtcNow(), cancellationToken),
+            OpenWorkItems: await dbContext.WorkItems.AsNoTracking().CountAsync(
+                x => x.Status != WorkItemStatus.Completed && x.Status != WorkItemStatus.Archived,
+                cancellationToken),
+            OpenMotions: await dbContext.Motions.AsNoTracking().CountAsync(x => x.Status == MotionStatus.Open && x.ClosesAtUtc >= now, cancellationToken),
             PendingMembershipApprovals: outstandingApprovals,
-            AssignedToCurrentMember: assignedToMe,
+            AssignedToCurrentMember: assignedToMe.Count,
             ApprovedNominalPayoutValue: payoutPreviewNominal,
             RecentWorkItems: recentWorkItems,
-            OpenMotionHighlights: openMotions);
+            OpenMotionHighlights: openMotions,
+            MyAssignedWork: assignedToMe,
+            MyVolunteeredWork: volunteeredByMe,
+            MySubmittedWork: submittedByMe,
+            RecentActivity: recentActivity);
     }
 }
 
@@ -75,18 +133,40 @@ public sealed record DashboardSnapshot(
     int AssignedToCurrentMember,
     decimal ApprovedNominalPayoutValue,
     IReadOnlyList<DashboardWorkItem> RecentWorkItems,
-    IReadOnlyList<DashboardMotion> OpenMotionHighlights);
+    IReadOnlyList<DashboardMotion> OpenMotionHighlights,
+    IReadOnlyList<DashboardLaneItem> MyAssignedWork,
+    IReadOnlyList<DashboardLaneItem> MyVolunteeredWork,
+    IReadOnlyList<DashboardLaneItem> MySubmittedWork,
+    IReadOnlyList<DashboardActivity> RecentActivity);
 
 public sealed record DashboardWorkItem(
+    Guid WorkItemId,
+    string Title,
+    string ProjectName,
+    string AssigneeName,
+    string Status,
+    decimal EstimatedHours,
+    decimal ActualHours);
+
+public sealed record DashboardMotion(
+    Guid MotionId,
+    string Title,
+    string Scope,
+    string Category,
+    decimal VotesFor,
+    decimal VotesAgainst,
+    decimal Threshold,
+    DateTimeOffset ClosesAtUtc);
+
+public sealed record DashboardLaneItem(
+    Guid WorkItemId,
     string Title,
     string ProjectName,
     string Status,
-    Guid WorkItemId);
+    DateTimeOffset? TargetDateUtc);
 
-public sealed record DashboardMotion(
-    string Title,
-    string Scope,
-    decimal VotesFor,
-    decimal VotesAgainst,
-    DateTimeOffset ClosesAtUtc,
-    Guid MotionId);
+public sealed record DashboardActivity(
+    string Action,
+    string Detail,
+    string ActorName,
+    DateTimeOffset OccurredAtUtc);

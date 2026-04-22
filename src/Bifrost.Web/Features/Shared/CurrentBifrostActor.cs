@@ -9,25 +9,50 @@ public sealed record CurrentBifrostActor(bool IsAuthenticated, UserAccount? User
     public Bifrost.Web.Domain.Membership? Membership => UserAccount?.Membership;
 
     public string DisplayName =>
-        UserAccount?.DisplayName
+        UserAccount?.MemberProfile?.Nickname
+        ?? UserAccount?.DisplayName
         ?? UserAccount?.GitHubLogin
         ?? "Guest";
 
     public bool IsActiveMember => Membership?.Status == MembershipStatus.Active;
 
-    public bool CanManageMembership => Membership?.IsPlatformAdmin == true;
+    public IReadOnlyCollection<MemberRole> Roles =>
+        Membership?.RoleAssignments
+            .Select(x => x.Role)
+            .Distinct()
+            .ToArray()
+        ?? [];
+
+    public bool IsPlatformAdmin =>
+        Membership?.IsPlatformAdmin == true ||
+        Roles.Contains(MemberRole.PlatformAdmin);
+
+    public bool CanManageMembership => IsPlatformAdmin;
 
     public bool CanManageProjects =>
-        Membership?.IsPlatformAdmin == true ||
-        Membership?.CanManageProjects == true;
+        IsPlatformAdmin ||
+        Membership?.CanManageProjects == true ||
+        Roles.Contains(MemberRole.Producer);
+
+    public bool CanAssignWork =>
+        CanManageProjects ||
+        Roles.Contains(MemberRole.Maintainer);
+
+    public bool CanReviewWork =>
+        IsPlatformAdmin ||
+        Roles.Contains(MemberRole.Producer) ||
+        Roles.Contains(MemberRole.Maintainer);
 
     public bool CanManageLedger =>
-        Membership?.IsPlatformAdmin == true ||
-        Membership?.CanManageLedger == true;
+        IsPlatformAdmin ||
+        Membership?.CanManageLedger == true ||
+        Roles.Contains(MemberRole.LedgerReviewer);
 
     public bool CanModerateMotions =>
-        Membership?.IsPlatformAdmin == true ||
-        Membership?.CanModerateMotions == true;
+        IsPlatformAdmin ||
+        Membership?.CanModerateMotions == true ||
+        Roles.Contains(MemberRole.Producer) ||
+        Roles.Contains(MemberRole.Maintainer);
 
     public decimal EffectiveVotingWeight => Membership?.EffectiveVotingWeight ?? 0m;
 }

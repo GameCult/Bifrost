@@ -12,23 +12,25 @@ It is currently a strong first application slice, not an internet-facing alpha. 
 
 ### What Exists Already
 
-- ASP.NET Core 8 Razor Pages app scaffold
-- PostgreSQL-backed EF Core model
-- GitHub OAuth wiring
-- invite and approval gate
+- ASP.NET Core 8 Razor Pages app
+- PostgreSQL-backed EF Core model plus initial migration
+- GitHub OAuth wiring and startup config validation
+- invite and approval gate with explicit member roles
+- member profile editing plus patron or contributor tier snapshots
 - project, work item, motion, member, and ledger UI
-- basic integration tests
+- work logs, work reviews, and completion flow
+- GitHub App webhook ingestion for issue, pull request, and review sync
+- health and readiness endpoints plus request logging
+- deployment artifacts and runbooks in `gamecult-ops`
+- integration tests covering console access, health/readiness, and GitHub webhook sync
 
 ### What Is Still Missing Before Deployment
 
-- initial EF Core migrations and a repeatable database bootstrap path
-- production config validation, secrets handling guidance, and startup failure checks
-- GitHub App integration, webhook ingestion, and issue or pull request sync
-- health checks, structured logging, and deployment smoke tests
-- nginx and systemd deployment artifacts or matching runbooks in `gamecult-ops`
-- backup and restore instructions for PostgreSQL and app secrets
-- role and permission hardening beyond the initial admin flags
-- production-safe ledger workflow, payout proposal generation, and approval gates
+- live GitHub App installation validation against the real `GameCult/Bifrost` repository
+- deploy rehearsal on Yggdrasil with real secrets and a real PostgreSQL database
+- backup and restore rehearsal for PostgreSQL and app secrets
+- fuller workflow polish around blockers, archival, and review ergonomics
+- production-safe payout proposal batching and finance review workflow
 - contribution point rules, patron point rules, decay jobs, and revenue share calculation
 
 ## Product Alignment With Labor Platform

@@ -13,58 +13,72 @@
             payout review possible later, with explicit status and enough context to audit the trail.
         </p>
 
-        <form method="post" asp-page-handler="Create">
-            <div asp-validation-summary="ModelOnly" class="validation-summary-errors"></div>
-            <div class="form-grid">
-                <div class="field">
-                    <label asp-for="Input.UserAccountId"></label>
-                    <select asp-for="Input.UserAccountId" asp-items="Model.MemberOptions"></select>
-                    <span asp-validation-for="Input.UserAccountId"></span>
+        <div class="callout">
+            Post-alpha economics automation is planned separately. The schema now leaves room for point transactions,
+            patron support events, weekly decay runs, revenue events, and revenue-share batches without making them launch blockers.
+        </div>
+
+        @if (Model.Actor.CanManageLedger)
+        {
+            <form method="post" asp-page-handler="Create">
+                <div asp-validation-summary="ModelOnly" class="validation-summary-errors"></div>
+                <div class="form-grid">
+                    <div class="field">
+                        <label asp-for="Input.UserAccountId"></label>
+                        <select asp-for="Input.UserAccountId" asp-items="Model.MemberOptions"></select>
+                        <span asp-validation-for="Input.UserAccountId"></span>
+                    </div>
+                    <div class="field">
+                        <label asp-for="Input.EntryType"></label>
+                        <select asp-for="Input.EntryType" asp-items="Html.GetEnumSelectList<LedgerEntryType>()"></select>
+                        <span asp-validation-for="Input.EntryType"></span>
+                    </div>
+                    <div class="field">
+                        <label asp-for="Input.Status"></label>
+                        <select asp-for="Input.Status" asp-items="Html.GetEnumSelectList<LedgerEntryStatus>()"></select>
+                        <span asp-validation-for="Input.Status"></span>
+                    </div>
+                    <div class="field">
+                        <label asp-for="Input.ProjectId"></label>
+                        <select asp-for="Input.ProjectId" asp-items="Model.ProjectOptions">
+                            <option value="">No project</option>
+                        </select>
+                        <span asp-validation-for="Input.ProjectId"></span>
+                    </div>
+                    <div class="field">
+                        <label asp-for="Input.WorkItemId"></label>
+                        <select asp-for="Input.WorkItemId" asp-items="Model.WorkItemOptions">
+                            <option value="">No work item</option>
+                        </select>
+                        <span asp-validation-for="Input.WorkItemId"></span>
+                    </div>
+                    <div class="field">
+                        <label asp-for="Input.Points"></label>
+                        <input asp-for="Input.Points" />
+                        <span asp-validation-for="Input.Points"></span>
+                    </div>
+                    <div class="field">
+                        <label asp-for="Input.NominalAmount"></label>
+                        <input asp-for="Input.NominalAmount" />
+                        <span asp-validation-for="Input.NominalAmount"></span>
+                    </div>
                 </div>
                 <div class="field">
-                    <label asp-for="Input.EntryType"></label>
-                    <select asp-for="Input.EntryType" asp-items="Html.GetEnumSelectList<LedgerEntryType>()"></select>
-                    <span asp-validation-for="Input.EntryType"></span>
+                    <label asp-for="Input.Note"></label>
+                    <textarea asp-for="Input.Note"></textarea>
+                    <span asp-validation-for="Input.Note"></span>
                 </div>
-                <div class="field">
-                    <label asp-for="Input.Status"></label>
-                    <select asp-for="Input.Status" asp-items="Html.GetEnumSelectList<LedgerEntryStatus>()"></select>
-                    <span asp-validation-for="Input.Status"></span>
+                <div class="panel-actions">
+                    <button class="button" type="submit">Record entry</button>
                 </div>
-                <div class="field">
-                    <label asp-for="Input.ProjectId"></label>
-                    <select asp-for="Input.ProjectId" asp-items="Model.ProjectOptions">
-                        <option value="">No project</option>
-                    </select>
-                    <span asp-validation-for="Input.ProjectId"></span>
-                </div>
-                <div class="field">
-                    <label asp-for="Input.WorkItemId"></label>
-                    <select asp-for="Input.WorkItemId" asp-items="Model.WorkItemOptions">
-                        <option value="">No work item</option>
-                    </select>
-                    <span asp-validation-for="Input.WorkItemId"></span>
-                </div>
-                <div class="field">
-                    <label asp-for="Input.Points"></label>
-                    <input asp-for="Input.Points" />
-                    <span asp-validation-for="Input.Points"></span>
-                </div>
-                <div class="field">
-                    <label asp-for="Input.NominalAmount"></label>
-                    <input asp-for="Input.NominalAmount" />
-                    <span asp-validation-for="Input.NominalAmount"></span>
-                </div>
+            </form>
+        }
+        else
+        {
+            <div class="callout warning">
+                Ledger review actions are limited to finance reviewers and platform admins, but the ledger remains visible to all active members.
             </div>
-            <div class="field">
-                <label asp-for="Input.Note"></label>
-                <textarea asp-for="Input.Note"></textarea>
-                <span asp-validation-for="Input.Note"></span>
-            </div>
-            <div class="panel-actions">
-                <button class="button" type="submit">Record entry</button>
-            </div>
-        </form>
+        }
     </article>
 
     <article class="panel">

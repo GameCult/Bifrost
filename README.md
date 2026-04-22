@@ -4,15 +4,20 @@ Bifrost is the planned GameCult member, governance, and labor platform running u
 
 ## Status
 
-This repository now includes the first implementation slice of the ASP.NET Core app:
+This repository now includes a viable alpha foundation slice of the ASP.NET Core app:
 
-- Razor Pages app scaffold under `src/Bifrost.Web`
-- PostgreSQL-backed EF Core domain model for members, projects, work items, motions, and ledgers
-- GitHub OAuth wiring plus invite/approval-based membership gating
-- initial member console pages for projects, work items, motions, ledger activity, and member approvals
+- Razor Pages app under `src/Bifrost.Web`
+- PostgreSQL-backed EF Core model with an initial migration under `src/Bifrost.Web/Data/Migrations`
+- GitHub OAuth sign-in plus invite/approval-based membership gating
+- explicit member roles and admin-managed patron or contributor tier snapshots
+- shared work board with estimates, actual time logs, review flow, and GitHub issue or PR links
+- member-facing motions with category thresholds aligned to the labor-platform doc
+- health and readiness endpoints plus startup config validation
+- GitHub App webhook ingestion for issue, pull request, and review sync
 - xUnit integration tests under `tests/Bifrost.Web.Tests`
+- matching deploy artifacts and runbooks in `E:\Projects\gamecult-ops`
 
-It is not yet ready for production deployment. The current state is suitable for continued development and, after deploy-foundation work, an internal staging rollout.
+It is closer to deployable now, but it is still not a finished internet-facing member alpha. The current state is suitable for a private deploy candidate on Yggdrasil while we finish the remaining operational hardening and post-MVP economics work.
 
 ## Chosen Stack
 
@@ -39,13 +44,13 @@ It is not yet ready for production deployment. The current state is suitable for
 
 ## Next Build Target
 
-The next build target is to deepen the first implementation milestone by adding:
+The next build target is to deepen the alpha candidate by adding:
 
-- database migrations and bootstrap seed/run instructions
-- GitHub issue and pull request sync
-- richer membership/admin role management
-- work item completion and ledger approval flow
-- payout proposal batch generation and review
+- GitHub App installation/admin guidance and live webhook verification against the real repo
+- richer workflow polish around work review, blocking, and closure ergonomics
+- payout proposal batch generation and tighter ledger approval workflow
+- staged deploy validation on Yggdrasil, including backup/restore rehearsal
+- post-MVP economics automation for point transactions, decay, and revenue-share calculation
 
 For the full staged roadmap, including contribution points, revenue share, patron or contributor decay, and labor-platform alignment, see [docs/full-implementation-strategy.md](E:\Projects\Bifrost\docs\full-implementation-strategy.md).
 

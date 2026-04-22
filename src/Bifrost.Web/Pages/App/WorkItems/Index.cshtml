@@ -1,4 +1,5 @@
 @page
+@using Bifrost.Web.Domain
 @model Bifrost.Web.Pages.App.WorkItems.IndexModel
 @{
     ViewData["Title"] = "Work items";
@@ -9,8 +10,8 @@
         <span class="eyebrow">Work items</span>
         <h1>Internal and GitHub-backed work</h1>
         <p class="panel-intro">
-            The goal here is one shared list with enough structure to support volunteering,
-            assignment, and later ledger attribution without turning task intake into ceremony.
+            This is the shared queue for internal operations, GitHub issues, assignment, actual hours, and review.
+            Everyone can see the board; mutation stays role-gated where it needs to.
         </p>
 
         <form method="post" asp-page-handler="Create">
@@ -27,9 +28,29 @@
                     <span asp-validation-for="Input.Title"></span>
                 </div>
                 <div class="field">
-                    <label asp-for="Input.EffortPoints"></label>
-                    <input asp-for="Input.EffortPoints" />
-                    <span asp-validation-for="Input.EffortPoints"></span>
+                    <label asp-for="Input.Category"></label>
+                    <input asp-for="Input.Category" />
+                    <span asp-validation-for="Input.Category"></span>
+                </div>
+                <div class="field">
+                    <label asp-for="Input.SkillLevel"></label>
+                    <select asp-for="Input.SkillLevel" asp-items="Html.GetEnumSelectList<WorkItemSkillLevel>()"></select>
+                    <span asp-validation-for="Input.SkillLevel"></span>
+                </div>
+                <div class="field">
+                    <label asp-for="Input.EstimatedHours"></label>
+                    <input asp-for="Input.EstimatedHours" />
+                    <span asp-validation-for="Input.EstimatedHours"></span>
+                </div>
+                <div class="field">
+                    <label asp-for="Input.ContributionPoints"></label>
+                    <input asp-for="Input.ContributionPoints" />
+                    <span asp-validation-for="Input.ContributionPoints"></span>
+                </div>
+                <div class="field">
+                    <label asp-for="Input.TargetDateUtc"></label>
+                    <input asp-for="Input.TargetDateUtc" />
+                    <span asp-validation-for="Input.TargetDateUtc"></span>
                 </div>
             </div>
             <div class="field">
@@ -43,96 +64,232 @@
         </form>
     </article>
 
-    <article class="table-panel">
-        <div class="panel-header" style="padding: 1.25rem 1.25rem 0;">
-            <div>
-                <h2>Queue</h2>
-                <p class="table-meta">@Model.WorkItems.Count tracked work items.</p>
+    <article class="panel">
+        <span class="eyebrow">Workflow</span>
+        <h2>How this MVP flows</h2>
+        <div class="list-grid">
+            <div class="status-banner">
+                <strong>States</strong>
+                <span class="muted">Proposed, open, volunteered, assigned, in progress, submitted for review, changes requested, approved, completed, blocked, archived.</span>
+            </div>
+            <div class="status-banner">
+                <strong>Time tracking</strong>
+                <span class="muted">Members log actual hours per item. Producers and maintainers approve or reject those logs.</span>
+            </div>
+            <div class="status-banner">
+                <strong>GitHub sync</strong>
+                <span class="muted">Issues and pull requests show up here when the GitHub App webhook is configured.</span>
             </div>
         </div>
+    </article>
+</section>
 
-        @if (Model.WorkItems.Count == 0)
-        {
-            <div class="empty-state" style="margin: 1.25rem;">No work items yet.</div>
-        }
-        else
-        {
-            <div class="table-shell">
-                <table>
-                    <thead>
+<section class="table-panel" style="margin-top: 1.5rem;">
+    <div class="panel-header" style="padding: 1.25rem 1.25rem 0;">
+        <div>
+            <h2>Shared work board</h2>
+            <p class="table-meta">@Model.WorkItems.Count tracked work items.</p>
+        </div>
+    </div>
+
+    @if (Model.WorkItems.Count == 0)
+    {
+        <div class="empty-state" style="margin: 1.25rem;">No work items yet.</div>
+    }
+    else
+    {
+        <div class="table-shell">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Work</th>
+                        <th>Workflow</th>
+                        <th>Time and points</th>
+                        <th>GitHub</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var workItem in Model.WorkItems)
+                    {
+                        var hasClaim = workItem.VolunteerClaims.Any(x => x.UserAccountId == Model.Actor.UserAccount?.Id && x.Status == VolunteerClaimStatus.Active);
+                        var canWorkOnItem =
+                            workItem.AssignedToUserAccountId == Model.Actor.UserAccount?.Id ||
+                            workItem.RequestedByUserAccountId == Model.Actor.UserAccount?.Id ||
+                            hasClaim;
+                        var pendingLogs = workItem.WorkLogs.Where(x => x.ApprovalStatus == WorkLogApprovalStatus.Submitted).ToList();
+
                         <tr>
-                            <th>Work</th>
-                            <th>Status</th>
-                            <th>Claims</th>
-                            <th>Assignment</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        @foreach (var workItem in Model.WorkItems)
-                        {
-                            var hasClaim = workItem.VolunteerClaims.Any(x => x.UserAccountId == Model.Actor.UserAccount?.Id && x.Status == VolunteerClaimStatus.Active);
-                            <tr>
-                                <td>
-                                    <strong>@workItem.Title</strong><br />
-                                    <span class="muted">@workItem.Project.Name</span>
-                                    <p class="muted">@workItem.Summary</p>
-                                </td>
-                                <td>
-                                    <span class="pill">@workItem.Status</span><br />
-                                    <span class="muted">@workItem.EffortPoints.ToString("0.##") pts</span>
-                                </td>
-                                <td>
-                                    @if (workItem.VolunteerClaims.Count == 0)
-                                    {
-                                        <span class="muted">No claims yet.</span>
-                                    }
-                                    else
-                                    {
-                                        @foreach (var claim in workItem.VolunteerClaims)
+                            <td>
+                                <strong>@workItem.Title</strong><br />
+                                <span class="muted">@workItem.Project.Name</span>
+                                <div class="inline-actions" style="margin-top: 0.4rem;">
+                                    <span class="pill">@workItem.SourceType</span>
+                                    <span class="pill">@workItem.Category</span>
+                                    <span class="pill">@workItem.SkillLevel</span>
+                                </div>
+                                <p class="muted">@workItem.Summary</p>
+                            </td>
+                            <td>
+                                <span class="pill">@workItem.Status</span>
+                                <div class="muted" style="margin-top: 0.5rem;">Review: @workItem.ReviewStatus</div>
+                                <div class="muted">
+                                    Assignee:
+                                    @(workItem.AssignedToUserAccount is null ? "Unassigned" : workItem.AssignedToUserAccount.DisplayName)
+                                </div>
+                                <div class="muted">
+                                    Target:
+                                    @(workItem.TargetDateUtc is null ? "None" : workItem.TargetDateUtc.Value.ToString("dd MMM yyyy HH:mm") + " UTC")
+                                </div>
+                                @if (workItem.VolunteerClaims.Count > 0)
+                                {
+                                    <div class="muted" style="margin-top: 0.4rem;">
+                                        Volunteers:
+                                        @string.Join(", ", workItem.VolunteerClaims.Select(x => x.UserAccount.DisplayName))
+                                    </div>
+                                }
+                            </td>
+                            <td>
+                                <div>@workItem.EstimatedHours.ToString("0.##")h estimated</div>
+                                <div>@workItem.WorkLogs.Sum(x => x.Hours).ToString("0.##")h logged</div>
+                                <div>@workItem.ContributionPoints.ToString("0.##") contribution points</div>
+                                @if (workItem.WorkLogs.Count > 0)
+                                {
+                                    <div class="muted" style="margin-top: 0.6rem;">
+                                        @foreach (var log in workItem.WorkLogs.OrderByDescending(x => x.CreatedAtUtc).Take(3))
                                         {
-                                            <div>@claim.UserAccount.DisplayName <span class="muted">(@claim.Status)</span></div>
+                                            <div>@log.UserAccount.DisplayName: @log.Hours.ToString("0.##")h (@log.ApprovalStatus)</div>
                                         }
+                                    </div>
+                                }
+                            </td>
+                            <td>
+                                @if (workItem.GitHubIssueLink is null && workItem.GitHubPullRequestLinks.Count == 0)
+                                {
+                                    <span class="muted">Internal-only</span>
+                                }
+                                else
+                                {
+                                    @if (workItem.GitHubIssueLink is not null)
+                                    {
+                                        <div>
+                                            <a href="@workItem.GitHubIssueLink.IssueUrl" target="_blank" rel="noreferrer">
+                                                Issue #@workItem.GitHubIssueLink.IssueNumber
+                                            </a>
+                                            <span class="muted">(@workItem.GitHubIssueLink.State)</span>
+                                        </div>
                                     }
-
-                                    @if (!hasClaim)
+                                    @foreach (var pr in workItem.GitHubPullRequestLinks.OrderByDescending(x => x.LastSynchronizedAtUtc))
+                                    {
+                                        <div style="margin-top: 0.35rem;">
+                                            <a href="@pr.PullRequestUrl" target="_blank" rel="noreferrer">
+                                                PR #@pr.PullRequestNumber
+                                            </a>
+                                            <span class="muted">(@pr.State, @pr.ReviewDecision)</span>
+                                        </div>
+                                    }
+                                }
+                            </td>
+                            <td>
+                                <div class="stack-form">
+                                    @if (!hasClaim && workItem.Status != WorkItemStatus.Completed && workItem.Status != WorkItemStatus.Archived)
                                     {
                                         <form method="post" asp-page-handler="Volunteer">
                                             <input type="hidden" name="workItemId" value="@workItem.Id" />
                                             <button class="button ghost" type="submit">Volunteer</button>
                                         </form>
                                     }
-                                </td>
-                                <td>
-                                    @if (workItem.AssignedToUserAccount is not null)
-                                    {
-                                        <strong>@workItem.AssignedToUserAccount.DisplayName</strong>
-                                    }
-                                    else
-                                    {
-                                        <span class="muted">Unassigned</span>
-                                    }
 
-                                    @if (Model.Actor.CanManageProjects && workItem.VolunteerClaims.Any(x => x.Status == VolunteerClaimStatus.Active))
+                                    @if (Model.Actor.CanAssignWork)
                                     {
-                                        <form method="post" asp-page-handler="Assign" class="inline-actions">
+                                        <form method="post" asp-page-handler="Assign">
                                             <input type="hidden" name="workItemId" value="@workItem.Id" />
                                             <select name="userAccountId">
-                                                @foreach (var claim in workItem.VolunteerClaims.Where(x => x.Status == VolunteerClaimStatus.Active))
+                                                @foreach (var member in Model.MemberOptions)
                                                 {
-                                                    <option value="@claim.UserAccountId">@claim.UserAccount.DisplayName</option>
+                                                    if (member.Value == workItem.AssignedToUserAccountId?.ToString())
+                                                    {
+                                                        <option value="@member.Value" selected="selected">@member.Text</option>
+                                                    }
+                                                    else
+                                                    {
+                                                        <option value="@member.Value">@member.Text</option>
+                                                    }
                                                 }
                                             </select>
                                             <button class="button secondary" type="submit">Assign</button>
                                         </form>
                                     }
-                                </td>
-                            </tr>
-                        }
-                    </tbody>
-                </table>
-            </div>
-        }
-    </article>
+
+                                    @if (canWorkOnItem && workItem.Status is WorkItemStatus.Assigned or WorkItemStatus.Volunteered or WorkItemStatus.Proposed or WorkItemStatus.Open or WorkItemStatus.ChangesRequested)
+                                    {
+                                        <form method="post" asp-page-handler="Start">
+                                            <input type="hidden" name="workItemId" value="@workItem.Id" />
+                                            <button class="button secondary" type="submit">Start</button>
+                                        </form>
+                                    }
+
+                                    @if (canWorkOnItem && workItem.Status != WorkItemStatus.Completed && workItem.Status != WorkItemStatus.Archived)
+                                    {
+                                        <form method="post" asp-page-handler="LogTime">
+                                            <input type="hidden" name="workItemId" value="@workItem.Id" />
+                                            <input name="hours" placeholder="Hours" />
+                                            <input name="note" placeholder="What moved?" />
+                                            <button class="button ghost" type="submit">Log time</button>
+                                        </form>
+                                    }
+
+                                    @if (canWorkOnItem && workItem.Status is WorkItemStatus.InProgress or WorkItemStatus.ChangesRequested or WorkItemStatus.Approved)
+                                    {
+                                        <form method="post" asp-page-handler="Submit">
+                                            <input type="hidden" name="workItemId" value="@workItem.Id" />
+                                            <button class="button" type="submit">Submit for review</button>
+                                        </form>
+                                    }
+
+                                    @if (Model.Actor.CanReviewWork && workItem.Status is WorkItemStatus.SubmittedForReview or WorkItemStatus.ChangesRequested or WorkItemStatus.Approved)
+                                    {
+                                        <form method="post" asp-page-handler="Review">
+                                            <input type="hidden" name="workItemId" value="@workItem.Id" />
+                                            <select name="status">
+                                                <option value="@WorkReviewStatus.Approved">Approve</option>
+                                                <option value="@WorkReviewStatus.ChangesRequested">Request changes</option>
+                                            </select>
+                                            <input name="note" placeholder="Review note" />
+                                            <button class="button warm" type="submit">Record review</button>
+                                        </form>
+                                    }
+
+                                    @if (Model.Actor.CanReviewWork && workItem.Status == WorkItemStatus.Approved)
+                                    {
+                                        <form method="post" asp-page-handler="Complete">
+                                            <input type="hidden" name="workItemId" value="@workItem.Id" />
+                                            <button class="button" type="submit">Mark completed</button>
+                                        </form>
+                                    }
+
+                                    @if (Model.Actor.CanReviewWork && pendingLogs.Count > 0)
+                                    {
+                                        @foreach (var workLog in pendingLogs)
+                                        {
+                                            <form method="post" asp-page-handler="ModerateLog">
+                                                <input type="hidden" name="workLogId" value="@workLog.Id" />
+                                                <select name="approvalStatus">
+                                                    <option value="@WorkLogApprovalStatus.Approved">Approve @workLog.Hours.ToString("0.##")h</option>
+                                                    <option value="@WorkLogApprovalStatus.Rejected">Reject @workLog.Hours.ToString("0.##")h</option>
+                                                </select>
+                                                <button class="button ghost" type="submit">@workLog.UserAccount.DisplayName log</button>
+                                            </form>
+                                        }
+                                    }
+                                </div>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
 </section>
 
 @section Scripts {

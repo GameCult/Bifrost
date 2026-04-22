@@ -1,4 +1,5 @@
 @page
+@using Bifrost.Web.Domain
 @model Bifrost.Web.Pages.App.Motions.IndexModel
 @{
     ViewData["Title"] = "Motions";
@@ -9,8 +10,8 @@
         <span class="eyebrow">Governance</span>
         <h1>Open motions and voting</h1>
         <p class="panel-intro">
-            Motions stay app-native here: no token theater, just explicit thresholds,
-            weighted votes, and an auditable trail of who changed what.
+            Motions stay app-native here: no token theater, just explicit thresholds from the labor platform,
+            weighted votes from current tier snapshots, and an auditable trail of who changed what.
         </p>
 
         <form method="post" asp-page-handler="Create">
@@ -27,6 +28,11 @@
                         <option value="">No project scope</option>
                     </select>
                     <span asp-validation-for="Input.ProjectId"></span>
+                </div>
+                <div class="field">
+                    <label asp-for="Input.Category"></label>
+                    <select asp-for="Input.Category" asp-items="Html.GetEnumSelectList<MotionCategory>()"></select>
+                    <span asp-validation-for="Input.Category"></span>
                 </div>
                 <div class="field">
                     <label asp-for="Input.ClosesAtUtc"></label>
@@ -54,52 +60,92 @@
         <div class="panel-header">
             <div>
                 <h2>Vote ledger</h2>
-                <p class="muted">Your current effective weight is @Model.Actor.EffectiveVotingWeight.</p>
+                <p class="muted">Your current effective vote weight is @Model.Actor.EffectiveVotingWeight.ToString("0.##").</p>
             </div>
         </div>
 
-        @if (Model.Motions.Count == 0)
-        {
-            <div class="empty-state">No motions yet.</div>
-        }
-        else
-        {
-            <div class="motion-grid">
-                @foreach (var motion in Model.Motions)
-                {
-                    <article class="motion-card">
-                        <div class="inline-actions">
-                            <span class="pill">@motion.Scope</span>
-                            <span class="pill @motion.StatusTone">@motion.StatusLabel</span>
-                        </div>
-                        <h3>@motion.Title</h3>
-                        <p class="muted">@motion.Summary</p>
-                        <p class="muted">
-                            @motion.ProjectName
-                            · closes @motion.ClosesAtUtc.ToString("dd MMM yyyy HH:mm") UTC
-                        </p>
-                        <div class="inline-actions">
-                            <span class="pill success">For @motion.VotesFor</span>
-                            <span class="pill danger">Against @motion.VotesAgainst</span>
-                            <span class="pill">Abstain @motion.VotesAbstain</span>
-                        </div>
-                        <div class="vote-strip">
-                            @foreach (var choice in Enum.GetValues<VoteChoice>())
-                            {
-                                <form method="post" asp-page-handler="Vote">
-                                    <input type="hidden" name="motionId" value="@motion.Id" />
-                                    <input type="hidden" name="choice" value="@choice" />
-                                    <button class="button @(motion.CurrentUserVote == choice ? "warm" : "secondary")" type="submit">
-                                        Vote @choice
-                                    </button>
-                                </form>
-                            }
-                        </div>
-                    </article>
-                }
+        <div class="list-grid">
+            <div class="status-banner">
+                <strong>Bugs</strong>
+                <span class="muted">15% threshold</span>
             </div>
-        }
+            <div class="status-banner">
+                <strong>Cosmetics</strong>
+                <span class="muted">30% threshold</span>
+            </div>
+            <div class="status-banner">
+                <strong>Balance changes</strong>
+                <span class="muted">40% threshold</span>
+            </div>
+            <div class="status-banner">
+                <strong>Features and new content</strong>
+                <span class="muted">50% threshold</span>
+            </div>
+            <div class="status-banner">
+                <strong>Fundamental design changes</strong>
+                <span class="muted">66% threshold</span>
+            </div>
+        </div>
     </article>
+</section>
+
+<section class="panel" style="margin-top: 1.5rem;">
+    @if (Model.Motions.Count == 0)
+    {
+        <div class="empty-state">No motions yet.</div>
+    }
+    else
+    {
+        <div class="motion-grid">
+            @foreach (var motion in Model.Motions)
+            {
+                <article class="motion-card">
+                    <div class="inline-actions">
+                        <span class="pill">@motion.Scope</span>
+                        <span class="pill">@motion.Category</span>
+                        <span class="pill @motion.StatusTone">@motion.StatusLabel</span>
+                    </div>
+                    <h3>@motion.Title</h3>
+                    <p class="muted">@motion.Summary</p>
+                    <p class="muted">
+                        @motion.ProjectName
+                        · threshold @motion.Threshold.ToString("P0")
+                        · closes @motion.ClosesAtUtc.ToString("dd MMM yyyy HH:mm") UTC
+                    </p>
+                    <div class="inline-actions">
+                        <span class="pill success">For @motion.VotesFor</span>
+                        <span class="pill danger">Against @motion.VotesAgainst</span>
+                        <span class="pill">Abstain @motion.VotesAbstain</span>
+                    </div>
+                    @if (!string.IsNullOrWhiteSpace(motion.ResolutionNote))
+                    {
+                        <p class="muted" style="margin-top: 0.8rem;">@motion.ResolutionNote</p>
+                    }
+                    <div class="vote-strip">
+                        @foreach (var choice in Enum.GetValues<VoteChoice>())
+                        {
+                            <form method="post" asp-page-handler="Vote">
+                                <input type="hidden" name="motionId" value="@motion.Id" />
+                                <input type="hidden" name="choice" value="@choice" />
+                                <input type="hidden" name="comment" value="" />
+                                <button class="button @(motion.CurrentUserVote == choice ? "warm" : "secondary")" type="submit">
+                                    Vote @choice
+                                </button>
+                            </form>
+                        }
+
+                        @if (Model.Actor.CanModerateMotions || motion.StatusLabel == "Expired")
+                        {
+                            <form method="post" asp-page-handler="Close">
+                                <input type="hidden" name="motionId" value="@motion.Id" />
+                                <button class="button ghost" type="submit">Close motion</button>
+                            </form>
+                        }
+                    </div>
+                </article>
+            }
+        </div>
+    }
 </section>
 
 @section Scripts {

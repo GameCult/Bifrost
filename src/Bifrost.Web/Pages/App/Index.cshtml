@@ -10,8 +10,8 @@
             <span class="eyebrow">Member console</span>
             <h1>Operational picture for @Model.Actor.DisplayName</h1>
             <p class="panel-intro">
-                This view ties together the slices we care about first: who can participate,
-                what work is moving, what motions are open, and what ledger value is accruing.
+                This is the alpha control room: personal lanes for your work, a shared operational picture,
+                governance pressure, and recent team activity in one place.
             </p>
         </div>
         <button class="button secondary"
@@ -27,24 +27,88 @@
     </div>
 </section>
 
-<section class="panel-grid">
+<section class="panel-grid" style="margin-top: 1.5rem;">
     <article class="panel">
         <div class="panel-header">
             <div>
-                <h2>Recent work</h2>
-                <p class="muted">Latest work item movement across projects.</p>
+                <h2>My assigned work</h2>
+                <p class="muted">What is currently on your plate.</p>
             </div>
-            <a class="button ghost" asp-page="/App/WorkItems/Index">Manage work items</a>
+            <a class="button ghost" asp-page="/App/WorkItems/Index">Open work board</a>
         </div>
 
-        @if (Model.Snapshot.RecentWorkItems.Count == 0)
+        @if (Model.Snapshot.MyAssignedWork.Count == 0)
         {
-            <div class="empty-state">No work items exist yet.</div>
+            <div class="empty-state">Nothing is currently assigned to you.</div>
         }
         else
         {
             <div class="list-grid">
-                @foreach (var item in Model.Snapshot.RecentWorkItems)
+                @foreach (var item in Model.Snapshot.MyAssignedWork)
+                {
+                    <div class="status-banner">
+                        <strong>@item.Title</strong>
+                        <span class="muted">@item.ProjectName</span>
+                        <div class="inline-actions">
+                            <span class="pill">@item.Status</span>
+                            @if (item.TargetDateUtc is not null)
+                            {
+                                <span class="pill warning">Due @item.TargetDateUtc.Value.ToString("dd MMM")</span>
+                            }
+                        </div>
+                    </div>
+                }
+            </div>
+        }
+    </article>
+
+    <article class="panel">
+        <div class="panel-header">
+            <div>
+                <h2>My submitted work</h2>
+                <p class="muted">Items waiting on review or closure.</p>
+            </div>
+        </div>
+
+        @if (Model.Snapshot.MySubmittedWork.Count == 0)
+        {
+            <div class="empty-state">Nothing of yours is waiting on review.</div>
+        }
+        else
+        {
+            <div class="list-grid">
+                @foreach (var item in Model.Snapshot.MySubmittedWork)
+                {
+                    <div class="status-banner">
+                        <strong>@item.Title</strong>
+                        <span class="muted">@item.ProjectName</span>
+                        <div class="inline-actions">
+                            <span class="pill">@item.Status</span>
+                        </div>
+                    </div>
+                }
+            </div>
+        }
+    </article>
+</section>
+
+<section class="panel-grid" style="margin-top: 1.5rem;">
+    <article class="panel">
+        <div class="panel-header">
+            <div>
+                <h2>My volunteered work</h2>
+                <p class="muted">Things you raised your hand for but are not fully assigned yet.</p>
+            </div>
+        </div>
+
+        @if (Model.Snapshot.MyVolunteeredWork.Count == 0)
+        {
+            <div class="empty-state">No active volunteer claims right now.</div>
+        }
+        else
+        {
+            <div class="list-grid">
+                @foreach (var item in Model.Snapshot.MyVolunteeredWork)
                 {
                     <div class="status-banner">
                         <strong>@item.Title</strong>
@@ -62,7 +126,7 @@
         <div class="panel-header">
             <div>
                 <h2>Open motions</h2>
-                <p class="muted">A quick read on governance traffic and current vote pressure.</p>
+                <p class="muted">A quick read on governance traffic and threshold pressure.</p>
             </div>
             <a class="button ghost" asp-page="/App/Motions/Index">Review motions</a>
         </div>
@@ -80,10 +144,75 @@
                         <h3>@motion.Title</h3>
                         <div class="inline-actions">
                             <span class="pill">@motion.Scope</span>
+                            <span class="pill">@motion.Category</span>
                             <span class="pill success">For @motion.VotesFor</span>
                             <span class="pill danger">Against @motion.VotesAgainst</span>
                         </div>
-                        <p class="muted">Closes @motion.ClosesAtUtc.ToString("dd MMM yyyy HH:mm") UTC</p>
+                        <p class="muted">
+                            Threshold @motion.Threshold.ToString("P0")
+                            · closes @motion.ClosesAtUtc.ToString("dd MMM yyyy HH:mm") UTC
+                        </p>
+                    </div>
+                }
+            </div>
+        }
+    </article>
+</section>
+
+<section class="panel-grid" style="margin-top: 1.5rem;">
+    <article class="panel">
+        <div class="panel-header">
+            <div>
+                <h2>Recent work</h2>
+                <p class="muted">Latest movement across the shared work board.</p>
+            </div>
+        </div>
+
+        @if (Model.Snapshot.RecentWorkItems.Count == 0)
+        {
+            <div class="empty-state">No work items exist yet.</div>
+        }
+        else
+        {
+            <div class="list-grid">
+                @foreach (var item in Model.Snapshot.RecentWorkItems)
+                {
+                    <div class="status-banner">
+                        <strong>@item.Title</strong>
+                        <span class="muted">@item.ProjectName</span>
+                        <div class="inline-actions">
+                            <span class="pill">@item.Status</span>
+                            <span class="pill">@item.AssigneeName</span>
+                            <span class="pill">@item.ActualHours.ToString("0.##") / @item.EstimatedHours.ToString("0.##")h</span>
+                        </div>
+                    </div>
+                }
+            </div>
+        }
+    </article>
+
+    <article class="panel">
+        <div class="panel-header">
+            <div>
+                <h2>Recent activity</h2>
+                <p class="muted">Audit trail excerpts across membership, work, motions, and ledger changes.</p>
+            </div>
+        </div>
+
+        @if (Model.Snapshot.RecentActivity.Count == 0)
+        {
+            <div class="empty-state">No team activity yet.</div>
+        }
+        else
+        {
+            <div class="list-grid">
+                @foreach (var activity in Model.Snapshot.RecentActivity)
+                {
+                    <div class="status-banner">
+                        <strong>@activity.ActorName</strong>
+                        <span class="muted">@activity.Action</span>
+                        <div class="muted">@activity.Detail</div>
+                        <div class="muted">@activity.OccurredAtUtc.ToString("dd MMM yyyy HH:mm") UTC</div>
                     </div>
                 }
             </div>

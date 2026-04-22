@@ -5,4 +5,6 @@ public sealed class BootstrapOptions
     public const string SectionName = "Bootstrap";
 
     public string[] AdminGitHubLogins { get; init; } = [];
+
+    public bool ApplyMigrationsOnStartup { get; init; }
 }

@@ -1,4 +1,5 @@
 @page
+@using Bifrost.Web.Domain
 @model Bifrost.Web.Pages.App.Members.IndexModel
 @{
     ViewData["Title"] = "Members";
@@ -37,73 +38,196 @@
         else
         {
             <div class="callout warning">
-                Only platform admins can issue invites or approve members.
+                Only platform admins can issue invites, approve members, or manage tier snapshots.
             </div>
         }
     </article>
 
-    <article class="table-panel">
-        <div class="panel-header" style="padding: 1.25rem 1.25rem 0;">
-            <div>
-                <h2>Current member records</h2>
-                <p class="table-meta">@Model.Users.Count authenticated GitHub identities tracked.</p>
-            </div>
-        </div>
+    <article class="panel">
+        <span class="eyebrow">My profile</span>
+        <h2>Work allocation context</h2>
+        <p class="panel-intro">
+            Keep your profile current so producers and maintainers can see your skills, availability, and links at a glance.
+        </p>
 
-        @if (Model.Users.Count == 0)
-        {
-            <div class="empty-state" style="margin: 1.25rem;">No member records yet.</div>
-        }
-        else
-        {
-            <div class="table-shell">
-                <table>
-                    <thead>
+        <form method="post" asp-page-handler="UpdateProfile">
+            <div asp-validation-summary="ModelOnly" class="validation-summary-errors"></div>
+            <div class="form-grid">
+                <div class="field">
+                    <label asp-for="Profile.DisplayName"></label>
+                    <input asp-for="Profile.DisplayName" />
+                    <span asp-validation-for="Profile.DisplayName"></span>
+                </div>
+                <div class="field">
+                    <label asp-for="Profile.Nickname"></label>
+                    <input asp-for="Profile.Nickname" />
+                    <span asp-validation-for="Profile.Nickname"></span>
+                </div>
+                <div class="field">
+                    <label asp-for="Profile.Headline"></label>
+                    <input asp-for="Profile.Headline" />
+                    <span asp-validation-for="Profile.Headline"></span>
+                </div>
+                <div class="field">
+                    <label asp-for="Profile.PortfolioUrl"></label>
+                    <input asp-for="Profile.PortfolioUrl" />
+                    <span asp-validation-for="Profile.PortfolioUrl"></span>
+                </div>
+            </div>
+            <div class="field">
+                <label asp-for="Profile.Skills"></label>
+                <textarea asp-for="Profile.Skills"></textarea>
+                <span asp-validation-for="Profile.Skills"></span>
+            </div>
+            <div class="field">
+                <label asp-for="Profile.Availability"></label>
+                <input asp-for="Profile.Availability" />
+                <span asp-validation-for="Profile.Availability"></span>
+            </div>
+            <div class="field">
+                <label asp-for="Profile.Notes"></label>
+                <textarea asp-for="Profile.Notes"></textarea>
+                <span asp-validation-for="Profile.Notes"></span>
+            </div>
+            <div class="panel-actions">
+                <button class="button" type="submit">Update profile</button>
+            </div>
+        </form>
+    </article>
+</section>
+
+<section class="table-panel" style="margin-top: 1.5rem;">
+    <div class="panel-header" style="padding: 1.25rem 1.25rem 0;">
+        <div>
+            <h2>Current member records</h2>
+            <p class="table-meta">@Model.Users.Count authenticated GitHub identities tracked.</p>
+        </div>
+    </div>
+
+    @if (Model.Users.Count == 0)
+    {
+        <div class="empty-state" style="margin: 1.25rem;">No member records yet.</div>
+    }
+    else
+    {
+        <div class="table-shell">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Account</th>
+                        <th>Status</th>
+                        <th>Profile</th>
+                        <th>Roles and tiers</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var user in Model.Users)
+                    {
                         <tr>
-                            <th>Account</th>
-                            <th>Status</th>
-                            <th>Permissions</th>
-                            <th>Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        @foreach (var user in Model.Users)
-                        {
-                            <tr>
-                                <td>
-                                    <strong>@user.DisplayName</strong><br />
-                                    <span class="muted">@user.GitHubLogin</span>
-                                </td>
-                                <td>
-                                    <span class="pill">@user.Membership!.Status</span>
-                                </td>
-                                <td>
-                                    @(user.Membership.IsPlatformAdmin ? "Platform admin" : "Member")
-                                    <div class="muted">
-                                        Projects @(user.Membership.CanManageProjects ? "on" : "off"),
-                                        ledger @(user.Membership.CanManageLedger ? "on" : "off")
-                                    </div>
-                                </td>
-                                <td>
-                                    @if (Model.Actor.CanManageMembership && user.Membership.Status != MembershipStatus.Active)
+                            <td>
+                                <strong>@user.DisplayName</strong><br />
+                                <span class="muted">@user.GitHubLogin</span>
+                            </td>
+                            <td>
+                                <span class="pill">@user.Status</span>
+                            </td>
+                            <td>
+                                @if (!string.IsNullOrWhiteSpace(user.Nickname))
+                                {
+                                    <div><strong>@user.Nickname</strong></div>
+                                }
+                                @if (!string.IsNullOrWhiteSpace(user.Headline))
+                                {
+                                    <div class="muted">@user.Headline</div>
+                                }
+                                @if (!string.IsNullOrWhiteSpace(user.Skills))
+                                {
+                                    <div class="muted">@user.Skills</div>
+                                }
+                                @if (!string.IsNullOrWhiteSpace(user.Availability))
+                                {
+                                    <div class="muted">Availability: @user.Availability</div>
+                                }
+                                @if (!string.IsNullOrWhiteSpace(user.PortfolioUrl))
+                                {
+                                    <div><a href="@user.PortfolioUrl" target="_blank" rel="noreferrer">Portfolio</a></div>
+                                }
+                            </td>
+                            <td>
+                                <div class="inline-actions">
+                                    @if (user.Roles.Count == 0)
                                     {
-                                        <form method="post" asp-page-handler="Approve">
-                                            <input type="hidden" name="userAccountId" value="@user.Id" />
-                                            <button class="button secondary" type="submit">Approve</button>
-                                        </form>
+                                        <span class="pill">No roles yet</span>
                                     }
                                     else
                                     {
-                                        <span class="muted">No action</span>
+                                        @foreach (var role in user.Roles)
+                                        {
+                                            <span class="pill">@role</span>
+                                        }
                                     }
-                                </td>
-                            </tr>
-                        }
-                    </tbody>
-                </table>
-            </div>
-        }
-    </article>
+                                </div>
+                                <div class="muted" style="margin-top: 0.6rem;">
+                                    Patron: @(string.IsNullOrWhiteSpace(user.PatronTierLabel) ? "none" : $"{user.PatronTierLabel} ({user.PatronTierWeight:0.##})")
+                                </div>
+                                <div class="muted">
+                                    Contributor: @(string.IsNullOrWhiteSpace(user.ContributorTierLabel) ? "none" : $"{user.ContributorTierLabel} ({user.ContributorTierWeight:0.##})")
+                                </div>
+                            </td>
+                            <td>
+                                @if (Model.Actor.CanManageMembership && user.Status != MembershipStatus.Active)
+                                {
+                                    <form method="post" asp-page-handler="Approve">
+                                        <input type="hidden" name="userAccountId" value="@user.UserAccountId" />
+                                        <button class="button secondary" type="submit">Approve</button>
+                                    </form>
+                                }
+
+                                @if (Model.Actor.CanManageMembership)
+                                {
+                                    <div class="stack-form" style="margin-top: 0.8rem;">
+                                        @foreach (var role in Enum.GetValues<MemberRole>())
+                                        {
+                                            <form method="post" asp-page-handler="ToggleRole">
+                                                <input type="hidden" name="userAccountId" value="@user.UserAccountId" />
+                                                <input type="hidden" name="role" value="@role" />
+                                                <button class="button @(user.Roles.Contains(role) ? "warm" : "ghost")" type="submit">
+                                                    @role
+                                                </button>
+                                            </form>
+                                        }
+                                    </div>
+
+                                    <form method="post" asp-page-handler="SetTier" class="stack-form" style="margin-top: 0.8rem;">
+                                        <input type="hidden" name="userAccountId" value="@user.UserAccountId" />
+                                        <input type="hidden" name="kind" value="@TierSnapshotKind.Patron" />
+                                        <input name="label" value="@user.PatronTierLabel" placeholder="Patron tier label" />
+                                        <input name="weight" value="@user.PatronTierWeight.ToString("0.##")" placeholder="Weight" />
+                                        <input name="notes" placeholder="Notes" />
+                                        <button class="button ghost" type="submit">Save patron tier</button>
+                                    </form>
+
+                                    <form method="post" asp-page-handler="SetTier" class="stack-form" style="margin-top: 0.6rem;">
+                                        <input type="hidden" name="userAccountId" value="@user.UserAccountId" />
+                                        <input type="hidden" name="kind" value="@TierSnapshotKind.Contributor" />
+                                        <input name="label" value="@user.ContributorTierLabel" placeholder="Contributor tier label" />
+                                        <input name="weight" value="@user.ContributorTierWeight.ToString("0.##")" placeholder="Weight" />
+                                        <input name="notes" placeholder="Notes" />
+                                        <button class="button ghost" type="submit">Save contributor tier</button>
+                                    </form>
+                                }
+                                else if (user.Status == MembershipStatus.Active)
+                                {
+                                    <span class="muted">Visible to all active members.</span>
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
 </section>
 
 <section class="table-panel" style="margin-top: 1.5rem;">

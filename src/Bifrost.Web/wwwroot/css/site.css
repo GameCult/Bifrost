@@ -191,6 +191,16 @@ code {
   flex-wrap: wrap;
 }
 
+.stack-form {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.stack-form form {
+  display: grid;
+  gap: 0.45rem;
+}
+
 .button {
   display: inline-flex;
   align-items: center;
@@ -391,6 +401,17 @@ tbody tr:hover {
 .field textarea {
   min-height: 7rem;
   resize: vertical;
+}
+
+.stack-form input,
+.stack-form select {
+  width: 100%;
+  border: 1px solid rgba(38, 34, 27, 0.14);
+  border-radius: 14px;
+  padding: 0.75rem 0.85rem;
+  background: #fffdf8;
+  color: var(--ink);
+  font: inherit;
 }
 
 .validation-summary-errors,

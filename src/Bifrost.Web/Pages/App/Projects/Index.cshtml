@@ -13,30 +13,45 @@
             Keeping them explicit is what lets the rest of the system stay legible.
         </p>
 
-        <form method="post" asp-page-handler="Create">
-            <div asp-validation-summary="ModelOnly" class="validation-summary-errors"></div>
-            <div class="form-grid">
-                <div class="field">
-                    <label asp-for="Input.Name"></label>
-                    <input asp-for="Input.Name" />
-                    <span asp-validation-for="Input.Name"></span>
+        @if (Model.Actor.CanManageProjects)
+        {
+            <form method="post" asp-page-handler="Create">
+                <div asp-validation-summary="ModelOnly" class="validation-summary-errors"></div>
+                <div class="form-grid">
+                    <div class="field">
+                        <label asp-for="Input.Name"></label>
+                        <input asp-for="Input.Name" />
+                        <span asp-validation-for="Input.Name"></span>
+                    </div>
+                    <div class="field">
+                        <label asp-for="Input.Slug"></label>
+                        <input asp-for="Input.Slug" />
+                        <span class="hint">Leave blank to derive from the name.</span>
+                        <span asp-validation-for="Input.Slug"></span>
+                    </div>
+                    <div class="field">
+                        <label asp-for="Input.GitHubRepository"></label>
+                        <input asp-for="Input.GitHubRepository" />
+                        <span class="hint">Use <code>owner/repo</code> when the project should sync GitHub issues and PRs.</span>
+                        <span asp-validation-for="Input.GitHubRepository"></span>
+                    </div>
                 </div>
                 <div class="field">
-                    <label asp-for="Input.Slug"></label>
-                    <input asp-for="Input.Slug" />
-                    <span class="hint">Leave blank to derive from the name.</span>
-                    <span asp-validation-for="Input.Slug"></span>
+                    <label asp-for="Input.Summary"></label>
+                    <textarea asp-for="Input.Summary"></textarea>
+                    <span asp-validation-for="Input.Summary"></span>
                 </div>
+                <div class="panel-actions">
+                    <button class="button" type="submit">Create project</button>
+                </div>
+            </form>
+        }
+        else
+        {
+            <div class="callout warning">
+                Producers and platform admins can create or map project containers.
             </div>
-            <div class="field">
-                <label asp-for="Input.Summary"></label>
-                <textarea asp-for="Input.Summary"></textarea>
-                <span asp-validation-for="Input.Summary"></span>
-            </div>
-            <div class="panel-actions">
-                <button class="button" type="submit">Create project</button>
-            </div>
-        </form>
+        }
     </article>
 
     <article class="table-panel">
@@ -60,6 +75,7 @@
                             <th>Name</th>
                             <th>Status</th>
                             <th>Owner</th>
+                            <th>Repository</th>
                             <th>Updated</th>
                         </tr>
                     </thead>
@@ -71,9 +87,20 @@
                                     <strong>@project.Name</strong><br />
                                     <span class="muted">@project.Slug</span>
                                     <p class="muted">@project.Summary</p>
+                                    <div class="muted">@project.OpenWorkItems open work items</div>
                                 </td>
                                 <td><span class="pill">@project.Status</span></td>
-                                <td>@project.OwnerUserAccount.DisplayName</td>
+                                <td>@project.OwnerName</td>
+                                <td>
+                                    @if (string.IsNullOrWhiteSpace(project.GitHubRepository))
+                                    {
+                                        <span class="muted">Internal only</span>
+                                    }
+                                    else
+                                    {
+                                        <code>@project.GitHubRepository</code>
+                                    }
+                                </td>
                                 <td>@project.UpdatedAtUtc.ToString("dd MMM yyyy")</td>
                             </tr>
                         }

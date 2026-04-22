@@ -38,6 +38,10 @@ public sealed class IndexModel(
     public async Task<IActionResult> OnPostCreateAsync(CancellationToken cancellationToken)
     {
         Actor = await actorAccessor.GetAsync(cancellationToken);
+        if (!Actor.CanManageLedger || Actor.UserAccount is null)
+        {
+            return Forbid();
+        }
 
         if (!ModelState.IsValid)
         {
@@ -51,7 +55,7 @@ public sealed class IndexModel(
             UserAccountId = Input.UserAccountId,
             ProjectId = Input.ProjectId,
             WorkItemId = Input.WorkItemId,
-            CreatedByUserAccountId = Actor.UserAccount!.Id,
+            CreatedByUserAccountId = Actor.UserAccount.Id,
             EntryType = Input.EntryType,
             Status = Input.Status,
             Points = Input.Points,

@@ -1,6 +1,7 @@
 using System.ComponentModel.DataAnnotations;
 using Bifrost.Web.Data;
 using Bifrost.Web.Domain;
+using Bifrost.Web.Features.Motions;
 using Bifrost.Web.Features.Shared;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
@@ -51,11 +52,13 @@ public sealed class IndexModel(
         var now = timeProvider.GetUtcNow();
         var motion = new Motion
         {
-            ProjectId = Input.ProjectId,
+            ProjectId = Input.Scope == MotionScope.Project ? Input.ProjectId : null,
             CreatedByUserAccountId = actorUser.Id,
             Scope = Input.Scope,
+            Category = Input.Category,
             Title = Input.Title.Trim(),
             Summary = Input.Summary.Trim(),
+            ApprovalThreshold = MotionCategoryPolicy.GetThreshold(Input.Category),
             OpensAtUtc = now,
             ClosesAtUtc = Input.ClosesAtUtc.ToUniversalTime(),
             CreatedAtUtc = now
@@ -74,7 +77,7 @@ public sealed class IndexModel(
         return RedirectToPage();
     }
 
-    public async Task<IActionResult> OnPostVoteAsync(Guid motionId, VoteChoice choice, CancellationToken cancellationToken)
+    public async Task<IActionResult> OnPostVoteAsync(Guid motionId, VoteChoice choice, string comment, CancellationToken cancellationToken)
     {
         Actor = await actorAccessor.GetAsync(cancellationToken);
         var actorUser = Actor.UserAccount;
@@ -102,6 +105,7 @@ public sealed class IndexModel(
                 UserAccountId = actorUser.Id,
                 Choice = choice,
                 Weight = Actor.EffectiveVotingWeight,
+                Comment = comment?.Trim() ?? string.Empty,
                 CastAtUtc = timeProvider.GetUtcNow()
             });
         }
@@ -109,6 +113,7 @@ public sealed class IndexModel(
         {
             vote.Choice = choice;
             vote.Weight = Actor.EffectiveVotingWeight;
+            vote.Comment = comment?.Trim() ?? string.Empty;
             vote.CastAtUtc = timeProvider.GetUtcNow();
         }
 
@@ -119,6 +124,50 @@ public sealed class IndexModel(
             motion.Id,
             "motion.voted",
             $"{Actor.DisplayName} voted {choice} on {motion.Title}.",
+            cancellationToken);
+
+        return RedirectToPage();
+    }
+
+    public async Task<IActionResult> OnPostCloseAsync(Guid motionId, CancellationToken cancellationToken)
+    {
+        Actor = await actorAccessor.GetAsync(cancellationToken);
+        var actorUser = Actor.UserAccount;
+        if (actorUser is null)
+        {
+            return Forbid();
+        }
+
+        var motion = await dbContext.Motions
+            .Include(x => x.Votes)
+            .SingleAsync(x => x.Id == motionId, cancellationToken);
+
+        if (!Actor.CanModerateMotions && motion.CreatedByUserAccountId != actorUser.Id)
+        {
+            return Forbid();
+        }
+
+        var votesFor = motion.Votes.Where(v => v.Choice == VoteChoice.For).Sum(v => v.Weight);
+        var votesAgainst = motion.Votes.Where(v => v.Choice == VoteChoice.Against).Sum(v => v.Weight);
+        var decisiveVotes = votesFor + votesAgainst;
+
+        motion.Status = decisiveVotes > 0 && votesFor / decisiveVotes >= motion.ApprovalThreshold
+            ? MotionStatus.Passed
+            : decisiveVotes > 0
+                ? MotionStatus.Failed
+                : MotionStatus.Closed;
+        motion.ResolvedAtUtc = timeProvider.GetUtcNow();
+        motion.ResolutionNote = decisiveVotes > 0
+            ? $"Closed with {votesFor:0.##} for and {votesAgainst:0.##} against at a {motion.ApprovalThreshold:P0} threshold."
+            : "Closed without decisive votes.";
+
+        await dbContext.SaveChangesAsync(cancellationToken);
+        await auditTrailService.RecordAsync(
+            actorUser.Id,
+            nameof(Motion),
+            motion.Id,
+            "motion.closed",
+            $"Closed motion {motion.Title} with status {motion.Status}.",
             cancellationToken);
 
         return RedirectToPage();
@@ -147,13 +196,16 @@ public sealed class IndexModel(
             x.Summary,
             x.Project?.Name ?? "Management-wide",
             x.Scope.ToString(),
+            MotionCategoryPolicy.GetLabel(x.Category),
+            x.ApprovalThreshold,
             ResolveStatusLabel(x, timeProvider.GetUtcNow()),
             ResolveStatusTone(x, timeProvider.GetUtcNow()),
             x.Votes.Where(v => v.Choice == VoteChoice.For).Sum(v => v.Weight),
             x.Votes.Where(v => v.Choice == VoteChoice.Against).Sum(v => v.Weight),
             x.Votes.Where(v => v.Choice == VoteChoice.Abstain).Sum(v => v.Weight),
             x.Votes.Where(v => v.UserAccountId == Actor.UserAccount?.Id).Select(v => (VoteChoice?)v.Choice).FirstOrDefault(),
-            x.ClosesAtUtc)).ToList();
+            x.ClosesAtUtc,
+            x.ResolutionNote)).ToList();
     }
 
     private static string ResolveStatusLabel(Motion motion, DateTimeOffset now)
@@ -170,13 +222,13 @@ public sealed class IndexModel(
 
         var votesFor = motion.Votes.Where(v => v.Choice == VoteChoice.For).Sum(v => v.Weight);
         var votesAgainst = motion.Votes.Where(v => v.Choice == VoteChoice.Against).Sum(v => v.Weight);
-        var total = votesFor + votesAgainst;
-        if (total <= 0)
+        var decisiveVotes = votesFor + votesAgainst;
+        if (decisiveVotes <= 0)
         {
-            return "Closed";
+            return "Expired";
         }
 
-        return votesFor / total >= motion.ApprovalThreshold ? "Passed" : "Failed";
+        return votesFor / decisiveVotes >= motion.ApprovalThreshold ? "Passed" : "Failed";
     }
 
     private static string ResolveStatusTone(Motion motion, DateTimeOffset now) =>
@@ -184,8 +236,8 @@ public sealed class IndexModel(
         {
             "Passed" => "success",
             "Failed" => "danger",
-            "Open" => string.Empty,
-            _ => "warning"
+            "Expired" => "warning",
+            _ => string.Empty
         };
 
     public sealed class CreateMotionInput
@@ -195,6 +247,9 @@ public sealed class IndexModel(
 
         [Display(Name = "Project")]
         public Guid? ProjectId { get; set; }
+
+        [Display(Name = "Category")]
+        public MotionCategory Category { get; set; } = MotionCategory.Features;
 
         [Required, StringLength(180)]
         public string Title { get; set; } = string.Empty;
@@ -212,11 +267,14 @@ public sealed class IndexModel(
         string Summary,
         string ProjectName,
         string Scope,
+        string Category,
+        decimal Threshold,
         string StatusLabel,
         string StatusTone,
         decimal VotesFor,
         decimal VotesAgainst,
         decimal VotesAbstain,
         VoteChoice? CurrentUserVote,
-        DateTimeOffset ClosesAtUtc);
+        DateTimeOffset ClosesAtUtc,
+        string ResolutionNote);
 }
