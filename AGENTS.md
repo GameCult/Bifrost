@@ -48,6 +48,7 @@
 
 - Read existing docs before reopening settled product decisions.
 - Keep implementation boring where possible; the product idea is ambitious enough already.
+- Push changes after every implementation pass.
 - If a question is about trust, accountability, or payout fairness, prefer auditability over automation.
 - Before debugging UI/layout, inspect the live DOM and computed styles instead of guessing from templates or CSS intent.
 
@@ -58,7 +59,8 @@ Read these files first:
 1. `AGENTS.md`
 2. `README.md`
 3. `docs/bifrost-mvp-plan.md`
-4. `docs/context.md`
+4. `docs/full-implementation-strategy.md`
+5. `docs/context.md`
 
 Then start the first implementation milestone:
 

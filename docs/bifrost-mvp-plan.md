@@ -7,6 +7,7 @@
 - Use ASP.NET Core 8 with Razor Pages + HTMX and PostgreSQL.
 - Support invite-only GitHub-linked members, GitHub-backed and internal work items, app-native governance, and internal ledgers.
 - Do not include Ethereum, wallets, DAO mechanics, or payout execution in v1.
+- Align the implementation with the labor platform model in `E:\Projects\gamecult-site\GameCult\Docs\labor-platform.md`.
 
 ## System Shape
 
@@ -42,6 +43,14 @@
 - Voting weight derives from patron tier plus contributor tier.
 - Compensation is modeled internally, not executed by the platform.
 - Human approval remains in the loop for governance-sensitive and payout-sensitive steps.
+
+## Labor Platform Alignment
+
+- Contribution points and patron points are separate systems that both matter to tiering and governance.
+- Effective balances decay over time where the labor platform rules call for decay.
+- Project-specific contribution points stay distinct from global contribution points.
+- Revenue share should be implemented as an internal calculation and review flow, not direct payout execution.
+- Continuous care work such as maintainer, producer, and community labor must be accounted for alongside ticket-shaped work.
 
 ## Deployment Assumptions
 
@@ -80,7 +89,7 @@ Build the minimum vertical slice for:
 
 ## Assumptions And Defaults
 
-- Bifrost is docs-only during bootstrap; no app code exists yet.
+- Bifrost now has an initial application slice, but it is not yet production-ready for deployment.
 - v1 optimizes for legibility, auditability, and workflow proof.
-- No remote git repo is required during bootstrap.
 - Future sessions should treat this document and `AGENTS.md` as the durable source of truth for settled decisions.
+- The full staged roadmap lives in `docs/full-implementation-strategy.md`.

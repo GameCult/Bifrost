@@ -9,6 +9,7 @@ GameCult needs a platform that can connect public projects, contributor particip
 - `E:\Projects\gamecult-site`
   - public-facing Quartz site for the studio, projects, and docs
   - source of the Labor Platform concept and public framing
+  - Bifrost should stay aligned with `GameCult\Docs\labor-platform.md` for points, tiers, decay, revenue share, and workflow shape
 - `E:\Projects\gamecult-ops`
   - source of deployment and infrastructure conventions
   - documents Yggdrasil, nginx, systemd, and local-Postgres patterns
@@ -26,6 +27,11 @@ After bootstrap, the next session should start implementing the first vertical s
 - work items from GitHub and internal sources
 - motions
 - ledger entries
+
+## Strategy Notes
+
+- Bifrost now has the first application slice, but it still needs deploy-foundation work before it should go live on Yggdrasil.
+- The full implementation roadmap, including contribution points, patron points, decay, and revenue share, is documented in `docs/full-implementation-strategy.md`.
 
 ## Product Defaults
 

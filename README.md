@@ -12,6 +12,8 @@ This repository now includes the first implementation slice of the ASP.NET Core 
 - initial member console pages for projects, work items, motions, ledger activity, and member approvals
 - xUnit integration tests under `tests/Bifrost.Web.Tests`
 
+It is not yet ready for production deployment. The current state is suitable for continued development and, after deploy-foundation work, an internal staging rollout.
+
 ## Chosen Stack
 
 - ASP.NET Core 8 LTS
@@ -45,6 +47,8 @@ The next build target is to deepen the first implementation milestone by adding:
 - work item completion and ledger approval flow
 - payout proposal batch generation and review
 
+For the full staged roadmap, including contribution points, revenue share, patron or contributor decay, and labor-platform alignment, see [docs/full-implementation-strategy.md](E:\Projects\Bifrost\docs\full-implementation-strategy.md).
+
 ## Local Dev Notes
 
 - set `GitHubOAuth:ClientId` and `GitHubOAuth:ClientSecret` before using sign-in
@@ -59,4 +63,5 @@ Before implementation work starts in a new session, read these files in order:
 
 1. [AGENTS.md](E:\Projects\Bifrost\AGENTS.md)
 2. [docs/bifrost-mvp-plan.md](E:\Projects\Bifrost\docs\bifrost-mvp-plan.md)
-3. [docs/context.md](E:\Projects\Bifrost\docs\context.md)
+3. [docs/full-implementation-strategy.md](E:\Projects\Bifrost\docs\full-implementation-strategy.md)
+4. [docs/context.md](E:\Projects\Bifrost\docs\context.md)
