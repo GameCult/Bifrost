@@ -83,6 +83,5 @@ The plugin is listed in `.agents/plugins/marketplace.json` as `bifrost-intake`.
 
 ## Next Integration Points
 
-- Teach the VoidBot consensus feeder to enqueue Bifrost update requests after it writes a packet.
-- Let repo Faces claim by `targetRepoName`, then inject the claimed packet into Codex only when the repo matches their jurisdiction.
+- Route claimed agent work that produces reviewable artifacts through `tools/bifrost-bridge.mjs` so Bifrost, not VoidBot, owns GitHub and Discord crossing receipts.
 - Use CultNet direct pipes when a long-running agent runtime is available; keep raw snapshot files as the dead-simple bridge until then.

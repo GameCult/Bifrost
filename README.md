@@ -14,6 +14,7 @@ This repository now includes a viable alpha foundation slice of the ASP.NET Core
 - member-facing motions with category thresholds aligned to the labor-platform doc
 - health and readiness endpoints plus startup config validation
 - GitHub App webhook ingestion for issue, pull request, and review sync
+- local bridge tooling for agent-owned GitHub draft PRs and Discord posts
 - xUnit integration tests under `tests/Bifrost.Web.Tests`
 - matching deploy artifacts and runbooks in `E:\Projects\gamecult-ops`
 
