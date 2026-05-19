@@ -18,11 +18,10 @@
     "codex"
   ],
   "skills": "./skills/",
-  "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Bifrost Intake",
     "shortDescription": "Claim and route Bifrost agent update requests",
-    "longDescription": "Expose Bifrost's CultCache-backed, CultNet-syncable agent transport lane to Codex so repo agents can enqueue, list, claim, close, and package update requests.",
+    "longDescription": "Expose Bifrost's CultCache-backed, CultNet-syncable agent transport lane to Codex through direct local scripts so repo agents can claim or dismiss intake without waiting on mounted tools.",
     "developerName": "GameCult",
     "category": "Coding",
     "capabilities": [

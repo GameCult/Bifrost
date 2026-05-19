@@ -60,22 +60,26 @@ The `snapshot` command writes a MessagePack-encoded `cultnet.snapshot_response_r
 
 ## Codex Intake Plugin
 
-`plugins/bifrost-intake` exposes this lane to Codex as an MCP plugin. It does not own a second queue. Its server wraps `tools/agent-transport.mjs`.
+`plugins/bifrost-intake` exposes this lane to Codex through direct scripts. It does not own a second queue, and the intake hot path does not depend on MCP tool mounting.
 
-Tools:
+Hot path:
 
-- `get_intake_context`
-- `enqueue_update_request`
-- `list_update_requests`
-- `claim_update_request`
-- `close_update_request`
-- `format_claimed_request`
-- `create_transport_snapshot`
-- `apply_transport_snapshot`
+```powershell
+node E:\Projects\Bifrost\plugins\bifrost-intake\scripts\intake-context.mjs --repo AetheriaLore --agent nibu
+```
+
+That command claims the next matching request for the current repo and prints a context packet immediately. If nothing is queued, it prints a direct no-work message so the agent can stop worrying about intake and continue the live turn.
+
+Lower-level CLI commands:
+
+- `tools/agent-transport.mjs enqueue`
+- `tools/agent-transport.mjs list`
+- `tools/agent-transport.mjs claim`
+- `tools/agent-transport.mjs close`
+- `tools/agent-transport.mjs snapshot`
+- `tools/agent-transport.mjs apply-snapshot`
 
 The plugin is listed in `.agents/plugins/marketplace.json` as `bifrost-intake`.
-
-`get_intake_context` is the normal Codex-facing entry point. It claims the next matching request for the current repo and returns a context packet immediately. If nothing is queued, it returns a direct no-work message so the agent can stop worrying about intake and continue the live turn.
 
 ## Next Integration Points
 
