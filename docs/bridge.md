@@ -56,6 +56,18 @@ The command:
 
 Use `--dry-run` to print the planned action without writing or posting.
 
+### GitHub PR Comment
+
+```powershell
+node .\tools\bifrost-bridge.mjs github-pr-comment `
+  --repo-root E:\Projects\AetheriaLore `
+  --identity nibu `
+  --pr 12 `
+  --content "This proposal needs a sharper leash before it becomes canon-shaped."
+```
+
+The command leaves a signed PR comment through `gh` and prints a JSON receipt. Repo Faces should use this when the argument belongs on the review artifact instead of dissolving into Discord scrollback.
+
 ### Discord Post
 
 ```powershell

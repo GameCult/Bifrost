@@ -21,6 +21,9 @@ async function main() {
     case "github-draft-pr":
       await createGitHubDraftPr(options);
       return;
+    case "github-pr-comment":
+      await commentGitHubPr(options);
+      return;
     case "discord-post":
       await postDiscordMessage(options);
       return;
@@ -112,6 +115,36 @@ async function createGitHubDraftPr(options) {
     branch,
     pushed,
     prUrl,
+  });
+}
+
+async function commentGitHubPr(options) {
+  const repoRoot = resolve(requireOption(options, "repo-root"));
+  const identity = slugify(requireOption(options, "identity"));
+  const pr = requireOption(options, "pr");
+  const content = await readOptionText(options, "content", "content-file");
+  const dryRun = options["dry-run"] === "true";
+  const body = `${identity} says:\n\n${content.trim()}`;
+
+  if (dryRun) {
+    printJson({
+      dryRun: true,
+      action: "github-pr-comment",
+      repoRoot,
+      identity,
+      pr,
+      body,
+    });
+    return;
+  }
+
+  run("gh", ["pr", "comment", pr, "--body", body], repoRoot);
+  printJson({
+    action: "github-pr-comment",
+    ok: true,
+    repoRoot,
+    identity,
+    pr,
   });
 }
 
@@ -536,10 +569,12 @@ function printHelp() {
 
 Commands:
   github-draft-pr   Write one file in a target repo and open a draft PR through gh
+  github-pr-comment Comment on a pull request through gh
   discord-post      Post a message to Discord through the bot token or persona webhook pipe
 
 Examples:
   node tools/bifrost-bridge.mjs github-draft-pr --repo-root E:/Projects/AetheriaLore --identity nibu --title "Nibu: Glitchcraft" --path Aetheria/Articles/Nibu/glitchcraft.md --content-file article.md
+  node tools/bifrost-bridge.mjs github-pr-comment --repo-root E:/Projects/AetheriaLore --identity nibu --pr 12 --content "This needs a sharper leash."
   node tools/bifrost-bridge.mjs discord-post --channel-id 1501196543150264332 --persona-name Nibu --content "Draft PR opened: https://github.com/..."
 `);
 }
