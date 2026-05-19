@@ -2,7 +2,10 @@
   "mcpServers": {
     "bifrost-intake": {
       "command": "node",
-      "args": ["./scripts/mcp-server.mjs"],
+      "args": ["E:/Projects/Bifrost/plugins/bifrost-intake/scripts/mcp-server.mjs"],
+      "env": {
+        "BIFROST_ROOT": "E:/Projects/Bifrost"
+      },
       "note": "Local Bifrost intake MCP server. Wraps Bifrost's CultCache/CultNet agent transport CLI."
     }
   }

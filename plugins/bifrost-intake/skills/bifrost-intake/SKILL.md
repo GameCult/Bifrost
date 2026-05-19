@@ -11,9 +11,9 @@ Use these tools when a user asks to feed a consensus packet to a repo Face, clai
 
 Default flow:
 
-1. Use `list_update_requests` to inspect queued work for a repo or Face.
-2. Use `claim_update_request` with the repo name before injecting the request into Codex.
-3. Use `format_claimed_request` when you need a compact prompt packet for a claimed request.
-4. Use `close_update_request` when the work is completed or cancelled.
+1. Use `get_intake_context` at the start of a repo-agent turn when the agent should check Bifrost intake.
+2. If it returns a request packet, treat that packet as live context for the turn.
+3. If it says no request is queued, do not ask the user what to do because of intake; continue with the user's direct request or the repo's normal next action.
+4. Use `close_update_request` when the claimed work is completed or cancelled.
 
 Do not store a parallel queue in VoidBot or Codex session memory. If the request is intended to persist, put it in Bifrost intake.

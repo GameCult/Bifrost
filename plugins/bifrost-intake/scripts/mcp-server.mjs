@@ -1,14 +1,30 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const pluginRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const bifrostRoot = resolve(pluginRoot, "..", "..");
+const bifrostRoot = resolveBifrostRoot();
 const transportCli = resolve(bifrostRoot, "tools", "agent-transport.mjs");
 const serverInfo = { name: "bifrost-intake", version: "0.1.0" };
 
 const tools = [
+  {
+    name: "get_intake_context",
+    description: "Claim the next matching Bifrost request and return a Codex-ready context packet, or say there is no queued intake work.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["repo"],
+      properties: {
+        repo: { type: "string", description: "Current repository short name, such as AetheriaLore." },
+        agent: { type: "string", description: "Optional current Face identity, such as nibu." },
+        claimedBy: { type: "string" },
+        store: { type: "string" }
+      }
+    }
+  },
   {
     name: "enqueue_update_request",
     description: "Enqueue a Bifrost agent update request in the CultCache-backed intake store.",
@@ -190,6 +206,8 @@ async function callTool(params) {
   const args = params.arguments ?? {};
 
   switch (name) {
+    case "get_intake_context":
+      return textToolResult(await getIntakeContext(args));
     case "enqueue_update_request":
       return jsonToolResult(await runTransport([
         "enqueue",
@@ -249,6 +267,26 @@ async function callTool(params) {
     default:
       throw new Error(`Unknown tool "${name}".`);
   }
+}
+
+async function getIntakeContext(args) {
+  const repo = requireString(args.repo, "repo");
+  const claimed = await runTransport([
+    "claim",
+    "--repo", repo,
+    ...optionalArg("--agent", args.agent),
+    ...optionalArg("--claimed-by", args.claimedBy ?? args.agent),
+    ...storeArg(args.store),
+  ]);
+
+  if (!claimed) {
+    const face = typeof args.agent === "string" && args.agent.trim().length > 0
+      ? ` for ${args.agent.trim()}`
+      : "";
+    return `No Bifrost intake requests are queued for ${repo}${face}. Do not stall on intake for this turn; continue with the user's direct request or the repo's normal next action.`;
+  }
+
+  return formatClaimedRequest(claimed);
 }
 
 async function requireRequestById(args) {
@@ -363,4 +401,23 @@ function sendMessage(message) {
   const body = Buffer.from(JSON.stringify(message), "utf8");
   process.stdout.write(`Content-Length: ${body.length}\r\n\r\n`);
   process.stdout.write(body);
+}
+
+function resolveBifrostRoot() {
+  const candidates = [
+    process.env.BIFROST_ROOT,
+    resolve(pluginRoot, "..", ".."),
+    "E:/Projects/Bifrost",
+  ].filter((candidate) => typeof candidate === "string" && candidate.trim().length > 0);
+
+  for (const candidate of candidates) {
+    const root = resolve(candidate);
+    if (existsSync(resolve(root, "tools", "agent-transport.mjs"))) {
+      return root;
+    }
+  }
+
+  throw new Error(
+    "Could not find Bifrost root. Set BIFROST_ROOT to the repository that contains tools/agent-transport.mjs.",
+  );
 }

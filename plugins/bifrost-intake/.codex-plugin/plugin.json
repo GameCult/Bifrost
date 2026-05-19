@@ -33,7 +33,7 @@
     "privacyPolicyURL": "https://github.com/GameCult/Bifrost",
     "termsOfServiceURL": "https://github.com/GameCult/Bifrost",
     "defaultPrompt": [
-      "Claim the next Bifrost update request for this repo.",
+      "Get Bifrost intake context for this repo.",
       "Enqueue this consensus packet for a repo Face.",
       "List queued Bifrost agent requests."
     ],

@@ -64,6 +64,7 @@ The `snapshot` command writes a MessagePack-encoded `cultnet.snapshot_response_r
 
 Tools:
 
+- `get_intake_context`
 - `enqueue_update_request`
 - `list_update_requests`
 - `claim_update_request`
@@ -73,6 +74,8 @@ Tools:
 - `apply_transport_snapshot`
 
 The plugin is listed in `.agents/plugins/marketplace.json` as `bifrost-intake`.
+
+`get_intake_context` is the normal Codex-facing entry point. It claims the next matching request for the current repo and returns a context packet immediately. If nothing is queued, it returns a direct no-work message so the agent can stop worrying about intake and continue the live turn.
 
 ## Next Integration Points
 
