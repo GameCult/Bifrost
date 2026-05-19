@@ -58,9 +58,24 @@ node .\tools\agent-transport.mjs apply-snapshot --in E:\tmp\bifrost-agent-transp
 
 The `snapshot` command writes a MessagePack-encoded `cultnet.snapshot_response_raw.v0` message. This keeps CultCache payload bytes intact for peers that share the document binding.
 
+## Codex Intake Plugin
+
+`plugins/bifrost-intake` exposes this lane to Codex as an MCP plugin. It does not own a second queue. Its server wraps `tools/agent-transport.mjs`.
+
+Tools:
+
+- `enqueue_update_request`
+- `list_update_requests`
+- `claim_update_request`
+- `close_update_request`
+- `format_claimed_request`
+- `create_transport_snapshot`
+- `apply_transport_snapshot`
+
+The plugin is listed in `.agents/plugins/marketplace.json` as `bifrost-intake`.
+
 ## Next Integration Points
 
-- Add an MCP wrapper that calls this CLI instead of storing transport state in VoidBot.
 - Teach the VoidBot consensus feeder to enqueue Bifrost update requests after it writes a packet.
 - Let repo Faces claim by `targetRepoName`, then inject the claimed packet into Codex only when the repo matches their jurisdiction.
 - Use CultNet direct pipes when a long-running agent runtime is available; keep raw snapshot files as the dead-simple bridge until then.

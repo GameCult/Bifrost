@@ -1,0 +1,43 @@
+{
+  "name": "bifrost-intake",
+  "version": "0.1.0",
+  "description": "Codex intake tools for Bifrost agent update requests stored in CultCache and synced through CultNet.",
+  "author": {
+    "name": "GameCult",
+    "email": "ops@gamecult.org",
+    "url": "https://github.com/GameCult"
+  },
+  "homepage": "https://github.com/GameCult/Bifrost",
+  "repository": "https://github.com/GameCult/Bifrost",
+  "license": "MIT",
+  "keywords": [
+    "bifrost",
+    "agent-transport",
+    "cultcache",
+    "cultnet",
+    "codex"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Bifrost Intake",
+    "shortDescription": "Claim and route Bifrost agent update requests",
+    "longDescription": "Expose Bifrost's CultCache-backed, CultNet-syncable agent transport lane to Codex so repo agents can enqueue, list, claim, close, and package update requests.",
+    "developerName": "GameCult",
+    "category": "Coding",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/GameCult/Bifrost",
+    "privacyPolicyURL": "https://github.com/GameCult/Bifrost",
+    "termsOfServiceURL": "https://github.com/GameCult/Bifrost",
+    "defaultPrompt": [
+      "Claim the next Bifrost update request for this repo.",
+      "Enqueue this consensus packet for a repo Face.",
+      "List queued Bifrost agent requests."
+    ],
+    "brandColor": "#4F46E5",
+    "screenshots": []
+  }
+}
