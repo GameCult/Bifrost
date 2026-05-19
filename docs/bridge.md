@@ -61,10 +61,12 @@ Use `--dry-run` to print the planned action without writing or posting.
 ```powershell
 node .\tools\bifrost-bridge.mjs discord-post `
   --channel-id 1501196543150264332 `
+  --persona-name Nibu `
+  --persona-avatar-url https://example.invalid/nibu.png `
   --content "Nibu drafted the article and put it in a PR: https://github.com/..."
 ```
 
-The command posts through Discord's REST API using the configured bot token and prints a JSON receipt.
+The command posts through Discord's REST API using the configured bot token and prints a JSON receipt. When `--persona-name` is provided, Bifrost uses the shared webhook persona pattern so repo Faces can speak with their own display name and avatar instead of collapsing back into the base bot identity. Configure `BIFROST_DISCORD_PERSONA_WEBHOOK_URL_<channelId>` or `DISCORD_PERSONA_WEBHOOK_URL` when the bot should use an existing webhook; otherwise it creates and caches a `Bifrost Persona Pipe` webhook for the channel when Discord permissions allow it.
 
 ## Heimdall Integration Target
 

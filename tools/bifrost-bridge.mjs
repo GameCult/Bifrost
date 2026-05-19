@@ -1,7 +1,12 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+
+const PERSONA_WEBHOOK_NAME = "Bifrost Persona Pipe";
+const PERSONA_WEBHOOK_CACHE_PATH = resolve(".bifrost/discord-webhook-cache.json");
+const THREAD_CHANNEL_TYPES = new Set([10, 11, 12]);
 
 async function main() {
   const [command, ...rawArgs] = process.argv.slice(2);
@@ -114,6 +119,9 @@ async function postDiscordMessage(options) {
   const token = process.env.BIFROST_DISCORD_BOT_TOKEN ?? process.env.DISCORD_BOT_TOKEN;
   const channelId = requireOption(options, "channel-id");
   const content = await readOptionText(options, "content", "content-file");
+  const replyToMessageId = optionalString(options["reply-to-message-id"]);
+  const personaName = optionalString(options["persona-name"]);
+  const personaAvatarUrl = optionalString(options["persona-avatar-url"]);
   const dryRun = options["dry-run"] === "true";
 
   if (dryRun) {
@@ -122,6 +130,9 @@ async function postDiscordMessage(options) {
       action: "discord-post",
       channelId,
       content,
+      replyToMessageId,
+      personaName,
+      personaAvatarUrl,
     });
     return;
   }
@@ -130,13 +141,43 @@ async function postDiscordMessage(options) {
     throw new Error("Set BIFROST_DISCORD_BOT_TOKEN or DISCORD_BOT_TOKEN before posting to Discord.");
   }
 
+  const result = personaName
+    ? await postDiscordPersonaMessage(token, channelId, content, {
+        personaName,
+        personaAvatarUrl,
+        replyToMessageId,
+      })
+    : await postDiscordBotMessage(token, channelId, content, replyToMessageId);
+
+  printJson({
+    action: "discord-post",
+    ok: true,
+    channelId,
+    messageId: result.id,
+    transport: result.transport,
+    url: `https://discord.com/channels/${result.guildId ?? "@me"}/${channelId}/${result.id}`,
+  });
+}
+
+async function postDiscordBotMessage(token, channelId, content, replyToMessageId) {
   const response = await fetch(`https://discord.com/api/v10/channels/${channelId}/messages`, {
     method: "POST",
     headers: {
       Authorization: `Bot ${token}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ content }),
+    body: JSON.stringify({
+      content,
+      message_reference: replyToMessageId
+        ? {
+            message_id: replyToMessageId,
+            fail_if_not_exists: false,
+          }
+        : undefined,
+      allowed_mentions: {
+        parse: [],
+      },
+    }),
   });
 
   const text = await response.text();
@@ -145,13 +186,245 @@ async function postDiscordMessage(options) {
   }
 
   const message = JSON.parse(text);
-  printJson({
-    action: "discord-post",
-    ok: true,
-    channelId,
-    messageId: message.id,
-    url: `https://discord.com/channels/${message.guild_id ?? "@me"}/${channelId}/${message.id}`,
+  return {
+    id: message.id,
+    guildId: message.guild_id,
+    transport: "bot",
+  };
+}
+
+async function postDiscordPersonaMessage(token, channelId, content, options) {
+  const target = await resolveWebhookTarget(token, channelId);
+  let webhook = await getConfiguredPersonaWebhook(target.webhookChannelId);
+  if (!webhook) {
+    webhook = getCachedPersonaWebhook(target.webhookChannelId);
+  }
+  if (!webhook) {
+    webhook = await createPersonaWebhook(token, target.webhookChannelId);
+    writeCachedPersonaWebhook(target.webhookChannelId, webhook);
+  }
+
+  try {
+    return await executePersonaWebhook(webhook, {
+      threadId: target.threadId,
+      content,
+      replyToMessageId: options.replyToMessageId,
+      username: options.personaName.slice(0, 80),
+      avatarUrl: options.personaAvatarUrl,
+    });
+  } catch (error) {
+    if (!isStaleWebhookError(error) || webhook.configured) {
+      throw error;
+    }
+
+    clearCachedPersonaWebhook(target.webhookChannelId);
+    const refreshed = await createPersonaWebhook(token, target.webhookChannelId);
+    writeCachedPersonaWebhook(target.webhookChannelId, refreshed);
+    return executePersonaWebhook(refreshed, {
+      threadId: target.threadId,
+      content,
+      replyToMessageId: options.replyToMessageId,
+      username: options.personaName.slice(0, 80),
+      avatarUrl: options.personaAvatarUrl,
+    });
+  }
+}
+
+async function resolveWebhookTarget(token, channelId) {
+  const response = await fetch(`https://discord.com/api/v10/channels/${channelId}`, {
+    method: "GET",
+    headers: {
+      Authorization: `Bot ${token}`,
+      "Content-Type": "application/json",
+    },
   });
+
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error(`Discord channel lookup failed with ${response.status}: ${text}`);
+  }
+
+  const channel = JSON.parse(text);
+  if (THREAD_CHANNEL_TYPES.has(channel.type)) {
+    if (!channel.parent_id) {
+      throw new Error(`Discord thread ${channelId} has no parent channel for webhook routing.`);
+    }
+
+    return {
+      webhookChannelId: channel.parent_id,
+      threadId: channel.id,
+    };
+  }
+
+  return {
+    webhookChannelId: channel.id,
+    threadId: undefined,
+  };
+}
+
+async function createPersonaWebhook(token, channelId) {
+  const response = await fetch(`https://discord.com/api/v10/channels/${channelId}/webhooks`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bot ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      name: PERSONA_WEBHOOK_NAME,
+    }),
+  });
+
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error(
+      `Discord webhook creation failed with ${response.status}: ${text}. ` +
+        `Grant Manage Webhooks or set BIFROST_DISCORD_PERSONA_WEBHOOK_URL_${channelId}.`,
+    );
+  }
+
+  const payload = JSON.parse(text);
+  if (!payload.id || !payload.token) {
+    throw new Error(`Discord webhook creation for channel ${channelId} returned no executable token.`);
+  }
+
+  return {
+    id: payload.id,
+    token: payload.token,
+    channelId,
+    name: PERSONA_WEBHOOK_NAME,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+async function getConfiguredPersonaWebhook(channelId) {
+  const rawUrl =
+    optionalString(process.env[`BIFROST_DISCORD_PERSONA_WEBHOOK_URL_${channelId}`]) ??
+    optionalString(process.env.DISCORD_PERSONA_WEBHOOK_URL);
+
+  if (!rawUrl) {
+    return undefined;
+  }
+
+  const webhook = parseDiscordWebhookUrl(rawUrl, channelId);
+  const response = await fetch(`https://discord.com/api/v10/webhooks/${webhook.id}/${webhook.token}`);
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error(`Configured Discord webhook lookup failed with ${response.status}: ${text}`);
+  }
+
+  const payload = JSON.parse(text);
+  if (payload.channel_id !== channelId) {
+    throw new Error(`Configured Discord webhook targets channel ${payload.channel_id}, not ${channelId}.`);
+  }
+
+  return webhook;
+}
+
+function parseDiscordWebhookUrl(rawUrl, expectedChannelId) {
+  const url = new URL(rawUrl);
+  const match =
+    url.pathname.match(/\/api(?:\/v\d+)?\/webhooks\/([^/]+)\/([^/?#]+)/) ??
+    url.pathname.match(/\/webhooks\/([^/]+)\/([^/?#]+)/);
+
+  if (!match) {
+    throw new Error(
+      `Configured Discord webhook for channel ${expectedChannelId} must look like https://discord.com/api/webhooks/<id>/<token>.`,
+    );
+  }
+
+  return {
+    id: match[1],
+    token: match[2],
+    channelId: expectedChannelId,
+    name: "configured",
+    createdAt: "configured",
+    configured: true,
+  };
+}
+
+async function executePersonaWebhook(webhook, input) {
+  const url = new URL(`https://discord.com/api/v10/webhooks/${webhook.id}/${webhook.token}`);
+  url.searchParams.set("wait", "true");
+  if (input.threadId) {
+    url.searchParams.set("thread_id", input.threadId);
+  }
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      content: input.content,
+      username: input.username,
+      avatar_url: input.avatarUrl,
+      message_reference: input.replyToMessageId
+        ? {
+            message_id: input.replyToMessageId,
+            fail_if_not_exists: false,
+          }
+        : undefined,
+      allowed_mentions: {
+        parse: [],
+      },
+    }),
+  });
+
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error(`Discord webhook execution failed with ${response.status}: ${text}`);
+  }
+
+  const payload = JSON.parse(text);
+  if (!payload.id) {
+    throw new Error("Discord webhook execution returned no message id.");
+  }
+
+  return {
+    id: payload.id,
+    guildId: payload.guild_id,
+    transport: "webhook",
+  };
+}
+
+function getCachedPersonaWebhook(channelId) {
+  return readPersonaWebhookCache()[channelId];
+}
+
+function writeCachedPersonaWebhook(channelId, webhook) {
+  const cache = readPersonaWebhookCache();
+  cache[channelId] = webhook;
+  writePersonaWebhookCache(cache);
+}
+
+function clearCachedPersonaWebhook(channelId) {
+  const cache = readPersonaWebhookCache();
+  delete cache[channelId];
+  writePersonaWebhookCache(cache);
+}
+
+function readPersonaWebhookCache() {
+  if (!existsSync(PERSONA_WEBHOOK_CACHE_PATH)) {
+    return {};
+  }
+
+  try {
+    return JSON.parse(readFileSync(PERSONA_WEBHOOK_CACHE_PATH, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+function writePersonaWebhookCache(cache) {
+  mkdirSync(dirname(PERSONA_WEBHOOK_CACHE_PATH), { recursive: true });
+  writeFileSync(PERSONA_WEBHOOK_CACHE_PATH, `${JSON.stringify(cache, null, 2)}\n`, "utf8");
+}
+
+function isStaleWebhookError(error) {
+  return error instanceof Error && (
+    error.message.includes("Discord webhook execution failed with 401") ||
+    error.message.includes("Discord webhook execution failed with 404")
+  );
 }
 
 async function readOptionText(options, inlineName, fileName, fallback) {
@@ -263,11 +536,11 @@ function printHelp() {
 
 Commands:
   github-draft-pr   Write one file in a target repo and open a draft PR through gh
-  discord-post      Post a message to Discord through the configured bot token
+  discord-post      Post a message to Discord through the bot token or persona webhook pipe
 
 Examples:
   node tools/bifrost-bridge.mjs github-draft-pr --repo-root E:/Projects/AetheriaLore --identity nibu --title "Nibu: Glitchcraft" --path Aetheria/Articles/Nibu/glitchcraft.md --content-file article.md
-  node tools/bifrost-bridge.mjs discord-post --channel-id 1501196543150264332 --content "Draft PR opened: https://github.com/..."
+  node tools/bifrost-bridge.mjs discord-post --channel-id 1501196543150264332 --persona-name Nibu --content "Draft PR opened: https://github.com/..."
 `);
 }
 
