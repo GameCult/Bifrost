@@ -1,8 +1,19 @@
 # Bifrost Jurisdiction Map
 
-Bifrost is GameCult's government, labor, and public-process platform. Its bridge role is not a second mission stapled onto the side; it follows from the original mission. Work, motions, contributor accountability, review artifacts, and public commitments already need one official crossing between GameCult internals and the outside surfaces where work is argued or recorded.
+Bifrost is GameCult's governance, labor, and public-process platform. Its bridge role is not a second mission stapled onto the side; it follows from the original Labor Platform idea. Users, patrons, members, and contributors need one place to vote on policy, prioritize work, allocate rewards, review accepted work, and keep credit legible.
 
-The agent swarm makes that need louder. Repo Faces can notice work, sharpen consensus, draft proposals, write bylined articles, and ask for priority. They should not each carry their own GitHub, Discord, intake, receipt, and permission machinery. That would turn every Face into a tiny foreign ministry with a shell script addiction. Bifrost owns the public-protocol transport so the swarm can propose work without making transport authority plural.
+The core loop is economic and social, not merely technical:
+
+1. A user, patron, member, agent, or contributor identifies work that should exist.
+2. GameCult participants vote, fund, boost, or otherwise express priority.
+3. The reward for the work rises as demand and importance rise.
+4. A contributor picks up the work when the bounty/credit is worth their time.
+5. A project maintainer reviews and accepts the pull request or other completion artifact.
+6. Bifrost credits the contributor for the accepted work item and records the reward allocation.
+
+That loop already has to cross GitHub, Discord, Bifrost's own web UI, and eventually other collaboration surfaces. The bridge role exists so those crossings stay attached to governance, prioritization, reward, and credit instead of becoming stray bot errands.
+
+The agent swarm makes that need louder. Repo Faces can notice work, sharpen consensus, draft proposals, write bylined articles, and ask for priority. They should not each carry their own GitHub, Discord, intake, receipt, and permission machinery. Bifrost owns the public-protocol transport so the swarm can propose work without making transport authority plural.
 
 ## Core Invariant
 
@@ -11,7 +22,7 @@ Bifrost owns governed public crossings for GameCult work.
 A governed public crossing is any action where an internal GameCult actor, agent, Face, or process causes a durable or visible change on a public or collaboration surface:
 
 - GitHub draft PRs, PR comments, issues, review artifacts, and work links
-- Discord persona announcements, dispatch receipts, and role-addressed work updates
+- Discord-native Bifrost interactions, persona announcements, dispatch receipts, and role-addressed swarm I/O
 - CultNet/CultCache intake packets that move work requests between runtimes
 - future collaboration interfaces that expose GameCult decisions, requests, work status, or receipts outside a single local process
 
@@ -19,16 +30,31 @@ Bifrost does not own every byte that moves. It owns the meaning, policy, routing
 
 ## Why This Belongs To Bifrost
 
-Bifrost was already the member alpha platform for tasks, governance, contributor accounting, and operational legibility. GitHub integration was part of that from the start because GameCult work lives partly in GitHub issues, PRs, and review history. Discord integration becomes part of the same authority once agents and humans coordinate public work there.
+Bifrost was already the member alpha platform for tasks, governance, contributor accounting, reward allocation, and operational legibility. GitHub integration was part of that from the start because GameCult work lives partly in GitHub issues, PRs, and review history. Discord integration belongs in the same authority when Discord is being used as a Bifrost interface: voting prompts, prioritization discussion, bounty/work updates, member/patron/user access, agent dispatch, and public receipts.
 
-The bridge role is therefore an extension of Bifrost's government role:
+The bridge role is therefore an extension of Bifrost's Labor Platform role:
 
 - tasks need a canonical relationship to GitHub and internal work items
 - proposals need a durable review surface instead of dissolving into chat
-- motions and priority disputes need receipts, provenance, and accountable closure
-- contributors and agents need one place to see what was requested, who claimed it, what crossed, and where it landed
+- votes, priority signals, and reward boosts need provenance and accountable closure
+- accepted work needs a maintainer-approved completion artifact before credit/reward is assigned
+- contributors and agents need one place to see what was requested, who wanted it, what bounty/credit attached, who claimed it, what crossed, and where it landed
 
-If the bridge lives in VoidBot, Discord becomes a hidden government. If it lives separately from Bifrost, transport and governance split into two half-authorities that will eventually disagree. If every repo Face owns its own bridge, the swarm becomes unreviewable noise with adorable avatars. The coherent machine is smaller: Bifrost governs public work transport.
+If the bridge lives in VoidBot, Discord becomes a hidden governance surface. If it lives separately from Bifrost, transport and governance split into two half-authorities that will eventually disagree. If every repo Face owns its own bridge, the swarm becomes unreviewable noise with adorable avatars. The coherent machine is smaller: Bifrost governs public work transport.
+
+## Discord Decision
+
+Discord should become a native Bifrost interface, and Bifrost should own Discord transport authority for Bifrost-scoped work and swarm I/O.
+
+That means Bifrost should eventually provide Discord access to registered GameCult users, patrons, members, and contributors. A Discord message can become a priority signal, vote prompt, work request, claim update, bounty/reward discussion, maintainer review notice, or agent dispatch event when the actor and channel are authorized.
+
+It also means Bifrost should become the router for Discord input/output for the agent swarm:
+
+- inbound Discord mentions or channel events that target a Face become Bifrost-routed work or speech events
+- outbound agent posts, PR receipts, article announcements, and dispatch acknowledgements go through Bifrost
+- Bifrost records which Face spoke, why the message was allowed, what request or work item it relates to, and where the receipt landed
+
+This does not mean Bifrost owns all Discord behavior. General conversation, room reading, moderation judgment, archive retrieval, and personality cognition remain VoidBot/Face concerns. Bifrost owns Discord when Discord is acting as a GameCult governance/labor/work interface or as the swarm's public transport.
 
 ## Ownership Boundaries
 
@@ -36,9 +62,10 @@ If the bridge lives in VoidBot, Discord becomes a hidden government. If it lives
 
 - bridge action request shape and lifecycle
 - work-priority intake packets and claim semantics
+- user, patron, member, contributor, and agent transport events when they affect work, priority, reward, votes, claims, or receipts
 - mapping from internal request to public target surface
 - GitHub proposal/comment/PR transport for agent and member work
-- Discord dispatch receipts and persona announcements for work crossings
+- Discord-native Bifrost commands/interactions, dispatch receipts, and persona announcements for work crossings and swarm I/O
 - public receipt quality: target, actor, action, result, and next place to look
 - policy for which bridge actions are allowed in the Bifrost domain
 - audit records proving when a crossing was requested, claimed, executed, failed, or closed
@@ -61,7 +88,7 @@ Bifrost consumes Heimdall claims. It does not become the key vault. The split is
 - repo Face heartbeat prompts and local personality/state loops
 - the worker-side validation that a registered Face is allowed to request a crossing
 
-VoidBot should not be the durable authority that mutates GitHub or owns public work transport. It may prepare packets and call Bifrost. It does not get to be a shadow legislature because it was nearest to the chat log.
+VoidBot should not be the durable authority that mutates GitHub or owns Bifrost-scoped Discord transport. It may prepare packets and call Bifrost. It does not get to be a shadow governance platform because it was nearest to the chat log.
 
 ### CultCache, CultNet, And CultLib Own
 
@@ -88,8 +115,10 @@ Repo Faces may generate bridge requests. They do not own the bridge itself.
 | Who is this actor? | Heimdall | Identity and account custody must stay with the auth authority. |
 | Is this actor allowed to request this crossing? | Heimdall plus Bifrost | Heimdall issues grants; Bifrost applies bridge-domain policy. |
 | What work is being requested? | Bifrost | The request shape, priority, provenance, and lifecycle are governance concerns. |
+| How does interest become reward pressure? | Bifrost | Priority, bounty growth, vote weight, and reward allocation are Labor Platform concerns. |
 | Where is the durable argument surface? | Bifrost | Public process must land on the correct GitHub, Discord, or future collaboration surface. |
 | What did the room recently agree or ask for? | VoidBot | Discord observation and consensus packaging belong to the room-aware bot. |
+| Is Discord acting as a Bifrost interface? | Bifrost | Member access, vote prompts, work requests, priority signals, reward discussion, and swarm routing are native Bifrost transport concerns. |
 | What does the repo Face think should happen? | Repo Face | Jurisdictional taste and proposal pressure belong to the Face. |
 | Where is the packet stored and synced? | CultCache/CultNet | Transport state should use the shared typed storage/sync substrate. |
 | What proves the action happened? | Bifrost | Receipts are part of public-process transport, not local helper trivia. |
@@ -103,6 +132,7 @@ Every Bifrost-owned crossing should be able to answer:
 - source: which chat, motion, work item, consensus packet, or repo state produced it
 - target: which repo, PR, issue, channel, thread, or interface receives it
 - action: what visible or durable change is being made
+- work economics: which work item, vote/priority signal, bounty/reward state, or credit allocation the action affects when applicable
 - result: success, failure, queued, cancelled, or completed
 - receipt: the URL, message id, PR number, branch, request id, log path, or other concrete proof
 - next handoff: where humans and agents should continue the argument or review
@@ -123,11 +153,12 @@ This is not the final hosted control plane. It is the current bridge actuator an
 ## Design Rules
 
 - Do not add GitHub mutation machinery to VoidBot when the action is reviewable public work. Call Bifrost.
-- Do not add Discord dispatch receipts to arbitrary repo Face scripts. Call Bifrost.
+- Do not add Bifrost-scoped Discord transport or dispatch receipts to arbitrary repo Face scripts. Call Bifrost.
 - Do not put OAuth credentials or account custody into Bifrost helper scripts as the long-term plan. Use Heimdall claims.
 - Do not make CultCache documents decide policy. They store packets; Bifrost gives those packets meaning.
 - Do not let a repo Face turn a proposal into endless Aquarium pressure once it has enough shape. Route it to Bifrost as a reviewable artifact.
 - Do not expose bridge debug noise to public channels. Public receipts should say what happened, where it landed, and what comes next.
+- Do not make Bifrost responsible for generic chat cognition, lore retrieval, moderation taste, or Face personality. Native Discord interface does not mean one app gets to eat every mind in the room.
 
 ## Future Shape
 
@@ -135,8 +166,11 @@ The hosted Bifrost app should eventually expose this bridge role as first-class 
 
 - an intake board for agent and human work requests
 - claim, priority, and closure workflows aligned with member governance
+- dynamic reward/bounty growth from votes, patron/member demand, and maintainer priority
+- maintainer acceptance flow that credits the contributor after accepted completion
 - GitHub and Discord receipts attached to the originating work item, motion, or request
+- Discord-native prompts and commands for registered users, patrons, members, contributors, and agents
 - Heimdall-backed capability checks for member and agent actions
 - public and member-facing views that show what the swarm asked for, what humans accepted, what crossed, and what still needs review
 
-Bifrost remains the government platform. The bridge is how that government touches the world without making every bot its own little state department.
+Bifrost remains the governance and labor platform. The bridge is how that platform touches the world without making every bot its own little state department.

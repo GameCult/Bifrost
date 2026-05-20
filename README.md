@@ -1,8 +1,8 @@
 # Bifrost
 
-Bifrost is the planned GameCult member, governance, labor, and public-process platform running under the Yggdrasil infrastructure umbrella. It exists to connect projects, contributors, motions, ledgers, work requests, public receipts, and operational decisions in one place instead of leaving them scattered across GitHub, docs, chat, and human memory.
+Bifrost is the planned GameCult member, governance, labor, and public-process platform running under the Yggdrasil infrastructure umbrella. It exists to connect projects, users, patrons, contributors, motions, ledgers, work requests, reward pressure, public receipts, and operational decisions in one place instead of leaving them scattered across GitHub, docs, chat, and human memory.
 
-Bifrost also owns the governed transport layer for GameCult work that crosses public or collaboration protocols: GitHub proposal/review surfaces, Discord dispatch receipts, CultNet/CultCache intake packets, and future collaboration interfaces. That bridge role follows from the governance role; it is not a separate bot utility. See [docs/jurisdiction-map.md](E:\Projects\Bifrost\docs\jurisdiction-map.md).
+Bifrost also owns the governed transport layer for GameCult work that crosses public or collaboration protocols: GitHub proposal/review surfaces, Discord-native work and swarm interfaces, CultNet/CultCache intake packets, and future collaboration interfaces. That bridge role follows from the Labor Platform role; it is not a separate bot utility. See [docs/jurisdiction-map.md](E:\Projects\Bifrost\docs\jurisdiction-map.md).
 
 ## Status
 
@@ -13,6 +13,7 @@ This repository now includes a viable alpha foundation slice of the ASP.NET Core
 - GitHub OAuth sign-in plus invite/approval-based membership gating
 - explicit member roles and admin-managed patron or contributor tier snapshots
 - shared work board with estimates, actual time logs, review flow, and GitHub issue or PR links
+- planned priority/reward pressure loop where demand can raise a work item's value before a contributor claims it
 - member-facing motions with category thresholds aligned to the labor-platform doc
 - health and readiness endpoints plus startup config validation
 - GitHub App webhook ingestion for issue, pull request, and review sync

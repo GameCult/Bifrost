@@ -5,7 +5,9 @@
 - Bifrost is the GameCult member alpha platform for tasks, governance, contributor accounting, and operational legibility.
 - Bifrost also owns GameCult public-protocol transport for governed work crossings: GitHub proposal/review surfaces, Discord dispatch receipts, CultNet/CultCache intake packets, and future collaboration interfaces.
 - It sits under the Yggdrasil infrastructure umbrella and should connect GameCult services and workflows without importing crypto ideology or platform theater.
-- The transport role follows from Bifrost's government role. Do not treat bridge tools as a stray bot utility owned by VoidBot or individual repo Faces.
+- The transport role follows from Bifrost's Labor Platform role. Do not treat bridge tools as a stray bot utility owned by VoidBot or individual repo Faces.
+- The product center is the governance/labor loop: users, patrons, members, and contributors express policy and work priorities; reward pressure rises around work that matters; contributors claim valuable work; maintainers accept completion artifacts; Bifrost credits the contributor and records the reward allocation.
+- Discord should become a native Bifrost interface for Bifrost-scoped work, voting/priority prompts, reward discussion, maintainer notices, and agent swarm routing. This does not make Bifrost responsible for generic room cognition, moderation judgment, archive retrieval, or Face personality.
 
 ## V1 Non-Goals
 

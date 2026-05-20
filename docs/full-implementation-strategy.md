@@ -2,7 +2,7 @@
 
 This document aligns the current Bifrost application work with the broader GameCult labor platform concept documented in `E:\Projects\gamecult-site\GameCult\Docs\labor-platform.md`.
 
-The goal is to keep Bifrost implementation boring, auditable, and staged while still preserving the actual GameCult model: contributor history, governance, contribution points, patron points, decay, and revenue share.
+The goal is to keep Bifrost implementation boring, auditable, and staged while still preserving the actual GameCult model: contributor history, governance, work priority, reward pressure, contribution points, patron points, decay, and revenue share.
 
 ## Current Readiness
 
@@ -41,6 +41,7 @@ The labor platform concept doc establishes the social and economic model. Bifros
 - keep the app invite-only during alpha
 - keep payout execution out of scope; only compute, review, and audit payout proposals
 - treat contribution points, patron points, decay, and revenue share as first-class product systems, not spreadsheet afterthoughts
+- preserve the Labor Platform loop where eligible demand raises priority/reward pressure, contributors claim valuable work, maintainers accept completion artifacts, and accepted work becomes contributor credit plus reward allocation
 - preserve the concept doc's emphasis on continuous care work, not only ticket-shaped labor
 
 ## Systems That Must Exist
@@ -56,7 +57,9 @@ The labor platform concept doc establishes the social and economic model. Bifros
 
 - GitHub-backed work items and internal work items in one queue
 - work categories, skill level, estimated hours, deadline, and review state
+- transparent priority signals and reward pressure attached to work before it is claimed
 - volunteer, assignment, review, completion, and approval transitions
+- maintainer-accepted completion artifacts, usually GitHub PRs, before contributor credit/reward finalization
 - support for continuous roles such as maintainer, producer, community manager, and social media work
 
 ### Governance
@@ -70,6 +73,7 @@ The labor platform concept doc establishes the social and economic model. Bifros
   - features: 50%
   - new content: 50%
   - fundamental design changes: 66%
+- Discord-native voting or priority prompts should eventually write into the same governance/priority records as the web app, after Heimdall-backed identity and capability claims exist.
 
 ### Accounting
 
@@ -247,6 +251,9 @@ The current domain is a good start, but the following models should be expected:
 - `WorkItemCategory`
 - `WorkReview`
 - `WorkCompletion`
+- `PrioritySignal`
+- `RewardAllocation`
+- `CompletionArtifact`
 - `PointTransaction`
 - `PointBalanceSnapshot`
 - `PatronSupportEvent`

@@ -2,9 +2,11 @@
 
 ## Why Bifrost Exists
 
-GameCult needs a platform that can connect public projects, contributor participation, governance, agent work requests, public transport receipts, and internal accounting without relying on chat memory, disconnected tools, or hand-maintained spreadsheets of dubious destiny. Bifrost is that connective layer.
+GameCult needs a platform that can connect public projects, users, patrons, contributor participation, governance, agent work requests, reward allocation, public transport receipts, and internal accounting without relying on chat memory, disconnected tools, or hand-maintained spreadsheets of dubious destiny. Bifrost is that connective layer.
 
-Bifrost's bridge role follows from that purpose. GitHub proposals, Discord dispatch receipts, CultNet/CultCache intake packets, and future collaboration interfaces are not side channels when they carry GameCult work. They are public-process crossings, so Bifrost owns their request shape, routing, policy, audit, and receipt semantics. The detailed boundary map lives in `docs/jurisdiction-map.md`.
+Bifrost's bridge role follows from that purpose. GitHub proposals, Discord-native work and swarm interfaces, CultNet/CultCache intake packets, and future collaboration interfaces are not side channels when they carry GameCult work. They are public-process crossings, so Bifrost owns their request shape, routing, policy, audit, and receipt semantics. The detailed boundary map lives in `docs/jurisdiction-map.md`.
+
+The product center is the Labor Platform loop: eligible participants express policy and work priorities, demand raises reward pressure for work that needs doing, contributors pick up work once the bounty or credit is worthwhile, maintainers accept completion artifacts, and Bifrost records contributor credit plus reward allocation.
 
 ## Relationship To Other Workspaces
 
@@ -21,6 +23,7 @@ Bifrost's bridge role follows from that purpose. GitHub proposals, Discord dispa
 - `E:\Projects\VoidBot`
   - observes Discord, packages consensus, and runs repo Face heartbeats
   - should call Bifrost for governed GitHub/Discord/intake crossings instead of becoming hidden transport authority
+  - keeps room cognition, moderation judgment, retrieval, and Face personality separate from Bifrost's Discord-native work interface
 - `E:\Projects\CultLib`
   - stewards CultCache, CultNet, CultMesh, typed persistence, schemas, and reusable sync/storage libraries
   - Bifrost defines the meaning of agent transport packets while CultLib-provided primitives store and move them
@@ -51,6 +54,8 @@ After bootstrap, the next session should start implementing the first vertical s
 - GitHub as the only auth provider in v1
 - GitHub issues and internal tasks both supported
 - app-native governance and voting
+- priority and reward pressure should be transparent and auditable
+- Discord should become a native interface for Bifrost-scoped work, membership/patron/user access, and agent swarm routing
 - internal ledgers only
 - no crypto, no wallets, no payout automation
 

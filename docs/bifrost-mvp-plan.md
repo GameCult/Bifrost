@@ -6,6 +6,7 @@
 - Build a member alpha, not a public launch.
 - Use ASP.NET Core 8 with Razor Pages + HTMX and PostgreSQL.
 - Support invite-only GitHub-linked members, GitHub-backed and internal work items, app-native governance, and internal ledgers.
+- Preserve the Labor Platform loop: user/member/patron demand raises work priority and reward pressure, contributors pick up valuable work, maintainers accept completion artifacts, and Bifrost credits the contributor plus any bounty/reward allocation.
 - Do not include Ethereum, wallets, DAO mechanics, or payout execution in v1.
 - Align the implementation with the labor platform model in `E:\Projects\gamecult-site\GameCult\Docs\labor-platform.md`.
 
@@ -16,6 +17,7 @@
 - PostgreSQL as the system of record.
 - GitHub OAuth for login.
 - GitHub App plus webhooks for issue and pull request lifecycle sync.
+- Discord should become a native Bifrost interface for work, voting/priority prompts, reward discussion, maintainer notices, and agent swarm routing once identity/capability claims are available.
 - Yggdrasil-hosted deployment behind nginx with systemd-managed app service.
 
 ## Core Models
@@ -25,8 +27,11 @@
 - `Membership`: invite state, approval state, active/suspended state, roles
 - `Project`: GameCult project container for tasks, motions, and ledgers
 - `WorkItem`: shared model for `GitHubIssue` and `Internal` task sources
+- `PrioritySignal`: user/member/patron/contributor demand or vote-like pressure attached to work
+- `RewardAllocation`: bounty, credit, or reward pressure attached to a work item before completion
 - `VolunteerClaim`: member intent to work on an item
 - `Assignment`: approved responsibility for a work item
+- `CompletionArtifact`: PR, commit, document, or other maintainer-reviewable proof of work
 - `Motion`: `Management` or `Project`
 - `Vote`: per-member vote tied to effective voting weight
 - `LedgerEntry`: immutable patron/contributor/accounting record
@@ -40,6 +45,8 @@
 - Authentication is separate from membership approval.
 - Work items may come from GitHub issues or internal platform-native tasks.
 - Voting is app-native and off-chain.
+- Work priority and attached reward should be able to rise as more eligible participants want the work done.
+- Contributor credit/reward is assigned only after maintainer acceptance of the completion artifact.
 - Voting weight derives from patron tier plus contributor tier.
 - Compensation is modeled internally, not executed by the platform.
 - Human approval remains in the loop for governance-sensitive and payout-sensitive steps.
@@ -47,6 +54,7 @@
 ## Labor Platform Alignment
 
 - Contribution points and patron points are separate systems that both matter to tiering and governance.
+- Work bounties/reward pressure should be derived from transparent demand, priority, and approved allocation rules rather than private chat pressure.
 - Effective balances decay over time where the labor platform rules call for decay.
 - Project-specific contribution points stay distinct from global contribution points.
 - Revenue share should be implemented as an internal calculation and review flow, not direct payout execution.
@@ -70,7 +78,9 @@ Build the minimum vertical slice for:
 - invite and membership gating
 - project management
 - work items from GitHub and internal sources
+- priority signals and reward pressure for work items
 - volunteering and assignment flow
+- maintainer acceptance of completion artifacts
 - motions and voting
 - ledger entry creation
 - payout proposal batch review without disbursement
@@ -81,7 +91,10 @@ Build the minimum vertical slice for:
 - uninvited GitHub user cannot participate fully
 - GitHub issue sync creates or updates a work item
 - internal task can be created and assigned without GitHub backing
+- eligible users/members/patrons/contributors can add priority pressure to work
+- work reward/credit pressure can rise from demand and be inspected before claim
 - member volunteers for a task and a producer/admin assigns it
+- maintainer accepts a linked PR or completion artifact before credit/reward is assigned
 - completed work generates ledger entries after approval
 - motion creation, voting, closure, and threshold logic work correctly
 - payout proposal batch can be generated from approved ledger data without sending money
