@@ -96,6 +96,9 @@ async function main() {
     case "claim":
       await claim(cache, options);
       return;
+    case "release":
+      await releaseRequest(cache, options);
+      return;
     case "close":
       await closeRequest(cache, options);
       return;
@@ -215,6 +218,30 @@ async function closeRequest(cache, options) {
   });
   await cache.put(updateRequestDefinition, closed.id, closed);
   printJson(closed);
+}
+
+async function releaseRequest(cache, options) {
+  const id = requireOption(options, "id");
+  const current = cache.get(updateRequestDefinition, id);
+  if (!current) {
+    throw new Error(`No update request found for id "${id}".`);
+  }
+
+  if (current.status !== "claimed") {
+    throw new Error(`Only claimed requests can be released; "${id}" is ${current.status}.`);
+  }
+
+  const now = new Date().toISOString();
+  const released = parseUpdateRequest({
+    ...current,
+    status: "queued",
+    claimedByAgent: undefined,
+    claimedAt: undefined,
+    closeNote: optionalString(options.note),
+    updatedAt: now,
+  });
+  await cache.put(updateRequestDefinition, released.id, released);
+  printJson(released);
 }
 
 async function writeSnapshot(cache, options) {
@@ -429,6 +456,7 @@ Commands:
   list           List requests, optionally filtered by --repo, --agent, --status
   claim          Claim the highest-priority queued request for --repo
   close          Mark a request completed or cancelled
+  release        Return a claimed request to the queue after dispatch setup fails
   snapshot       Write or print a CultNet raw snapshot response
   apply-snapshot Apply a CultNet raw snapshot response from --in
   schema         Print the document type and schema id

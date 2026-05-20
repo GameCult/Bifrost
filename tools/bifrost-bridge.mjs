@@ -3,12 +3,18 @@ import { spawnSync } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const PERSONA_WEBHOOK_NAME = "Bifrost Persona Pipe";
 const PERSONA_WEBHOOK_CACHE_PATH = resolve(".bifrost/discord-webhook-cache.json");
 const THREAD_CHANNEL_TYPES = new Set([10, 11, 12]);
+const scriptDir = dirname(fileURLToPath(import.meta.url));
+const repoRoot = resolve(scriptDir, "..");
+const projectsRoot = resolve(repoRoot, "..");
 
 async function main() {
+  loadLocalEnv(resolve(repoRoot, ".env"));
+  loadLocalEnv(resolve(projectsRoot, "VoidBot", ".env"));
   const [command, ...rawArgs] = process.argv.slice(2);
   const options = parseArgs(rawArgs);
 
@@ -562,6 +568,38 @@ function timestampSlug(date) {
 
 function printJson(value) {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
+}
+
+function loadLocalEnv(path) {
+  const normalizedPath = path.startsWith("/") && /^[A-Za-z]:/.test(path.slice(1))
+    ? path.slice(1)
+    : path;
+  if (!existsSync(normalizedPath)) {
+    return;
+  }
+
+  for (const line of readFileSync(normalizedPath, "utf8").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) {
+      continue;
+    }
+    const separator = trimmed.indexOf("=");
+    if (separator === -1) {
+      continue;
+    }
+    const key = trimmed.slice(0, separator).trim();
+    if (process.env[key]) {
+      continue;
+    }
+    let value = trimmed.slice(separator + 1).trim();
+    if (
+      value.length >= 2 &&
+      ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))
+    ) {
+      value = value.slice(1, -1);
+    }
+    process.env[key] = value;
+  }
 }
 
 function printHelp() {
