@@ -13,6 +13,8 @@ const defaultStatusDir = resolve(bifrostRoot, ".bifrost", "agent-dispatch");
 const defaultProjectsRoot = resolve(bifrostRoot, "..");
 const defaultAquariumChannelId = "1501196543150264332";
 const defaultPersonaName = "Bifrost";
+const defaultPersonaAvatarUrl =
+  "https://raw.githubusercontent.com/GameCult/Bifrost/main/src/Bifrost.Web/wwwroot/img/bifrost-profile.png";
 
 async function main() {
   loadLocalEnv(resolve(bifrostRoot, ".env"));
@@ -391,8 +393,13 @@ ${request.requestMarkdown}
 }
 
 function postDispatchReceipt(request, dispatchRecord, options) {
-  const channelId = options["channel-id"] ?? defaultAquariumChannelId;
-  const personaName = options["persona-name"] ?? defaultPersonaName;
+  const channelId = resolveDispatchReceiptChannelId(options);
+  const personaName = options["persona-name"] ?? process.env.BIFROST_DISCORD_PERSONA_NAME ?? defaultPersonaName;
+  const personaAvatarUrl =
+    optionalString(options["persona-avatar-url"]) ??
+    optionalString(process.env.BIFROST_DISCORD_PERSONA_AVATAR_URL) ??
+    optionalString(process.env.DISCORD_PERSONA_AVATAR_URL_BIFROST) ??
+    defaultPersonaAvatarUrl;
   const topic = summarizeRequestTopic(request);
   const content = [
     `Bifrost dispatch: ${request.targetAgentIdentity ?? "repo agent"} has this.`,
@@ -408,8 +415,17 @@ function postDispatchReceipt(request, dispatchRecord, options) {
     "--channel-id", channelId,
     "--persona-name", personaName,
     "--content", content,
-    ...optionalArg("--persona-avatar-url", options["persona-avatar-url"]),
+    ...optionalArg("--persona-avatar-url", personaAvatarUrl),
   ], bifrostRoot);
+}
+
+function resolveDispatchReceiptChannelId(options) {
+  return (
+    optionalString(options["channel-id"]) ??
+    optionalString(process.env.BIFROST_DISCORD_CHANNEL_ID) ??
+    optionalString(process.env.DISCORD_BIFROST_CHANNEL_ID) ??
+    defaultAquariumChannelId
+  );
 }
 
 class CodexAppServerClient {

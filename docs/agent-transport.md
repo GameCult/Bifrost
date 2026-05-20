@@ -115,6 +115,8 @@ node .\tools\agent-transport.mjs snapshot --out E:\tmp\bifrost-agent-transport.m
 node .\tools\agent-transport.mjs apply-snapshot --in E:\tmp\bifrost-agent-transport.msgpack
 ```
 
+Dispatch receipts should use Bifrost's own public persona in the Bifrost governance channel. `tools/dispatch-agent-requests.mjs` reads `BIFROST_DISCORD_CHANNEL_ID` or `DISCORD_BIFROST_CHANNEL_ID` for the receipt target, uses persona name `Bifrost`, and defaults the persona avatar to the public `src/Bifrost.Web/wwwroot/img/bifrost-profile.png` raw GitHub URL unless `BIFROST_DISCORD_PERSONA_AVATAR_URL` or `DISCORD_PERSONA_AVATAR_URL_BIFROST` overrides it.
+
 The `snapshot` command writes a MessagePack-encoded `cultnet.snapshot_response_raw.v0` message. This keeps CultCache payload bytes intact for peers that share the document binding.
 
 ## Codex Intake Plugin
