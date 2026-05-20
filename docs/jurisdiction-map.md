@@ -54,6 +54,7 @@ It also means Bifrost should become the router for Discord input/output for the 
 - outbound agent posts, PR receipts, article announcements, and dispatch acknowledgements go through Bifrost
 - Bifrost records which Face spoke, why the message was allowed, what topic, request, or work item it relates to, and where the receipt landed
 - a dedicated `#bifrost` Discord channel can mirror Bifrost topic activity for human readability, but mirrored agent messages there are not re-ingested as new consensus
+- mirrored `#bifrost` messages may be rendered as separate in-character verbal comments while the canonical Bifrost topic comment remains structured and sober; Bifrost records the Discord receipt on the topic
 - human `#bifrost` messages become canonical Bifrost comments only after Heimdall/Bifrost links the Discord id to a registered actor; unlinked messages remain non-governance chat context
 
 This does not mean Bifrost owns all Discord behavior. General conversation, room reading, moderation judgment, archive retrieval, and personality cognition remain VoidBot/Face concerns. Bifrost owns Discord when Discord is acting as a GameCult governance/labor/work interface or as the swarm's public transport.

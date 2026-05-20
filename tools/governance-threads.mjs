@@ -12,6 +12,7 @@ const projectsRoot = resolve(repoRoot, "..");
 const defaultStorePath = resolve(repoRoot, ".bifrost", "governance-threads.cc");
 const defaultPacketDir = resolve(repoRoot, ".bifrost", "governance-dispatch-packets");
 const agentTransportCli = resolve(repoRoot, "tools", "agent-transport.mjs");
+const bridgeCli = resolve(repoRoot, "tools", "bifrost-bridge.mjs");
 
 const cultCacheRequire = createRequire(resolve(projectsRoot, "CultCacheTS", "package.json"));
 const {
@@ -162,6 +163,11 @@ async function openTopic(cache, options) {
   });
 
   await cache.put(topicDefinition, topic.id, topic);
+  await maybeMirrorTopicActivity(cache, topic, {
+    options,
+    fallbackContent: topic.summaryMarkdown,
+    eventLabel: "opened",
+  });
   printJson(topic);
 }
 
@@ -184,6 +190,11 @@ async function addComment(cache, options) {
   });
 
   await cache.put(commentDefinition, comment.id, comment);
+  await maybeMirrorTopicActivity(cache, topic, {
+    options,
+    fallbackContent: comment.bodyMarkdown,
+    eventLabel: comment.stance,
+  });
   printJson(comment);
 }
 
@@ -219,6 +230,12 @@ async function approveTopic(cache, options) {
     });
     await cache.put(commentDefinition, comment.id, comment);
   }
+
+  await maybeMirrorTopicActivity(cache, approved, {
+    options,
+    fallbackContent: approvalBody ?? `Approved by ${approvedBy}.`,
+    eventLabel: "approved",
+  });
 
   printJson(approved);
 }
@@ -273,8 +290,70 @@ async function promoteTopic(cache, options) {
     createdAt: now,
   });
   await cache.put(commentDefinition, receipt.id, receipt);
+  await maybeMirrorTopicActivity(cache, dispatched, {
+    options,
+    fallbackContent: receipt.bodyMarkdown,
+    eventLabel: "dispatched",
+  });
 
   printJson({ topic: dispatched, request });
+}
+
+async function maybeMirrorTopicActivity(cache, topic, input) {
+  const channelId = optionalString(input.options["mirror-channel-id"]);
+  if (!channelId) {
+    return;
+  }
+
+  const personaName = optionalString(input.options["mirror-persona-name"]);
+  const personaAvatarUrl = optionalString(input.options["mirror-persona-avatar-url"]);
+  const mirrorContent =
+    await readOptionalMarkdownOption(input.options, "mirror-content") ??
+    renderMirrorFallback(topic, input.eventLabel, input.fallbackContent);
+
+  const now = new Date().toISOString();
+  let bodyMarkdown;
+  let sourceMessageId;
+  try {
+    const receipt = runNodeJson([
+      bridgeCli,
+      "discord-post",
+      "--channel-id", channelId,
+      "--content", mirrorContent,
+      ...optionalArg("--persona-name", personaName),
+      ...optionalArg("--persona-avatar-url", personaAvatarUrl),
+      ...optionalArg("--reply-to-message-id", input.options["mirror-reply-to-message-id"]),
+      ...(input.options["mirror-dry-run"] === "true" ? ["--dry-run", "true"] : []),
+    ], repoRoot);
+    bodyMarkdown = receipt.dryRun
+      ? `Dry-run mirror prepared for Discord channel ${channelId}.`
+      : `Mirrored ${input.eventLabel} to Discord channel ${channelId}${receipt.url ? `: ${receipt.url}` : ""}.`;
+    sourceMessageId = receipt.messageId;
+  } catch (error) {
+    bodyMarkdown = `Discord mirror failed for ${input.eventLabel} in channel ${channelId}: ${error instanceof Error ? error.message : String(error)}`;
+  }
+
+  const receiptComment = parseComment({
+    id: `comment_${randomUUID()}`,
+    topicId: topic.id,
+    authorKind: "system",
+    authorId: "bifrost",
+    stance: "receipt",
+    bodyMarkdown,
+    sourceMessageId,
+    createdAt: now,
+  });
+  await cache.put(commentDefinition, receiptComment.id, receiptComment);
+}
+
+function renderMirrorFallback(topic, eventLabel, content) {
+  return [
+    `Bifrost ${eventLabel}: ${topic.title}`,
+    "",
+    content.trim(),
+    "",
+    `Topic: ${topic.id}`,
+  ].join("\n");
 }
 
 function listTopics(cache, options) {
@@ -570,6 +649,14 @@ Examples:
   node tools/governance-threads.mjs open --repo AquaSynth --agent aqua --title "Universal utterance schema" --summary-file packet.md --priority 80
   node tools/governance-threads.mjs approve --topic topic_... --approved-by aqua --body "Aqua approves dispatch."
   node tools/governance-threads.mjs promote --topic topic_...
+
+Mirror options:
+  --mirror-channel-id <id>            Mirror this activity to Discord through Bifrost bridge
+  --mirror-persona-name <name>        Render the mirror as the Face/persona
+  --mirror-persona-avatar-url <url>   Optional persona avatar for the mirror
+  --mirror-content <text>             Optional more verbal/personality-rich mirror text
+  --mirror-content-file <path>        Read mirror text from a file
+  --mirror-dry-run true               Exercise mirror plumbing without posting to Discord
 `);
 }
 
