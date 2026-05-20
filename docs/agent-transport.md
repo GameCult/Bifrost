@@ -1,6 +1,6 @@
 # Agent Transport
 
-Bifrost owns the agent transport contract for GameCult work requests.
+Bifrost owns the agent transport contract for GameCult work requests because agent intake is part of Bifrost's public-process jurisdiction. The broader ownership rule lives in `docs/jurisdiction-map.md`: Bifrost governs work crossings; CultCache stores typed packets; CultNet moves them; VoidBot observes Discord and packages consensus; repo Faces claim only work inside their jurisdiction.
 
 This is not a Postgres queue and not a VoidBot side channel. VoidBot may observe Discord and package consensus, but the shared request lane belongs here:
 
@@ -10,6 +10,14 @@ This is not a Postgres queue and not a VoidBot side channel. VoidBot may observe
 - Repo agents claim only requests whose target repository matches their jurisdiction.
 
 That ownership split matters. If the queue lives in VoidBot, Discord becomes the hidden source of authority. If it lives in Bifrost but stores through Entity Framework, agents cannot share the same packet through the CultCache/CultNet machinery they already use for state. The coherent machine is smaller: Bifrost says what the request means; CultCache remembers it; CultNet moves it.
+
+An update request is not just a message in a queue. It is a governed handoff:
+
+- what changed in the room, repo, motion, or work context
+- which repo or Face has jurisdiction
+- why this deserves priority now
+- where the claimed work should report back
+- which receipt will prove the request was handled
 
 ## Document
 
@@ -85,3 +93,4 @@ The plugin is listed in `.agents/plugins/marketplace.json` as `bifrost-intake`.
 
 - Route claimed agent work that produces reviewable artifacts through `tools/bifrost-bridge.mjs` so Bifrost, not VoidBot, owns GitHub and Discord crossing receipts.
 - Use CultNet direct pipes when a long-running agent runtime is available; keep raw snapshot files as the dead-simple bridge until then.
+- Surface transport requests inside the Bifrost app as governance/workflow objects instead of leaving them as local CLI state forever.

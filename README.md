@@ -1,6 +1,8 @@
 # Bifrost
 
-Bifrost is the planned GameCult member, governance, and labor platform running under the Yggdrasil infrastructure umbrella. It exists to connect projects, contributors, motions, ledgers, and operational decisions in one place instead of leaving them scattered across GitHub, docs, chat, and human memory.
+Bifrost is the planned GameCult member, governance, labor, and public-process platform running under the Yggdrasil infrastructure umbrella. It exists to connect projects, contributors, motions, ledgers, work requests, public receipts, and operational decisions in one place instead of leaving them scattered across GitHub, docs, chat, and human memory.
+
+Bifrost also owns the governed transport layer for GameCult work that crosses public or collaboration protocols: GitHub proposal/review surfaces, Discord dispatch receipts, CultNet/CultCache intake packets, and future collaboration interfaces. That bridge role follows from the governance role; it is not a separate bot utility. See [docs/jurisdiction-map.md](E:\Projects\Bifrost\docs\jurisdiction-map.md).
 
 ## Status
 
@@ -15,6 +17,7 @@ This repository now includes a viable alpha foundation slice of the ASP.NET Core
 - health and readiness endpoints plus startup config validation
 - GitHub App webhook ingestion for issue, pull request, and review sync
 - local bridge tooling for agent-owned GitHub draft PRs and Discord posts
+- CultCache/CultNet-backed agent intake tooling for repo Face update requests
 - Docker image and local Compose stack for containerized smoke testing
 - xUnit integration tests under `tests/Bifrost.Web.Tests`
 - matching deploy artifacts and runbooks in `E:\Projects\gamecult-ops`
@@ -72,5 +75,8 @@ Before implementation work starts in a new session, read these files in order:
 
 1. [AGENTS.md](E:\Projects\Bifrost\AGENTS.md)
 2. [docs/bifrost-mvp-plan.md](E:\Projects\Bifrost\docs\bifrost-mvp-plan.md)
-3. [docs/full-implementation-strategy.md](E:\Projects\Bifrost\docs\full-implementation-strategy.md)
-4. [docs/context.md](E:\Projects\Bifrost\docs\context.md)
+3. [docs/jurisdiction-map.md](E:\Projects\Bifrost\docs\jurisdiction-map.md)
+4. [docs/bridge.md](E:\Projects\Bifrost\docs\bridge.md)
+5. [docs/agent-transport.md](E:\Projects\Bifrost\docs\agent-transport.md)
+6. [docs/full-implementation-strategy.md](E:\Projects\Bifrost\docs\full-implementation-strategy.md)
+7. [docs/context.md](E:\Projects\Bifrost\docs\context.md)

@@ -1,6 +1,10 @@
 # Bifrost Bridge
 
-Bifrost is the bridge for GameCult agent work that needs to cross into GitHub, Discord, or another governed external surface.
+Bifrost is the bridge for GameCult agent and member work that needs to cross into GitHub, Discord, CultNet/CultCache intake, or another governed external surface.
+
+This is not a new side mission. Bifrost was already the member, governance, and labor platform: the place where GameCult work, motions, contributor accountability, and operational decisions become legible. Public-protocol transport belongs here because public work needs the same governance spine. The bridge is how Bifrost's government role touches GitHub, Discord, and future collaboration interfaces without letting VoidBot, repo Faces, or one-off helper scripts become hidden authorities.
+
+For the full ownership map, read `docs/jurisdiction-map.md`.
 
 That means Bifrost owns the operational meaning of the crossing:
 
@@ -15,10 +19,11 @@ It does not mean Bifrost should own OAuth sludge. Heimdall owns OAuth, linked id
 ## Ownership
 
 - Heimdall owns provider OAuth and account-linked credentials.
-- Bifrost owns bridge action policy, routing, execution receipts, and governance transport.
-- VoidBot observes Discord, packages conversation, and speaks through registered personas. It should not be the durable authority that mutates GitHub.
+- Bifrost owns bridge action policy, request lifecycle, routing, execution receipts, and governance transport.
+- VoidBot observes Discord, packages conversation, validates registered Face intent, and speaks through registered personas. It should not be the durable authority that mutates GitHub or owns public work transport.
 - CultCache stores lightweight agent transport packets when the bridge needs file-native state.
 - CultNet carries those packets between runtimes.
+- Repo Faces generate jurisdictional proposals and authored voice; they may request crossings, but they do not own the bridge.
 
 ## Local Bridge CLI
 

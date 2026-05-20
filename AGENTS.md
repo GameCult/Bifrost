@@ -3,7 +3,9 @@
 ## Repo Purpose
 
 - Bifrost is the GameCult member alpha platform for tasks, governance, contributor accounting, and operational legibility.
+- Bifrost also owns GameCult public-protocol transport for governed work crossings: GitHub proposal/review surfaces, Discord dispatch receipts, CultNet/CultCache intake packets, and future collaboration interfaces.
 - It sits under the Yggdrasil infrastructure umbrella and should connect GameCult services and workflows without importing crypto ideology or platform theater.
+- The transport role follows from Bifrost's government role. Do not treat bridge tools as a stray bot utility owned by VoidBot or individual repo Faces.
 
 ## V1 Non-Goals
 
@@ -47,9 +49,11 @@
 ## Working Notes
 
 - Read existing docs before reopening settled product decisions.
+- Treat `docs/jurisdiction-map.md` as the ownership map for Bifrost's bridge/governance/auth boundaries.
 - Keep implementation boring where possible; the product idea is ambitious enough already.
 - Push changes after every implementation pass.
 - If a question is about trust, accountability, or payout fairness, prefer auditability over automation.
+- If a question is about public work crossing GitHub, Discord, CultNet/CultCache intake, or future collaboration surfaces, prefer Bifrost-owned requests, receipts, and routing over local helper sprawl.
 - Before debugging UI/layout, inspect the live DOM and computed styles instead of guessing from templates or CSS intent.
 
 ## Starting Point For The Next Session
@@ -58,9 +62,12 @@ Read these files first:
 
 1. `AGENTS.md`
 2. `README.md`
-3. `docs/bifrost-mvp-plan.md`
-4. `docs/full-implementation-strategy.md`
-5. `docs/context.md`
+3. `docs/jurisdiction-map.md`
+4. `docs/bridge.md`
+5. `docs/agent-transport.md`
+6. `docs/bifrost-mvp-plan.md`
+7. `docs/full-implementation-strategy.md`
+8. `docs/context.md`
 
 Then start the first implementation milestone:
 

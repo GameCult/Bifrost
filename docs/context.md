@@ -2,7 +2,9 @@
 
 ## Why Bifrost Exists
 
-GameCult needs a platform that can connect public projects, contributor participation, governance, and internal accounting without relying on chat memory, disconnected tools, or hand-maintained spreadsheets of dubious destiny. Bifrost is that connective layer.
+GameCult needs a platform that can connect public projects, contributor participation, governance, agent work requests, public transport receipts, and internal accounting without relying on chat memory, disconnected tools, or hand-maintained spreadsheets of dubious destiny. Bifrost is that connective layer.
+
+Bifrost's bridge role follows from that purpose. GitHub proposals, Discord dispatch receipts, CultNet/CultCache intake packets, and future collaboration interfaces are not side channels when they carry GameCult work. They are public-process crossings, so Bifrost owns their request shape, routing, policy, audit, and receipt semantics. The detailed boundary map lives in `docs/jurisdiction-map.md`.
 
 ## Relationship To Other Workspaces
 
@@ -13,6 +15,15 @@ GameCult needs a platform that can connect public projects, contributor particip
 - `E:\Projects\gamecult-ops`
   - source of deployment and infrastructure conventions
   - documents Yggdrasil, nginx, systemd, and local-Postgres patterns
+- `E:\Projects\Heimdall`
+  - owns OAuth, linked accounts, token custody, signed claims, grants, consent, and revocation
+  - Bifrost consumes Heimdall identity/capability facts instead of becoming the credential vault
+- `E:\Projects\VoidBot`
+  - observes Discord, packages consensus, and runs repo Face heartbeats
+  - should call Bifrost for governed GitHub/Discord/intake crossings instead of becoming hidden transport authority
+- `E:\Projects\CultLib`
+  - stewards CultCache, CultNet, CultMesh, typed persistence, schemas, and reusable sync/storage libraries
+  - Bifrost defines the meaning of agent transport packets while CultLib-provided primitives store and move them
 - `Yggdrasil`
   - GameCult infrastructure host
   - intended deployment home for `bifrost.gamecult.org`
