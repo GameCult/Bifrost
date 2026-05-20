@@ -400,14 +400,7 @@ function postDispatchReceipt(request, dispatchRecord, options) {
     optionalString(process.env.BIFROST_DISCORD_PERSONA_AVATAR_URL) ??
     optionalString(process.env.DISCORD_PERSONA_AVATAR_URL_BIFROST) ??
     defaultPersonaAvatarUrl;
-  const topic = summarizeRequestTopic(request);
-  const content = [
-    `Bifrost dispatch: ${request.targetAgentIdentity ?? "repo agent"} has this.`,
-    ``,
-    `**${request.targetRepoName}: ${topic}**`,
-    ``,
-    `A Codex turn is open in the ${request.targetRepoName} workspace. Keep sharpening the answer in here; the work is no longer waiting for a claimant.`,
-  ].join("\n");
+  const content = renderDispatchReceiptContent(request);
 
   runNodeJson([
     bridgeCli,
@@ -426,6 +419,21 @@ function resolveDispatchReceiptChannelId(options) {
     optionalString(process.env.DISCORD_BIFROST_CHANNEL_ID) ??
     defaultAquariumChannelId
   );
+}
+
+function renderDispatchReceiptContent(request) {
+  const topic = summarizeRequestTopic(request);
+  const actor = request.targetAgentIdentity
+    ? `${request.targetAgentIdentity} / ${request.targetRepoName}`
+    : request.targetRepoName;
+  return [
+    `Bifrost dispatch receipt`,
+    ``,
+    `**${request.targetRepoName}: ${topic}**`,
+    ``,
+    `Codex has started a turn for ${actor}. The claim is now specific enough to inspect, and the work is no longer sitting unclaimed in chat.`,
+    `Keep discussion here if it sharpens this request; Bifrost will carry the result back across the bridge.`,
+  ].join("\n");
 }
 
 class CodexAppServerClient {

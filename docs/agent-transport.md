@@ -119,7 +119,7 @@ node .\tools\agent-transport.mjs apply-snapshot --in E:\tmp\bifrost-agent-transp
 
 `enqueue` also mirrors the queued request into `#bifrost` by default. Use `--mirror-content-file` when a Face has a better human-facing line than the fallback receipt; use `--mirror-dry-run true` only for smoke tests.
 
-Dispatch receipts should use Bifrost's own public persona in the Bifrost governance channel. `tools/dispatch-agent-requests.mjs` reads `BIFROST_DISCORD_CHANNEL_ID` or `DISCORD_BIFROST_CHANNEL_ID` for the receipt target, uses persona name `Bifrost`, and defaults the persona avatar to the public `src/Bifrost.Web/wwwroot/img/bifrost-profile.png` raw GitHub URL unless `BIFROST_DISCORD_PERSONA_AVATAR_URL` or `DISCORD_PERSONA_AVATAR_URL_BIFROST` overrides it.
+Dispatch receipts should use Bifrost's own public persona in the Bifrost governance channel. `tools/dispatch-agent-requests.mjs` reads `BIFROST_DISCORD_CHANNEL_ID` or `DISCORD_BIFROST_CHANNEL_ID` for the receipt target, uses persona name `Bifrost`, and defaults the persona avatar to the public `src/Bifrost.Web/wwwroot/img/bifrost-profile.png` raw GitHub URL unless `BIFROST_DISCORD_PERSONA_AVATAR_URL` or `DISCORD_PERSONA_AVATAR_URL_BIFROST` overrides it. Receipt text must lead with the concrete repo and work title, not a generic "recent consensus" summary, and must not expose request ids, workspace paths, log paths, or other debugging debris in Discord.
 
 The `snapshot` command writes a MessagePack-encoded `cultnet.snapshot_response_raw.v0` message. This keeps CultCache payload bytes intact for peers that share the document binding.
 
