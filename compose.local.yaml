@@ -1,0 +1,50 @@
+name: bifrost-local
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: bifrost-postgres
+    environment:
+      POSTGRES_DB: bifrost_dev
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - bifrost-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d bifrost_dev"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ghcr.io/gamecult/bifrost:local
+    container_name: bifrost-web
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://0.0.0.0:5080
+      ConnectionStrings__Bifrost: Host=postgres;Database=bifrost_dev;Username=postgres;Password=postgres
+      Bootstrap__ApplyMigrationsOnStartup: "true"
+      GitHubOAuth__ClientId: local-dev-client
+      GitHubOAuth__ClientSecret: local-dev-secret
+      GitHubApp__EnableWebhookSync: "false"
+      Host__PublicBaseUrl: http://localhost:5080
+      Host__ExpectedHost: localhost
+      Host__RequireStrictHostValidation: "false"
+      DataProtection__KeysPath: /var/lib/bifrost/data-protection-keys
+      AllowedHosts: localhost;127.0.0.1
+    ports:
+      - "127.0.0.1:5080:5080"
+    volumes:
+      - bifrost-data-protection:/var/lib/bifrost/data-protection-keys
+
+volumes:
+  bifrost-postgres:
+  bifrost-data-protection:

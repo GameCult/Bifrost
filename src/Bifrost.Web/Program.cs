@@ -10,6 +10,7 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.OAuth;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.HttpLogging;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -67,23 +68,34 @@ builder.Services.AddScoped<ApplicationBootstrapper>();
 builder.Services.AddSingleton<StartupConfigurationValidator>();
 builder.Services.AddScoped<IAuthorizationHandler, ActiveMemberAuthorizationHandler>();
 
-builder.Services
+var dataProtectionKeysPath = builder.Configuration["DataProtection:KeysPath"];
+if (!string.IsNullOrWhiteSpace(dataProtectionKeysPath))
+{
+    builder.Services
+        .AddDataProtection()
+        .PersistKeysToFileSystem(new DirectoryInfo(dataProtectionKeysPath));
+}
+
+var configuredGitHubOAuthOptions = builder.Configuration
+    .GetSection(GitHubOAuthOptions.SectionName)
+    .Get<GitHubOAuthOptions>() ?? new GitHubOAuthOptions();
+
+var authenticationBuilder = builder.Services
     .AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
     .AddCookie(options =>
     {
         options.LoginPath = "/auth/sign-in";
         options.AccessDeniedPath = "/Membership/Status";
         options.SlidingExpiration = true;
-    })
-    .AddOAuth(GitHubAuthenticationDefaults.AuthenticationScheme, options =>
-    {
-        var gitHubOptions = builder.Configuration
-            .GetSection(GitHubOAuthOptions.SectionName)
-            .Get<GitHubOAuthOptions>() ?? new GitHubOAuthOptions();
+    });
 
-        options.ClientId = gitHubOptions.ClientId;
-        options.ClientSecret = gitHubOptions.ClientSecret;
-        options.CallbackPath = gitHubOptions.CallbackPath;
+if (configuredGitHubOAuthOptions.IsConfigured)
+{
+    authenticationBuilder.AddOAuth(GitHubAuthenticationDefaults.AuthenticationScheme, options =>
+    {
+        options.ClientId = configuredGitHubOAuthOptions.ClientId;
+        options.ClientSecret = configuredGitHubOAuthOptions.ClientSecret;
+        options.CallbackPath = configuredGitHubOAuthOptions.CallbackPath;
         options.AuthorizationEndpoint = "https://github.com/login/oauth/authorize";
         options.TokenEndpoint = "https://github.com/login/oauth/access_token";
         options.UserInformationEndpoint = "https://api.github.com/user";
@@ -118,6 +130,7 @@ builder.Services
             }
         };
     });
+}
 
 builder.Services.AddAuthorization(options =>
 {

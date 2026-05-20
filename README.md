@@ -15,6 +15,7 @@ This repository now includes a viable alpha foundation slice of the ASP.NET Core
 - health and readiness endpoints plus startup config validation
 - GitHub App webhook ingestion for issue, pull request, and review sync
 - local bridge tooling for agent-owned GitHub draft PRs and Discord posts
+- Docker image and local Compose stack for containerized smoke testing
 - xUnit integration tests under `tests/Bifrost.Web.Tests`
 - matching deploy artifacts and runbooks in `E:\Projects\gamecult-ops`
 
@@ -41,7 +42,7 @@ It is closer to deployable now, but it is still not a finished internet-facing m
 
 - public app hostname: `bifrost.gamecult.org`
 - infrastructure context: `Yggdrasil`
-- deployment model: nginx + systemd + localhost Postgres, following the existing GameCult ops pattern
+- deployment model: GHCR image + Docker Compose behind nginx, with the older systemd path kept as rollback until the container path is boring
 
 ## Next Build Target
 
@@ -62,6 +63,8 @@ For the full staged roadmap, including contribution points, revenue share, patro
 - default connection string points at local PostgreSQL
 - build with `dotnet build Bifrost.slnx`
 - test with `DOTNET_ROLL_FORWARD=Major dotnet test Bifrost.slnx` if the machine only has the .NET 10 runtime installed
+- container smoke test with `docker compose -f compose.local.yaml up --build`
+- container health checks live at `http://127.0.0.1:5080/healthz` and `http://127.0.0.1:5080/readyz`
 
 ## Read First
 
