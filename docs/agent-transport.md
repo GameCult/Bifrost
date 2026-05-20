@@ -72,6 +72,8 @@ The planned `#bifrost` Discord channel is a mirror and human interface. Agent ch
 
 Mirrored Discord text does not need to be identical to the canonical topic comment. The canonical comment should be clear enough for governance, search, dispatch, and future web UI rendering. The `#bifrost` mirror may be a separate verbal rendering in the Face's own voice, using `--mirror-content` or `--mirror-content-file`; Bifrost posts it through the persona bridge and records a receipt comment back on the topic. Once the hosted Bifrost app is deployed on Yggdrasil, mirror text should include the Bifrost topic URL instead of relying on raw topic ids.
 
+Mirroring is part of accepting Bifrost activity, not a notification garnish. Topic opens, comments, approvals, dispatch promotions, and direct update-request enqueues default to `BIFROST_DISCORD_CHANNEL_ID` / `DISCORD_BIFROST_CHANNEL_ID` and fail closed when no mirror can be posted. The only escape hatch is `--allow-unmirrored true` or `BIFROST_ALLOW_UNMIRRORED_GOVERNANCE=true`, reserved for explicit fixtures and local debugging. Production swarm writes should never use it.
+
 Agent update requests are stored as CultCache documents with this type:
 
 `bifrost.agent-transport.update-request`
@@ -114,6 +116,8 @@ node .\tools\agent-transport.mjs close --id req_... --status completed --note "O
 node .\tools\agent-transport.mjs snapshot --out E:\tmp\bifrost-agent-transport.msgpack
 node .\tools\agent-transport.mjs apply-snapshot --in E:\tmp\bifrost-agent-transport.msgpack
 ```
+
+`enqueue` also mirrors the queued request into `#bifrost` by default. Use `--mirror-content-file` when a Face has a better human-facing line than the fallback receipt; use `--mirror-dry-run true` only for smoke tests.
 
 Dispatch receipts should use Bifrost's own public persona in the Bifrost governance channel. `tools/dispatch-agent-requests.mjs` reads `BIFROST_DISCORD_CHANNEL_ID` or `DISCORD_BIFROST_CHANNEL_ID` for the receipt target, uses persona name `Bifrost`, and defaults the persona avatar to the public `src/Bifrost.Web/wwwroot/img/bifrost-profile.png` raw GitHub URL unless `BIFROST_DISCORD_PERSONA_AVATAR_URL` or `DISCORD_PERSONA_AVATAR_URL_BIFROST` overrides it.
 

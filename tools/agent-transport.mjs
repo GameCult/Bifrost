@@ -1,6 +1,8 @@
 #!/usr/bin/env node
+import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,6 +11,10 @@ const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
 const projectsRoot = resolve(repoRoot, "..");
 const defaultStorePath = resolve(repoRoot, ".bifrost", "agent-transport.cc");
+const bridgeCli = resolve(repoRoot, "tools", "bifrost-bridge.mjs");
+const defaultPersonaName = "Bifrost";
+const defaultPersonaAvatarUrl =
+  "https://raw.githubusercontent.com/GameCult/Bifrost/main/src/Bifrost.Web/wwwroot/img/bifrost-profile.png";
 
 const cultCacheRequire = createRequire(resolve(projectsRoot, "CultCacheTS", "package.json"));
 const cultNetRequire = createRequire(resolve(projectsRoot, "CultNetTS", "package.json"));
@@ -75,6 +81,8 @@ const cultNetRegistry = new CultNetDocumentRegistry([
 ]);
 
 async function main() {
+  loadLocalEnv(resolve(repoRoot, ".env"));
+  loadLocalEnv(resolve(projectsRoot, "VoidBot", ".env"));
   const [command, ...rawArgs] = process.argv.slice(2);
   const options = parseArgs(rawArgs);
 
@@ -152,8 +160,83 @@ async function enqueue(cache, options) {
     closedAt: undefined,
   });
 
+  await mirrorEnqueuedRequestOrThrow(request, options);
   await cache.put(updateRequestDefinition, request.id, request);
   printJson(request);
+}
+
+async function mirrorEnqueuedRequestOrThrow(request, options) {
+  const channelId = resolveMirrorChannelId(options);
+  if (!channelId) {
+    if (allowsUnmirrored(options)) {
+      return;
+    }
+    throw new Error(
+      "Bifrost update requests require a Discord mirror. Set BIFROST_DISCORD_CHANNEL_ID, pass --mirror-channel-id, or use --allow-unmirrored true only for explicit fixtures.",
+    );
+  }
+
+  const mirrorContent =
+    await readOptionalTextOption(options, "mirror-content") ??
+    renderRequestMirrorFallback(request);
+  const personaName = optionalString(options["mirror-persona-name"])
+    ?? optionalString(process.env.BIFROST_DISCORD_PERSONA_NAME)
+    ?? defaultPersonaName;
+  const personaAvatarUrl =
+    optionalString(options["mirror-persona-avatar-url"]) ??
+    optionalString(process.env.BIFROST_DISCORD_PERSONA_AVATAR_URL) ??
+    optionalString(process.env.DISCORD_PERSONA_AVATAR_URL_BIFROST) ??
+    defaultPersonaAvatarUrl;
+
+  runNodeJson([
+    bridgeCli,
+    "discord-post",
+    "--channel-id", channelId,
+    "--content", mirrorContent,
+    "--persona-name", personaName,
+    ...optionalArg("--persona-avatar-url", personaAvatarUrl),
+    ...optionalArg("--reply-to-message-id", options["mirror-reply-to-message-id"]),
+    ...(options["mirror-dry-run"] === "true" ? ["--dry-run", "true"] : []),
+  ], repoRoot);
+}
+
+function resolveMirrorChannelId(options) {
+  return (
+    optionalString(options["mirror-channel-id"]) ??
+    optionalString(process.env.BIFROST_DISCORD_CHANNEL_ID) ??
+    optionalString(process.env.DISCORD_BIFROST_CHANNEL_ID)
+  );
+}
+
+function allowsUnmirrored(options) {
+  return options["allow-unmirrored"] === "true" || process.env.BIFROST_ALLOW_UNMIRRORED_GOVERNANCE === "true";
+}
+
+function renderRequestMirrorFallback(request) {
+  const actor = request.createdByAgent ? `${request.createdByAgent} queued` : "Queued";
+  return [
+    `Bifrost intake: ${actor} a work request.`,
+    "",
+    `**${request.targetRepoName}: ${request.title}**`,
+    "",
+    summarizeRequestMarkdown(request.requestMarkdown),
+    "",
+    `Request: \`${request.id}\``,
+  ].join("\n");
+}
+
+function summarizeRequestMarkdown(markdown) {
+  const text = String(markdown);
+  const requestSection = text.match(/## Request\s+([\s\S]*?)(?:\n## |\n```|$)/i)?.[1]?.trim();
+  const firstUsefulBlock = (requestSection ?? text)
+    .split(/\n\s*\n/)
+    .map((block) => block.replace(/\s+/g, " ").trim())
+    .find((block) => block && !block.startsWith("#"));
+  return truncate(firstUsefulBlock ?? "A Bifrost update request was queued for Codex dispatch.", 360);
+}
+
+function truncate(value, maxLength) {
+  return value.length > maxLength ? `${value.slice(0, maxLength - 3)}...` : value;
 }
 
 function listRequests(cache, options) {
@@ -309,6 +392,14 @@ async function readRequestMarkdown(options) {
   return requireOption(options, "request");
 }
 
+async function readOptionalTextOption(options, name) {
+  const file = optionalString(options[`${name}-file`]);
+  if (file) {
+    return readFile(resolveOptionPath(file), "utf8");
+  }
+  return optionalString(options[name]);
+}
+
 function parseUpdateRequest(input) {
   if (!input || typeof input !== "object") {
     throw new Error("Update request must be an object.");
@@ -384,6 +475,11 @@ function optionalString(value) {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
+function optionalArg(flag, value) {
+  const normalized = optionalString(value);
+  return normalized ? [flag, normalized] : [];
+}
+
 function requireString(value, field) {
   const normalized = optionalString(value);
   if (!normalized) {
@@ -444,6 +540,50 @@ function resolveOptionPath(path) {
   return resolve(process.cwd(), path);
 }
 
+function runNodeJson(args, cwd) {
+  const result = spawnSync(process.execPath, args, {
+    cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+    timeout: 30000,
+  });
+  if (result.status !== 0) {
+    const reason = result.error?.message ?? result.stderr ?? result.stdout;
+    throw new Error(`node ${args.join(" ")} failed with ${result.status ?? "unknown"}:\n${reason}`);
+  }
+  return JSON.parse(result.stdout);
+}
+
+function loadLocalEnv(path) {
+  if (!existsSync(path)) {
+    return;
+  }
+
+  for (const line of readFileSync(path, "utf8").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) {
+      continue;
+    }
+    const separator = trimmed.indexOf("=");
+    if (separator === -1) {
+      continue;
+    }
+    const key = trimmed.slice(0, separator).trim();
+    if (process.env[key]) {
+      continue;
+    }
+    let value = trimmed.slice(separator + 1).trim();
+    if (
+      value.length >= 2 &&
+      ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))
+    ) {
+      value = value.slice(1, -1);
+    }
+    process.env[key] = value;
+  }
+}
+
 function printJson(value) {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 }
@@ -463,6 +603,15 @@ Commands:
 
 Common options:
   --store <path> Override the .cc store path
+
+Mirror options for enqueue:
+  --mirror-channel-id <id>            Mirror queued requests to Discord; defaults to BIFROST_DISCORD_CHANNEL_ID
+  --mirror-persona-name <name>        Render the mirror through this persona; defaults to Bifrost
+  --mirror-persona-avatar-url <url>   Optional persona avatar for the mirror
+  --mirror-content <text>             Optional custom mirror text
+  --mirror-content-file <path>        Read custom mirror text from a file
+  --mirror-dry-run true               Exercise mirror plumbing without posting to Discord
+  --allow-unmirrored true             Fixture/debug escape hatch; production writes should not use this
 
 Examples:
   node tools/agent-transport.mjs enqueue --repo AetheriaLore --agent nibu --title "Wavecrafters" --request-file packet.md --priority 80

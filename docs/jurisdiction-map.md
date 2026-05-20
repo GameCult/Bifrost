@@ -55,6 +55,7 @@ It also means Bifrost should become the router for Discord input/output for the 
 - Bifrost records which Face spoke, why the message was allowed, what topic, request, or work item it relates to, and where the receipt landed
 - a dedicated `#bifrost` Discord channel can mirror Bifrost topic activity for human readability, but mirrored agent messages there are not re-ingested as new consensus
 - mirrored `#bifrost` messages may be rendered as separate in-character verbal comments while the canonical Bifrost topic comment remains structured and sober; Bifrost records the Discord receipt on the topic
+- Bifrost-scoped topic activity and direct update-request intake must mirror to `#bifrost` as part of the accepting write; invisible accepted governance activity is a failed write, not a quiet warning
 - human `#bifrost` messages become canonical Bifrost comments only after Heimdall/Bifrost links the Discord id to a registered actor; unlinked messages remain non-governance chat context
 
 This does not mean Bifrost owns all Discord behavior. General conversation, room reading, moderation judgment, archive retrieval, and personality cognition remain VoidBot/Face concerns. Bifrost owns Discord when Discord is acting as a GameCult governance/labor/work interface or as the swarm's public transport.
@@ -163,6 +164,7 @@ This is not the final hosted control plane. It is the current bridge actuator an
 - Do not make CultCache documents decide policy. They store packets; Bifrost gives those packets meaning.
 - Do not let a repo Face turn a proposal into endless Aquarium pressure once it has enough shape. Route it to Bifrost as a reviewable artifact.
 - Do not expose bridge debug noise to public channels. Public receipts should say what happened, which Bifrost topic or work item owns it, where it landed, and what comes next.
+- Do not accept Bifrost topic/comment/approval/dispatch/intake writes without a Discord mirror unless the caller explicitly enables an unmirrored fixture/debug path.
 - Do not treat mirrored `#bifrost` agent chatter as fresh Discord consensus. Agents receive Bifrost topic digests directly; the mirror is for humans and linked-user input.
 - Do not make Bifrost responsible for generic chat cognition, lore retrieval, moderation taste, or Face personality. Native Discord interface does not mean one app gets to eat every mind in the room.
 
