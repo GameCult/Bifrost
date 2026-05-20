@@ -9,15 +9,17 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$node = (Get-Command node.exe -ErrorAction Stop).Source
 $script = Join-Path $repoRoot "tools\dispatch-agent-requests.mjs"
+$hiddenLauncher = Join-Path $repoRoot "tools\run-agent-dispatch-hidden.vbs"
 
 if (-not (Test-Path $script)) {
   throw "Missing dispatcher script at $script"
 }
+if (-not (Test-Path $hiddenLauncher)) {
+  throw "Missing hidden dispatcher launcher at $hiddenLauncher"
+}
 
 $argumentList = @(
-  "`"$script`"",
   "dispatch",
   "--repo", "`"$Repo`"",
   "--max", "1"
@@ -27,8 +29,8 @@ if (-not [string]::IsNullOrWhiteSpace($Agent)) {
 }
 
 $action = New-ScheduledTaskAction `
-  -Execute $node `
-  -Argument ($argumentList -join " ") `
+  -Execute "wscript.exe" `
+  -Argument ("//B //Nologo `"$hiddenLauncher`" " + ($argumentList -join " ")) `
   -WorkingDirectory $repoRoot
 
 $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `
