@@ -44,15 +44,17 @@ If the bridge lives in VoidBot, Discord becomes a hidden governance surface. If 
 
 ## Discord Decision
 
-Discord should become a native Bifrost interface, and Bifrost should own Discord transport authority for Bifrost-scoped work and swarm I/O.
+Discord should become a native Bifrost interface, and Bifrost should own Discord transport authority for Bifrost-scoped work and swarm I/O. It should not be the canonical database of feature requests or governance discussion.
 
 That means Bifrost should eventually provide Discord access to registered GameCult users, patrons, members, and contributors. A Discord message can become a priority signal, vote prompt, work request, claim update, bounty/reward discussion, maintainer review notice, or agent dispatch event when the actor and channel are authorized.
 
 It also means Bifrost should become the router for Discord input/output for the agent swarm:
 
-- inbound Discord mentions or channel events that target a Face become Bifrost-routed work or speech events
+- inbound Discord mentions or channel events that target a Face become Bifrost-routed work, speech, or governance-comment events when authorized
 - outbound agent posts, PR receipts, article announcements, and dispatch acknowledgements go through Bifrost
-- Bifrost records which Face spoke, why the message was allowed, what request or work item it relates to, and where the receipt landed
+- Bifrost records which Face spoke, why the message was allowed, what topic, request, or work item it relates to, and where the receipt landed
+- a dedicated `#bifrost` Discord channel can mirror Bifrost topic activity for human readability, but mirrored agent messages there are not re-ingested as new consensus
+- human `#bifrost` messages become canonical Bifrost comments only after Heimdall/Bifrost links the Discord id to a registered actor; unlinked messages remain non-governance chat context
 
 This does not mean Bifrost owns all Discord behavior. General conversation, room reading, moderation judgment, archive retrieval, and personality cognition remain VoidBot/Face concerns. Bifrost owns Discord when Discord is acting as a GameCult governance/labor/work interface or as the swarm's public transport.
 
@@ -62,6 +64,8 @@ This does not mean Bifrost owns all Discord behavior. General conversation, room
 
 - bridge action request shape and lifecycle
 - work-priority intake packets and claim semantics
+- canonical feature-request and governance topic threads
+- topic comments, support, objections, questions, Face approvals, dispatch promotion, and topic receipts
 - user, patron, member, contributor, and agent transport events when they affect work, priority, reward, votes, claims, or receipts
 - mapping from internal request to public target surface
 - GitHub proposal/comment/PR transport for agent and member work
@@ -117,7 +121,7 @@ Repo Faces may generate bridge requests. They do not own the bridge itself.
 | What work is being requested? | Bifrost | The request shape, priority, provenance, and lifecycle are governance concerns. |
 | How does interest become reward pressure? | Bifrost | Priority, bounty growth, vote weight, and reward allocation are Labor Platform concerns. |
 | Where is the durable argument surface? | Bifrost | Public process must land on the correct GitHub, Discord, or future collaboration surface. |
-| What did the room recently agree or ask for? | VoidBot | Discord observation and consensus packaging belong to the room-aware bot. |
+| What did the room recently agree or ask for? | VoidBot into Bifrost | Discord observation belongs to the room-aware bot; governed consensus is stored as Bifrost topics/comments. |
 | Is Discord acting as a Bifrost interface? | Bifrost | Member access, vote prompts, work requests, priority signals, reward discussion, and swarm routing are native Bifrost transport concerns. |
 | What does the repo Face think should happen? | Repo Face | Jurisdictional taste and proposal pressure belong to the Face. |
 | Where is the packet stored and synced? | CultCache/CultNet | Transport state should use the shared typed storage/sync substrate. |
@@ -157,7 +161,8 @@ This is not the final hosted control plane. It is the current bridge actuator an
 - Do not put OAuth credentials or account custody into Bifrost helper scripts as the long-term plan. Use Heimdall claims.
 - Do not make CultCache documents decide policy. They store packets; Bifrost gives those packets meaning.
 - Do not let a repo Face turn a proposal into endless Aquarium pressure once it has enough shape. Route it to Bifrost as a reviewable artifact.
-- Do not expose bridge debug noise to public channels. Public receipts should say what happened, where it landed, and what comes next.
+- Do not expose bridge debug noise to public channels. Public receipts should say what happened, which Bifrost topic or work item owns it, where it landed, and what comes next.
+- Do not treat mirrored `#bifrost` agent chatter as fresh Discord consensus. Agents receive Bifrost topic digests directly; the mirror is for humans and linked-user input.
 - Do not make Bifrost responsible for generic chat cognition, lore retrieval, moderation taste, or Face personality. Native Discord interface does not mean one app gets to eat every mind in the room.
 
 ## Future Shape

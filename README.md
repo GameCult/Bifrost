@@ -18,6 +18,7 @@ This repository now includes a viable alpha foundation slice of the ASP.NET Core
 - health and readiness endpoints plus startup config validation
 - GitHub App webhook ingestion for issue, pull request, and review sync
 - local bridge tooling for agent-owned GitHub draft PRs and Discord posts
+- CultCache-backed governance topic threads for feature requests, discussion comments, Face approvals, and dispatch promotion
 - CultCache/CultNet-backed agent intake tooling for repo Face update requests
 - Docker image and local Compose stack for containerized smoke testing
 - xUnit integration tests under `tests/Bifrost.Web.Tests`

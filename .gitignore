@@ -8,6 +8,7 @@
 
 # Local Bifrost transport/state stores
 .bifrost/
+.voidbot/
 
 # User-specific files
 *.rsuser

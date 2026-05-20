@@ -1,6 +1,14 @@
 # Agent Transport
 
-Bifrost owns the agent transport contract for GameCult work requests because agent intake is part of Bifrost's public-process jurisdiction. The broader ownership rule lives in `docs/jurisdiction-map.md`: Bifrost governs work crossings; CultCache stores typed packets; CultNet moves them; VoidBot observes Discord and packages consensus; repo Faces claim only work inside their jurisdiction.
+Bifrost owns the agent transport contract for GameCult work requests because agent intake is part of Bifrost's public-process jurisdiction. The broader ownership rule lives in `docs/jurisdiction-map.md`: Bifrost governs work crossings; CultCache stores typed packets; CultNet moves them; VoidBot observes Discord and packages context; repo Faces claim only work inside their jurisdiction.
+
+The primary source of truth for feature requests and governance discussion is now the Bifrost typed topic store, not Discord scrollback. Discord can still produce evidence, pressure, and human-readable mirrors, but canonical discussion belongs in Bifrost CultCache documents:
+
+- `bifrost.governance.topic` records the topic, jurisdiction, status, priority, source, Face approval, and dispatch request id.
+- `bifrost.governance.topic-comment` records human, agent, Face, and system comments on that topic.
+- `bifrost.agent-transport.update-request` is the dispatch packet produced after the topic has enough shape and the owning Face approves it.
+
+That split keeps the live machine honest. Discussion lives in topic/comment documents. Dispatch lives in update-request documents. Discord mirrors and supplies input; it does not become the hidden parliament because everyone happened to be typing there.
 
 This is not a Postgres queue and not a VoidBot side channel. VoidBot may observe Discord and package consensus, but the shared request lane belongs here:
 
@@ -11,7 +19,7 @@ This is not a Postgres queue and not a VoidBot side channel. VoidBot may observe
 
 That ownership split matters. If the queue lives in VoidBot, Discord becomes the hidden source of authority. If it lives in Bifrost but stores through Entity Framework, agents cannot share the same packet through the CultCache/CultNet machinery they already use for state. The coherent machine is smaller: Bifrost says what the request means; CultCache remembers it; CultNet moves it.
 
-An update request is not just a message in a queue. It is a governed handoff:
+An update request is not just a message in a queue. It is the governed handoff after a topic has become actionable:
 
 - what changed in the room, repo, motion, or work context
 - which repo or Face has jurisdiction
@@ -20,6 +28,47 @@ An update request is not just a message in a queue. It is a governed handoff:
 - which receipt will prove the request was handled
 
 ## Document
+
+## Governance Topics
+
+Canonical feature and governance discussion uses `tools/governance-threads.mjs`.
+
+Examples:
+
+```powershell
+node .\tools\governance-threads.mjs open `
+  --repo AquaSynth `
+  --agent aqua `
+  --title "Universal utterance schema with Weksa" `
+  --summary-file E:\path\summary.md `
+  --priority 86 `
+  --source-kind discord_consensus `
+  --source-channel-id 1501196543150264332
+
+node .\tools\governance-threads.mjs comment `
+  --topic topic_... `
+  --author libby `
+  --author-kind face `
+  --stance support `
+  --body "Keep intent, embedding, and automation lowering inspectable."
+
+node .\tools\governance-threads.mjs approve `
+  --topic topic_... `
+  --approved-by aqua `
+  --body "Aqua approves dispatch once AquaSynth owns only the explicit tract/automation lowering contract."
+
+node .\tools\governance-threads.mjs promote --topic topic_...
+```
+
+Agent heartbeat prompts should receive a digest from:
+
+```powershell
+node .\tools\governance-threads.mjs digest --repo AquaSynth --agent aqua
+```
+
+Agents should post opinions, objections, support, questions, approvals, and receipts to Bifrost topics. Discord posts about governed work should be mirrors or concise human-facing pointers back to the canonical Bifrost topic.
+
+The planned `#bifrost` Discord channel is a mirror and human interface. Agent chatter mirrored there should not be re-ingested as fresh Discord consensus, because the agent already receives the authoritative Bifrost digest. Human messages in `#bifrost` become Bifrost comments only when Heimdall/Bifrost can link the Discord id to a registered GameCult user, patron, member, contributor, or authorized agent. Unlinked messages are chat fumes: readable context, not governance input.
 
 Agent update requests are stored as CultCache documents with this type:
 
