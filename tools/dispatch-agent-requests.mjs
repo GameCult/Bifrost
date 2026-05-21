@@ -427,11 +427,15 @@ function renderDispatchReceiptContent(request) {
     ? `${request.targetAgentIdentity} / ${request.targetRepoName}`
     : request.targetRepoName;
   return [
-    `Bifrost dispatch receipt`,
+    `Bifrost Codex dispatch started`,
     ``,
     `**${request.targetRepoName}: ${topic}**`,
+    `Request: \`${request.id}\``,
+    `Target: ${actor}`,
+    `Status: claimed by dispatcher`,
+    `Codex job: started`,
     ``,
-    `Codex has started a turn for ${actor}. The claim is now specific enough to inspect, and the work is no longer sitting unclaimed in chat.`,
+    `Codex has started a turn. The claim is now specific enough to inspect, and the work is no longer sitting unclaimed in chat.`,
     `Keep discussion here if it sharpens this request; Bifrost will carry the result back across the bridge.`,
   ].join("\n");
 }

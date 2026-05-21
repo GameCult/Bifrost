@@ -215,13 +215,19 @@ function allowsUnmirrored(options) {
 function renderRequestMirrorFallback(request) {
   const actor = request.createdByAgent ? `${request.createdByAgent} queued` : "Queued";
   return [
-    `Bifrost intake: ${actor} a work request.`,
+    `Bifrost update request queued`,
     "",
     `**${request.targetRepoName}: ${request.title}**`,
+    `Request: \`${request.id}\``,
+    `Target: ${request.targetAgentIdentity ? `${request.targetAgentIdentity} / ` : ""}${request.targetRepoName}`,
+    `Status: queued`,
+    `Codex job: no - this request is waiting for the dispatcher`,
+    "",
+    `${actor} this work request.`,
     "",
     summarizeRequestMarkdown(request.requestMarkdown),
     "",
-    `Request: \`${request.id}\``,
+    `Next: a separate \`Bifrost Codex dispatch started\` receipt means a Codex turn actually began.`,
   ].join("\n");
 }
 

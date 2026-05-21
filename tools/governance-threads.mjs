@@ -359,9 +359,11 @@ async function mirrorTopicActivityOrThrow(cache, topic, input) {
     optionalString(process.env.BIFROST_DISCORD_PERSONA_AVATAR_URL) ??
     optionalString(process.env.DISCORD_PERSONA_AVATAR_URL_BIFROST) ??
     defaultPersonaAvatarUrl;
-  const mirrorContent =
-    await readOptionalMarkdownOption(input.options, "mirror-content") ??
-    renderMirrorFallback(topic, input.eventLabel, input.fallbackContent);
+  const mirrorContent = renderGovernanceMirrorContent(
+    topic,
+    input.eventLabel,
+    await readOptionalMarkdownOption(input.options, "mirror-content") ?? input.fallbackContent,
+  );
 
   const now = new Date().toISOString();
   const receipt = runNodeJson([
@@ -403,14 +405,54 @@ function allowsUnmirrored(options) {
   return options["allow-unmirrored"] === "true" || process.env.BIFROST_ALLOW_UNMIRRORED_GOVERNANCE === "true";
 }
 
-function renderMirrorFallback(topic, eventLabel, content) {
+function renderGovernanceMirrorContent(topic, eventLabel, content) {
+  const event = governanceMirrorEvent(eventLabel);
   return [
-    `Bifrost ${eventLabel}: ${topic.title}`,
+    `Bifrost governance: ${event.label}`,
     "",
-    content.trim(),
+    `**${topic.title}**`,
+    `Topic: \`${topic.id}\``,
+    `Jurisdiction: ${topic.jurisdictionRepoName}${topic.jurisdictionAgentIdentity ? ` / ${topic.jurisdictionAgentIdentity}` : ""}`,
+    `Topic status: ${topic.status}`,
+    `Codex job: ${event.codexJob}`,
     "",
-    `Topic: ${topic.id}`,
+    truncateMarkdown(content.trim(), 1200),
+    "",
+    event.nextStep,
   ].join("\n");
+}
+
+function governanceMirrorEvent(eventLabel) {
+  switch (eventLabel) {
+    case "opened":
+      return {
+        label: "topic opened",
+        codexJob: "no - this is discussion/proposal intake only",
+        nextStep: "Next: comments, jurisdiction review, or approval. Nothing has been dispatched.",
+      };
+    case "approved":
+      return {
+        label: "topic approved",
+        codexJob: "no - approved topics still need promotion before dispatch",
+        nextStep: "Next: promotion creates a Bifrost update request. A separate dispatch receipt means Codex actually started.",
+      };
+    case "dispatched":
+      return {
+        label: "topic promoted to update request",
+        codexJob: "queued - Codex has not necessarily started yet",
+        nextStep: "Next: wait for a `Bifrost Codex dispatch started` receipt before treating this as an active Codex job.",
+      };
+    default:
+      return {
+        label: `topic ${eventLabel}`,
+        codexJob: "no - this is governance discussion, not dispatch",
+        nextStep: "Next: keep discussing, approve, or promote when the jurisdiction owner is ready.",
+      };
+  }
+}
+
+function truncateMarkdown(value, maxLength) {
+  return value.length > maxLength ? `${value.slice(0, maxLength - 3)}...` : value;
 }
 
 function listTopics(cache, options) {
