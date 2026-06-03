@@ -21,6 +21,7 @@ This repository now includes a viable alpha foundation slice of the ASP.NET Core
 - CultCache-backed governance topic threads for feature requests, discussion comments, Face approvals, and dispatch promotion
 - CultCache/CultNet-backed agent intake tooling for repo Face update requests
 - a Verse service contract for CultCache witnesses, CultMesh namespaces, and Eve/CultUI product and operator surfaces
+- a read-only Eve provider advertisement export command for Bifrost Verse surface discovery
 - Docker image and local Compose stack for containerized smoke testing
 - xUnit integration tests under `tests/Bifrost.Web.Tests`
 - matching deploy artifacts and runbooks in `E:\Projects\gamecult-ops`
@@ -69,6 +70,8 @@ For the full staged roadmap, including contribution points, revenue share, patro
 - default connection string points at local PostgreSQL
 - build with `dotnet build Bifrost.slnx`
 - test with `DOTNET_ROLL_FORWARD=Major dotnet test Bifrost.slnx` if the machine only has the .NET 10 runtime installed
+- print the Eve provider advertisement with `node tools/provider-advertisement.mjs print`
+- export the Eve provider advertisement witness with `node tools/provider-advertisement.mjs export --out .bifrost/provider-advertisement.cc`
 - container smoke test with `docker compose -f compose.local.yaml up --build`
 - container health checks live at `http://127.0.0.1:5080/healthz` and `http://127.0.0.1:5080/readyz`
 

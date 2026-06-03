@@ -71,6 +71,30 @@ Bifrost publishes under these CultMesh namespaces:
 Odin discovers Bifrost through the service namespace, then indexes the schema
 catalog and surface namespaces. Odin does not scrape Razor pages as truth.
 
+## Provider Advertisement Export
+
+Bifrost has a read-only first-cut provider advertisement command:
+
+```powershell
+node tools/provider-advertisement.mjs export --out .bifrost/provider-advertisement.cc
+```
+
+It writes a single `gamecult.eve.provider_advertisement.v1` CultCache document
+for Odin/Eve discovery experiments. The document names Bifrost's Account,
+Patron, Project, Work, Motion, and Operator Verse surfaces; current and planned
+schema ids; `.cc` witness/export paths; command authority boundaries; style
+capabilities; and demoted presentation/probe surfaces.
+
+This export is discovery metadata only. It does not migrate Postgres state,
+publish to CultMesh, read secrets, execute bridge actions, or make Razor Pages,
+HTTP probes, Discord mirrors, or local dispatch JSON canonical.
+
+For protocol-debug inspection without writing a witness:
+
+```powershell
+node tools/provider-advertisement.mjs print
+```
+
 ## Eve Product And Operator Surfaces
 
 Product surfaces are the canonical interface compositions for:
