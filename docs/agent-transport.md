@@ -8,6 +8,9 @@ The primary source of truth for feature requests and governance discussion is no
 - `bifrost.governance.topic-comment` records human, agent, Face, and system comments on that topic.
 - `bifrost.agent-transport.update-request` is the dispatch packet produced after the topic has enough shape and the owning Face approves it.
 
+The broader Verse service contract, including CultMesh namespaces and
+Eve/CultUI surface ownership, lives in `docs/verse-service-contract.md`.
+
 That split keeps the live machine honest. Discussion lives in topic/comment documents. Dispatch lives in update-request documents. Discord mirrors and supplies input; it does not become the hidden parliament because everyone happened to be typing there.
 
 This is not a Postgres queue and not a VoidBot side channel. VoidBot may observe Discord and package consensus, but the shared request lane belongs here:

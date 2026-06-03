@@ -20,6 +20,7 @@ This repository now includes a viable alpha foundation slice of the ASP.NET Core
 - local bridge tooling for agent-owned GitHub draft PRs and Discord posts
 - CultCache-backed governance topic threads for feature requests, discussion comments, Face approvals, and dispatch promotion
 - CultCache/CultNet-backed agent intake tooling for repo Face update requests
+- a Verse service contract for CultCache witnesses, CultMesh namespaces, and Eve/CultUI product and operator surfaces
 - Docker image and local Compose stack for containerized smoke testing
 - xUnit integration tests under `tests/Bifrost.Web.Tests`
 - matching deploy artifacts and runbooks in `E:\Projects\gamecult-ops`
@@ -79,6 +80,7 @@ Before implementation work starts in a new session, read these files in order:
 2. [docs/bifrost-mvp-plan.md](E:\Projects\Bifrost\docs\bifrost-mvp-plan.md)
 3. [docs/jurisdiction-map.md](E:\Projects\Bifrost\docs\jurisdiction-map.md)
 4. [docs/bridge.md](E:\Projects\Bifrost\docs\bridge.md)
-5. [docs/agent-transport.md](E:\Projects\Bifrost\docs\agent-transport.md)
-6. [docs/full-implementation-strategy.md](E:\Projects\Bifrost\docs\full-implementation-strategy.md)
-7. [docs/context.md](E:\Projects\Bifrost\docs\context.md)
+5. [docs/verse-service-contract.md](E:\Projects\Bifrost\docs\verse-service-contract.md)
+6. [docs/agent-transport.md](E:\Projects\Bifrost\docs\agent-transport.md)
+7. [docs/full-implementation-strategy.md](E:\Projects\Bifrost\docs\full-implementation-strategy.md)
+8. [docs/context.md](E:\Projects\Bifrost\docs\context.md)

@@ -2,6 +2,13 @@
 
 Bifrost is GameCult's governance, labor, and public-process platform. Its bridge role is not a second mission stapled onto the side; it follows from the original Labor Platform idea. Users, patrons, members, and contributors need one place to vote on policy, prioritize work, allocate rewards, review accepted work, and keep credit legible.
 
+Bifrost is also a Verse service. Its durable state should be typed CultCache
+documents or CultCache-compatible stores with `.cc` witnesses, its service and
+surface capabilities should publish through CultMesh for Odin discovery, and
+its product/operator interfaces should be Eve/CultUI surfaces rather than
+renderer-owned dashboard truth. The service contract lives in
+`docs/verse-service-contract.md`.
+
 The core loop is economic and social, not merely technical:
 
 1. A user, patron, member, agent, or contributor identifies work that should exist.
@@ -158,6 +165,13 @@ This is not the final hosted control plane. It is the current bridge actuator an
 
 ## Design Rules
 
+- Do not make Razor Pages, Discord mirrors, HTTP status JSON, or private dispatch
+  JSON the canonical presentation or state owner. They lower, witness, or export
+  Bifrost state; typed Bifrost state remains the authority.
+- Do not publish a Bifrost dashboard without also naming the Eve/CultUI surface
+  or `gamecult.eve.surface.v1` composition it lowers from.
+- Do not expose new durable Bifrost state without a CultCache `.cc` witness or a
+  migration step that produces one.
 - Do not add GitHub mutation machinery to VoidBot when the action is reviewable public work. Call Bifrost.
 - Do not add Bifrost-scoped Discord transport or dispatch receipts to arbitrary repo Face scripts. Call Bifrost.
 - Do not put OAuth credentials or account custody into Bifrost helper scripts as the long-term plan. Use Heimdall claims.

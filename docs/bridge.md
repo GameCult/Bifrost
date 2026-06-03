@@ -2,6 +2,11 @@
 
 Bifrost is the bridge for GameCult agent, user, patron, member, and contributor work that needs to cross into GitHub, Discord, CultNet/CultCache intake, or another governed external surface.
 
+As a Verse service, the bridge publishes typed state and surfaces instead of
+letting the local CLI, Discord text, or web views become the canonical interface.
+The CultCache witness, CultMesh namespace, Eve/CultUI surface, migration, and
+demotion rules are defined in `docs/verse-service-contract.md`.
+
 This is not a new side mission. Bifrost evolved out of the GameCult Labor Platform idea: users and contributors should be able to vote on policy, work priority, and reward allocation; high-demand work should become more valuable until someone picks it up; maintainers should accept completed work; and contributors should receive credit and bounty through an auditable platform. Public-protocol transport belongs here because that workflow crosses GitHub, Discord, and future collaboration interfaces. The bridge is how Bifrost's governance/labor role touches the world without letting VoidBot, repo Faces, or one-off helper scripts become hidden authorities.
 
 For the full ownership map, read `docs/jurisdiction-map.md`.
