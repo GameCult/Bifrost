@@ -192,10 +192,9 @@ function buildAdvertisement(options) {
     surfaces: [
       surface("bifrost", "Bifrost Operator Dashboard", "gamecult.bifrost.surface.operator", "gamecult.eve.surface_state.v1", ".bifrost/provider-advertisement.cc", [
         "service health",
-        "docker containers",
-        "governance topic counts",
-        "agent transport request counts",
-        "witness freshness",
+        "compact service status",
+        "topic and request status",
+        "dispatch activity by source channel",
         "bridge capability status",
       ]),
       surface("bifrost.account", "Account Verse", "gamecult.bifrost.surface.product", "gamecult.eve.surface.v1", ".bifrost/eve-surfaces.cc", [
@@ -232,7 +231,7 @@ function buildAdvertisement(options) {
       ]),
       surface("bifrost.operator", "Bifrost Operator Verse", "gamecult.bifrost.surface.operator", "gamecult.eve.surface.v1", ".bifrost/eve-surfaces.cc", [
         "readiness",
-        "witness freshness",
+        "store freshness",
         "bridge queues",
         "schema catalog",
         "migration drift",
@@ -324,6 +323,7 @@ async function collectStats(options) {
   const requests = Array.isArray(transport.value) ? transport.value : [];
   const topicCounts = countBy(topics, "status");
   const requestCounts = countBy(requests, "status");
+  const recentWindowHours = 24;
   const dockerHealthy = docker.items.filter((item) => /healthy/i.test(item.status)).length;
   const dockerRunning = docker.items.filter((item) => /^Up\b/i.test(item.status)).length;
 
@@ -337,6 +337,9 @@ async function collectStats(options) {
       error: governance.error,
       count: topics.length,
       statusCounts: topicCounts,
+      recentCount: countRecent(topics, recentWindowHours),
+      channelCounts: countBy(topics, "sourceKind"),
+      recentChannelCounts: countRecentBy(topics, "sourceKind", recentWindowHours),
       latestUpdatedAt: latestTimestamp(topics.map((item) => item.updatedAt)),
     },
     transport: {
@@ -344,6 +347,9 @@ async function collectStats(options) {
       error: transport.error,
       count: requests.length,
       statusCounts: requestCounts,
+      recentCount: countRecent(requests, recentWindowHours),
+      channelCounts: countBy(requests, "sourceKind"),
+      recentChannelCounts: countRecentBy(requests, "sourceKind", recentWindowHours),
       latestUpdatedAt: latestTimestamp(requests.map((item) => item.updatedAt)),
     },
     witnesses,
@@ -362,8 +368,11 @@ async function collectStats(options) {
       dockerHealthy,
       governanceTopics: topics.length,
       transportRequests: requests.length,
+      recentGovernanceTopics: countRecent(topics, recentWindowHours),
+      recentTransportRequests: countRecent(requests, recentWindowHours),
       openTopics: topicCounts.open ?? 0,
       queuedRequests: requestCounts.queued ?? 0,
+      recentWindowHours,
     },
   };
 }
@@ -456,7 +465,6 @@ function witnessStat(relativePath) {
     return {
       path: relativePath,
       exists: false,
-      bytes: 0,
       updatedAt: null,
     };
   }
@@ -464,7 +472,6 @@ function witnessStat(relativePath) {
   return {
     path: relativePath,
     exists: true,
-    bytes: stat.size,
     updatedAt: stat.mtime.toISOString(),
   };
 }
@@ -472,17 +479,22 @@ function witnessStat(relativePath) {
 function buildOperatorSurface(stats) {
   const statusTone = stats.summary.status === "ready" ? "ok" : "warn";
   const children = [
-    metricNode("status", "Status", stats.summary.status, statusTone),
-    metricNode("health", "Health", String(stats.summary.health), stats.health.ok ? "ok" : "warn"),
-    metricNode("ready", "Ready", String(stats.summary.ready), stats.ready.ok ? "ok" : "warn"),
-    metricNode("docker", "Docker", `${stats.summary.dockerRunning} up / ${stats.summary.dockerHealthy} healthy`, stats.summary.dockerHealthy > 0 ? "ok" : "warn"),
-    metricNode("topics", "Topics", `${stats.summary.governanceTopics} total / ${stats.summary.openTopics} open`, stats.governance.ok ? "ok" : "warn"),
-    metricNode("transport", "Transport", `${stats.summary.transportRequests} requests / ${stats.summary.queuedRequests} queued`, stats.transport.ok ? "ok" : "warn"),
-    metricNode("bridge", "Bridge", `Discord post ${stats.bridge.discordPost ? "yes" : "no"} / DM ${stats.bridge.discordDm ? "yes" : "no"}`, "ok"),
-    listNode("containers", "Containers", stats.docker.items.map((item) => `${item.name}: ${item.status}`)),
-    listNode("witnesses", "Witnesses", stats.witnesses.map((item) => `${item.path}: ${item.exists ? `${item.bytes} bytes` : "missing"}`)),
-    listNode("topic-status", "Topic Status", objectLines(stats.governance.statusCounts)),
-    listNode("request-status", "Request Status", objectLines(stats.transport.statusCounts)),
+    panelNode("service", "Service", [
+      metricNode("status", "Status", stats.summary.status, statusTone),
+      metricNode("daemon", "Daemon", `health ${stats.summary.health} / ready ${stats.summary.ready}`, stats.health.ok && stats.ready.ok ? "ok" : "warn"),
+      metricNode("containers", "Containers", `${stats.summary.dockerRunning} up / ${stats.summary.dockerHealthy} healthy`, stats.summary.dockerHealthy > 0 ? "ok" : "warn"),
+      metricNode("stores", "Stores", witnessHealthLine(stats.witnesses), witnessHealthTone(stats.witnesses)),
+      metricNode("bridge", "Bridge", `Discord post ${yesNo(stats.bridge.discordPost)} / DM ${yesNo(stats.bridge.discordDm)}`, "ok"),
+    ]),
+    panelNode("activity", "Activity", [
+      metricNode("topics", "Topics", `${stats.summary.governanceTopics} total / ${stats.summary.openTopics} open / ${stats.summary.recentGovernanceTopics} in ${stats.summary.recentWindowHours}h`, stats.governance.ok ? "ok" : "warn"),
+      metricNode("requests", "Requests", `${stats.summary.transportRequests} total / ${stats.summary.queuedRequests} queued / ${stats.summary.recentTransportRequests} in ${stats.summary.recentWindowHours}h`, stats.transport.ok ? "ok" : "warn"),
+      listNode("status", "Status", [
+        `topics: ${compactCounts(stats.governance.statusCounts)}`,
+        `requests: ${compactCounts(stats.transport.statusCounts)}`,
+      ]),
+      listNode("channels", "Dispatch Channels", compactChannelLines(stats.transport.channelCounts, stats.transport.recentChannelCounts, stats.summary.recentWindowHours)),
+    ]),
   ];
 
   return {
@@ -541,6 +553,15 @@ function buildInterfaceBinding(surface, stats) {
   };
 }
 
+function panelNode(id, title, children) {
+  return {
+    id: `panel-${id}`,
+    kind: "panel",
+    props: { title },
+    children,
+  };
+}
+
 function metricNode(id, label, value, tone) {
   return {
     id: `metric-${id}`,
@@ -564,9 +585,17 @@ function listNode(id, title, items) {
   };
 }
 
-function objectLines(value) {
+function compactCounts(value) {
   const entries = Object.entries(value).sort((left, right) => left[0].localeCompare(right[0]));
-  return entries.length > 0 ? entries.map(([key, count]) => `${key}: ${count}`) : ["none"];
+  return entries.length > 0 ? entries.map(([key, count]) => `${key} ${count}`).join(" / ") : "none";
+}
+
+function compactChannelLines(totalCounts, recentCounts, windowHours) {
+  const keys = new Set([...Object.keys(totalCounts), ...Object.keys(recentCounts)]);
+  const lines = [...keys]
+    .sort((left, right) => left.localeCompare(right))
+    .map((key) => `${key}: ${totalCounts[key] || 0} total / ${recentCounts[key] || 0} in ${windowHours}h`);
+  return lines.length > 0 ? lines : ["none"];
 }
 
 function countBy(items, field) {
@@ -578,11 +607,58 @@ function countBy(items, field) {
   return counts;
 }
 
+function countRecent(items, hours) {
+  const cutoff = Date.now() - hours * 60 * 60 * 1000;
+  return items.filter((item) => {
+    const timestamp = Date.parse(item?.updatedAt || item?.createdAt || "");
+    return Number.isFinite(timestamp) && timestamp >= cutoff;
+  }).length;
+}
+
+function countRecentBy(items, field, hours) {
+  const cutoff = Date.now() - hours * 60 * 60 * 1000;
+  const counts = {};
+  for (const item of items) {
+    const timestamp = Date.parse(item?.updatedAt || item?.createdAt || "");
+    if (!Number.isFinite(timestamp) || timestamp < cutoff) {
+      continue;
+    }
+    const key = String(item?.[field] || "unknown");
+    counts[key] = (counts[key] || 0) + 1;
+  }
+  return counts;
+}
+
 function latestTimestamp(values) {
   return values
     .filter((value) => typeof value === "string" && value.trim().length > 0)
     .sort()
     .at(-1) || null;
+}
+
+function witnessHealthLine(witnesses) {
+  const missing = witnesses.filter((item) => !item.exists).length;
+  if (missing > 0) {
+    return `${witnesses.length - missing}/${witnesses.length} present`;
+  }
+  const latest = latestTimestamp(witnesses.map((item) => item.updatedAt));
+  return `all present / latest ${latest ? shortTime(latest) : "unknown"}`;
+}
+
+function witnessHealthTone(witnesses) {
+  return witnesses.every((item) => item.exists) ? "ok" : "warn";
+}
+
+function shortTime(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "unknown";
+  }
+  return date.toISOString().slice(5, 16).replace("T", " ");
+}
+
+function yesNo(value) {
+  return value ? "yes" : "no";
 }
 
 function namespace(id, purpose) {

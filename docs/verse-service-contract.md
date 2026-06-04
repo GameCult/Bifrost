@@ -87,9 +87,8 @@ It writes Bifrost-owned Eve discovery documents into
   schema ids; `.cc` witness/export paths; command authority boundaries; style
   capabilities; and demoted presentation/probe surfaces.
 - `gamecult.eve.surface_state.v1` publishes the live Bifrost operator dashboard
-  surface with health/readiness, Docker container state, governance topic
-  counts, agent transport request counts, witness freshness, and bridge
-  capability status.
+  surface with compact service health, topic/request status, dispatch activity
+  by source channel, store presence/freshness, and bridge capability status.
 - `gamecult.eve.interface_binding.v1` binds that surface to provider id
   `bifrost` so Odin can lower it into Nightwing, Eve, browser, or future room
   dashboards.
@@ -119,9 +118,12 @@ Product surfaces are the canonical interface compositions for:
 Operator surfaces are the canonical interface compositions for:
 
 - readiness, build/version, config validation, and deploy target;
-- CultCache witness freshness and export errors;
+- compact service health: daemon readiness, container health, and backing store
+  presence without making file size or storage mechanics first-rank operator
+  signal;
 - CultMesh publication health and Odin discovery status;
-- bridge queues, failed crossings, retry/cancel controls, and receipt gaps;
+- topic/request status, dispatch activity by source channel, failed crossings,
+  retry/cancel controls, and receipt gaps;
 - schema versions, migration state, and Postgres-to-`.cc` witness drift;
 - Discord mirror health, including fail-closed unmirrored governance writes.
 
