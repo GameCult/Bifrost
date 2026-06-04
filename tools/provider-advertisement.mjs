@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { createRequire } from "node:module";
+import { spawnSync } from "node:child_process";
 import { mkdir } from "node:fs/promises";
+import { existsSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -19,6 +21,11 @@ const {
 const documentType = "gamecult.eve.provider_advertisement";
 const schemaId = "gamecult.eve.provider_advertisement.v1";
 const documentId = "bifrost";
+const surfaceDocumentType = "gamecult.eve.surface_state";
+const surfaceSchemaId = "gamecult.eve.surface_state.v1";
+const interfaceBindingDocumentType = "gamecult.eve.interface_binding";
+const interfaceBindingSchemaId = "gamecult.eve.interface_binding.v1";
+const verseId = "bifrost.local";
 
 const advertisementDefinition = defineDocumentType({
   type: documentType,
@@ -46,6 +53,31 @@ const advertisementDefinition = defineDocumentType({
     { slot: 11, memberName: "styleCapabilities", typeName: "object", isMany: true },
     { slot: 12, memberName: "demotions", typeName: "string", isMany: true },
   ],
+});
+
+const surfaceDefinition = defineDocumentType({
+  type: surfaceDocumentType,
+  schemaId: surfaceSchemaId,
+  schemaName: surfaceDocumentType,
+  schemaVersion: surfaceSchemaId,
+  schema: { parse: parseObjectDocument("Eve surface state") },
+  name: "providerId",
+  members: [
+    { slot: 0, memberName: "providerId", typeName: "string", isName: true },
+    { slot: 1, memberName: "title", typeName: "string" },
+    { slot: 2, memberName: "version", typeName: "long" },
+    { slot: 3, memberName: "updatedAt", typeName: "string" },
+    { slot: 4, memberName: "surface", typeName: "object" },
+  ],
+});
+
+const interfaceBindingDefinition = defineDocumentType({
+  type: interfaceBindingDocumentType,
+  schemaId: interfaceBindingSchemaId,
+  schemaName: interfaceBindingDocumentType,
+  schemaVersion: interfaceBindingSchemaId,
+  schema: { parse: parseObjectDocument("Eve interface binding") },
+  name: "bindingId",
 });
 
 async function main() {
@@ -83,12 +115,19 @@ async function exportAdvertisement(options) {
 
   const cache = CultCache.builder()
     .withDocumentType(advertisementDefinition)
+    .withDocumentType(surfaceDefinition)
+    .withDocumentType(interfaceBindingDefinition)
     .withGenericStore(new SingleFileMessagePackBackingStore(storePath))
     .build();
 
   await cache.pullAllBackingStores();
   const advertisement = buildAdvertisement(options);
+  const stats = await collectStats(options);
+  const surface = buildOperatorSurface(stats, options);
+  const binding = buildInterfaceBinding(surface, stats, options);
   await cache.put(advertisementDefinition, advertisement.providerId, advertisement);
+  await cache.put(surfaceDefinition, surface.providerId, surface);
+  await cache.put(interfaceBindingDefinition, binding.bindingId, binding);
 
   printJson({
     ok: true,
@@ -98,6 +137,7 @@ async function exportAdvertisement(options) {
     out: storePath,
     surfaces: advertisement.surfaces.map((surface) => surface.id),
     witnesses: advertisement.witnesses.map((witness) => witness.path),
+    stats: stats.summary,
   });
 }
 
@@ -150,6 +190,14 @@ function buildAdvertisement(options) {
       witness(".bifrost/eve-surfaces.cc", "gamecult.eve.surface.v1", "planned-export", "product and operator Eve/CultUI surface publications"),
     ],
     surfaces: [
+      surface("bifrost", "Bifrost Operator Dashboard", "gamecult.bifrost.surface.operator", "gamecult.eve.surface_state.v1", ".bifrost/provider-advertisement.cc", [
+        "service health",
+        "docker containers",
+        "governance topic counts",
+        "agent transport request counts",
+        "witness freshness",
+        "bridge capability status",
+      ]),
       surface("bifrost.account", "Account Verse", "gamecult.bifrost.surface.product", "gamecult.eve.surface.v1", ".bifrost/eve-surfaces.cc", [
         "membership status",
         "Heimdall-linked account projection",
@@ -259,6 +307,284 @@ function buildAdvertisement(options) {
   });
 }
 
+async function collectStats(options) {
+  const generatedAt = options["generated-at"] ?? new Date().toISOString();
+  const health = await fetchProbe("http://127.0.0.1:5080/healthz");
+  const ready = await fetchProbe("http://127.0.0.1:5080/readyz");
+  const transport = runJsonTool(["tools/agent-transport.mjs", "list", "--json"]);
+  const governance = runJsonTool(["tools/governance-threads.mjs", "list", "--json"]);
+  const docker = dockerContainers();
+  const witnesses = [
+    witnessStat(".bifrost/provider-advertisement.cc"),
+    witnessStat(".bifrost/governance-threads.cc"),
+    witnessStat(".bifrost/agent-transport.cc"),
+    witnessStat(".bifrost/discord-webhook-cache.json"),
+  ];
+  const topics = Array.isArray(governance.value) ? governance.value : [];
+  const requests = Array.isArray(transport.value) ? transport.value : [];
+  const topicCounts = countBy(topics, "status");
+  const requestCounts = countBy(requests, "status");
+  const dockerHealthy = docker.items.filter((item) => /healthy/i.test(item.status)).length;
+  const dockerRunning = docker.items.filter((item) => /^Up\b/i.test(item.status)).length;
+
+  return {
+    generatedAt,
+    health,
+    ready,
+    docker,
+    governance: {
+      ok: governance.ok,
+      error: governance.error,
+      count: topics.length,
+      statusCounts: topicCounts,
+      latestUpdatedAt: latestTimestamp(topics.map((item) => item.updatedAt)),
+    },
+    transport: {
+      ok: transport.ok,
+      error: transport.error,
+      count: requests.length,
+      statusCounts: requestCounts,
+      latestUpdatedAt: latestTimestamp(requests.map((item) => item.updatedAt)),
+    },
+    witnesses,
+    bridge: {
+      discordPost: true,
+      discordDm: true,
+      githubDraftPr: true,
+      githubPrComment: true,
+      credentialSource: process.env.BIFROST_DISCORD_BOT_TOKEN ? "BIFROST_DISCORD_BOT_TOKEN" : process.env.DISCORD_BOT_TOKEN ? "DISCORD_BOT_TOKEN-fallback" : "missing",
+    },
+    summary: {
+      status: health.ok && ready.ok ? "ready" : "degraded",
+      health: health.value ?? health.error,
+      ready: ready.value ?? ready.error,
+      dockerRunning,
+      dockerHealthy,
+      governanceTopics: topics.length,
+      transportRequests: requests.length,
+      openTopics: topicCounts.open ?? 0,
+      queuedRequests: requestCounts.queued ?? 0,
+    },
+  };
+}
+
+async function fetchProbe(url) {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 2500);
+    const response = await fetch(url, { signal: controller.signal });
+    clearTimeout(timeout);
+    const text = (await response.text()).trim();
+    return {
+      ok: response.ok,
+      statusCode: response.status,
+      value: text,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+function runJsonTool(args) {
+  const result = spawnSync(process.execPath, args, {
+    cwd: repoRoot,
+    encoding: "utf8",
+    windowsHide: true,
+  });
+  if (result.status !== 0) {
+    return {
+      ok: false,
+      error: (result.stderr || result.stdout || `exit ${result.status}`).trim(),
+      value: null,
+    };
+  }
+  try {
+    return {
+      ok: true,
+      value: JSON.parse(result.stdout),
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+      value: null,
+    };
+  }
+}
+
+function dockerContainers() {
+  const result = spawnSync("docker", ["ps", "--filter", "name=bifrost", "--format", "{{json .}}"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    windowsHide: true,
+  });
+  if (result.status !== 0) {
+    return {
+      ok: false,
+      error: (result.stderr || result.stdout || `exit ${result.status}`).trim(),
+      items: [],
+    };
+  }
+  const items = result.stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      try {
+        const parsed = JSON.parse(line);
+        return {
+          id: parsed.ID,
+          name: parsed.Names,
+          image: parsed.Image,
+          status: parsed.Status,
+          ports: parsed.Ports,
+        };
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+  return { ok: true, items };
+}
+
+function witnessStat(relativePath) {
+  const fullPath = resolve(repoRoot, relativePath);
+  if (!existsSync(fullPath)) {
+    return {
+      path: relativePath,
+      exists: false,
+      bytes: 0,
+      updatedAt: null,
+    };
+  }
+  const stat = statSync(fullPath);
+  return {
+    path: relativePath,
+    exists: true,
+    bytes: stat.size,
+    updatedAt: stat.mtime.toISOString(),
+  };
+}
+
+function buildOperatorSurface(stats) {
+  const statusTone = stats.summary.status === "ready" ? "ok" : "warn";
+  const children = [
+    metricNode("status", "Status", stats.summary.status, statusTone),
+    metricNode("health", "Health", String(stats.summary.health), stats.health.ok ? "ok" : "warn"),
+    metricNode("ready", "Ready", String(stats.summary.ready), stats.ready.ok ? "ok" : "warn"),
+    metricNode("docker", "Docker", `${stats.summary.dockerRunning} up / ${stats.summary.dockerHealthy} healthy`, stats.summary.dockerHealthy > 0 ? "ok" : "warn"),
+    metricNode("topics", "Topics", `${stats.summary.governanceTopics} total / ${stats.summary.openTopics} open`, stats.governance.ok ? "ok" : "warn"),
+    metricNode("transport", "Transport", `${stats.summary.transportRequests} requests / ${stats.summary.queuedRequests} queued`, stats.transport.ok ? "ok" : "warn"),
+    metricNode("bridge", "Bridge", `Discord post ${stats.bridge.discordPost ? "yes" : "no"} / DM ${stats.bridge.discordDm ? "yes" : "no"}`, "ok"),
+    listNode("containers", "Containers", stats.docker.items.map((item) => `${item.name}: ${item.status}`)),
+    listNode("witnesses", "Witnesses", stats.witnesses.map((item) => `${item.path}: ${item.exists ? `${item.bytes} bytes` : "missing"}`)),
+    listNode("topic-status", "Topic Status", objectLines(stats.governance.statusCounts)),
+    listNode("request-status", "Request Status", objectLines(stats.transport.statusCounts)),
+  ];
+
+  return {
+    providerId: "bifrost",
+    title: "Bifrost Operator Dashboard",
+    version: Date.parse(stats.generatedAt) || Date.now(),
+    updatedAt: stats.generatedAt,
+    stats,
+    surface: {
+      schema: "gamecult.eve.surface.v1",
+      id: "bifrost-operator-dashboard",
+      title: "Bifrost Operator Dashboard",
+      root: {
+        id: "bifrost-root",
+        kind: "dashboard",
+        props: {
+          title: "Bifrost",
+          subtitle: "Governance, labor, and public crossing bridge",
+          status: stats.summary.status,
+          generatedAt: stats.generatedAt,
+        },
+        children,
+      },
+    },
+  };
+}
+
+function buildInterfaceBinding(surface, stats) {
+  return {
+    bindingId: "bifrost",
+    providerId: "bifrost",
+    title: surface.title,
+    kind: "operator-dashboard",
+    updatedAt: surface.updatedAt,
+    provider: {
+      id: "bifrost",
+      title: "Bifrost",
+      description: "Bifrost-owned operator stats and bridge health surface.",
+      version: String(surface.version),
+      endpoint: `cultmesh://${verseId}/eve/providers/bifrost`,
+      capabilities: ["operator-stats", "bridge-health", "governance-counts", "agent-transport-counts"],
+      usesCultMesh: true,
+      status: stats.summary.status,
+      transport: "CultMesh Eve interface binding.",
+    },
+    surface: surface.surface,
+    rendererHints: {
+      preferredLowerings: ["nightwing-tui", "eve-native", "browser"],
+      tileId: "bifrost",
+      minWidth: 80,
+      minHeight: 18,
+      preferredWidth: 120,
+      preferredHeight: 32,
+      density: "operator",
+    },
+  };
+}
+
+function metricNode(id, label, value, tone) {
+  return {
+    id: `metric-${id}`,
+    kind: "metric",
+    props: { label, value, tone },
+  };
+}
+
+function listNode(id, title, items) {
+  return {
+    id: `list-${id}`,
+    kind: "list",
+    props: { title },
+    children: items.length > 0
+      ? items.map((item, index) => ({
+          id: `list-${id}-${index}`,
+          kind: "text",
+          props: { text: item },
+        }))
+      : [{ id: `list-${id}-empty`, kind: "text", props: { text: "none" } }],
+  };
+}
+
+function objectLines(value) {
+  const entries = Object.entries(value).sort((left, right) => left[0].localeCompare(right[0]));
+  return entries.length > 0 ? entries.map(([key, count]) => `${key}: ${count}`) : ["none"];
+}
+
+function countBy(items, field) {
+  const counts = {};
+  for (const item of items) {
+    const key = String(item?.[field] || "unknown");
+    counts[key] = (counts[key] || 0) + 1;
+  }
+  return counts;
+}
+
+function latestTimestamp(values) {
+  return values
+    .filter((value) => typeof value === "string" && value.trim().length > 0)
+    .sort()
+    .at(-1) || null;
+}
+
 function namespace(id, purpose) {
   return { id, purpose };
 }
@@ -312,6 +638,15 @@ function parseAdvertisement(input) {
   }
 
   return advertisement;
+}
+
+function parseObjectDocument(label) {
+  return (input) => {
+    if (!input || typeof input !== "object" || Array.isArray(input)) {
+      throw new Error(`${label} must be an object.`);
+    }
+    return input;
+  };
 }
 
 function parseArgs(args) {

@@ -79,15 +79,25 @@ Bifrost has a read-only first-cut provider advertisement command:
 node tools/provider-advertisement.mjs export --out .bifrost/provider-advertisement.cc
 ```
 
-It writes a single `gamecult.eve.provider_advertisement.v1` CultCache document
-for Odin/Eve discovery experiments. The document names Bifrost's Account,
-Patron, Project, Work, Motion, and Operator Verse surfaces; current and planned
-schema ids; `.cc` witness/export paths; command authority boundaries; style
-capabilities; and demoted presentation/probe surfaces.
+It writes Bifrost-owned Eve discovery documents into
+`.bifrost/provider-advertisement.cc`:
 
-This export is discovery metadata only. It does not migrate Postgres state,
-publish to CultMesh, read secrets, execute bridge actions, or make Razor Pages,
-HTTP probes, Discord mirrors, or local dispatch JSON canonical.
+- `gamecult.eve.provider_advertisement.v1` names Bifrost's Account, Patron,
+  Project, Work, Motion, and Operator Verse surfaces; current and planned
+  schema ids; `.cc` witness/export paths; command authority boundaries; style
+  capabilities; and demoted presentation/probe surfaces.
+- `gamecult.eve.surface_state.v1` publishes the live Bifrost operator dashboard
+  surface with health/readiness, Docker container state, governance topic
+  counts, agent transport request counts, witness freshness, and bridge
+  capability status.
+- `gamecult.eve.interface_binding.v1` binds that surface to provider id
+  `bifrost` so Odin can lower it into Nightwing, Eve, browser, or future room
+  dashboards.
+
+This export does not migrate Postgres state, read secrets, execute bridge
+actions, or make Razor Pages, HTTP probes, Discord mirrors, or local dispatch
+JSON canonical. The operator surface may display those probes, but the provider
+owned `.cc` witness remains the discovery and dashboard source.
 
 For protocol-debug inspection without writing a witness:
 
