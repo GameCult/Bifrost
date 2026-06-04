@@ -26,6 +26,11 @@ const surfaceSchemaId = "gamecult.eve.surface_state.v1";
 const interfaceBindingDocumentType = "gamecult.eve.interface_binding";
 const interfaceBindingSchemaId = "gamecult.eve.interface_binding.v1";
 const verseId = "bifrost.local";
+const rootVerse = "asgard";
+const currentMachine = "starfire";
+const canonicalService = `${rootVerse}.bifrost`;
+const locatedService = `${rootVerse}.${currentMachine}.bifrost`;
+const plannedLocatedService = `${rootVerse}.yggdrasil.bifrost`;
 
 const advertisementDefinition = defineDocumentType({
   type: documentType,
@@ -52,6 +57,12 @@ const advertisementDefinition = defineDocumentType({
     { slot: 10, memberName: "commandBoundaries", typeName: "object", isMany: true },
     { slot: 11, memberName: "styleCapabilities", typeName: "object", isMany: true },
     { slot: 12, memberName: "demotions", typeName: "string", isMany: true },
+    { slot: 13, memberName: "rootVerse", typeName: "string" },
+    { slot: 14, memberName: "canonicalService", typeName: "string" },
+    { slot: 15, memberName: "locatedService", typeName: "string" },
+    { slot: 16, memberName: "cultMeshAddress", typeName: "string" },
+    { slot: 17, memberName: "endpoints", typeName: "object", isMany: true },
+    { slot: 18, memberName: "routes", typeName: "object", isMany: true },
   ],
 });
 
@@ -147,13 +158,27 @@ function buildAdvertisement(options) {
     serviceName: "Bifrost",
     contractPath: "docs/verse-service-contract.md",
     generatedAt: options["generated-at"] ?? new Date().toISOString(),
+    rootVerse,
+    canonicalService,
+    locatedService,
+    plannedLocatedService,
+    cultMeshAddress: locatedService,
+    endpoints: [
+      endpoint("operator-tui", `${locatedService}/eve/tui`, "gamecult.eve.surface.v1", ["tui", "nightwing-tui"]),
+      endpoint("operator-gui", `${locatedService}/eve/gui`, "gamecult.eve.surface.v1", ["gui", "browser", "eve-native"]),
+      endpoint("operator-commands", `${locatedService}/commands`, "bifrost.bridge_action.v0", ["command"]),
+    ],
+    routes: [
+      route("cultcache-witness", ".bifrost/provider-advertisement.cc", "local-cultcache", true),
+      route("websocket-bridge", "ws://192.168.1.66:8797/eve/deck", "compatibility-eve-deck", true),
+    ],
     authority: {
       owner: "Bifrost",
       role: "GameCult labor, governance, patron pressure, project work, account membership, and governed-public-crossing provider",
       presentationOwner: "Eve/CultUI",
       discoveryOwner: "Odin through CultMesh",
       stateOwner: "Bifrost typed state with CultCache .cc witnesses or export paths",
-      runtimeMigration: "not performed by this advertisement",
+      runtimeMigration: `currently ${locatedService}; planned move target ${plannedLocatedService}`,
     },
     namespaces: [
       namespace("gamecult.bifrost.service", "service registration, build/version, schema catalog, and command discovery"),
@@ -190,46 +215,46 @@ function buildAdvertisement(options) {
       witness(".bifrost/eve-surfaces.cc", "gamecult.eve.surface.v1", "planned-export", "product and operator Eve/CultUI surface publications"),
     ],
     surfaces: [
-      surface("bifrost", "Bifrost Operator Dashboard", "gamecult.bifrost.surface.operator", "gamecult.eve.surface_state.v1", ".bifrost/provider-advertisement.cc", [
+      surface("bifrost", "Bifrost Operator Dashboard", "gamecult.bifrost.surface.operator", "gamecult.eve.surface_state.v1", ".bifrost/provider-advertisement.cc", "eve", [
         "service health",
         "compact service status",
         "topic and request status",
         "dispatch activity by source channel",
         "bridge capability status",
       ]),
-      surface("bifrost.account", "Account Verse", "gamecult.bifrost.surface.product", "gamecult.eve.surface.v1", ".bifrost/eve-surfaces.cc", [
+      surface("bifrost.account", "Account Verse", "gamecult.bifrost.surface.product", "gamecult.eve.surface.v1", ".bifrost/eve-surfaces.cc", "account/eve", [
         "membership status",
         "Heimdall-linked account projection",
         "grant consumption",
         "audit trail lowerings",
       ]),
-      surface("bifrost.patron", "Patron Verse", "gamecult.bifrost.surface.product", "gamecult.eve.surface.v1", ".bifrost/eve-surfaces.cc", [
+      surface("bifrost.patron", "Patron Verse", "gamecult.bifrost.surface.product", "gamecult.eve.surface.v1", ".bifrost/eve-surfaces.cc", "patron/eve", [
         "patron standing",
         "priority pressure",
         "pledge/reward influence",
         "receipts",
       ]),
-      surface("bifrost.project", "Project Verse", "gamecult.bifrost.surface.product", "gamecult.eve.surface.v1", ".bifrost/eve-surfaces.cc", [
+      surface("bifrost.project", "Project Verse", "gamecult.bifrost.surface.product", "gamecult.eve.surface.v1", ".bifrost/eve-surfaces.cc", "project/eve", [
         "project membership",
         "repository links",
         "maintainer authority",
         "work boards",
       ]),
-      surface("bifrost.work", "Work Verse", "gamecult.bifrost.surface.product", "gamecult.eve.surface.v1", ".bifrost/eve-surfaces.cc", [
+      surface("bifrost.work", "Work Verse", "gamecult.bifrost.surface.product", "gamecult.eve.surface.v1", ".bifrost/eve-surfaces.cc", "work/eve", [
         "work items",
         "claims",
         "review",
         "blockers",
         "completion artifacts",
       ]),
-      surface("bifrost.motion", "Motion Verse", "gamecult.bifrost.surface.product", "gamecult.eve.surface.v1", ".bifrost/eve-surfaces.cc", [
+      surface("bifrost.motion", "Motion Verse", "gamecult.bifrost.surface.product", "gamecult.eve.surface.v1", ".bifrost/eve-surfaces.cc", "motion/eve", [
         "motions",
         "topic threads",
         "votes",
         "approvals",
         "objections",
       ]),
-      surface("bifrost.operator", "Bifrost Operator Verse", "gamecult.bifrost.surface.operator", "gamecult.eve.surface.v1", ".bifrost/eve-surfaces.cc", [
+      surface("bifrost.operator", "Bifrost Operator Verse", "gamecult.bifrost.surface.operator", "gamecult.eve.surface.v1", ".bifrost/eve-surfaces.cc", "operator/eve", [
         "readiness",
         "store freshness",
         "bridge queues",
@@ -534,7 +559,19 @@ function buildInterfaceBinding(surface, stats) {
       title: "Bifrost",
       description: "Bifrost-owned operator stats and bridge health surface.",
       version: String(surface.version),
-      endpoint: `cultmesh://${verseId}/eve/providers/bifrost`,
+      endpoint: `${locatedService}/eve/tui`,
+      cultMeshAddress: `${locatedService}/eve/tui`,
+      canonicalService,
+      locatedService,
+      plannedLocatedService,
+      endpoints: [
+        endpoint("operator-tui", `${locatedService}/eve/tui`, "gamecult.eve.surface.v1", ["tui", "nightwing-tui"]),
+        endpoint("operator-gui", `${locatedService}/eve/gui`, "gamecult.eve.surface.v1", ["gui", "browser", "eve-native"]),
+      ],
+      routes: [
+        route("cultcache-witness", ".bifrost/provider-advertisement.cc", "local-cultcache", true),
+        route("websocket-bridge", "ws://192.168.1.66:8797/eve/deck", "compatibility-eve-deck", true),
+      ],
       capabilities: ["operator-stats", "bridge-health", "governance-counts", "agent-transport-counts"],
       usesCultMesh: true,
       status: stats.summary.status,
@@ -673,8 +710,21 @@ function witness(path, schemaIds, status, purpose) {
   return { path, schemaIds, status, purpose };
 }
 
-function surface(id, name, namespace, schemaId, witnessPath, capabilities) {
-  return { id, name, namespace, schemaId, witnessPath, capabilities };
+function surface(id, name, namespace, schemaId, witnessPath, resourceBase, capabilities) {
+  return {
+    id,
+    name,
+    namespace,
+    schemaId,
+    witnessPath,
+    capabilities,
+    cultMeshAddress: `${locatedService}/${resourceBase}/tui`,
+    graphicalAddress: `${locatedService}/${resourceBase}/gui`,
+    endpoints: [
+      endpoint("tui", `${locatedService}/${resourceBase}/tui`, schemaId, ["tui"]),
+      endpoint("gui", `${locatedService}/${resourceBase}/gui`, schemaId, ["gui"]),
+    ],
+  };
 }
 
 function boundary(area, owner, commands, forbiddenAuthority) {
@@ -683,6 +733,14 @@ function boundary(area, owner, commands, forbiddenAuthority) {
 
 function style(area, capabilities) {
   return { area, capabilities };
+}
+
+function endpoint(id, address, schemaId, lowerings) {
+  return { id, address, schemaId, lowerings };
+}
+
+function route(id, address, transport, demoted) {
+  return { id, address, transport, demoted };
 }
 
 function parseAdvertisement(input) {
@@ -695,6 +753,13 @@ function parseAdvertisement(input) {
     serviceName: requireString(input.serviceName, "serviceName"),
     contractPath: requireString(input.contractPath, "contractPath"),
     generatedAt: requireString(input.generatedAt, "generatedAt"),
+    rootVerse: optionalString(input.rootVerse, rootVerse),
+    canonicalService: optionalString(input.canonicalService, canonicalService),
+    locatedService: optionalString(input.locatedService, locatedService),
+    plannedLocatedService: typeof input.plannedLocatedService === "string" ? input.plannedLocatedService.trim() : "",
+    cultMeshAddress: optionalString(input.cultMeshAddress, locatedService),
+    endpoints: Array.isArray(input.endpoints) ? requireObjectArray(input.endpoints, "endpoints") : [],
+    routes: Array.isArray(input.routes) ? requireObjectArray(input.routes, "routes") : [],
     authority: requireObject(input.authority, "authority"),
     namespaces: requireObjectArray(input.namespaces, "namespaces"),
     schemas: requireObjectArray(input.schemas, "schemas"),
@@ -753,6 +818,13 @@ function requireString(value, field) {
   }
 
   return value.trim();
+}
+
+function optionalString(value, fallback) {
+  if (typeof value === "string" && value.trim().length > 0) {
+    return value.trim();
+  }
+  return fallback;
 }
 
 function requireObject(value, field) {

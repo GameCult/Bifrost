@@ -131,6 +131,38 @@ The current Razor Pages app lowers product surfaces into browser UI. Existing
 health/readiness endpoints lower operator state into HTTP probes. Both should
 be fed by the same typed service state that backs Eve surfaces.
 
+## CultMesh Address Shape
+
+Bifrost publishes semantic CultMesh addresses before transport routes. The
+canonical service name survives host moves:
+
+```text
+asgard.bifrost
+```
+
+The current located instance is:
+
+```text
+asgard.starfire.bifrost
+```
+
+The planned hosted location is:
+
+```text
+asgard.yggdrasil.bifrost
+```
+
+Surface resources hang under the located service. TUI and GUI are sibling
+lowerings, not one endpoint wearing two costumes:
+
+```text
+asgard.starfire.bifrost/eve/tui
+asgard.starfire.bifrost/eve/gui
+```
+
+CultNet routes are transport metadata for resolving those names. WebSocket and
+HTTP URLs are compatibility bridges or probes, not native Bifrost addresses.
+
 ## Nested Verses
 
 Bifrost exposes nested Verses where local ownership matters:
