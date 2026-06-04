@@ -92,6 +92,16 @@ node .\tools\bifrost-bridge.mjs discord-post `
 
 The command posts through Discord's REST API using the configured bot token and prints a JSON receipt. When `--persona-name` is provided, Bifrost uses the shared webhook persona pattern so repo Faces can speak with their own display name and avatar instead of collapsing back into the base bot identity. Configure `BIFROST_DISCORD_PERSONA_WEBHOOK_URL_<channelId>` or `DISCORD_PERSONA_WEBHOOK_URL` when the bot should use an existing webhook; otherwise it creates and caches a `Bifrost Persona Pipe` webhook for the channel when Discord permissions allow it.
 
+### Discord DM
+
+```powershell
+node .\tools\bifrost-bridge.mjs discord-dm `
+  --recipient-id 123456789012345678 `
+  --content "Moderation status update..."
+```
+
+The command opens a bot DM with the recipient, posts the message, and prints a JSON receipt. Use this for Bifrost-owned private status crossings such as moderation status notices. Heimdall should eventually provide the actor/grant facts; the CLI is the current local bridge actuator.
+
 ## Discord Native Interface Target
 
 Discord should become a native Bifrost interface for Bifrost-scoped work, not just an output pipe.
