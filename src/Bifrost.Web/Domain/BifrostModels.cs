@@ -164,7 +164,9 @@ public sealed class UserAccount
 {
     public Guid Id { get; set; } = Guid.NewGuid();
 
-    public long GitHubUserId { get; set; }
+    public long? GitHubUserId { get; set; }
+
+    public string HeimdallAccountId { get; set; } = string.Empty;
 
     public string GitHubLogin { get; set; } = string.Empty;
 

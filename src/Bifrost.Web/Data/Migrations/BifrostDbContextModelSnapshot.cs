@@ -825,8 +825,13 @@ namespace Bifrost.Web.Data.Migrations
                         .HasMaxLength(120)
                         .HasColumnType("character varying(120)");
 
-                    b.Property<long>("GitHubUserId")
+                    b.Property<long?>("GitHubUserId")
                         .HasColumnType("bigint");
+
+                    b.Property<string>("HeimdallAccountId")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("character varying(160)");
 
                     b.Property<DateTimeOffset>("LastSeenAtUtc")
                         .HasColumnType("timestamp with time zone");
@@ -839,10 +844,16 @@ namespace Bifrost.Web.Data.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("GitHubUserId")
-                        .IsUnique();
+                        .IsUnique()
+                        .HasFilter("\"GitHubUserId\" IS NOT NULL");
+
+                    b.HasIndex("HeimdallAccountId")
+                        .IsUnique()
+                        .HasFilter("\"HeimdallAccountId\" <> ''");
 
                     b.HasIndex("NormalizedGitHubLogin")
-                        .IsUnique();
+                        .IsUnique()
+                        .HasFilter("\"NormalizedGitHubLogin\" <> ''");
 
                     b.ToTable("UserAccounts");
                 });

@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using Bifrost.Web.Data;
+using Bifrost.Web.Features.Membership;
 using Microsoft.EntityFrameworkCore;
 
 namespace Bifrost.Web.Features.Shared;
@@ -29,8 +30,11 @@ public sealed class CurrentBifrostActorAccessor(
             return Cache(httpContext, CurrentBifrostActor.Anonymous);
         }
 
+        var heimdallAccountId = httpContext.User.FindFirstValue(BifrostClaimTypes.HeimdallAccountId);
         var gitHubId = httpContext.User.FindFirstValue(ClaimTypes.NameIdentifier);
-        if (!long.TryParse(gitHubId, out var gitHubUserId))
+        var hasGitHubUserId = long.TryParse(gitHubId, out var gitHubUserId);
+
+        if (string.IsNullOrWhiteSpace(heimdallAccountId) && !hasGitHubUserId)
         {
             return Cache(httpContext, CurrentBifrostActor.Anonymous);
         }
@@ -42,7 +46,10 @@ public sealed class CurrentBifrostActorAccessor(
                 .ThenInclude(x => x.RoleAssignments)
             .Include(x => x.Membership!)
                 .ThenInclude(x => x.TierSnapshots)
-            .SingleOrDefaultAsync(x => x.GitHubUserId == gitHubUserId, cancellationToken);
+            .SingleOrDefaultAsync(
+                x => (!string.IsNullOrWhiteSpace(heimdallAccountId) && x.HeimdallAccountId == heimdallAccountId) ||
+                     (hasGitHubUserId && x.GitHubUserId == gitHubUserId),
+                cancellationToken);
 
         return Cache(httpContext, new CurrentBifrostActor(true, userAccount));
     }

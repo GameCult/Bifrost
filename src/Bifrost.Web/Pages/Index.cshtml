@@ -20,6 +20,12 @@
                 <code>GitHubOAuth:ClientSecret</code> before using sign-in.
             </div>
         }
+        else if (Model.Auth == "heimdall-error")
+        {
+            <div class="callout warning">
+                Heimdall sign-in did not complete. Check the provider configuration and membership policy.
+            </div>
+        }
 
         <div class="hero-actions">
             @if (Model.Actor.IsActiveMember)
@@ -33,6 +39,8 @@
             else
             {
                 <a class="button" href="/auth/sign-in">Sign in with GitHub</a>
+                <a class="button secondary" href="/auth/heimdall/discord">Sign in with Discord</a>
+                <a class="button secondary" href="/auth/heimdall/patreon">Sign in with Patreon</a>
             }
 
             <a class="button secondary" href="https://github.com/GameCult/Bifrost">View repository</a>
