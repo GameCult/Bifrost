@@ -36,6 +36,9 @@ async function main() {
     case "discord-dm":
       await sendDiscordDm(options);
       return;
+    case "reddit-post":
+      await postRedditThread(options);
+      return;
     default:
       throw new Error(`Unknown command "${command}". Run "node tools/bifrost-bridge.mjs help".`);
   }
@@ -232,6 +235,141 @@ async function sendDiscordDm(options) {
     transport: result.transport,
     url: `https://discord.com/channels/@me/${channelId}/${result.id}`,
   });
+}
+
+async function postRedditThread(options) {
+  const subreddit = normalizeSubreddit(options.subreddit ?? process.env.BIFROST_REDDIT_SUBREDDIT ?? "GameCultOrg");
+  const title = requireOption(options, "title");
+  const content = await readOptionText(options, "content", "content-file");
+  const personaName = optionalString(options["persona-name"]);
+  const personaFlairId = optionalString(options["persona-flair-id"]);
+  const personaFlairText = optionalString(options["persona-flair-text"]) ?? personaName;
+  const dryRun = options["dry-run"] === "true";
+
+  if (dryRun) {
+    printJson({
+      dryRun: true,
+      action: "reddit-post",
+      subreddit,
+      title,
+      content,
+      personaName,
+      personaFlairId,
+      personaFlairText,
+    });
+    return;
+  }
+
+  const accessToken = await getRedditAccessToken();
+  const result = await submitRedditSelfPost(accessToken, {
+    subreddit,
+    title,
+    content,
+    flairId: personaFlairId,
+    flairText: personaFlairText,
+  });
+
+  printJson({
+    action: "reddit-post",
+    ok: true,
+    subreddit,
+    title,
+    personaName,
+    personaFlairId,
+    personaFlairText,
+    thingId: result.thingId,
+    url: result.url,
+  });
+}
+
+async function getRedditAccessToken() {
+  const clientId = optionalString(process.env.BIFROST_REDDIT_CLIENT_ID ?? process.env.REDDIT_CLIENT_ID);
+  const clientSecret = process.env.BIFROST_REDDIT_CLIENT_SECRET ?? process.env.REDDIT_CLIENT_SECRET ?? "";
+  const refreshToken = optionalString(process.env.BIFROST_REDDIT_REFRESH_TOKEN ?? process.env.REDDIT_REFRESH_TOKEN);
+  const userAgent = getRedditUserAgent();
+
+  if (!clientId || !refreshToken) {
+    throw new Error(
+      "Set BIFROST_REDDIT_CLIENT_ID and BIFROST_REDDIT_REFRESH_TOKEN before posting to Reddit. " +
+        "Set BIFROST_REDDIT_CLIENT_SECRET when the Reddit app uses one.",
+    );
+  }
+
+  const response = await fetch("https://www.reddit.com/api/v1/access_token", {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString("base64")}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+      "User-Agent": userAgent,
+    },
+    body: new URLSearchParams({
+      grant_type: "refresh_token",
+      refresh_token: refreshToken,
+    }),
+  });
+
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error(`Reddit token exchange failed with ${response.status}: ${text}`);
+  }
+
+  const payload = JSON.parse(text);
+  if (!payload.access_token) {
+    throw new Error("Reddit token exchange returned no access token.");
+  }
+  return payload.access_token;
+}
+
+async function submitRedditSelfPost(accessToken, input) {
+  const body = new URLSearchParams({
+    api_type: "json",
+    kind: "self",
+    sr: input.subreddit,
+    title: input.title,
+    text: input.content,
+    resubmit: "true",
+    send_replies: "true",
+  });
+
+  if (input.flairId) {
+    body.set("flair_id", input.flairId);
+  }
+  if (input.flairText) {
+    body.set("flair_text", input.flairText.slice(0, 64));
+  }
+
+  const response = await fetch("https://oauth.reddit.com/api/submit", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+      "User-Agent": getRedditUserAgent(),
+    },
+    body,
+  });
+
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error(`Reddit post failed with ${response.status}: ${text}`);
+  }
+
+  const payload = JSON.parse(text);
+  const errors = payload?.json?.errors ?? [];
+  if (errors.length > 0) {
+    throw new Error(`Reddit post failed: ${JSON.stringify(errors)}`);
+  }
+
+  const data = payload?.json?.data ?? {};
+  const thingId = data.name ?? data.id ?? "";
+  const url = data.url ?? (data.id ? `https://www.reddit.com/r/${input.subreddit}/comments/${data.id}` : "");
+  if (!thingId && !url) {
+    throw new Error(`Reddit post returned no receipt: ${text}`);
+  }
+
+  return {
+    thingId,
+    url,
+  };
 }
 
 async function openDiscordDmChannel(token, recipientId) {
@@ -605,6 +743,19 @@ function optionalString(value) {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
+function normalizeSubreddit(value) {
+  const subreddit = optionalString(value)?.replace(/^\/?r\//i, "");
+  if (!subreddit || !/^[A-Za-z0-9_]{3,21}$/.test(subreddit)) {
+    throw new Error(`Invalid subreddit "${value}". Use a subreddit name such as GameCultOrg.`);
+  }
+  return subreddit;
+}
+
+function getRedditUserAgent() {
+  return optionalString(process.env.BIFROST_REDDIT_USER_AGENT ?? process.env.REDDIT_USER_AGENT) ??
+    "GameCult Bifrost bridge/0.1 by GameCultOrg";
+}
+
 function normalizeRelativePath(value) {
   const normalized = value.replace(/\\/g, "/").replace(/^\/+/, "");
   if (normalized.includes("../") || normalized === "..") {
@@ -670,12 +821,14 @@ Commands:
   github-pr-comment Comment on a pull request through gh
   discord-post      Post a message to Discord through the bot token or persona webhook pipe
   discord-dm        Send a Discord DM through Bifrost's bridge-owned bot token
+  reddit-post       Create a self-post in r/GameCultOrg through the Bifrost Reddit app
 
 Examples:
   node tools/bifrost-bridge.mjs github-draft-pr --repo-root E:/Projects/AetheriaLore --identity nibu --title "Nibu: Glitchcraft" --path Aetheria/Articles/Nibu/glitchcraft.md --content-file article.md
   node tools/bifrost-bridge.mjs github-pr-comment --repo-root E:/Projects/AetheriaLore --identity nibu --pr 12 --content "This needs a sharper leash."
   node tools/bifrost-bridge.mjs discord-post --channel-id 1501196543150264332 --persona-name Nibu --content "Draft PR opened: https://github.com/..."
   node tools/bifrost-bridge.mjs discord-dm --recipient-id 123456789 --content "Moderation status update..."
+  node tools/bifrost-bridge.mjs reddit-post --title "Nibu: Reset-loop continuity" --persona-name Nibu --content-file thread.md
 `);
 }
 

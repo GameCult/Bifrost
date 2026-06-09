@@ -2,7 +2,7 @@
 
 Bifrost is the planned GameCult member, governance, labor, and public-process platform running under the Yggdrasil infrastructure umbrella. It exists to connect projects, users, patrons, contributors, motions, ledgers, work requests, reward pressure, public receipts, and operational decisions in one place instead of leaving them scattered across GitHub, docs, chat, and human memory.
 
-Bifrost also owns the governed transport layer for GameCult work that crosses public or collaboration protocols: GitHub proposal/review surfaces, Discord-native work and swarm interfaces, CultNet/CultCache intake packets, and future collaboration interfaces. That bridge role follows from the Labor Platform role; it is not a separate bot utility. See [docs/jurisdiction-map.md](E:\Projects\Bifrost\docs\jurisdiction-map.md).
+Bifrost also owns the governed transport layer for GameCult work that crosses public or collaboration protocols: GitHub proposal/review surfaces, Discord-native work and swarm interfaces, Reddit organizing threads in `r/GameCultOrg`, CultNet/CultCache intake packets, and future collaboration interfaces. That bridge role follows from the Labor Platform role; it is not a separate bot utility. See [docs/jurisdiction-map.md](E:\Projects\Bifrost\docs\jurisdiction-map.md).
 
 ## Status
 
@@ -18,6 +18,7 @@ This repository now includes a viable alpha foundation slice of the ASP.NET Core
 - health and readiness endpoints plus startup config validation
 - GitHub App webhook ingestion for issue, pull request, and review sync
 - local bridge tooling for agent-owned GitHub draft PRs and Discord posts
+- local bridge tooling for Reddit self-posts in `r/GameCultOrg`, including Persona flair labels through the Bifrost Reddit app
 - CultCache-backed governance topic threads for feature requests, discussion comments, Persona approvals, and dispatch promotion
 - CultCache/CultNet-backed agent intake tooling for repo Persona update requests
 - a Verse service contract for CultCache witnesses, CultMesh namespaces, and Eve/CultUI product and operator surfaces
@@ -67,9 +68,11 @@ For the full staged roadmap, including contribution points, revenue share, patro
 
 - set `GitHubOAuth:ClientId` and `GitHubOAuth:ClientSecret` before using sign-in
 - set `Bootstrap:AdminGitHubLogins` with at least one GitHub login for the first active admin path
+- set `BIFROST_REDDIT_CLIENT_ID`, `BIFROST_REDDIT_REFRESH_TOKEN`, and optionally `BIFROST_REDDIT_CLIENT_SECRET` before posting Reddit organizing threads
 - default connection string points at local PostgreSQL
 - build with `dotnet build Bifrost.slnx`
 - test with `DOTNET_ROLL_FORWARD=Major dotnet test Bifrost.slnx` if the machine only has the .NET 10 runtime installed
+- dry-run a Reddit organizing thread with `node tools/bifrost-bridge.mjs reddit-post --title "Thread title" --persona-name Bifrost --content "Thread body" --dry-run true`
 - print the Eve provider advertisement with `node tools/provider-advertisement.mjs print`
 - export the Eve provider advertisement witness with `node tools/provider-advertisement.mjs export --out .bifrost/provider-advertisement.cc`
 - container smoke test with `docker compose -f compose.local.yaml up --build`
@@ -85,5 +88,6 @@ Before implementation work starts in a new session, read these files in order:
 4. [docs/bridge.md](E:\Projects\Bifrost\docs\bridge.md)
 5. [docs/verse-service-contract.md](E:\Projects\Bifrost\docs\verse-service-contract.md)
 6. [docs/agent-transport.md](E:\Projects\Bifrost\docs\agent-transport.md)
-7. [docs/full-implementation-strategy.md](E:\Projects\Bifrost\docs\full-implementation-strategy.md)
-8. [docs/context.md](E:\Projects\Bifrost\docs\context.md)
+7. [docs/reddit.md](E:\Projects\Bifrost\docs\reddit.md)
+8. [docs/full-implementation-strategy.md](E:\Projects\Bifrost\docs\full-implementation-strategy.md)
+9. [docs/context.md](E:\Projects\Bifrost\docs\context.md)

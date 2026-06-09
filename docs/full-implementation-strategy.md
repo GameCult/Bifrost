@@ -73,7 +73,8 @@ The labor platform concept doc establishes the social and economic model. Bifros
   - features: 50%
   - new content: 50%
   - fundamental design changes: 66%
-- Discord-native voting or priority prompts should eventually write into the same governance/priority records as the web app, after Heimdall-backed identity and capability claims exist.
+- Discord-native and Reddit-native voting or priority prompts should eventually write into the same governance/priority records as the web app, after Heimdall-backed identity and capability claims exist.
+- Reddit organizing threads in `r/GameCultOrg` may host public discussion and Persona-authored prompts, but Reddit reactions are evidence until Bifrost commits a linked vote or priority signal.
 
 ### Accounting
 
@@ -204,6 +205,7 @@ Deliver:
 - contributor point award rules
 - continuous role accounting
 - patron support history and patron point calculation
+- Reddit account linking for discussion attribution, without using Reddit karma or upvotes as patron voting weight
 - weekly decay job
 - tier snapshots and effective voting weight calculation from tier state
 

@@ -5,7 +5,7 @@
 - Create Bifrost as a separate GameCult app repo and deploy it on Yggdrasil.
 - Build a member alpha, not a public launch.
 - Use ASP.NET Core 8 with Razor Pages + HTMX and PostgreSQL.
-- Support invite-only GitHub-linked members, GitHub-backed and internal work items, app-native governance, and internal ledgers.
+- Support invite-only GitHub-linked members, GitHub-backed and internal work items, app-native governance, Reddit organizing threads, and internal ledgers.
 - Preserve the Labor Platform loop: user/member/patron demand raises work priority and reward pressure, contributors pick up valuable work, maintainers accept completion artifacts, and Bifrost credits the contributor plus any bounty/reward allocation.
 - Do not include Ethereum, wallets, DAO mechanics, or payout execution in v1.
 - Align the implementation with the labor platform model in `E:\Projects\gamecult-site\GameCult\Docs\labor-platform.md`.
@@ -17,7 +17,7 @@
 - PostgreSQL as the system of record.
 - GitHub OAuth for login.
 - GitHub App plus webhooks for issue and pull request lifecycle sync.
-- Discord should become a native Bifrost interface for work, voting/priority prompts, reward discussion, maintainer notices, and agent swarm routing once identity/capability claims are available.
+- Discord and Reddit should become native Bifrost interfaces for work, voting/priority prompts, reward discussion, maintainer notices, public organizing threads, and agent swarm routing once identity/capability claims are available.
 - Yggdrasil-hosted deployment behind nginx with systemd-managed app service.
 
 ## Core Models
@@ -48,6 +48,7 @@
 - Work priority and attached reward should be able to rise as more eligible participants want the work done.
 - Contributor credit/reward is assigned only after maintainer acceptance of the completion artifact.
 - Voting weight derives from patron tier plus contributor tier.
+- Reddit comments, upvotes, flair, and thread visibility do not derive voting weight; linked patron support and contribution state do.
 - Compensation is modeled internally, not executed by the platform.
 - Human approval remains in the loop for governance-sensitive and payout-sensitive steps.
 
@@ -92,6 +93,7 @@ Build the minimum vertical slice for:
 - GitHub issue sync creates or updates a work item
 - internal task can be created and assigned without GitHub backing
 - eligible users/members/patrons/contributors can add priority pressure to work
+- Reddit discussion can produce a linked Bifrost topic comment, priority signal, or motion vote without Reddit itself becoming the ledger
 - work reward/credit pressure can rise from demand and be inspected before claim
 - member volunteers for a task and a producer/admin assigns it
 - maintainer accepts a linked PR or completion artifact before credit/reward is assigned

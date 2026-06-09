@@ -3,11 +3,11 @@
 ## Repo Purpose
 
 - Bifrost is the GameCult member alpha platform for tasks, governance, contributor accounting, and operational legibility.
-- Bifrost also owns GameCult public-protocol transport for governed work crossings: GitHub proposal/review surfaces, Discord dispatch receipts, CultNet/CultCache intake packets, and future collaboration interfaces.
+- Bifrost also owns GameCult public-protocol transport for governed work crossings: GitHub proposal/review surfaces, Discord dispatch receipts, Reddit organizing threads, CultNet/CultCache intake packets, and future collaboration interfaces.
 - It sits under the Yggdrasil infrastructure umbrella and should connect GameCult services and workflows without importing crypto ideology or platform theater.
 - The transport role follows from Bifrost's Labor Platform role. Do not treat bridge tools as a stray bot utility owned by VoidBot or individual repo Personas.
 - The product center is the governance/labor loop: users, patrons, members, and contributors express policy and work priorities; reward pressure rises around work that matters; contributors claim valuable work; maintainers accept completion artifacts; Bifrost credits the contributor and records the reward allocation.
-- Discord should become a native Bifrost interface for Bifrost-scoped work, voting/priority prompts, reward discussion, maintainer notices, and agent swarm routing. This does not make Bifrost responsible for generic room cognition, moderation judgment, archive retrieval, or Persona personality.
+- Discord and Reddit should become native Bifrost interfaces for Bifrost-scoped work, voting/priority prompts, reward discussion, maintainer notices, public organizing threads, and agent swarm routing. This does not make Bifrost responsible for generic room cognition, moderation judgment, archive retrieval, subreddit moderation taste, or Persona personality.
 
 ## V1 Non-Goals
 
@@ -55,7 +55,7 @@
 - Keep implementation boring where possible; the product idea is ambitious enough already.
 - Push changes after every implementation pass.
 - If a question is about trust, accountability, or payout fairness, prefer auditability over automation.
-- If a question is about public work crossing GitHub, Discord, CultNet/CultCache intake, or future collaboration surfaces, prefer Bifrost-owned requests, receipts, and routing over local helper sprawl.
+- If a question is about public work crossing GitHub, Discord, Reddit, CultNet/CultCache intake, or future collaboration surfaces, prefer Bifrost-owned requests, receipts, and routing over local helper sprawl.
 - Before debugging UI/layout, inspect the live DOM and computed styles instead of guessing from templates or CSS intent.
 
 ## Starting Point For The Next Session
@@ -67,9 +67,10 @@ Read these files first:
 3. `docs/jurisdiction-map.md`
 4. `docs/bridge.md`
 5. `docs/agent-transport.md`
-6. `docs/bifrost-mvp-plan.md`
-7. `docs/full-implementation-strategy.md`
-8. `docs/context.md`
+6. `docs/reddit.md`
+7. `docs/bifrost-mvp-plan.md`
+8. `docs/full-implementation-strategy.md`
+9. `docs/context.md`
 
 Then start the first implementation milestone:
 

@@ -12,11 +12,32 @@ const projectsRoot = resolve(repoRoot, "..");
 const defaultStorePath = resolve(repoRoot, ".bifrost", "provider-advertisement.cc");
 
 const cultCacheRequire = createRequire(resolve(projectsRoot, "CultCacheTS", "package.json"));
+const cultCacheRuntime = loadCultCacheRuntime();
 const {
   CultCache,
   SingleFileMessagePackBackingStore,
   defineDocumentType,
-} = cultCacheRequire(resolve(projectsRoot, "CultCacheTS", "dist", "index.js"));
+} = cultCacheRuntime;
+
+function loadCultCacheRuntime() {
+  const candidates = [
+    resolve(projectsRoot, "CultCacheTS", "dist", "index.js"),
+    resolve(projectsRoot, "CultLib", "packages", "cultcache-ts", "dist", "index.js"),
+  ];
+
+  for (const candidate of candidates) {
+    try {
+      const runtime = cultCacheRequire(candidate);
+      if (runtime.CultCache && runtime.SingleFileMessagePackBackingStore && runtime.defineDocumentType) {
+        return runtime;
+      }
+    } catch {
+      // Try the next local CultCache runtime candidate.
+    }
+  }
+
+  throw new Error("CultCache TypeScript runtime with document APIs is unavailable.");
+}
 
 const documentType = "gamecult.eve.provider_advertisement";
 const schemaId = "gamecult.eve.provider_advertisement.v1";
@@ -185,7 +206,7 @@ function buildAdvertisement(options) {
       namespace("gamecult.bifrost.governance", "motions, topic threads, comments, votes, approvals, objections, and policy receipts"),
       namespace("gamecult.bifrost.work", "projects, work items, claims, review state, completion artifacts, and maintainer acceptance"),
       namespace("gamecult.bifrost.economics", "patron pressure, contributor credit, ledger entries, payout proposal batches, and revenue-share inputs"),
-      namespace("gamecult.bifrost.bridge", "GitHub, Discord, CultNet/CultCache, and future collaboration crossings plus receipts"),
+      namespace("gamecult.bifrost.bridge", "GitHub, Discord, Reddit, CultNet/CultCache, and future collaboration crossings plus receipts"),
       namespace("gamecult.bifrost.surface.product", "member, patron, contributor, and project-facing Eve product surfaces"),
       namespace("gamecult.bifrost.surface.operator", "readiness, witness, bridge, schema, migration, and deploy operator surfaces"),
     ],
@@ -280,7 +301,7 @@ function buildAdvertisement(options) {
         "object",
         "promote to dispatch",
       ], [
-        "Discord mirrors cannot become canonical governance without a committed Bifrost document",
+        "Discord and Reddit mirrors cannot become canonical governance without a committed Bifrost document",
       ]),
       boundary("patron", "Bifrost", [
         "record patron pressure",
@@ -309,6 +330,7 @@ function buildAdvertisement(options) {
         "prepare governed public crossings",
         "execute approved handoffs",
         "record receipts",
+        "post Persona-flaired Reddit organizing threads",
       ], [
         "does not treat local protocol JSON as work authority",
         "does not touch secrets in this advertisement",
@@ -325,6 +347,7 @@ function buildAdvertisement(options) {
       "Razor Pages are browser lowerings, not the canonical presentation owner.",
       "HTTP health/readiness JSON is a probe, not service truth.",
       "Discord messages are mirrors and input surfaces until Bifrost commits typed state.",
+      "Reddit threads are organizing surfaces until Bifrost commits typed votes, priority signals, comments, or receipts.",
       "Local dispatch JSON is evidence for receipts, not command authority.",
       "This advertisement is read-only discovery metadata and does not migrate runtime state.",
     ],
@@ -381,9 +404,11 @@ async function collectStats(options) {
     bridge: {
       discordPost: true,
       discordDm: true,
+      redditPost: Boolean(process.env.BIFROST_REDDIT_CLIENT_ID && process.env.BIFROST_REDDIT_REFRESH_TOKEN),
       githubDraftPr: true,
       githubPrComment: true,
       credentialSource: process.env.BIFROST_DISCORD_BOT_TOKEN ? "BIFROST_DISCORD_BOT_TOKEN" : process.env.DISCORD_BOT_TOKEN ? "DISCORD_BOT_TOKEN-fallback" : "missing",
+      redditCredentialSource: process.env.BIFROST_REDDIT_CLIENT_ID && process.env.BIFROST_REDDIT_REFRESH_TOKEN ? "BIFROST_REDDIT_CLIENT_ID+BIFROST_REDDIT_REFRESH_TOKEN" : "missing",
     },
     summary: {
       status: health.ok && ready.ok ? "ready" : "degraded",
@@ -509,7 +534,7 @@ function buildOperatorSurface(stats) {
       metricNode("daemon", "Daemon", `health ${stats.summary.health} / ready ${stats.summary.ready}`, stats.health.ok && stats.ready.ok ? "ok" : "warn"),
       metricNode("containers", "Containers", `${stats.summary.dockerRunning} up / ${stats.summary.dockerHealthy} healthy`, stats.summary.dockerHealthy > 0 ? "ok" : "warn"),
       metricNode("stores", "Stores", witnessHealthLine(stats.witnesses), witnessHealthTone(stats.witnesses)),
-      metricNode("bridge", "Bridge", `Discord post ${yesNo(stats.bridge.discordPost)} / DM ${yesNo(stats.bridge.discordDm)}`, "ok"),
+      metricNode("bridge", "Bridge", `Discord post ${yesNo(stats.bridge.discordPost)} / DM ${yesNo(stats.bridge.discordDm)} / Reddit ${yesNo(stats.bridge.redditPost)}`, stats.bridge.redditPost ? "ok" : "warn"),
     ]),
     panelNode("activity", "Activity", [
       metricNode("topics", "Topics", `${stats.summary.governanceTopics} total / ${stats.summary.openTopics} open / ${stats.summary.recentGovernanceTopics} in ${stats.summary.recentWindowHours}h`, stats.governance.ok ? "ok" : "warn"),

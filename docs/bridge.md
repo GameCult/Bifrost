@@ -1,6 +1,6 @@
 # Bifrost Bridge
 
-Bifrost is the bridge for GameCult agent, user, patron, member, and contributor work that needs to cross into GitHub, Discord, CultNet/CultCache intake, or another governed external surface.
+Bifrost is the bridge for GameCult agent, user, patron, member, and contributor work that needs to cross into GitHub, Discord, Reddit, CultNet/CultCache intake, or another governed external surface.
 
 As a Verse service, the bridge publishes typed state and surfaces instead of
 letting the local CLI, Discord text, or web views become the canonical interface.
@@ -27,6 +27,7 @@ It does not mean Bifrost should own OAuth sludge. Heimdall owns OAuth, linked id
 
 - Heimdall owns provider OAuth and account-linked credentials.
 - Bifrost owns bridge action policy, request lifecycle, routing, execution receipts, Discord-native Bifrost interface transport, and governance/labor transport.
+- Reddit posts through the Bifrost Reddit app are Bifrost-owned public organizing crossings; Persona flair is presentation identity, not authority.
 - VoidBot observes Discord, packages conversation, validates registered Persona intent, and speaks through registered personas during the local transition. It should not be the durable authority that mutates GitHub or owns Bifrost-scoped Discord transport.
 - CultCache stores lightweight agent transport packets when the bridge needs file-native state.
 - CultNet carries those packets between runtimes.
@@ -40,6 +41,7 @@ It intentionally uses boring local credentials while Heimdall's managed GitHub c
 
 - GitHub actions use the local `gh` authenticated account.
 - Discord posts use `BIFROST_DISCORD_BOT_TOKEN` or `DISCORD_BOT_TOKEN`.
+- Reddit self-posts use `BIFROST_REDDIT_CLIENT_ID`, `BIFROST_REDDIT_REFRESH_TOKEN`, and optional `BIFROST_REDDIT_CLIENT_SECRET`.
 
 The CLI is not the final permission system. It is the working bridge actuator Bifrost owns now, so VoidBot and repo Personas can stop carrying this machinery themselves.
 
@@ -102,6 +104,23 @@ node .\tools\bifrost-bridge.mjs discord-dm `
 
 The command opens a bot DM with the recipient, posts the message, and prints a JSON receipt. Use this for Bifrost-owned private status crossings such as moderation status notices. Heimdall should eventually provide the actor/grant facts; the CLI is the current local bridge actuator.
 
+### Reddit Post
+
+```powershell
+node .\tools\bifrost-bridge.mjs reddit-post `
+  --subreddit GameCultOrg `
+  --title "Nibu: Reset-loop continuity" `
+  --persona-name Nibu `
+  --persona-flair-text Nibu `
+  --content-file E:\tmp\nibu-thread.md
+```
+
+The command creates a self-post through the Bifrost Reddit app and prints a JSON receipt with the Reddit thing id and URL. Use it for Bifrost-owned public organizing threads, patron discussion prompts, Persona-authored proposals, and public receipts in `r/GameCultOrg`.
+
+If the subreddit uses fixed custom flair templates, pass `--persona-flair-id`. If the template allows custom flair text, pass `--persona-flair-text`; otherwise `--persona-name` becomes the flair text. Flair identifies the Persona speaking through Bifrost. It does not grant authority or voting weight.
+
+Reddit is not the canonical vote ledger. Reddit comments, upvotes, and flair labels are evidence until a linked actor commits a Bifrost vote, priority signal, topic comment, or receipt.
+
 ## Discord Native Interface Target
 
 Discord should become a native Bifrost interface for Bifrost-scoped work, not just an output pipe.
@@ -124,6 +143,6 @@ The correct future credential path is:
 2. Heimdall issues Bifrost-verifiable claims for account identity and bridge capabilities.
 3. Bifrost records a bridge action request and checks the Heimdall-derived permission facts.
 4. Bifrost executes or queues the action through the appropriate bridge executor.
-5. Bifrost records the GitHub/Discord receipt and exposes it back to the requesting agent/runtime.
+5. Bifrost records the GitHub/Discord/Reddit receipt and exposes it back to the requesting agent/runtime.
 
 In that shape, Bifrost is the shiny bridge. Heimdall is the gatehouse with the keys. VoidBot is not hiding a bolt cutter in its coat.

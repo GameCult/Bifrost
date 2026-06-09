@@ -6,8 +6,8 @@ CultCache-compatible store with a `.cc` witness/export. Its presentation truth
 must be Eve/CultUI DSL, preferably `gamecult.eve.surface.v1`, published through
 CultMesh for Odin discovery.
 
-The existing Razor Pages app, Discord mirrors, bridge CLI receipts, and future
-web/native/TUI clients are lowerings. They may render, command, and inspect
+The existing Razor Pages app, Discord mirrors, Reddit threads, bridge CLI
+receipts, and future web/native/TUI clients are lowerings. They may render, command, and inspect
 Bifrost state. They do not own Bifrost's canonical product or operator surface.
 
 ## Owner Map
@@ -20,7 +20,7 @@ Bifrost state. They do not own Bifrost's canonical product or operator surface.
 | Storage and sync primitives | CultCache/CultNet/CultLib | Bifrost document types and payloads | `.cc` stores, snapshots, raw document updates |
 | Service discovery and surface aggregation | Odin | CultMesh namespaces, schema catalogs, service registrations | discoverable Verse routes and surface indexes |
 | Room observation and Persona cognition | VoidBot/repo Personas | Discord context, repo state, Persona state | proposed Bifrost topics, comments, dispatch requests |
-| Rendering | Eve/browser/native/TUI/Discord | `gamecult.eve.surface.v1` compositions, typed state references | product/operator UI lowerings, not canonical state |
+| Rendering | Eve/browser/native/TUI/Discord/Reddit | `gamecult.eve.surface.v1` compositions, typed state references | product/operator UI lowerings, not canonical state |
 
 ## Durable State And Witnesses
 
@@ -61,7 +61,7 @@ Bifrost publishes under these CultMesh namespaces:
   acceptance.
 - `gamecult.bifrost.economics` for patron pressure, contributor credit, ledger
   entries, payout proposal batches, and revenue-share inputs.
-- `gamecult.bifrost.bridge` for GitHub, Discord, CultNet/CultCache, and future
+- `gamecult.bifrost.bridge` for GitHub, Discord, Reddit, CultNet/CultCache, and future
   collaboration crossings plus receipts.
 - `gamecult.bifrost.surface.product` for member/patron/contributor/user-facing
   Eve product surfaces.
@@ -94,8 +94,8 @@ It writes Bifrost-owned Eve discovery documents into
   dashboards.
 
 This export does not migrate Postgres state, read secrets, execute bridge
-actions, or make Razor Pages, HTTP probes, Discord mirrors, or local dispatch
-JSON canonical. The operator surface may display those probes, but the provider
+actions, or make Razor Pages, HTTP probes, Discord mirrors, Reddit threads, or
+local dispatch JSON canonical. The operator surface may display those probes, but the provider
 owned `.cc` witness remains the discovery and dashboard source.
 
 For protocol-debug inspection without writing a witness:
@@ -125,7 +125,8 @@ Operator surfaces are the canonical interface compositions for:
 - topic/request status, dispatch activity by source channel, failed crossings,
   retry/cancel controls, and receipt gaps;
 - schema versions, migration state, and Postgres-to-`.cc` witness drift;
-- Discord mirror health, including fail-closed unmirrored governance writes.
+- Discord mirror health, including fail-closed unmirrored governance writes;
+- Reddit bridge readiness for `r/GameCultOrg` organizing posts and Persona flair.
 
 The current Razor Pages app lowers product surfaces into browser UI. Existing
 health/readiness endpoints lower operator state into HTTP probes. Both should
@@ -186,7 +187,8 @@ Bifrost.
 ## Migration Order
 
 1. Catalog current Bifrost state owners: EF/Postgres tables, `.cc` stores,
-   bridge receipts, Discord mirrors, webhook cache, and app readiness state.
+   bridge receipts, Discord mirrors, Reddit receipts, webhook cache, and app
+   readiness state.
 2. Define schema ids for missing Bifrost documents: work item, motion, vote,
    ledger entry, bridge action, bridge receipt, member capability snapshot,
    service registration, and Eve surface publication.
@@ -199,8 +201,8 @@ Bifrost.
    contributor views as `gamecult.eve.surface.v1`.
 7. Lower the existing Razor Pages app from the Eve/product surface contract
    where practical, leaving direct Razor composition only as transitional UI.
-8. Route Discord native interactions through Bifrost commands that update typed
-   state and emit Discord receipts from the same commit path.
+8. Route Discord and Reddit native interactions through Bifrost commands that
+   update typed state and emit public receipts from the same commit path.
 9. Let Odin discover Bifrost surfaces and nested Verses through CultMesh, then
    retire any scraping or private summary adapters.
 
@@ -221,6 +223,9 @@ Demoted surfaces and stores:
 - Discord `#bifrost` messages are mirrors and linked-user input surfaces. They
   are not canonical governance threads unless Bifrost commits the corresponding
   topic/comment/vote document.
+- Reddit `r/GameCultOrg` threads are public organizing surfaces and linked-user
+  input surfaces. They are not voting power unless Bifrost commits a typed vote
+  or priority signal from a linked actor.
 
 The live owner is Bifrost typed state. Everything else either lowers it,
 commands it, witnesses it, or provides external evidence for a typed receipt.

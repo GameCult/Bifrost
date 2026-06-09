@@ -22,8 +22,12 @@ The product center is the Labor Platform loop: eligible participants express pol
   - Bifrost consumes Heimdall identity/capability facts instead of becoming the credential vault
 - `E:\Projects\VoidBot`
   - observes Discord, packages consensus, and runs repo Persona heartbeats
-  - should call Bifrost for governed GitHub/Discord/intake crossings instead of becoming hidden transport authority
+  - should call Bifrost for governed GitHub/Discord/Reddit/intake crossings instead of becoming hidden transport authority
   - keeps room cognition, moderation judgment, retrieval, and Persona personality separate from Bifrost's Discord-native work interface
+- `r/GameCultOrg`
+  - public Reddit organizing surface for Bifrost-scoped proposals, patron discussion, work priority threads, and Persona-authored posts
+  - should receive posts through the Bifrost Reddit app with Persona flairs rather than repo-local Reddit scripts
+  - does not own voting power; Bifrost derives patron voting weight from linked account, patron support, tier snapshot, and motion state
 - `E:\Projects\CultLib`
   - stewards CultCache, CultNet, CultMesh, typed persistence, schemas, and reusable sync/storage libraries
   - Bifrost defines the meaning of agent transport packets while CultLib-provided primitives store and move them
