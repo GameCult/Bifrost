@@ -1,11 +1,13 @@
 using System.Net.Http.Headers;
 using System.Security.Claims;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Bifrost.Web.Configuration;
 using Bifrost.Web.Data;
 using Bifrost.Web.Features.GitHub;
 using Bifrost.Web.Features.Heimdall;
 using Bifrost.Web.Features.Membership;
+using Bifrost.Web.Features.Motions;
 using Bifrost.Web.Features.Patronage;
 using Bifrost.Web.Features.Shared;
 using Microsoft.AspNetCore.Authentication;
@@ -44,6 +46,10 @@ builder.Services.AddRazorPages(options =>
     options.Conventions.AuthorizePage("/Membership/Status");
     options.Conventions.AuthorizeFolder("/App", ActiveMemberRequirement.PolicyName);
 });
+builder.Services.ConfigureHttpJsonOptions(options =>
+{
+    options.SerializerOptions.Converters.Add(new JsonStringEnumConverter());
+});
 
 builder.Services.AddDbContext<BifrostDbContext>(options =>
 {
@@ -69,6 +75,8 @@ builder.Services.AddScoped<AuditTrailService>();
 builder.Services.AddScoped<DashboardSnapshotService>();
 builder.Services.AddScoped<MembershipSynchronizationService>();
 builder.Services.AddScoped<GitHubWebhookService>();
+builder.Services.AddScoped<MotionGovernanceService>();
+builder.Services.AddScoped<MotionEveSurfaceService>();
 builder.Services.AddScoped<PatronageService>();
 builder.Services.AddScoped<HeimdallPatronSupportIntakeService>();
 builder.Services.AddScoped<ReadinessService>();
@@ -156,6 +164,7 @@ builder.Services.AddAuthorization(options =>
 });
 
 var app = builder.Build();
+var eveJsonSerializerOptions = CreateEveJsonSerializerOptions();
 
 app.Services.GetRequiredService<StartupConfigurationValidator>().Validate();
 await using (var scope = app.Services.CreateAsyncScope())
@@ -308,6 +317,94 @@ app.MapPost("/heimdall/patron-support/events", async (
     };
 }).AllowAnonymous();
 
+var eveGovernance = app.MapGroup("/eve/governance")
+    .RequireAuthorization(ActiveMemberRequirement.PolicyName);
+
+eveGovernance.MapGet("/surface", async (
+    ICurrentBifrostActorAccessor actorAccessor,
+    MotionGovernanceService motionGovernanceService,
+    MotionEveSurfaceService motionEveSurfaceService,
+    CancellationToken cancellationToken) =>
+{
+    var actor = await actorAccessor.GetAsync(cancellationToken);
+    var state = await motionGovernanceService.GetStateAsync(actor, cancellationToken);
+    var surface = motionEveSurfaceService.BuildSurface(state);
+    return Results.Text(
+        JsonSerializer.Serialize(surface, eveJsonSerializerOptions),
+        "application/json");
+});
+
+eveGovernance.MapPost("/commands", async (
+    MotionEveCommandRequest command,
+    ICurrentBifrostActorAccessor actorAccessor,
+    MotionGovernanceService motionGovernanceService,
+    MotionEveSurfaceService motionEveSurfaceService,
+    CancellationToken cancellationToken) =>
+{
+    var actor = await actorAccessor.GetAsync(cancellationToken);
+
+    try
+    {
+        switch (command.Command)
+        {
+            case "motion.create":
+                if (command.Scope is null ||
+                    command.Category is null ||
+                    command.ClosesAtUtc is null ||
+                    string.IsNullOrWhiteSpace(command.Title) ||
+                    string.IsNullOrWhiteSpace(command.Summary))
+                {
+                    return Results.BadRequest("motion.create requires scope, category, title, summary, and closesAtUtc.");
+                }
+
+                await motionGovernanceService.CreateMotionAsync(
+                    actor,
+                    new CreateMotionCommand(
+                        command.Scope.Value,
+                        command.ProjectId,
+                        command.Category.Value,
+                        command.Title,
+                        command.Summary,
+                        command.ClosesAtUtc.Value),
+                    cancellationToken);
+                break;
+            case "motion.vote":
+                if (command.MotionId is null || command.Choice is null)
+                {
+                    return Results.BadRequest("motion.vote requires motionId and choice.");
+                }
+
+                await motionGovernanceService.CastVoteAsync(
+                    actor,
+                    command.MotionId.Value,
+                    command.Choice.Value,
+                    command.Comment,
+                    cancellationToken);
+                break;
+            case "motion.close":
+                if (command.MotionId is null)
+                {
+                    return Results.BadRequest("motion.close requires motionId.");
+                }
+
+                await motionGovernanceService.CloseMotionAsync(actor, command.MotionId.Value, cancellationToken);
+                break;
+            default:
+                return Results.BadRequest($"Unknown Eve governance command '{command.Command}'.");
+        }
+    }
+    catch (UnauthorizedAccessException)
+    {
+        return Results.Forbid();
+    }
+
+    var state = await motionGovernanceService.GetStateAsync(actor, cancellationToken);
+    var surface = motionEveSurfaceService.BuildSurface(state);
+    return Results.Text(
+        JsonSerializer.Serialize(surface, eveJsonSerializerOptions),
+        "application/json");
+});
+
 app.MapGet("/auth/heimdall/wait", async (
     HttpContext httpContext,
     HeimdallAuthService heimdallAuthService,
@@ -345,5 +442,12 @@ app.MapPost("/auth/sign-out", async (HttpContext httpContext) =>
 app.MapRazorPages();
 
 app.Run();
+
+static JsonSerializerOptions CreateEveJsonSerializerOptions()
+{
+    var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+    options.Converters.Add(new JsonStringEnumConverter());
+    return options;
+}
 
 public partial class Program;

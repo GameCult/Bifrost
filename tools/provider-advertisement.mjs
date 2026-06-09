@@ -188,6 +188,8 @@ function buildAdvertisement(options) {
       endpoint("operator-tui", `${locatedService}/eve/tui`, "gamecult.eve.surface.v1", ["tui", "nightwing-tui"]),
       endpoint("operator-gui", `${locatedService}/eve/gui`, "gamecult.eve.surface.v1", ["gui", "browser", "eve-native"]),
       endpoint("operator-commands", `${locatedService}/commands`, "bifrost.bridge_action.v0", ["command"]),
+      endpoint("motion-surface", "https://bifrost.gamecult.org/eve/governance/surface", "gamecult.eve.surface.v1", ["product", "governance", "motion"]),
+      endpoint("motion-commands", "https://bifrost.gamecult.org/eve/governance/commands", "bifrost.motion_command.v0", ["command", "governance", "motion"]),
     ],
     routes: [
       route("cultcache-witness", ".bifrost/provider-advertisement.cc", "local-cultcache", true),
@@ -217,8 +219,9 @@ function buildAdvertisement(options) {
       schema("bifrost.governance.topic_comment.v0", "bifrost.governance.topic-comment", "existing CultCache governance comment witness"),
       schema("bifrost.agent-transport.update-request.v0", "bifrost.agent-transport.update-request", "existing CultCache/CultNet agent intake witness"),
       schema("bifrost.work_item.v0", "bifrost.work-item", "planned Postgres-to-CultCache work item witness"),
-      schema("bifrost.motion.v0", "bifrost.motion", "planned app-native motion witness"),
-      schema("bifrost.vote.v0", "bifrost.vote", "planned motion vote witness"),
+      schema("bifrost.motion.v0", "bifrost.motion", "app-native motion witness"),
+      schema("bifrost.vote.v0", "bifrost.vote", "motion vote witness"),
+      schema("bifrost.motion_command.v0", "bifrost.motion-command", "Eve Motion Verse command envelope for create, vote, and close"),
       schema("bifrost.ledger_entry.v0", "bifrost.ledger-entry", "planned contributor/patron ledger witness"),
       schema("bifrost.bridge_action.v0", "bifrost.bridge-action", "planned governed crossing command witness"),
       schema("bifrost.bridge_receipt.v0", "bifrost.bridge-receipt", "planned governed crossing result witness"),
@@ -268,7 +271,7 @@ function buildAdvertisement(options) {
         "blockers",
         "completion artifacts",
       ]),
-      surface("bifrost.motion", "Motion Verse", "gamecult.bifrost.surface.product", "gamecult.eve.surface.v1", ".bifrost/eve-surfaces.cc", "motion/eve", [
+      surface("bifrost.motion", "Motion Verse", "gamecult.bifrost.surface.product", "gamecult.eve.surface.v1", "/eve/governance/surface", "motion/eve", [
         "motions",
         "topic threads",
         "votes",
@@ -597,7 +600,7 @@ function buildInterfaceBinding(surface, stats) {
         route("cultcache-witness", ".bifrost/provider-advertisement.cc", "local-cultcache", true),
         route("websocket-bridge", "ws://192.168.1.66:8797/eve/deck", "compatibility-eve-deck", true),
       ],
-      capabilities: ["operator-stats", "bridge-health", "governance-counts", "agent-transport-counts"],
+      capabilities: ["operator-stats", "bridge-health", "governance-counts", "agent-transport-counts", "motion-surface", "motion-commands"],
       usesCultMesh: true,
       status: stats.summary.status,
       transport: "CultMesh Eve interface binding.",

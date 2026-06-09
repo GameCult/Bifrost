@@ -18,6 +18,7 @@ It is currently a strong first application slice, not an internet-facing alpha. 
 - invite and approval gate with explicit member roles
 - member profile editing plus patron or contributor tier snapshots
 - project, work item, motion, member, and ledger UI
+- first Eve Motion Verse product surface and command endpoint, with Razor motion forms routed through the same governance service
 - patron support event recording with derived patron tier snapshot refresh
 - work logs, work reviews, and completion flow
 - GitHub App webhook ingestion for issue, pull request, and review sync

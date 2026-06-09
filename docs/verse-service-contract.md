@@ -128,9 +128,17 @@ Operator surfaces are the canonical interface compositions for:
 - Discord mirror health, including fail-closed unmirrored governance writes;
 - Reddit bridge readiness for `r/GameCultOrg` organizing posts and Persona flair.
 
-The current Razor Pages app lowers product surfaces into browser UI. Existing
-health/readiness endpoints lower operator state into HTTP probes. Both should
-be fed by the same typed service state that backs Eve surfaces.
+The Motion Verse has begun the migration from Razor-owned behavior to Eve-owned
+presentation. `/eve/governance/surface` emits a `gamecult.eve.surface.v1`
+composition for motions and voting. `/eve/governance/commands` accepts
+`motion.create`, `motion.vote`, and `motion.close` commands, then routes those
+commands through the same Bifrost motion governance service used by the Razor
+forms.
+
+The current Razor Pages app is now a transitional browser lowering for motions,
+not the behavior owner. Existing health/readiness endpoints lower operator
+state into HTTP probes. Both should be fed by the same typed service state that
+backs Eve surfaces.
 
 ## CultMesh Address Shape
 
@@ -198,7 +206,8 @@ Bifrost.
 5. Publish operator surfaces first: readiness, witness freshness, bridge queue,
    failed crossings, and migration drift.
 6. Publish product surfaces for account, project, work, motion, patron, and
-   contributor views as `gamecult.eve.surface.v1`.
+   contributor views as `gamecult.eve.surface.v1`. Motion governance has its
+   first product surface and command endpoint.
 7. Lower the existing Razor Pages app from the Eve/product surface contract
    where practical, leaving direct Razor composition only as transitional UI.
 8. Route Discord and Reddit native interactions through Bifrost commands that

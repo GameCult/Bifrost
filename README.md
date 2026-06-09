@@ -19,6 +19,7 @@ This repository now includes a viable alpha foundation slice of the ASP.NET Core
 - health and readiness endpoints plus startup config validation
 - GitHub App webhook ingestion for issue, pull request, and review sync
 - Heimdall-signed external patron support intake for Patreon and PayPal support facts
+- Eve Motion Verse surface and command endpoint for governance participation, with Razor motion forms demoted to a transitional browser lowering
 - local bridge tooling for agent-owned GitHub draft PRs and Discord posts
 - local bridge tooling for Reddit self-posts in `r/GameCultOrg`, including Persona flair labels through the Bifrost Reddit app
 - CultCache-backed governance topic threads for feature requests, discussion comments, Persona approvals, and dispatch promotion
@@ -78,6 +79,7 @@ For the full staged roadmap, including contribution points, revenue share, patro
 - dry-run a Reddit organizing thread with `node tools/bifrost-bridge.mjs reddit-post --title "Thread title" --persona-name Bifrost --content "Thread body" --dry-run true`
 - print the Eve provider advertisement with `node tools/provider-advertisement.mjs print`
 - export the Eve provider advertisement witness with `node tools/provider-advertisement.mjs export --out .bifrost/provider-advertisement.cc`
+- inspect the interactive Motion Verse surface at `/eve/governance/surface` while signed in as an active member
 - container smoke test with `docker compose -f compose.local.yaml up --build`
 - container health checks live at `http://127.0.0.1:5080/healthz` and `http://127.0.0.1:5080/readyz`
 

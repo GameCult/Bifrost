@@ -227,6 +227,73 @@ public sealed class PlatformEndpointsTests : IClassFixture<TestWebApplicationFac
         Assert.Empty(currentPatronTiers);
     }
 
+    [Fact]
+    public async Task Eve_governance_surface_returns_motion_verse()
+    {
+        using var client = _factory.CreateClient();
+
+        using var response = await client.GetAsync("/eve/governance/surface");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var json = await response.Content.ReadAsStringAsync();
+        Assert.Contains("gamecult.eve.surface.v1", json);
+        Assert.Contains("bifrost-motion-verse", json);
+        Assert.Contains("motion.create", json);
+        Assert.Contains("/eve/governance/commands", json);
+    }
+
+    [Fact]
+    public async Task Eve_governance_vote_command_uses_canonical_motion_commit_path()
+    {
+        using var client = _factory.CreateClient();
+        _ = await client.GetAsync("/App");
+
+        Guid motionId;
+        using (var setupScope = _factory.Services.CreateScope())
+        {
+            var dbContext = setupScope.ServiceProvider.GetRequiredService<BifrostDbContext>();
+            var actor = dbContext.UserAccounts.Single(x => x.NormalizedGitHubLogin == "TEST-ADMIN");
+            var motion = new Motion
+            {
+                CreatedByUserAccountId = actor.Id,
+                Scope = MotionScope.Management,
+                Category = MotionCategory.Features,
+                Title = "Govern through Eve",
+                Summary = "The Motion Verse should command the canonical motion path.",
+                ApprovalThreshold = 0.50m,
+                OpensAtUtc = DateTimeOffset.UtcNow,
+                ClosesAtUtc = DateTimeOffset.UtcNow.AddDays(7),
+                CreatedAtUtc = DateTimeOffset.UtcNow
+            };
+            dbContext.Motions.Add(motion);
+            await dbContext.SaveChangesAsync();
+            motionId = motion.Id;
+        }
+
+        var payload = JsonSerializer.Serialize(new
+        {
+            command = "motion.vote",
+            motionId,
+            choice = "For",
+            comment = "Cast from Eve."
+        });
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/eve/governance/commands");
+        request.Content = new StringContent(payload, Encoding.UTF8, "application/json");
+
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var surfaceJson = await response.Content.ReadAsStringAsync();
+        Assert.Contains("bifrost-motion-verse", surfaceJson);
+
+        using var verificationScope = _factory.Services.CreateScope();
+        var verificationContext = verificationScope.ServiceProvider.GetRequiredService<BifrostDbContext>();
+        var vote = verificationContext.Votes.Single(x => x.MotionId == motionId);
+        Assert.Equal(VoteChoice.For, vote.Choice);
+        Assert.Equal("Cast from Eve.", vote.Comment);
+        Assert.Contains(verificationContext.AuditEvents, x => x.Action == "motion.voted");
+    }
+
     private static string ComputeSignature(string secret, string payload)
     {
         using var hasher = new HMACSHA256(Encoding.UTF8.GetBytes(secret));
