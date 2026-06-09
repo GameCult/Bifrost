@@ -206,7 +206,7 @@ function buildAdvertisement(options) {
     witnesses: [
       witness(".bifrost/provider-advertisement.cc", schemaId, "current", "read-only provider advertisement exported by this tool"),
       witness(".bifrost/governance-threads.cc", "bifrost.governance.topic.v0; bifrost.governance.topic_comment.v0", "current", "governance discussion, approvals, and dispatch promotion topics"),
-      witness(".bifrost/agent-transport.cc", "bifrost.agent-transport.update-request.v0", "current", "repo Face update requests and dispatch queue state"),
+      witness(".bifrost/agent-transport.cc", "bifrost.agent-transport.update-request.v0", "current", "repo Persona update requests and dispatch queue state"),
       witness(".bifrost/work-items.cc", "bifrost.work_item.v0", "planned-export", "work items exported from the alpha transactional store"),
       witness(".bifrost/motions.cc", "bifrost.motion.v0; bifrost.vote.v0", "planned-export", "app-native motions and votes exported from the alpha transactional store"),
       witness(".bifrost/ledger.cc", "bifrost.ledger_entry.v0", "planned-export", "patron and contributor ledger entries exported from the alpha transactional store"),
@@ -295,7 +295,7 @@ function buildAdvertisement(options) {
         "publish work boards",
         "surface maintainer authority",
       ], [
-        "does not seize repo Face cognition or project-local ownership",
+        "does not seize repo Persona cognition or project-local ownership",
       ]),
       boundary("account", "Bifrost consumes Heimdall claims", [
         "display membership status",

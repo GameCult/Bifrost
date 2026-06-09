@@ -21,9 +21,9 @@ The product center is the Labor Platform loop: eligible participants express pol
   - owns OAuth, linked accounts, token custody, signed claims, grants, consent, and revocation
   - Bifrost consumes Heimdall identity/capability facts instead of becoming the credential vault
 - `E:\Projects\VoidBot`
-  - observes Discord, packages consensus, and runs repo Face heartbeats
+  - observes Discord, packages consensus, and runs repo Persona heartbeats
   - should call Bifrost for governed GitHub/Discord/intake crossings instead of becoming hidden transport authority
-  - keeps room cognition, moderation judgment, retrieval, and Face personality separate from Bifrost's Discord-native work interface
+  - keeps room cognition, moderation judgment, retrieval, and Persona personality separate from Bifrost's Discord-native work interface
 - `E:\Projects\CultLib`
   - stewards CultCache, CultNet, CultMesh, typed persistence, schemas, and reusable sync/storage libraries
   - Bifrost defines the meaning of agent transport packets while CultLib-provided primitives store and move them

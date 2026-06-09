@@ -33,7 +33,7 @@
     "termsOfServiceURL": "https://github.com/GameCult/Bifrost",
     "defaultPrompt": [
       "Get Bifrost intake context for this repo.",
-      "Enqueue this consensus packet for a repo Face.",
+      "Enqueue this consensus packet for a repo Persona.",
       "List queued Bifrost agent requests."
     ],
     "brandColor": "#4F46E5",

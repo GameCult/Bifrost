@@ -18,8 +18,8 @@ This repository now includes a viable alpha foundation slice of the ASP.NET Core
 - health and readiness endpoints plus startup config validation
 - GitHub App webhook ingestion for issue, pull request, and review sync
 - local bridge tooling for agent-owned GitHub draft PRs and Discord posts
-- CultCache-backed governance topic threads for feature requests, discussion comments, Face approvals, and dispatch promotion
-- CultCache/CultNet-backed agent intake tooling for repo Face update requests
+- CultCache-backed governance topic threads for feature requests, discussion comments, Persona approvals, and dispatch promotion
+- CultCache/CultNet-backed agent intake tooling for repo Persona update requests
 - a Verse service contract for CultCache witnesses, CultMesh namespaces, and Eve/CultUI product and operator surfaces
 - a read-only Eve provider advertisement export command for Bifrost Verse surface discovery
 - Docker image and local Compose stack for containerized smoke testing

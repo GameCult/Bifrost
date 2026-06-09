@@ -1,13 +1,13 @@
 ---
 name: bifrost-intake
-description: Use when Codex should instantly check Bifrost intake for repo Face update requests, inject any claimed request into context, or stand down when no request is queued.
+description: Use when Codex should instantly check Bifrost intake for repo Persona update requests, inject any claimed request into context, or stand down when no request is queued.
 ---
 
 # Bifrost Intake
 
 Bifrost owns agent update request semantics. CultCache stores the request documents. CultNet moves raw snapshots and document updates. This plugin exposes the intake hot path to Codex through direct local scripts, not mounted MCP tools.
 
-Use this skill when a user asks to feed a consensus packet to a repo Face, claim work for the current repo, inspect queued update requests, or close a request after work is handled.
+Use this skill when a user asks to feed a consensus packet to a repo Persona, claim work for the current repo, inspect queued update requests, or close a request after work is handled.
 
 Do not wait for MCP tool discovery. Do not tell the user the backend is unavailable merely because `tool_search` cannot find Bifrost tools.
 
@@ -17,7 +17,7 @@ Hot path:
 node E:\Projects\Bifrost\plugins\bifrost-intake\scripts\intake-context.mjs --repo <RepoName> --agent <face-id>
 ```
 
-That command claims the highest-priority queued Bifrost request matching the repo and Face, then prints a Codex-ready context packet. If nothing is queued, it prints an explicit no-work message telling the agent to continue the live turn without worrying about intake.
+That command claims the highest-priority queued Bifrost request matching the repo and Persona, then prints a Codex-ready context packet. If nothing is queued, it prints an explicit no-work message telling the agent to continue the live turn without worrying about intake.
 
 Use `--claimed-by <identity>` when the claiming identity should differ from `--agent`.
 

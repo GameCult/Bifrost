@@ -40,7 +40,7 @@ function formatClaimedRequest(request) {
 ID: ${request.id}
 Status: ${request.status}
 Target repo: ${request.targetRepoName}
-Target Face: ${request.targetAgentIdentity ?? "any"}
+Target Persona: ${request.targetAgentIdentity ?? "any"}
 Priority: ${request.priority}
 Title: ${request.title}
 

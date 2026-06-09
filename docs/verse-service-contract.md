@@ -19,7 +19,7 @@ Bifrost state. They do not own Bifrost's canonical product or operator surface.
 | Identity, grants, consent, revocation | Heimdall | OAuth providers, linked accounts, operator grants | signed claims consumed by Bifrost |
 | Storage and sync primitives | CultCache/CultNet/CultLib | Bifrost document types and payloads | `.cc` stores, snapshots, raw document updates |
 | Service discovery and surface aggregation | Odin | CultMesh namespaces, schema catalogs, service registrations | discoverable Verse routes and surface indexes |
-| Room observation and Face cognition | VoidBot/repo Faces | Discord context, repo state, Persona state | proposed Bifrost topics, comments, dispatch requests |
+| Room observation and Persona cognition | VoidBot/repo Personas | Discord context, repo state, Persona state | proposed Bifrost topics, comments, dispatch requests |
 | Rendering | Eve/browser/native/TUI/Discord | `gamecult.eve.surface.v1` compositions, typed state references | product/operator UI lowerings, not canonical state |
 
 ## Durable State And Witnesses

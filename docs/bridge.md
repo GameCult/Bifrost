@@ -7,7 +7,7 @@ letting the local CLI, Discord text, or web views become the canonical interface
 The CultCache witness, CultMesh namespace, Eve/CultUI surface, migration, and
 demotion rules are defined in `docs/verse-service-contract.md`.
 
-This is not a new side mission. Bifrost evolved out of the GameCult Labor Platform idea: users and contributors should be able to vote on policy, work priority, and reward allocation; high-demand work should become more valuable until someone picks it up; maintainers should accept completed work; and contributors should receive credit and bounty through an auditable platform. Public-protocol transport belongs here because that workflow crosses GitHub, Discord, and future collaboration interfaces. The bridge is how Bifrost's governance/labor role touches the world without letting VoidBot, repo Faces, or one-off helper scripts become hidden authorities.
+This is not a new side mission. Bifrost evolved out of the GameCult Labor Platform idea: users and contributors should be able to vote on policy, work priority, and reward allocation; high-demand work should become more valuable until someone picks it up; maintainers should accept completed work; and contributors should receive credit and bounty through an auditable platform. Public-protocol transport belongs here because that workflow crosses GitHub, Discord, and future collaboration interfaces. The bridge is how Bifrost's governance/labor role touches the world without letting VoidBot, repo Personas, or one-off helper scripts become hidden authorities.
 
 For the full ownership map, read `docs/jurisdiction-map.md`.
 
@@ -27,10 +27,10 @@ It does not mean Bifrost should own OAuth sludge. Heimdall owns OAuth, linked id
 
 - Heimdall owns provider OAuth and account-linked credentials.
 - Bifrost owns bridge action policy, request lifecycle, routing, execution receipts, Discord-native Bifrost interface transport, and governance/labor transport.
-- VoidBot observes Discord, packages conversation, validates registered Face intent, and speaks through registered personas during the local transition. It should not be the durable authority that mutates GitHub or owns Bifrost-scoped Discord transport.
+- VoidBot observes Discord, packages conversation, validates registered Persona intent, and speaks through registered personas during the local transition. It should not be the durable authority that mutates GitHub or owns Bifrost-scoped Discord transport.
 - CultCache stores lightweight agent transport packets when the bridge needs file-native state.
 - CultNet carries those packets between runtimes.
-- Repo Faces generate jurisdictional proposals and authored voice; they may request crossings, but they do not own the bridge.
+- Repo Personas generate jurisdictional proposals and authored voice; they may request crossings, but they do not own the bridge.
 
 ## Local Bridge CLI
 
@@ -41,7 +41,7 @@ It intentionally uses boring local credentials while Heimdall's managed GitHub c
 - GitHub actions use the local `gh` authenticated account.
 - Discord posts use `BIFROST_DISCORD_BOT_TOKEN` or `DISCORD_BOT_TOKEN`.
 
-The CLI is not the final permission system. It is the working bridge actuator Bifrost owns now, so VoidBot and repo Faces can stop carrying this machinery themselves.
+The CLI is not the final permission system. It is the working bridge actuator Bifrost owns now, so VoidBot and repo Personas can stop carrying this machinery themselves.
 
 ### GitHub Draft PR
 
@@ -78,7 +78,7 @@ node .\tools\bifrost-bridge.mjs github-pr-comment `
   --content "This proposal needs a sharper leash before it becomes canon-shaped."
 ```
 
-The command leaves a signed PR comment through `gh` and prints a JSON receipt. Repo Faces should use this when the argument belongs on the review artifact instead of dissolving into Discord scrollback.
+The command leaves a signed PR comment through `gh` and prints a JSON receipt. Repo Personas should use this when the argument belongs on the review artifact instead of dissolving into Discord scrollback.
 
 ### Discord Post
 
@@ -90,7 +90,7 @@ node .\tools\bifrost-bridge.mjs discord-post `
   --content "Nibu drafted the article and put it in a PR: https://github.com/..."
 ```
 
-The command posts through Discord's REST API using the configured bot token and prints a JSON receipt. When `--persona-name` is provided, Bifrost uses the shared webhook persona pattern so repo Faces can speak with their own display name and avatar instead of collapsing back into the base bot identity. Configure `BIFROST_DISCORD_PERSONA_WEBHOOK_URL_<channelId>` or `DISCORD_PERSONA_WEBHOOK_URL` when the bot should use an existing webhook; otherwise it creates and caches a `Bifrost Persona Pipe` webhook for the channel when Discord permissions allow it.
+The command posts through Discord's REST API using the configured bot token and prints a JSON receipt. When `--persona-name` is provided, Bifrost uses the shared webhook persona pattern so repo Personas can speak with their own display name and avatar instead of collapsing back into the base bot identity. Configure `BIFROST_DISCORD_PERSONA_WEBHOOK_URL_<channelId>` or `DISCORD_PERSONA_WEBHOOK_URL` when the bot should use an existing webhook; otherwise it creates and caches a `Bifrost Persona Pipe` webhook for the channel when Discord permissions allow it.
 
 ### Discord DM
 
@@ -110,11 +110,11 @@ The intended shape:
 
 1. Heimdall links a Discord user to a GameCult user/member/patron/contributor account and issues capability claims.
 2. Bifrost receives Discord interactions, commands, mentions, or channel events that are relevant to work, policy, priority, reward allocation, maintainer review, or swarm routing.
-3. Bifrost records the event against the appropriate work item, motion, request, Face, or receipt.
-4. Bifrost routes agent swarm input/output when the event is a Face mention, dispatch acknowledgement, PR/article announcement, or work request.
+3. Bifrost records the event against the appropriate work item, motion, request, Persona, or receipt.
+4. Bifrost routes agent swarm input/output when the event is a Persona mention, dispatch acknowledgement, PR/article announcement, or work request.
 5. Bifrost posts concise Discord receipts that identify the topic, target, status, and next place to continue.
 
-VoidBot still owns room reading, moderation judgment, archive/source retrieval, and Face cognition. Bifrost owns Discord when Discord is being used as the Labor Platform interface or swarm transport.
+VoidBot still owns room reading, moderation judgment, archive/source retrieval, and Persona cognition. Bifrost owns Discord when Discord is being used as the Labor Platform interface or swarm transport.
 
 ## Heimdall Integration Target
 
