@@ -111,6 +111,10 @@ public sealed class IndexModel(
             PatronSupport.Amount,
             PatronSupport.CurrencyCode,
             PatronSupport.ExternalSupportId ?? string.Empty,
+            ExternalPatronProvider.Manual,
+            string.Empty,
+            string.Empty,
+            string.Empty,
             PatronSupport.SupportedAtUtc,
             PatronSupport.IsCurrentRecurringSupport,
             PatronSupport.Notes ?? string.Empty,
@@ -181,6 +185,7 @@ public sealed class IndexModel(
                 return new PatronSupportListItem(
                     x.UserAccountId,
                     x.UserAccount.DisplayName,
+                    x.Provider,
                     x.Kind,
                     x.Amount,
                     x.CurrencyCode,
@@ -244,7 +249,7 @@ public sealed class IndexModel(
         [Display(Name = "Support kind")]
         public PatronSupportEventKind Kind { get; set; } = PatronSupportEventKind.OneTimeDonation;
 
-        [Range(0.01, 100000000)]
+        [Range(-100000000, 100000000)]
         public decimal Amount { get; set; }
 
         [Display(Name = "Currency")]
@@ -270,6 +275,7 @@ public sealed class IndexModel(
     public sealed record PatronSupportListItem(
         Guid UserAccountId,
         string MemberName,
+        ExternalPatronProvider Provider,
         PatronSupportEventKind Kind,
         decimal Amount,
         string CurrencyCode,

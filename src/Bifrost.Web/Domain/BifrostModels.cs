@@ -163,7 +163,15 @@ public enum PointTransactionType
 public enum PatronSupportEventKind
 {
     OneTimeDonation,
-    RecurringSupportSnapshot
+    RecurringSupportSnapshot,
+    SupportAdjustment
+}
+
+public enum ExternalPatronProvider
+{
+    Manual,
+    Patreon,
+    PayPal
 }
 
 public sealed class UserAccount
@@ -716,6 +724,14 @@ public sealed class PatronSupportEvent
     public Guid UserAccountId { get; set; }
 
     public string ExternalSupportId { get; set; } = string.Empty;
+
+    public ExternalPatronProvider Provider { get; set; } = ExternalPatronProvider.Manual;
+
+    public string ProviderEventId { get; set; } = string.Empty;
+
+    public string ProviderPayerId { get; set; } = string.Empty;
+
+    public string ProviderSubscriptionId { get; set; } = string.Empty;
 
     public PatronSupportEventKind Kind { get; set; } = PatronSupportEventKind.OneTimeDonation;
 

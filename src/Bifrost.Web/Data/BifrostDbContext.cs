@@ -334,10 +334,17 @@ public sealed class BifrostDbContext(DbContextOptions<BifrostDbContext> options)
         modelBuilder.Entity<PatronSupportEvent>(entity =>
         {
             entity.Property(x => x.Kind).HasConversion<string>();
+            entity.Property(x => x.Provider).HasConversion<string>();
             entity.Property(x => x.Amount).HasPrecision(18, 2);
             entity.Property(x => x.ExternalSupportId).HasMaxLength(240);
+            entity.Property(x => x.ProviderEventId).HasMaxLength(240);
+            entity.Property(x => x.ProviderPayerId).HasMaxLength(240);
+            entity.Property(x => x.ProviderSubscriptionId).HasMaxLength(240);
             entity.Property(x => x.CurrencyCode).HasMaxLength(12);
             entity.HasIndex(x => new { x.UserAccountId, x.Kind, x.IsCurrentRecurringSupport });
+            entity.HasIndex(x => new { x.Provider, x.ProviderEventId })
+                .IsUnique()
+                .HasFilter("\"ProviderEventId\" <> ''");
             entity.HasOne(x => x.UserAccount)
                 .WithMany(x => x.PatronSupportEvents)
                 .HasForeignKey(x => x.UserAccountId)

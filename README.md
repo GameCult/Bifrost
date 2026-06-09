@@ -18,6 +18,7 @@ This repository now includes a viable alpha foundation slice of the ASP.NET Core
 - member-facing motions with category thresholds aligned to the labor-platform doc
 - health and readiness endpoints plus startup config validation
 - GitHub App webhook ingestion for issue, pull request, and review sync
+- Heimdall-signed external patron support intake for Patreon and PayPal support facts
 - local bridge tooling for agent-owned GitHub draft PRs and Discord posts
 - local bridge tooling for Reddit self-posts in `r/GameCultOrg`, including Persona flair labels through the Bifrost Reddit app
 - CultCache-backed governance topic threads for feature requests, discussion comments, Persona approvals, and dispatch promotion
@@ -70,6 +71,7 @@ For the full staged roadmap, including contribution points, revenue share, patro
 - set `GitHubOAuth:ClientId` and `GitHubOAuth:ClientSecret` before using sign-in
 - set `Bootstrap:AdminGitHubLogins` with at least one GitHub login for the first active admin path
 - set `BIFROST_REDDIT_CLIENT_ID`, `BIFROST_REDDIT_REFRESH_TOKEN`, and optionally `BIFROST_REDDIT_CLIENT_SECRET` before posting Reddit organizing threads
+- set `Heimdall:PatronSupportIntakeSecret` before enabling Heimdall patron support intake in production
 - default connection string points at local PostgreSQL
 - build with `dotnet build Bifrost.slnx`
 - test with `DOTNET_ROLL_FORWARD=Major dotnet test Bifrost.slnx` if the machine only has the .NET 10 runtime installed
@@ -90,5 +92,6 @@ Before implementation work starts in a new session, read these files in order:
 5. [docs/verse-service-contract.md](E:\Projects\Bifrost\docs\verse-service-contract.md)
 6. [docs/agent-transport.md](E:\Projects\Bifrost\docs\agent-transport.md)
 7. [docs/reddit.md](E:\Projects\Bifrost\docs\reddit.md)
-8. [docs/full-implementation-strategy.md](E:\Projects\Bifrost\docs\full-implementation-strategy.md)
-9. [docs/context.md](E:\Projects\Bifrost\docs\context.md)
+8. [docs/paypal-patronage.md](E:\Projects\Bifrost\docs\paypal-patronage.md)
+9. [docs/full-implementation-strategy.md](E:\Projects\Bifrost\docs\full-implementation-strategy.md)
+10. [docs/context.md](E:\Projects\Bifrost\docs\context.md)

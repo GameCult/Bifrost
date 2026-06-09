@@ -73,5 +73,7 @@ After bootstrap, the next session should start implementing the first vertical s
   - a formal proposal that affects either project work or GameCult policy/structure
 - `Ledger Entry`
   - an immutable record of patron points, contributor points, nominal compensation, or adjustments
+- `Patron Support Event`
+  - an auditable support fact recorded manually or through a Heimdall-verified external provider event; Bifrost derives patron points and voting tier snapshots from these events
 - `Payout Proposal Batch`
   - an admin-reviewed grouping of payout recommendations derived from approved ledger data

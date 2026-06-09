@@ -85,6 +85,7 @@ This keeps Reddit useful without making subreddit mechanics the secret constitut
 - canonical feature-request and governance topic threads
 - topic comments, support, objections, questions, Persona approvals, dispatch promotion, and topic receipts
 - user, patron, member, contributor, and agent transport events when they affect work, priority, reward, votes, claims, or receipts
+- patron support meaning: support events, effective patron points, derived tier snapshots, voting weight, and audit trail
 - mapping from internal request to public target surface
 - GitHub proposal/comment/PR transport for agent and member work
 - Discord-native Bifrost commands/interactions, dispatch receipts, and persona announcements for work crossings and swarm I/O
@@ -96,12 +97,21 @@ This keeps Reddit useful without making subreddit mechanics the secret constitut
 ### Heimdall Owns
 
 - OAuth provider flows
+- PayPal and Patreon webhook receipt, provider signature verification, payment-status normalization, and account-link evidence
 - account linking
 - credential custody
 - signed identity and capability claims
 - grants, consent, revocation, and capability evaluation
 
 Bifrost consumes Heimdall claims. It does not become the key vault. The split is bridge versus gate: Heimdall decides who may cross under which grant; Bifrost moves authorized work across public protocols and records where it landed.
+
+### Patron Collection Crossing
+
+PayPal and Patreon money movement enters Bifrost only as Heimdall-verified support facts. Heimdall receives provider webhooks, verifies provider signatures, links the provider account to a Heimdall account, normalizes payment status, and POSTs a signed support fact to `/heimdall/patron-support/events`.
+
+Bifrost verifies Heimdall's intake HMAC and resolves the linked `HeimdallAccountId` to a Bifrost account. Only then does `PatronageService` record a `PatronSupportEvent`, point transaction, tier refresh, and audit event. Duplicate provider events are idempotent by `(Provider, ProviderEventId)`.
+
+PayPal one-time donation completions should arrive as `Provider = PayPal`, `Kind = OneTimeDonation`, and a positive amount after completed capture. PayPal subscription current-support snapshots should arrive as `Kind = RecurringSupportSnapshot` with `IsCurrentRecurringSupport = true` after Heimdall has verified active paid support. Refunds, reversals, and chargebacks should arrive as `Kind = SupportAdjustment` with a negative amount. Bifrost does not delete old support history to hide provider churn.
 
 ### VoidBot Owns
 

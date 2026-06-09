@@ -500,6 +500,25 @@ namespace Bifrost.Web.Data.Migrations
                     b.Property<DateTimeOffset>("RecordedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<string>("Provider")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("ProviderEventId")
+                        .IsRequired()
+                        .HasMaxLength(240)
+                        .HasColumnType("character varying(240)");
+
+                    b.Property<string>("ProviderPayerId")
+                        .IsRequired()
+                        .HasMaxLength(240)
+                        .HasColumnType("character varying(240)");
+
+                    b.Property<string>("ProviderSubscriptionId")
+                        .IsRequired()
+                        .HasMaxLength(240)
+                        .HasColumnType("character varying(240)");
+
                     b.Property<DateTimeOffset>("SupportedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
@@ -511,6 +530,10 @@ namespace Bifrost.Web.Data.Migrations
                     b.HasIndex("UserAccountId");
 
                     b.HasIndex("UserAccountId", "Kind", "IsCurrentRecurringSupport");
+
+                    b.HasIndex("Provider", "ProviderEventId")
+                        .IsUnique()
+                        .HasFilter("\"ProviderEventId\" <> ''");
 
                     b.ToTable("PatronSupportEvents");
                 });

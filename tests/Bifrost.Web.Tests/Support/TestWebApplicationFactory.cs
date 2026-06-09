@@ -32,7 +32,8 @@ public sealed class TestWebApplicationFactory : WebApplicationFactory<Program>
                 ["GitHubApp:AppId"] = "1",
                 ["Host:PublicBaseUrl"] = "https://localhost",
                 ["Host:ExpectedHost"] = "localhost",
-                ["Host:RequireStrictHostValidation"] = "false"
+                ["Host:RequireStrictHostValidation"] = "false",
+                ["Heimdall:PatronSupportIntakeSecret"] = "test-heimdall-intake-secret"
             });
         });
 

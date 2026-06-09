@@ -11,12 +11,16 @@ public sealed class PatronageService(
     TimeProvider timeProvider)
 {
     public async Task<PatronSupportEvent> RecordSupportEventAsync(
-        Guid actorUserAccountId,
+        Guid? actorUserAccountId,
         Guid userAccountId,
         PatronSupportEventKind kind,
         decimal amount,
         string currencyCode,
         string externalSupportId,
+        ExternalPatronProvider provider,
+        string providerEventId,
+        string providerPayerId,
+        string providerSubscriptionId,
         DateTimeOffset supportedAtUtc,
         bool isCurrentRecurringSupport,
         string notes,
@@ -31,9 +35,35 @@ public sealed class PatronageService(
             throw new InvalidOperationException("Patron support can only be recorded for an active member.");
         }
 
-        if (amount <= 0)
+        if (amount <= 0 && kind != PatronSupportEventKind.SupportAdjustment)
         {
             throw new InvalidOperationException("Patron support amount must be greater than zero.");
+        }
+
+        if (amount == 0)
+        {
+            throw new InvalidOperationException("Patron support amount must not be zero.");
+        }
+
+        if (kind == PatronSupportEventKind.SupportAdjustment && amount > 0)
+        {
+            throw new InvalidOperationException("Patron support adjustments must reduce support.");
+        }
+
+        var normalizedProviderEventId = providerEventId.Trim();
+        if (provider != ExternalPatronProvider.Manual && string.IsNullOrWhiteSpace(normalizedProviderEventId))
+        {
+            throw new InvalidOperationException("External patron provider events require a provider event id.");
+        }
+
+        var existingProviderEvent = string.IsNullOrWhiteSpace(normalizedProviderEventId)
+            ? null
+            : await dbContext.PatronSupportEvents
+                .SingleOrDefaultAsync(x => x.Provider == provider && x.ProviderEventId == normalizedProviderEventId, cancellationToken);
+
+        if (existingProviderEvent is not null)
+        {
+            return existingProviderEvent;
         }
 
         var now = timeProvider.GetUtcNow();
@@ -60,6 +90,10 @@ public sealed class PatronageService(
             UserAccountId = userAccountId,
             Kind = kind,
             ExternalSupportId = externalSupportId.Trim(),
+            Provider = provider,
+            ProviderEventId = normalizedProviderEventId,
+            ProviderPayerId = providerPayerId.Trim(),
+            ProviderSubscriptionId = providerSubscriptionId.Trim(),
             Amount = amount,
             CurrencyCode = normalizedCurrency,
             IsCurrentRecurringSupport = kind == PatronSupportEventKind.RecurringSupportSnapshot && isCurrentRecurringSupport,
@@ -74,9 +108,9 @@ public sealed class PatronageService(
             UserAccountId = userAccountId,
             Type = PointTransactionType.PatronSupport,
             Amount = amount,
-            IsDecaying = kind != PatronSupportEventKind.RecurringSupportSnapshot,
+            IsDecaying = kind == PatronSupportEventKind.OneTimeDonation,
             CreatedAtUtc = now,
-            Note = $"Recorded {kind} patron support event {supportEvent.ExternalSupportId}."
+            Note = $"Recorded {provider} {kind} patron support event {supportEvent.ExternalSupportId}."
         });
 
         await dbContext.SaveChangesAsync(cancellationToken);
@@ -85,7 +119,7 @@ public sealed class PatronageService(
             nameof(PatronSupportEvent),
             supportEvent.Id,
             "patron-support.recorded",
-            $"Recorded {amount:0.##} {normalizedCurrency} {kind} patron support for {user.DisplayName}.",
+            $"Recorded {amount:0.##} {normalizedCurrency} {provider} {kind} patron support for {user.DisplayName}.",
             cancellationToken);
 
         await RefreshPatronTierSnapshotAsync(actorUserAccountId, userAccountId, cancellationToken);
@@ -93,7 +127,7 @@ public sealed class PatronageService(
     }
 
     public async Task<PatronPointSummary> RefreshPatronTierSnapshotAsync(
-        Guid actorUserAccountId,
+        Guid? actorUserAccountId,
         Guid userAccountId,
         CancellationToken cancellationToken)
     {

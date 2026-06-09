@@ -14,6 +14,10 @@ public sealed class HeimdallOptions
 
     public string PatreonTierTitle { get; init; } = "Inner Sanctum";
 
+    public string PatronSupportIntakeSecret { get; init; } = string.Empty;
+
+    public bool EnablePatronSupportIntake { get; init; } = true;
+
     public bool IsConfigured =>
         !string.IsNullOrWhiteSpace(BaseUrl) &&
         !string.IsNullOrWhiteSpace(AppSlug);
@@ -26,4 +30,9 @@ public sealed class HeimdallOptions
     public bool IsPatreonConfigured =>
         IsConfigured &&
         !string.IsNullOrWhiteSpace(PatreonTierTitle);
+
+    public bool IsPatronSupportIntakeConfigured =>
+        IsConfigured &&
+        EnablePatronSupportIntake &&
+        !string.IsNullOrWhiteSpace(PatronSupportIntakeSecret);
 }

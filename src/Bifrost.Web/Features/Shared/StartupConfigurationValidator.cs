@@ -8,6 +8,7 @@ public sealed class StartupConfigurationValidator(
     IHostEnvironment hostEnvironment,
     IOptions<GitHubOAuthOptions> gitHubOAuthOptions,
     IOptions<GitHubAppOptions> gitHubAppOptions,
+    IOptions<HeimdallOptions> heimdallOptions,
     IOptions<BifrostHostOptions> hostOptions)
 {
     public void Validate()
@@ -32,6 +33,12 @@ public sealed class StartupConfigurationValidator(
         if (!hostOptions.Value.IsConfigured)
         {
             failures.Add("Host:PublicBaseUrl and Host:ExpectedHost must be configured.");
+        }
+
+        if (heimdallOptions.Value.EnablePatronSupportIntake &&
+            !heimdallOptions.Value.IsPatronSupportIntakeConfigured)
+        {
+            failures.Add("Heimdall:PatronSupportIntakeSecret is required when patron support intake is enabled.");
         }
 
         var allowedHosts = configuration["AllowedHosts"] ?? string.Empty;

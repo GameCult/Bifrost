@@ -70,6 +70,7 @@ builder.Services.AddScoped<DashboardSnapshotService>();
 builder.Services.AddScoped<MembershipSynchronizationService>();
 builder.Services.AddScoped<GitHubWebhookService>();
 builder.Services.AddScoped<PatronageService>();
+builder.Services.AddScoped<HeimdallPatronSupportIntakeService>();
 builder.Services.AddScoped<ReadinessService>();
 builder.Services.AddScoped<ApplicationBootstrapper>();
 builder.Services.AddSingleton<StartupConfigurationValidator>();
@@ -282,6 +283,29 @@ app.MapPost("/auth/heimdall/callback", (
     {
         return Results.BadRequest(error.Message);
     }
+}).AllowAnonymous();
+
+app.MapPost("/heimdall/patron-support/events", async (
+    HttpRequest request,
+    HeimdallPatronSupportIntakeService intakeService,
+    CancellationToken cancellationToken) =>
+{
+    using var reader = new StreamReader(request.Body);
+    var payload = await reader.ReadToEndAsync(cancellationToken);
+    var signature = request.Headers["X-Heimdall-Signature-256"].ToString();
+
+    var result = await intakeService.ProcessAsync(signature, payload, cancellationToken);
+    return result.Status switch
+    {
+        HeimdallPatronSupportIntakeStatus.Processed => Results.Text(
+            result.Message,
+            statusCode: StatusCodes.Status202Accepted),
+        HeimdallPatronSupportIntakeStatus.BadRequest => Results.BadRequest(result.Message),
+        HeimdallPatronSupportIntakeStatus.NotConfigured => Results.Text(
+            result.Message,
+            statusCode: StatusCodes.Status503ServiceUnavailable),
+        _ => Results.Text(result.Message, statusCode: StatusCodes.Status401Unauthorized)
+    };
 }).AllowAnonymous();
 
 app.MapGet("/auth/heimdall/wait", async (

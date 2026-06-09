@@ -35,6 +35,11 @@ public static class PatronTierPolicy
             return Math.Max(0m, supportEvent.Amount);
         }
 
+        if (supportEvent.Kind == PatronSupportEventKind.SupportAdjustment)
+        {
+            return supportEvent.Amount;
+        }
+
         var amount = Math.Max(0m, supportEvent.Amount);
         var age = nowUtc - supportEvent.SupportedAtUtc.ToUniversalTime();
         if (age < TimeSpan.FromDays(30))

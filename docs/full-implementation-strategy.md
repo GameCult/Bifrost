@@ -97,7 +97,10 @@ Implementation requirements:
 - calculate patron points from current recurring support plus historical donations: implemented by `PatronageService`
 - apply the concept-doc rule that historical donations are halved after one month and then continue decaying: implemented for effective patron point calculation
 - expose both raw support history and current effective patron points: implemented on the ledger surface
-- ingest Patreon/Heimdall provider events into the same service path: pending
+- ingest Patreon/Heimdall provider events into the same service path: implemented through `/heimdall/patron-support/events`
+- ingest PayPal/Heimdall checkout, subscription, refund, reversal, and chargeback facts into the same service path: implemented as provider metadata plus support adjustments
+
+External provider support facts are not payment webhooks in Bifrost. Heimdall owns provider webhook verification and account linking. Bifrost accepts only Heimdall-signed support facts, resolves the linked `HeimdallAccountId`, deduplicates by provider event id, records support through `PatronageService`, and refreshes the derived patron tier.
 
 ### Contributor Points
 

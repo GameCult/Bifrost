@@ -206,6 +206,7 @@
                         <tr>
                             <td>@support.MemberName</td>
                             <td>
+                                <span class="pill">@support.Provider</span>
                                 <span class="pill">@support.Kind</span><br />
                                 @support.Amount.ToString("0.##") @support.CurrencyCode
                                 @if (support.IsCurrentRecurringSupport)
