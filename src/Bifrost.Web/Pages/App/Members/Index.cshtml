@@ -202,10 +202,10 @@
                                     <form method="post" asp-page-handler="SetTier" class="stack-form" style="margin-top: 0.8rem;">
                                         <input type="hidden" name="userAccountId" value="@user.UserAccountId" />
                                         <input type="hidden" name="kind" value="@TierSnapshotKind.Patron" />
-                                        <input name="label" value="@user.PatronTierLabel" placeholder="Patron tier label" />
-                                        <input name="weight" value="@user.PatronTierWeight.ToString("0.##")" placeholder="Weight" />
-                                        <input name="notes" placeholder="Notes" />
-                                        <button class="button ghost" type="submit">Save patron tier</button>
+                                        <input name="label" value="@user.PatronTierLabel" placeholder="Patron override label" />
+                                        <input name="weight" value="@user.PatronTierWeight.ToString("0.##")" placeholder="Override weight" />
+                                        <input name="notes" placeholder="Override notes" />
+                                        <button class="button ghost" type="submit">Override patron tier</button>
                                     </form>
 
                                     <form method="post" asp-page-handler="SetTier" class="stack-form" style="margin-top: 0.6rem;">

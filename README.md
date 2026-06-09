@@ -12,6 +12,7 @@ This repository now includes a viable alpha foundation slice of the ASP.NET Core
 - PostgreSQL-backed EF Core model with an initial migration under `src/Bifrost.Web/Data/Migrations`
 - GitHub OAuth sign-in plus invite/approval-based membership gating
 - explicit member roles and admin-managed patron or contributor tier snapshots
+- patron support event recording with derived patron point summaries and tier refresh for voting weight
 - shared work board with estimates, actual time logs, review flow, and GitHub issue or PR links
 - planned priority/reward pressure loop where demand can raise a work item's value before a contributor claims it
 - member-facing motions with category thresholds aligned to the labor-platform doc
@@ -43,7 +44,7 @@ It is closer to deployable now, but it is still not a finished internet-facing m
 - GitHub sign-in only
 - GitHub-backed and internal work items
 - app-native motions and voting
-- internal ledgers for patronage, contribution, and payout eligibility
+- internal ledgers for patronage, contribution, point evidence, and payout eligibility
 - no real payout execution in v1
 
 ## Hosting Target

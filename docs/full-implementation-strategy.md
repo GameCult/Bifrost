@@ -18,6 +18,7 @@ It is currently a strong first application slice, not an internet-facing alpha. 
 - invite and approval gate with explicit member roles
 - member profile editing plus patron or contributor tier snapshots
 - project, work item, motion, member, and ledger UI
+- patron support event recording with derived patron tier snapshot refresh
 - work logs, work reviews, and completion flow
 - GitHub App webhook ingestion for issue, pull request, and review sync
 - health and readiness endpoints plus request logging
@@ -31,7 +32,7 @@ It is currently a strong first application slice, not an internet-facing alpha. 
 - backup and restore rehearsal for PostgreSQL and app secrets
 - fuller workflow polish around blockers, archival, and review ergonomics
 - production-safe payout proposal batching and finance review workflow
-- contribution point rules, patron point rules, decay jobs, and revenue share calculation
+- external patron provider ingestion, full contribution point rules, scheduled decay jobs, and revenue share calculation
 
 ## Product Alignment With Labor Platform
 
@@ -88,14 +89,15 @@ These concepts need a proper implementation strategy rather than a single `Point
 
 ### Patron Points
 
-Patron points should be derived from support events and support state, not edited freehand as a main workflow.
+Patron points are now derived from support events and support state, not edited freehand as a main workflow. Manual patron tier edits remain an admin override/fallback, not the normal voting-power owner.
 
 Implementation requirements:
 
-- store recurring support state and historical donation events separately
-- calculate patron points from current recurring support plus historical donations
-- apply the concept-doc rule that historical donations are halved after one month and then continue decaying
-- expose both raw support history and current effective patron points
+- store recurring support state and historical donation events separately: implemented as `PatronSupportEventKind.RecurringSupportSnapshot` and `OneTimeDonation`
+- calculate patron points from current recurring support plus historical donations: implemented by `PatronageService`
+- apply the concept-doc rule that historical donations are halved after one month and then continue decaying: implemented for effective patron point calculation
+- expose both raw support history and current effective patron points: implemented on the ledger surface
+- ingest Patreon/Heimdall provider events into the same service path: pending
 
 ### Contributor Points
 

@@ -486,6 +486,13 @@ namespace Bifrost.Web.Data.Migrations
                         .HasMaxLength(240)
                         .HasColumnType("character varying(240)");
 
+                    b.Property<bool>("IsCurrentRecurringSupport")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasColumnType("text");
+
                     b.Property<string>("Notes")
                         .IsRequired()
                         .HasColumnType("text");
@@ -502,6 +509,8 @@ namespace Bifrost.Web.Data.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("UserAccountId");
+
+                    b.HasIndex("UserAccountId", "Kind", "IsCurrentRecurringSupport");
 
                     b.ToTable("PatronSupportEvents");
                 });

@@ -20,7 +20,7 @@ Patron voting power should be prepared from Bifrost-owned account and support st
 
 - Heimdall links external provider accounts to a GameCult account.
 - Bifrost records patron support events and current recurring support state.
-- Bifrost derives effective patron points, decay, tier snapshots, and current voting weight.
+- Bifrost derives effective patron points and patron tier snapshots through `PatronageService`; scheduled decay jobs remain future work.
 - Motions snapshot the effective voting weight when a linked actor votes.
 
 Reddit can invite, explain, and collect discussion. It does not grant weight by itself. When a Reddit user should cast a vote or priority signal, the actor must be linked and the vote must be written into Bifrost.

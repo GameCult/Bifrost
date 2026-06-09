@@ -160,6 +160,12 @@ public enum PointTransactionType
     Decay
 }
 
+public enum PatronSupportEventKind
+{
+    OneTimeDonation,
+    RecurringSupportSnapshot
+}
+
 public sealed class UserAccount
 {
     public Guid Id { get; set; } = Guid.NewGuid();
@@ -711,9 +717,13 @@ public sealed class PatronSupportEvent
 
     public string ExternalSupportId { get; set; } = string.Empty;
 
+    public PatronSupportEventKind Kind { get; set; } = PatronSupportEventKind.OneTimeDonation;
+
     public decimal Amount { get; set; }
 
     public string CurrencyCode { get; set; } = "USD";
+
+    public bool IsCurrentRecurringSupport { get; set; }
 
     public DateTimeOffset SupportedAtUtc { get; set; }
 

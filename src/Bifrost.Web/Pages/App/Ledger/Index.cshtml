@@ -14,8 +14,8 @@
         </p>
 
         <div class="callout">
-            Post-alpha economics automation is planned separately. The schema now leaves room for point transactions,
-            patron support events, weekly decay runs, revenue events, and revenue-share batches without making them launch blockers.
+            Patron support events now feed derived tier snapshots for voting weight. Broader economics automation still leaves room for point transactions,
+            weekly decay runs, revenue events, and revenue-share batches without making them launch blockers.
         </div>
 
         @if (Model.Actor.CanManageLedger)
@@ -82,6 +82,72 @@
     </article>
 
     <article class="panel">
+        <span class="eyebrow">Patronage</span>
+        <h2>Support events</h2>
+        <p class="panel-intro">
+            Patron voting power is derived from support events and tier snapshots. Reddit and Discord can organize the argument;
+            this ledger records the support state that decides weight.
+        </p>
+
+        @if (Model.Actor.CanManageLedger)
+        {
+            <form method="post" asp-page-handler="RecordPatronSupport">
+                <div asp-validation-summary="ModelOnly" class="validation-summary-errors"></div>
+                <div class="form-grid">
+                    <div class="field">
+                        <label asp-for="PatronSupport.UserAccountId"></label>
+                        <select asp-for="PatronSupport.UserAccountId" asp-items="Model.MemberOptions"></select>
+                        <span asp-validation-for="PatronSupport.UserAccountId"></span>
+                    </div>
+                    <div class="field">
+                        <label asp-for="PatronSupport.Kind"></label>
+                        <select asp-for="PatronSupport.Kind" asp-items="Html.GetEnumSelectList<Bifrost.Web.Domain.PatronSupportEventKind>()"></select>
+                        <span asp-validation-for="PatronSupport.Kind"></span>
+                    </div>
+                    <div class="field">
+                        <label asp-for="PatronSupport.Amount"></label>
+                        <input asp-for="PatronSupport.Amount" />
+                        <span asp-validation-for="PatronSupport.Amount"></span>
+                    </div>
+                    <div class="field">
+                        <label asp-for="PatronSupport.CurrencyCode"></label>
+                        <input asp-for="PatronSupport.CurrencyCode" />
+                        <span asp-validation-for="PatronSupport.CurrencyCode"></span>
+                    </div>
+                    <div class="field">
+                        <label asp-for="PatronSupport.ExternalSupportId"></label>
+                        <input asp-for="PatronSupport.ExternalSupportId" />
+                        <span asp-validation-for="PatronSupport.ExternalSupportId"></span>
+                    </div>
+                    <div class="field">
+                        <label asp-for="PatronSupport.SupportedAtUtc"></label>
+                        <input asp-for="PatronSupport.SupportedAtUtc" />
+                        <span asp-validation-for="PatronSupport.SupportedAtUtc"></span>
+                    </div>
+                </div>
+                <label class="check-row">
+                    <input asp-for="PatronSupport.IsCurrentRecurringSupport" />
+                    <span>Mark as the current recurring support snapshot</span>
+                </label>
+                <div class="field">
+                    <label asp-for="PatronSupport.Notes"></label>
+                    <textarea asp-for="PatronSupport.Notes"></textarea>
+                    <span asp-validation-for="PatronSupport.Notes"></span>
+                </div>
+                <div class="panel-actions">
+                    <button class="button" type="submit">Record patron support</button>
+                </div>
+            </form>
+        }
+        else
+        {
+            <div class="callout warning">
+                Patron support recording is limited to finance reviewers and platform admins.
+            </div>
+        }
+    </article>
+
+    <article class="panel">
         <div class="panel-header">
             <div>
                 <h2>Payout proposal preview</h2>
@@ -107,6 +173,73 @@
             </div>
         }
     </article>
+</section>
+
+<section class="table-panel" style="margin-top: 1.5rem;">
+    <div class="panel-header" style="padding: 1.25rem 1.25rem 0;">
+        <div>
+            <h2>Recent patron support</h2>
+            <p class="table-meta">@Model.PatronSupportEvents.Count support events in the current view.</p>
+        </div>
+    </div>
+
+    @if (Model.PatronSupportEvents.Count == 0)
+    {
+        <div class="empty-state" style="margin: 1.25rem;">No patron support recorded yet.</div>
+    }
+    else
+    {
+        <div class="table-shell">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Member</th>
+                        <th>Support</th>
+                        <th>Derived patron state</th>
+                        <th>Receipt</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var support in Model.PatronSupportEvents)
+                    {
+                        <tr>
+                            <td>@support.MemberName</td>
+                            <td>
+                                <span class="pill">@support.Kind</span><br />
+                                @support.Amount.ToString("0.##") @support.CurrencyCode
+                                @if (support.IsCurrentRecurringSupport)
+                                {
+                                    <div><span class="pill success">current recurring</span></div>
+                                }
+                            </td>
+                            <td>
+                                @support.EffectivePoints.ToString("0.##") effective pts<br />
+                                <span class="muted">
+                                    @(string.IsNullOrWhiteSpace(support.TierLabel)
+                                        ? "No patron tier"
+                                        : $"{support.TierLabel} weight {support.VotingWeight:0.##}")
+                                </span>
+                            </td>
+                            <td>
+                                <span class="muted">@support.ExternalSupportId</span><br />
+                                <span class="muted">@support.SupportedAtUtc.ToString("dd MMM yyyy HH:mm") UTC</span>
+                            </td>
+                            <td>
+                                @if (Model.Actor.CanManageLedger)
+                                {
+                                    <form method="post" asp-page-handler="RefreshPatronTier">
+                                        <input type="hidden" name="userAccountId" value="@support.UserAccountId" />
+                                        <button class="button ghost" type="submit">Refresh tier</button>
+                                    </form>
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
 </section>
 
 <section class="table-panel" style="margin-top: 1.5rem;">

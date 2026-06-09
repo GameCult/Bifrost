@@ -35,6 +35,7 @@
 - `Motion`: `Management` or `Project`
 - `Vote`: per-member vote tied to effective voting weight
 - `LedgerEntry`: immutable patron/contributor/accounting record
+- `PatronSupportEvent`: auditable support fact used to derive patron points and tier snapshots
 - `PayoutProposalBatch`: admin-reviewed payout recommendation batch only
 - `AuditEvent`: append-only activity and override log
 
@@ -48,6 +49,7 @@
 - Work priority and attached reward should be able to rise as more eligible participants want the work done.
 - Contributor credit/reward is assigned only after maintainer acceptance of the completion artifact.
 - Voting weight derives from patron tier plus contributor tier.
+- Patron tier can be refreshed from support events through the patronage service; manual tier entry is an override path.
 - Reddit comments, upvotes, flair, and thread visibility do not derive voting weight; linked patron support and contribution state do.
 - Compensation is modeled internally, not executed by the platform.
 - Human approval remains in the loop for governance-sensitive and payout-sensitive steps.

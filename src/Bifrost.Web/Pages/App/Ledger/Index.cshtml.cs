@@ -1,6 +1,7 @@
 using System.ComponentModel.DataAnnotations;
 using Bifrost.Web.Data;
 using Bifrost.Web.Domain;
+using Bifrost.Web.Features.Patronage;
 using Bifrost.Web.Features.Shared;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
@@ -13,10 +14,17 @@ public sealed class IndexModel(
     BifrostDbContext dbContext,
     ICurrentBifrostActorAccessor actorAccessor,
     AuditTrailService auditTrailService,
+    PatronageService patronageService,
     TimeProvider timeProvider) : PageModel
 {
     [BindProperty]
     public CreateLedgerEntryInput Input { get; set; } = new();
+
+    [BindProperty]
+    public RecordPatronSupportInput PatronSupport { get; set; } = new()
+    {
+        SupportedAtUtc = DateTimeOffset.UtcNow
+    };
 
     public CurrentBifrostActor Actor { get; private set; } = CurrentBifrostActor.Anonymous;
 
@@ -27,6 +35,8 @@ public sealed class IndexModel(
     public IReadOnlyList<SelectListItem> WorkItemOptions { get; private set; } = [];
 
     public IReadOnlyList<LedgerEntry> LedgerEntries { get; private set; } = [];
+
+    public IReadOnlyList<PatronSupportListItem> PatronSupportEvents { get; private set; } = [];
 
     public IReadOnlyList<PayoutPreviewItem> PayoutPreview { get; private set; } = [];
 
@@ -43,7 +53,8 @@ public sealed class IndexModel(
             return Forbid();
         }
 
-        if (!ModelState.IsValid)
+        ModelState.Clear();
+        if (!TryValidateModel(Input, nameof(Input)))
         {
             await LoadAsync(cancellationToken);
             return Page();
@@ -75,6 +86,48 @@ public sealed class IndexModel(
             $"Created {entry.EntryType} ledger entry.",
             cancellationToken);
 
+        return RedirectToPage();
+    }
+
+    public async Task<IActionResult> OnPostRecordPatronSupportAsync(CancellationToken cancellationToken)
+    {
+        Actor = await actorAccessor.GetAsync(cancellationToken);
+        if (!Actor.CanManageLedger || Actor.UserAccount is null)
+        {
+            return Forbid();
+        }
+
+        ModelState.Clear();
+        if (!TryValidateModel(PatronSupport, nameof(PatronSupport)))
+        {
+            await LoadAsync(cancellationToken);
+            return Page();
+        }
+
+        await patronageService.RecordSupportEventAsync(
+            Actor.UserAccount.Id,
+            PatronSupport.UserAccountId,
+            PatronSupport.Kind,
+            PatronSupport.Amount,
+            PatronSupport.CurrencyCode,
+            PatronSupport.ExternalSupportId ?? string.Empty,
+            PatronSupport.SupportedAtUtc,
+            PatronSupport.IsCurrentRecurringSupport,
+            PatronSupport.Notes ?? string.Empty,
+            cancellationToken);
+
+        return RedirectToPage();
+    }
+
+    public async Task<IActionResult> OnPostRefreshPatronTierAsync(Guid userAccountId, CancellationToken cancellationToken)
+    {
+        Actor = await actorAccessor.GetAsync(cancellationToken);
+        if (!Actor.CanManageLedger || Actor.UserAccount is null)
+        {
+            return Forbid();
+        }
+
+        await patronageService.RefreshPatronTierSnapshotAsync(Actor.UserAccount.Id, userAccountId, cancellationToken);
         return RedirectToPage();
     }
 
@@ -110,6 +163,36 @@ public sealed class IndexModel(
             .OrderByDescending(x => x.CreatedAtUtc)
             .Take(20)
             .ToListAsync(cancellationToken);
+
+        var allSupportEvents = await dbContext.PatronSupportEvents
+            .AsNoTracking()
+            .Include(x => x.UserAccount)
+            .OrderByDescending(x => x.RecordedAtUtc)
+            .ToListAsync(cancellationToken);
+
+        PatronSupportEvents = allSupportEvents
+            .Take(20)
+            .Select(x =>
+            {
+                var summary = PatronageService.CalculatePatronPoints(
+                    allSupportEvents.Where(item => item.UserAccountId == x.UserAccountId),
+                    timeProvider.GetUtcNow());
+
+                return new PatronSupportListItem(
+                    x.UserAccountId,
+                    x.UserAccount.DisplayName,
+                    x.Kind,
+                    x.Amount,
+                    x.CurrencyCode,
+                    x.IsCurrentRecurringSupport,
+                    x.SupportedAtUtc,
+                    x.RecordedAtUtc,
+                    x.ExternalSupportId,
+                    summary.EffectivePoints,
+                    summary.TierLabel,
+                    summary.VotingWeight);
+            })
+            .ToList();
 
         PayoutPreview = await dbContext.LedgerEntries
             .AsNoTracking()
@@ -152,5 +235,49 @@ public sealed class IndexModel(
         public string Note { get; set; } = string.Empty;
     }
 
+    public sealed class RecordPatronSupportInput
+    {
+        [Required]
+        [Display(Name = "Member")]
+        public Guid UserAccountId { get; set; }
+
+        [Display(Name = "Support kind")]
+        public PatronSupportEventKind Kind { get; set; } = PatronSupportEventKind.OneTimeDonation;
+
+        [Range(0.01, 100000000)]
+        public decimal Amount { get; set; }
+
+        [Display(Name = "Currency")]
+        [StringLength(12)]
+        public string CurrencyCode { get; set; } = "USD";
+
+        [Display(Name = "External support id")]
+        [StringLength(240)]
+        public string? ExternalSupportId { get; set; }
+
+        [Display(Name = "Current recurring support")]
+        public bool IsCurrentRecurringSupport { get; set; }
+
+        [Display(Name = "Supported at (UTC)")]
+        public DateTimeOffset SupportedAtUtc { get; set; }
+
+        [StringLength(3000)]
+        public string? Notes { get; set; }
+    }
+
     public sealed record PayoutPreviewItem(string MemberName, decimal Points, decimal NominalAmount);
+
+    public sealed record PatronSupportListItem(
+        Guid UserAccountId,
+        string MemberName,
+        PatronSupportEventKind Kind,
+        decimal Amount,
+        string CurrencyCode,
+        bool IsCurrentRecurringSupport,
+        DateTimeOffset SupportedAtUtc,
+        DateTimeOffset RecordedAtUtc,
+        string ExternalSupportId,
+        decimal EffectivePoints,
+        string TierLabel,
+        decimal VotingWeight);
 }
