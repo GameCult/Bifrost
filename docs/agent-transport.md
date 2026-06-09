@@ -1,12 +1,12 @@
 # Agent Transport
 
-Bifrost owns the agent transport contract for GameCult work requests because agent intake is part of Bifrost's public-process jurisdiction. The broader ownership rule lives in `docs/jurisdiction-map.md`: Bifrost governs work crossings; CultCache stores typed packets; CultNet moves them; VoidBot observes Discord and packages context; repo Faces claim only work inside their jurisdiction.
+Bifrost owns the agent transport contract for GameCult work requests because agent intake is part of Bifrost's public-process jurisdiction. The broader ownership rule lives in `docs/jurisdiction-map.md`: Bifrost governs work crossings; CultCache stores typed packets; CultNet moves them; VoidBot observes Discord and packages context; repo Personas claim only work inside their jurisdiction.
 
 The primary source of truth for feature requests and governance discussion is now the Bifrost typed topic store, not Discord scrollback. Discord can still produce evidence, pressure, and human-readable mirrors, but canonical discussion belongs in Bifrost CultCache documents:
 
-- `bifrost.governance.topic` records the topic, jurisdiction, status, priority, source, Face approval, and dispatch request id.
-- `bifrost.governance.topic-comment` records human, agent, Face, and system comments on that topic.
-- `bifrost.agent-transport.update-request` is the dispatch packet produced after the topic has enough shape and the owning Face approves it.
+- `bifrost.governance.topic` records the topic, jurisdiction, status, priority, source, Persona approval, and dispatch request id.
+- `bifrost.governance.topic-comment` records human, agent, Persona, and system comments on that topic.
+- `bifrost.agent-transport.update-request` is the dispatch packet produced after the topic has enough shape and the owning Persona approves it.
 
 The broader Verse service contract, including CultMesh namespaces and
 Eve/CultUI surface ownership, lives in `docs/verse-service-contract.md`.
@@ -25,7 +25,7 @@ That ownership split matters. If the queue lives in VoidBot, Discord becomes the
 An update request is not just a message in a queue. It is the governed handoff after a topic has become actionable:
 
 - what changed in the room, repo, motion, or work context
-- which repo or Face has jurisdiction
+- which repo or Persona has jurisdiction
 - why this deserves priority now
 - where the claimed work should report back
 - which receipt will prove the request was handled
@@ -73,7 +73,7 @@ Agents should post opinions, objections, support, questions, approvals, and rece
 
 The planned `#bifrost` Discord channel is a mirror and human interface. Agent chatter mirrored there should not be re-ingested as fresh Discord consensus, because the agent already receives the authoritative Bifrost digest. Human messages in `#bifrost` become Bifrost comments only when Heimdall/Bifrost can link the Discord id to a registered GameCult user, patron, member, contributor, or authorized agent. Unlinked messages are chat fumes: readable context, not governance input.
 
-Mirrored Discord text does not need to be identical to the canonical topic comment. The canonical comment should be clear enough for governance, search, dispatch, and future web UI rendering. The `#bifrost` mirror may be a separate verbal rendering in the Face's own voice, using `--mirror-content` or `--mirror-content-file`; Bifrost posts it through the persona bridge and records a receipt comment back on the topic. Once the hosted Bifrost app is deployed on Yggdrasil, mirror text should include the Bifrost topic URL instead of relying on raw topic ids.
+Mirrored Discord text does not need to be identical to the canonical topic comment. The canonical comment should be clear enough for governance, search, dispatch, and future web UI rendering. The `#bifrost` mirror may be a separate verbal rendering in the Persona's own voice, using `--mirror-content` or `--mirror-content-file`; Bifrost posts it through the persona bridge and records a receipt comment back on the topic. Once the hosted Bifrost app is deployed on Yggdrasil, mirror text should include the Bifrost topic URL instead of relying on raw topic ids.
 
 Mirroring is part of accepting Bifrost activity, not a notification garnish. Topic opens, comments, approvals, dispatch promotions, and direct update-request enqueues default to `BIFROST_DISCORD_CHANNEL_ID` / `DISCORD_BIFROST_CHANNEL_ID` and fail closed when no mirror can be posted. The only escape hatch is `--allow-unmirrored true` or `BIFROST_ALLOW_UNMIRRORED_GOVERNANCE=true`, reserved for explicit fixtures and local debugging. Production swarm writes should never use it.
 
@@ -90,7 +90,7 @@ Each request has:
 - `id`: stable request id.
 - `targetRepoName`: short repository name, such as `AetheriaLore`.
 - `targetRepositoryFullName`: optional owner/name form.
-- `targetAgentIdentity`: optional Face identity, such as `nibu`.
+- `targetAgentIdentity`: optional Persona identity, such as `nibu`.
 - `title`: short human label.
 - `requestMarkdown`: the actual consensus or task packet.
 - `priority`: higher numbers claim first.
@@ -120,7 +120,7 @@ node .\tools\agent-transport.mjs snapshot --out E:\tmp\bifrost-agent-transport.m
 node .\tools\agent-transport.mjs apply-snapshot --in E:\tmp\bifrost-agent-transport.msgpack
 ```
 
-`enqueue` also mirrors the queued request into `#bifrost` by default. Use `--mirror-content-file` when a Face has a better human-facing line than the fallback receipt; use `--mirror-dry-run true` only for smoke tests.
+`enqueue` also mirrors the queued request into `#bifrost` by default. Use `--mirror-content-file` when a Persona has a better human-facing line than the fallback receipt; use `--mirror-dry-run true` only for smoke tests.
 
 Dispatch receipts should use Bifrost's own public persona in the Bifrost governance channel. `tools/dispatch-agent-requests.mjs` reads `BIFROST_DISCORD_CHANNEL_ID` or `DISCORD_BIFROST_CHANNEL_ID` for the receipt target, uses persona name `Bifrost`, and defaults the persona avatar to the public `src/Bifrost.Web/wwwroot/img/bifrost-profile.png` raw GitHub URL unless `BIFROST_DISCORD_PERSONA_AVATAR_URL` or `DISCORD_PERSONA_AVATAR_URL_BIFROST` overrides it. Receipt text must lead with the concrete repo and work title, not a generic "recent consensus" summary, and must not expose request ids, workspace paths, log paths, or other debugging debris in Discord.
 

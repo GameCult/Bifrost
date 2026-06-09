@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { createRequire } from "node:module";
+import { spawnSync } from "node:child_process";
 import { mkdir } from "node:fs/promises";
+import { existsSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -19,6 +21,16 @@ const {
 const documentType = "gamecult.eve.provider_advertisement";
 const schemaId = "gamecult.eve.provider_advertisement.v1";
 const documentId = "bifrost";
+const surfaceDocumentType = "gamecult.eve.surface_state";
+const surfaceSchemaId = "gamecult.eve.surface_state.v1";
+const interfaceBindingDocumentType = "gamecult.eve.interface_binding";
+const interfaceBindingSchemaId = "gamecult.eve.interface_binding.v1";
+const verseId = "bifrost.local";
+const rootVerse = "asgard";
+const currentMachine = "starfire";
+const canonicalService = `${rootVerse}.bifrost`;
+const locatedService = `${rootVerse}.${currentMachine}.bifrost`;
+const plannedLocatedService = `${rootVerse}.yggdrasil.bifrost`;
 
 const advertisementDefinition = defineDocumentType({
   type: documentType,
@@ -45,7 +57,38 @@ const advertisementDefinition = defineDocumentType({
     { slot: 10, memberName: "commandBoundaries", typeName: "object", isMany: true },
     { slot: 11, memberName: "styleCapabilities", typeName: "object", isMany: true },
     { slot: 12, memberName: "demotions", typeName: "string", isMany: true },
+    { slot: 13, memberName: "rootVerse", typeName: "string" },
+    { slot: 14, memberName: "canonicalService", typeName: "string" },
+    { slot: 15, memberName: "locatedService", typeName: "string" },
+    { slot: 16, memberName: "cultMeshAddress", typeName: "string" },
+    { slot: 17, memberName: "endpoints", typeName: "object", isMany: true },
+    { slot: 18, memberName: "routes", typeName: "object", isMany: true },
   ],
+});
+
+const surfaceDefinition = defineDocumentType({
+  type: surfaceDocumentType,
+  schemaId: surfaceSchemaId,
+  schemaName: surfaceDocumentType,
+  schemaVersion: surfaceSchemaId,
+  schema: { parse: parseObjectDocument("Eve surface state") },
+  name: "providerId",
+  members: [
+    { slot: 0, memberName: "providerId", typeName: "string", isName: true },
+    { slot: 1, memberName: "title", typeName: "string" },
+    { slot: 2, memberName: "version", typeName: "long" },
+    { slot: 3, memberName: "updatedAt", typeName: "string" },
+    { slot: 4, memberName: "surface", typeName: "object" },
+  ],
+});
+
+const interfaceBindingDefinition = defineDocumentType({
+  type: interfaceBindingDocumentType,
+  schemaId: interfaceBindingSchemaId,
+  schemaName: interfaceBindingDocumentType,
+  schemaVersion: interfaceBindingSchemaId,
+  schema: { parse: parseObjectDocument("Eve interface binding") },
+  name: "bindingId",
 });
 
 async function main() {
@@ -83,12 +126,19 @@ async function exportAdvertisement(options) {
 
   const cache = CultCache.builder()
     .withDocumentType(advertisementDefinition)
+    .withDocumentType(surfaceDefinition)
+    .withDocumentType(interfaceBindingDefinition)
     .withGenericStore(new SingleFileMessagePackBackingStore(storePath))
     .build();
 
   await cache.pullAllBackingStores();
   const advertisement = buildAdvertisement(options);
+  const stats = await collectStats(options);
+  const surface = buildOperatorSurface(stats, options);
+  const binding = buildInterfaceBinding(surface, stats, options);
   await cache.put(advertisementDefinition, advertisement.providerId, advertisement);
+  await cache.put(surfaceDefinition, surface.providerId, surface);
+  await cache.put(interfaceBindingDefinition, binding.bindingId, binding);
 
   printJson({
     ok: true,
@@ -98,6 +148,7 @@ async function exportAdvertisement(options) {
     out: storePath,
     surfaces: advertisement.surfaces.map((surface) => surface.id),
     witnesses: advertisement.witnesses.map((witness) => witness.path),
+    stats: stats.summary,
   });
 }
 
@@ -107,13 +158,27 @@ function buildAdvertisement(options) {
     serviceName: "Bifrost",
     contractPath: "docs/verse-service-contract.md",
     generatedAt: options["generated-at"] ?? new Date().toISOString(),
+    rootVerse,
+    canonicalService,
+    locatedService,
+    plannedLocatedService,
+    cultMeshAddress: locatedService,
+    endpoints: [
+      endpoint("operator-tui", `${locatedService}/eve/tui`, "gamecult.eve.surface.v1", ["tui", "nightwing-tui"]),
+      endpoint("operator-gui", `${locatedService}/eve/gui`, "gamecult.eve.surface.v1", ["gui", "browser", "eve-native"]),
+      endpoint("operator-commands", `${locatedService}/commands`, "bifrost.bridge_action.v0", ["command"]),
+    ],
+    routes: [
+      route("cultcache-witness", ".bifrost/provider-advertisement.cc", "local-cultcache", true),
+      route("websocket-bridge", "ws://192.168.1.66:8797/eve/deck", "compatibility-eve-deck", true),
+    ],
     authority: {
       owner: "Bifrost",
       role: "GameCult labor, governance, patron pressure, project work, account membership, and governed-public-crossing provider",
       presentationOwner: "Eve/CultUI",
       discoveryOwner: "Odin through CultMesh",
       stateOwner: "Bifrost typed state with CultCache .cc witnesses or export paths",
-      runtimeMigration: "not performed by this advertisement",
+      runtimeMigration: `currently ${locatedService}; planned move target ${plannedLocatedService}`,
     },
     namespaces: [
       namespace("gamecult.bifrost.service", "service registration, build/version, schema catalog, and command discovery"),
@@ -141,7 +206,7 @@ function buildAdvertisement(options) {
     witnesses: [
       witness(".bifrost/provider-advertisement.cc", schemaId, "current", "read-only provider advertisement exported by this tool"),
       witness(".bifrost/governance-threads.cc", "bifrost.governance.topic.v0; bifrost.governance.topic_comment.v0", "current", "governance discussion, approvals, and dispatch promotion topics"),
-      witness(".bifrost/agent-transport.cc", "bifrost.agent-transport.update-request.v0", "current", "repo Face update requests and dispatch queue state"),
+      witness(".bifrost/agent-transport.cc", "bifrost.agent-transport.update-request.v0", "current", "repo Persona update requests and dispatch queue state"),
       witness(".bifrost/work-items.cc", "bifrost.work_item.v0", "planned-export", "work items exported from the alpha transactional store"),
       witness(".bifrost/motions.cc", "bifrost.motion.v0; bifrost.vote.v0", "planned-export", "app-native motions and votes exported from the alpha transactional store"),
       witness(".bifrost/ledger.cc", "bifrost.ledger_entry.v0", "planned-export", "patron and contributor ledger entries exported from the alpha transactional store"),
@@ -150,41 +215,48 @@ function buildAdvertisement(options) {
       witness(".bifrost/eve-surfaces.cc", "gamecult.eve.surface.v1", "planned-export", "product and operator Eve/CultUI surface publications"),
     ],
     surfaces: [
-      surface("bifrost.account", "Account Verse", "gamecult.bifrost.surface.product", "gamecult.eve.surface.v1", ".bifrost/eve-surfaces.cc", [
+      surface("bifrost", "Bifrost Operator Dashboard", "gamecult.bifrost.surface.operator", "gamecult.eve.surface_state.v1", ".bifrost/provider-advertisement.cc", "eve", [
+        "service health",
+        "compact service status",
+        "topic and request status",
+        "dispatch activity by source channel",
+        "bridge capability status",
+      ]),
+      surface("bifrost.account", "Account Verse", "gamecult.bifrost.surface.product", "gamecult.eve.surface.v1", ".bifrost/eve-surfaces.cc", "account/eve", [
         "membership status",
         "Heimdall-linked account projection",
         "grant consumption",
         "audit trail lowerings",
       ]),
-      surface("bifrost.patron", "Patron Verse", "gamecult.bifrost.surface.product", "gamecult.eve.surface.v1", ".bifrost/eve-surfaces.cc", [
+      surface("bifrost.patron", "Patron Verse", "gamecult.bifrost.surface.product", "gamecult.eve.surface.v1", ".bifrost/eve-surfaces.cc", "patron/eve", [
         "patron standing",
         "priority pressure",
         "pledge/reward influence",
         "receipts",
       ]),
-      surface("bifrost.project", "Project Verse", "gamecult.bifrost.surface.product", "gamecult.eve.surface.v1", ".bifrost/eve-surfaces.cc", [
+      surface("bifrost.project", "Project Verse", "gamecult.bifrost.surface.product", "gamecult.eve.surface.v1", ".bifrost/eve-surfaces.cc", "project/eve", [
         "project membership",
         "repository links",
         "maintainer authority",
         "work boards",
       ]),
-      surface("bifrost.work", "Work Verse", "gamecult.bifrost.surface.product", "gamecult.eve.surface.v1", ".bifrost/eve-surfaces.cc", [
+      surface("bifrost.work", "Work Verse", "gamecult.bifrost.surface.product", "gamecult.eve.surface.v1", ".bifrost/eve-surfaces.cc", "work/eve", [
         "work items",
         "claims",
         "review",
         "blockers",
         "completion artifacts",
       ]),
-      surface("bifrost.motion", "Motion Verse", "gamecult.bifrost.surface.product", "gamecult.eve.surface.v1", ".bifrost/eve-surfaces.cc", [
+      surface("bifrost.motion", "Motion Verse", "gamecult.bifrost.surface.product", "gamecult.eve.surface.v1", ".bifrost/eve-surfaces.cc", "motion/eve", [
         "motions",
         "topic threads",
         "votes",
         "approvals",
         "objections",
       ]),
-      surface("bifrost.operator", "Bifrost Operator Verse", "gamecult.bifrost.surface.operator", "gamecult.eve.surface.v1", ".bifrost/eve-surfaces.cc", [
+      surface("bifrost.operator", "Bifrost Operator Verse", "gamecult.bifrost.surface.operator", "gamecult.eve.surface.v1", ".bifrost/eve-surfaces.cc", "operator/eve", [
         "readiness",
-        "witness freshness",
+        "store freshness",
         "bridge queues",
         "schema catalog",
         "migration drift",
@@ -223,7 +295,7 @@ function buildAdvertisement(options) {
         "publish work boards",
         "surface maintainer authority",
       ], [
-        "does not seize repo Face cognition or project-local ownership",
+        "does not seize repo Persona cognition or project-local ownership",
       ]),
       boundary("account", "Bifrost consumes Heimdall claims", [
         "display membership status",
@@ -259,6 +331,373 @@ function buildAdvertisement(options) {
   });
 }
 
+async function collectStats(options) {
+  const generatedAt = options["generated-at"] ?? new Date().toISOString();
+  const health = await fetchProbe("http://127.0.0.1:5080/healthz");
+  const ready = await fetchProbe("http://127.0.0.1:5080/readyz");
+  const transport = runJsonTool(["tools/agent-transport.mjs", "list", "--json"]);
+  const governance = runJsonTool(["tools/governance-threads.mjs", "list", "--json"]);
+  const docker = dockerContainers();
+  const witnesses = [
+    witnessStat(".bifrost/provider-advertisement.cc"),
+    witnessStat(".bifrost/governance-threads.cc"),
+    witnessStat(".bifrost/agent-transport.cc"),
+    witnessStat(".bifrost/discord-webhook-cache.json"),
+  ];
+  const topics = Array.isArray(governance.value) ? governance.value : [];
+  const requests = Array.isArray(transport.value) ? transport.value : [];
+  const topicCounts = countBy(topics, "status");
+  const requestCounts = countBy(requests, "status");
+  const recentWindowHours = 24;
+  const dockerHealthy = docker.items.filter((item) => /healthy/i.test(item.status)).length;
+  const dockerRunning = docker.items.filter((item) => /^Up\b/i.test(item.status)).length;
+
+  return {
+    generatedAt,
+    health,
+    ready,
+    docker,
+    governance: {
+      ok: governance.ok,
+      error: governance.error,
+      count: topics.length,
+      statusCounts: topicCounts,
+      recentCount: countRecent(topics, recentWindowHours),
+      channelCounts: countBy(topics, "sourceKind"),
+      recentChannelCounts: countRecentBy(topics, "sourceKind", recentWindowHours),
+      latestUpdatedAt: latestTimestamp(topics.map((item) => item.updatedAt)),
+    },
+    transport: {
+      ok: transport.ok,
+      error: transport.error,
+      count: requests.length,
+      statusCounts: requestCounts,
+      recentCount: countRecent(requests, recentWindowHours),
+      channelCounts: countBy(requests, "sourceKind"),
+      recentChannelCounts: countRecentBy(requests, "sourceKind", recentWindowHours),
+      latestUpdatedAt: latestTimestamp(requests.map((item) => item.updatedAt)),
+    },
+    witnesses,
+    bridge: {
+      discordPost: true,
+      discordDm: true,
+      githubDraftPr: true,
+      githubPrComment: true,
+      credentialSource: process.env.BIFROST_DISCORD_BOT_TOKEN ? "BIFROST_DISCORD_BOT_TOKEN" : process.env.DISCORD_BOT_TOKEN ? "DISCORD_BOT_TOKEN-fallback" : "missing",
+    },
+    summary: {
+      status: health.ok && ready.ok ? "ready" : "degraded",
+      health: health.value ?? health.error,
+      ready: ready.value ?? ready.error,
+      dockerRunning,
+      dockerHealthy,
+      governanceTopics: topics.length,
+      transportRequests: requests.length,
+      recentGovernanceTopics: countRecent(topics, recentWindowHours),
+      recentTransportRequests: countRecent(requests, recentWindowHours),
+      openTopics: topicCounts.open ?? 0,
+      queuedRequests: requestCounts.queued ?? 0,
+      recentWindowHours,
+    },
+  };
+}
+
+async function fetchProbe(url) {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 2500);
+    const response = await fetch(url, { signal: controller.signal });
+    clearTimeout(timeout);
+    const text = (await response.text()).trim();
+    return {
+      ok: response.ok,
+      statusCode: response.status,
+      value: text,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+function runJsonTool(args) {
+  const result = spawnSync(process.execPath, args, {
+    cwd: repoRoot,
+    encoding: "utf8",
+    windowsHide: true,
+  });
+  if (result.status !== 0) {
+    return {
+      ok: false,
+      error: (result.stderr || result.stdout || `exit ${result.status}`).trim(),
+      value: null,
+    };
+  }
+  try {
+    return {
+      ok: true,
+      value: JSON.parse(result.stdout),
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+      value: null,
+    };
+  }
+}
+
+function dockerContainers() {
+  const result = spawnSync("docker", ["ps", "--filter", "name=bifrost", "--format", "{{json .}}"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    windowsHide: true,
+  });
+  if (result.status !== 0) {
+    return {
+      ok: false,
+      error: (result.stderr || result.stdout || `exit ${result.status}`).trim(),
+      items: [],
+    };
+  }
+  const items = result.stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      try {
+        const parsed = JSON.parse(line);
+        return {
+          id: parsed.ID,
+          name: parsed.Names,
+          image: parsed.Image,
+          status: parsed.Status,
+          ports: parsed.Ports,
+        };
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+  return { ok: true, items };
+}
+
+function witnessStat(relativePath) {
+  const fullPath = resolve(repoRoot, relativePath);
+  if (!existsSync(fullPath)) {
+    return {
+      path: relativePath,
+      exists: false,
+      updatedAt: null,
+    };
+  }
+  const stat = statSync(fullPath);
+  return {
+    path: relativePath,
+    exists: true,
+    updatedAt: stat.mtime.toISOString(),
+  };
+}
+
+function buildOperatorSurface(stats) {
+  const statusTone = stats.summary.status === "ready" ? "ok" : "warn";
+  const children = [
+    panelNode("service", "Service", [
+      metricNode("status", "Status", stats.summary.status, statusTone),
+      metricNode("daemon", "Daemon", `health ${stats.summary.health} / ready ${stats.summary.ready}`, stats.health.ok && stats.ready.ok ? "ok" : "warn"),
+      metricNode("containers", "Containers", `${stats.summary.dockerRunning} up / ${stats.summary.dockerHealthy} healthy`, stats.summary.dockerHealthy > 0 ? "ok" : "warn"),
+      metricNode("stores", "Stores", witnessHealthLine(stats.witnesses), witnessHealthTone(stats.witnesses)),
+      metricNode("bridge", "Bridge", `Discord post ${yesNo(stats.bridge.discordPost)} / DM ${yesNo(stats.bridge.discordDm)}`, "ok"),
+    ]),
+    panelNode("activity", "Activity", [
+      metricNode("topics", "Topics", `${stats.summary.governanceTopics} total / ${stats.summary.openTopics} open / ${stats.summary.recentGovernanceTopics} in ${stats.summary.recentWindowHours}h`, stats.governance.ok ? "ok" : "warn"),
+      metricNode("requests", "Requests", `${stats.summary.transportRequests} total / ${stats.summary.queuedRequests} queued / ${stats.summary.recentTransportRequests} in ${stats.summary.recentWindowHours}h`, stats.transport.ok ? "ok" : "warn"),
+      listNode("status", "Status", [
+        `topics: ${compactCounts(stats.governance.statusCounts)}`,
+        `requests: ${compactCounts(stats.transport.statusCounts)}`,
+      ]),
+      listNode("channels", "Dispatch Channels", compactChannelLines(stats.transport.channelCounts, stats.transport.recentChannelCounts, stats.summary.recentWindowHours)),
+    ]),
+  ];
+
+  return {
+    providerId: "bifrost",
+    title: "Bifrost Operator Dashboard",
+    version: Date.parse(stats.generatedAt) || Date.now(),
+    updatedAt: stats.generatedAt,
+    stats,
+    surface: {
+      schema: "gamecult.eve.surface.v1",
+      id: "bifrost-operator-dashboard",
+      title: "Bifrost Operator Dashboard",
+      root: {
+        id: "bifrost-root",
+        kind: "dashboard",
+        props: {
+          title: "Bifrost",
+          subtitle: "Governance, labor, and public crossing bridge",
+          status: stats.summary.status,
+          generatedAt: stats.generatedAt,
+        },
+        children,
+      },
+    },
+  };
+}
+
+function buildInterfaceBinding(surface, stats) {
+  return {
+    bindingId: "bifrost",
+    providerId: "bifrost",
+    title: surface.title,
+    kind: "operator-dashboard",
+    updatedAt: surface.updatedAt,
+    provider: {
+      id: "bifrost",
+      title: "Bifrost",
+      description: "Bifrost-owned operator stats and bridge health surface.",
+      version: String(surface.version),
+      endpoint: `${locatedService}/eve/tui`,
+      cultMeshAddress: `${locatedService}/eve/tui`,
+      canonicalService,
+      locatedService,
+      plannedLocatedService,
+      endpoints: [
+        endpoint("operator-tui", `${locatedService}/eve/tui`, "gamecult.eve.surface.v1", ["tui", "nightwing-tui"]),
+        endpoint("operator-gui", `${locatedService}/eve/gui`, "gamecult.eve.surface.v1", ["gui", "browser", "eve-native"]),
+      ],
+      routes: [
+        route("cultcache-witness", ".bifrost/provider-advertisement.cc", "local-cultcache", true),
+        route("websocket-bridge", "ws://192.168.1.66:8797/eve/deck", "compatibility-eve-deck", true),
+      ],
+      capabilities: ["operator-stats", "bridge-health", "governance-counts", "agent-transport-counts"],
+      usesCultMesh: true,
+      status: stats.summary.status,
+      transport: "CultMesh Eve interface binding.",
+    },
+    surface: surface.surface,
+    rendererHints: {
+      preferredLowerings: ["nightwing-tui", "eve-native", "browser"],
+      tileId: "bifrost",
+      minWidth: 80,
+      minHeight: 18,
+      preferredWidth: 120,
+      preferredHeight: 32,
+      density: "operator",
+    },
+  };
+}
+
+function panelNode(id, title, children) {
+  return {
+    id: `panel-${id}`,
+    kind: "panel",
+    props: { title },
+    children,
+  };
+}
+
+function metricNode(id, label, value, tone) {
+  return {
+    id: `metric-${id}`,
+    kind: "metric",
+    props: { label, value, tone },
+  };
+}
+
+function listNode(id, title, items) {
+  return {
+    id: `list-${id}`,
+    kind: "list",
+    props: { title },
+    children: items.length > 0
+      ? items.map((item, index) => ({
+          id: `list-${id}-${index}`,
+          kind: "text",
+          props: { text: item },
+        }))
+      : [{ id: `list-${id}-empty`, kind: "text", props: { text: "none" } }],
+  };
+}
+
+function compactCounts(value) {
+  const entries = Object.entries(value).sort((left, right) => left[0].localeCompare(right[0]));
+  return entries.length > 0 ? entries.map(([key, count]) => `${key} ${count}`).join(" / ") : "none";
+}
+
+function compactChannelLines(totalCounts, recentCounts, windowHours) {
+  const keys = new Set([...Object.keys(totalCounts), ...Object.keys(recentCounts)]);
+  const lines = [...keys]
+    .sort((left, right) => left.localeCompare(right))
+    .map((key) => `${key}: ${totalCounts[key] || 0} total / ${recentCounts[key] || 0} in ${windowHours}h`);
+  return lines.length > 0 ? lines : ["none"];
+}
+
+function countBy(items, field) {
+  const counts = {};
+  for (const item of items) {
+    const key = String(item?.[field] || "unknown");
+    counts[key] = (counts[key] || 0) + 1;
+  }
+  return counts;
+}
+
+function countRecent(items, hours) {
+  const cutoff = Date.now() - hours * 60 * 60 * 1000;
+  return items.filter((item) => {
+    const timestamp = Date.parse(item?.updatedAt || item?.createdAt || "");
+    return Number.isFinite(timestamp) && timestamp >= cutoff;
+  }).length;
+}
+
+function countRecentBy(items, field, hours) {
+  const cutoff = Date.now() - hours * 60 * 60 * 1000;
+  const counts = {};
+  for (const item of items) {
+    const timestamp = Date.parse(item?.updatedAt || item?.createdAt || "");
+    if (!Number.isFinite(timestamp) || timestamp < cutoff) {
+      continue;
+    }
+    const key = String(item?.[field] || "unknown");
+    counts[key] = (counts[key] || 0) + 1;
+  }
+  return counts;
+}
+
+function latestTimestamp(values) {
+  return values
+    .filter((value) => typeof value === "string" && value.trim().length > 0)
+    .sort()
+    .at(-1) || null;
+}
+
+function witnessHealthLine(witnesses) {
+  const missing = witnesses.filter((item) => !item.exists).length;
+  if (missing > 0) {
+    return `${witnesses.length - missing}/${witnesses.length} present`;
+  }
+  const latest = latestTimestamp(witnesses.map((item) => item.updatedAt));
+  return `all present / latest ${latest ? shortTime(latest) : "unknown"}`;
+}
+
+function witnessHealthTone(witnesses) {
+  return witnesses.every((item) => item.exists) ? "ok" : "warn";
+}
+
+function shortTime(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "unknown";
+  }
+  return date.toISOString().slice(5, 16).replace("T", " ");
+}
+
+function yesNo(value) {
+  return value ? "yes" : "no";
+}
+
 function namespace(id, purpose) {
   return { id, purpose };
 }
@@ -271,8 +710,21 @@ function witness(path, schemaIds, status, purpose) {
   return { path, schemaIds, status, purpose };
 }
 
-function surface(id, name, namespace, schemaId, witnessPath, capabilities) {
-  return { id, name, namespace, schemaId, witnessPath, capabilities };
+function surface(id, name, namespace, schemaId, witnessPath, resourceBase, capabilities) {
+  return {
+    id,
+    name,
+    namespace,
+    schemaId,
+    witnessPath,
+    capabilities,
+    cultMeshAddress: `${locatedService}/${resourceBase}/tui`,
+    graphicalAddress: `${locatedService}/${resourceBase}/gui`,
+    endpoints: [
+      endpoint("tui", `${locatedService}/${resourceBase}/tui`, schemaId, ["tui"]),
+      endpoint("gui", `${locatedService}/${resourceBase}/gui`, schemaId, ["gui"]),
+    ],
+  };
 }
 
 function boundary(area, owner, commands, forbiddenAuthority) {
@@ -281,6 +733,14 @@ function boundary(area, owner, commands, forbiddenAuthority) {
 
 function style(area, capabilities) {
   return { area, capabilities };
+}
+
+function endpoint(id, address, schemaId, lowerings) {
+  return { id, address, schemaId, lowerings };
+}
+
+function route(id, address, transport, demoted) {
+  return { id, address, transport, demoted };
 }
 
 function parseAdvertisement(input) {
@@ -293,6 +753,13 @@ function parseAdvertisement(input) {
     serviceName: requireString(input.serviceName, "serviceName"),
     contractPath: requireString(input.contractPath, "contractPath"),
     generatedAt: requireString(input.generatedAt, "generatedAt"),
+    rootVerse: optionalString(input.rootVerse, rootVerse),
+    canonicalService: optionalString(input.canonicalService, canonicalService),
+    locatedService: optionalString(input.locatedService, locatedService),
+    plannedLocatedService: typeof input.plannedLocatedService === "string" ? input.plannedLocatedService.trim() : "",
+    cultMeshAddress: optionalString(input.cultMeshAddress, locatedService),
+    endpoints: Array.isArray(input.endpoints) ? requireObjectArray(input.endpoints, "endpoints") : [],
+    routes: Array.isArray(input.routes) ? requireObjectArray(input.routes, "routes") : [],
     authority: requireObject(input.authority, "authority"),
     namespaces: requireObjectArray(input.namespaces, "namespaces"),
     schemas: requireObjectArray(input.schemas, "schemas"),
@@ -312,6 +779,15 @@ function parseAdvertisement(input) {
   }
 
   return advertisement;
+}
+
+function parseObjectDocument(label) {
+  return (input) => {
+    if (!input || typeof input !== "object" || Array.isArray(input)) {
+      throw new Error(`${label} must be an object.`);
+    }
+    return input;
+  };
 }
 
 function parseArgs(args) {
@@ -342,6 +818,13 @@ function requireString(value, field) {
   }
 
   return value.trim();
+}
+
+function optionalString(value, fallback) {
+  if (typeof value === "string" && value.trim().length > 0) {
+    return value.trim();
+  }
+  return fallback;
 }
 
 function requireObject(value, field) {

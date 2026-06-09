@@ -33,6 +33,9 @@ async function main() {
     case "discord-post":
       await postDiscordMessage(options);
       return;
+    case "discord-dm":
+      await sendDiscordDm(options);
+      return;
     default:
       throw new Error(`Unknown command "${command}". Run "node tools/bifrost-bridge.mjs help".`);
   }
@@ -196,6 +199,63 @@ async function postDiscordMessage(options) {
     transport: result.transport,
     url: `https://discord.com/channels/${result.guildId ?? "@me"}/${channelId}/${result.id}`,
   });
+}
+
+async function sendDiscordDm(options) {
+  const token = process.env.BIFROST_DISCORD_BOT_TOKEN ?? process.env.DISCORD_BOT_TOKEN;
+  const recipientId = requireOption(options, "recipient-id");
+  const content = await readOptionText(options, "content", "content-file");
+  const dryRun = options["dry-run"] === "true";
+
+  if (dryRun) {
+    printJson({
+      dryRun: true,
+      action: "discord-dm",
+      recipientId,
+      content,
+    });
+    return;
+  }
+
+  if (!token) {
+    throw new Error("Set BIFROST_DISCORD_BOT_TOKEN or DISCORD_BOT_TOKEN before sending a Discord DM.");
+  }
+
+  const channelId = await openDiscordDmChannel(token, recipientId);
+  const result = await postDiscordBotMessage(token, channelId, content, undefined);
+  printJson({
+    action: "discord-dm",
+    ok: true,
+    recipientId,
+    channelId,
+    messageId: result.id,
+    transport: result.transport,
+    url: `https://discord.com/channels/@me/${channelId}/${result.id}`,
+  });
+}
+
+async function openDiscordDmChannel(token, recipientId) {
+  const response = await fetch("https://discord.com/api/v10/users/@me/channels", {
+    method: "POST",
+    headers: {
+      Authorization: `Bot ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      recipient_id: recipientId,
+    }),
+  });
+
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error(`Discord DM channel creation failed with ${response.status}: ${text}`);
+  }
+
+  const channel = JSON.parse(text);
+  if (!channel.id) {
+    throw new Error("Discord DM channel creation returned no channel id.");
+  }
+  return channel.id;
 }
 
 async function postDiscordBotMessage(token, channelId, content, replyToMessageId) {
@@ -609,11 +669,13 @@ Commands:
   github-draft-pr   Write one file in a target repo and open a draft PR through gh
   github-pr-comment Comment on a pull request through gh
   discord-post      Post a message to Discord through the bot token or persona webhook pipe
+  discord-dm        Send a Discord DM through Bifrost's bridge-owned bot token
 
 Examples:
   node tools/bifrost-bridge.mjs github-draft-pr --repo-root E:/Projects/AetheriaLore --identity nibu --title "Nibu: Glitchcraft" --path Aetheria/Articles/Nibu/glitchcraft.md --content-file article.md
   node tools/bifrost-bridge.mjs github-pr-comment --repo-root E:/Projects/AetheriaLore --identity nibu --pr 12 --content "This needs a sharper leash."
   node tools/bifrost-bridge.mjs discord-post --channel-id 1501196543150264332 --persona-name Nibu --content "Draft PR opened: https://github.com/..."
+  node tools/bifrost-bridge.mjs discord-dm --recipient-id 123456789 --content "Moderation status update..."
 `);
 }
 

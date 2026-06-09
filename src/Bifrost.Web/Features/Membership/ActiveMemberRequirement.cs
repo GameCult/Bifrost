@@ -15,6 +15,8 @@ public static class GitHubAuthenticationDefaults
 public static class BifrostClaimTypes
 {
     public const string GitHubLogin = "urn:bifrost:github-login";
+    public const string HeimdallAccountId = "urn:bifrost:heimdall-account-id";
+    public const string AuthProvider = "urn:bifrost:auth-provider";
     public const string DisplayName = "urn:bifrost:display-name";
     public const string AvatarUrl = "urn:bifrost:avatar-url";
 }

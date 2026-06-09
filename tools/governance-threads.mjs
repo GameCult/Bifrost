@@ -220,7 +220,7 @@ async function approveTopic(cache, options) {
   const approvalBody = await readOptionalMarkdownOption(options, "body");
 
   if (!topic.jurisdictionAgentIdentity || !equalsIgnoreCase(approvedBy, topic.jurisdictionAgentIdentity)) {
-    throw new Error(`Topic "${topic.id}" can only be approved by its jurisdiction Face (${topic.jurisdictionAgentIdentity ?? "none"}).`);
+    throw new Error(`Topic "${topic.id}" can only be approved by its jurisdiction Persona (${topic.jurisdictionAgentIdentity ?? "none"}).`);
   }
 
   const now = new Date().toISOString();
@@ -766,7 +766,7 @@ function printHelp() {
 Commands:
   open      Create a canonical Bifrost topic for a feature request or discussion
   comment   Append a proposal, support, objection, question, approval, summary, or receipt
-  approve   Mark a topic approved by its jurisdiction Face and optionally append approval text
+  approve   Mark a topic approved by its jurisdiction Persona and optionally append approval text
   promote   Convert an approved topic into a Bifrost agent update request
   list      List topics, optionally filtered by --repo, --agent, --status
   show      Print one topic with its comments
@@ -780,7 +780,7 @@ Examples:
 
 Mirror options:
   --mirror-channel-id <id>            Mirror this activity to Discord through Bifrost bridge; defaults to BIFROST_DISCORD_CHANNEL_ID
-  --mirror-persona-name <name>        Render the mirror as the Face/persona
+  --mirror-persona-name <name>        Render the mirror as the Persona/persona
   --mirror-persona-avatar-url <url>   Optional persona avatar for the mirror
   --mirror-content <text>             Optional more verbal/personality-rich mirror text
   --mirror-content-file <path>        Read mirror text from a file

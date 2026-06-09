@@ -19,7 +19,7 @@ Bifrost state. They do not own Bifrost's canonical product or operator surface.
 | Identity, grants, consent, revocation | Heimdall | OAuth providers, linked accounts, operator grants | signed claims consumed by Bifrost |
 | Storage and sync primitives | CultCache/CultNet/CultLib | Bifrost document types and payloads | `.cc` stores, snapshots, raw document updates |
 | Service discovery and surface aggregation | Odin | CultMesh namespaces, schema catalogs, service registrations | discoverable Verse routes and surface indexes |
-| Room observation and Face cognition | VoidBot/repo Faces | Discord context, repo state, Persona state | proposed Bifrost topics, comments, dispatch requests |
+| Room observation and Persona cognition | VoidBot/repo Personas | Discord context, repo state, Persona state | proposed Bifrost topics, comments, dispatch requests |
 | Rendering | Eve/browser/native/TUI/Discord | `gamecult.eve.surface.v1` compositions, typed state references | product/operator UI lowerings, not canonical state |
 
 ## Durable State And Witnesses
@@ -79,15 +79,24 @@ Bifrost has a read-only first-cut provider advertisement command:
 node tools/provider-advertisement.mjs export --out .bifrost/provider-advertisement.cc
 ```
 
-It writes a single `gamecult.eve.provider_advertisement.v1` CultCache document
-for Odin/Eve discovery experiments. The document names Bifrost's Account,
-Patron, Project, Work, Motion, and Operator Verse surfaces; current and planned
-schema ids; `.cc` witness/export paths; command authority boundaries; style
-capabilities; and demoted presentation/probe surfaces.
+It writes Bifrost-owned Eve discovery documents into
+`.bifrost/provider-advertisement.cc`:
 
-This export is discovery metadata only. It does not migrate Postgres state,
-publish to CultMesh, read secrets, execute bridge actions, or make Razor Pages,
-HTTP probes, Discord mirrors, or local dispatch JSON canonical.
+- `gamecult.eve.provider_advertisement.v1` names Bifrost's Account, Patron,
+  Project, Work, Motion, and Operator Verse surfaces; current and planned
+  schema ids; `.cc` witness/export paths; command authority boundaries; style
+  capabilities; and demoted presentation/probe surfaces.
+- `gamecult.eve.surface_state.v1` publishes the live Bifrost operator dashboard
+  surface with compact service health, topic/request status, dispatch activity
+  by source channel, store presence/freshness, and bridge capability status.
+- `gamecult.eve.interface_binding.v1` binds that surface to provider id
+  `bifrost` so Odin can lower it into Nightwing, Eve, browser, or future room
+  dashboards.
+
+This export does not migrate Postgres state, read secrets, execute bridge
+actions, or make Razor Pages, HTTP probes, Discord mirrors, or local dispatch
+JSON canonical. The operator surface may display those probes, but the provider
+owned `.cc` witness remains the discovery and dashboard source.
 
 For protocol-debug inspection without writing a witness:
 
@@ -109,15 +118,50 @@ Product surfaces are the canonical interface compositions for:
 Operator surfaces are the canonical interface compositions for:
 
 - readiness, build/version, config validation, and deploy target;
-- CultCache witness freshness and export errors;
+- compact service health: daemon readiness, container health, and backing store
+  presence without making file size or storage mechanics first-rank operator
+  signal;
 - CultMesh publication health and Odin discovery status;
-- bridge queues, failed crossings, retry/cancel controls, and receipt gaps;
+- topic/request status, dispatch activity by source channel, failed crossings,
+  retry/cancel controls, and receipt gaps;
 - schema versions, migration state, and Postgres-to-`.cc` witness drift;
 - Discord mirror health, including fail-closed unmirrored governance writes.
 
 The current Razor Pages app lowers product surfaces into browser UI. Existing
 health/readiness endpoints lower operator state into HTTP probes. Both should
 be fed by the same typed service state that backs Eve surfaces.
+
+## CultMesh Address Shape
+
+Bifrost publishes semantic CultMesh addresses before transport routes. The
+canonical service name survives host moves:
+
+```text
+asgard.bifrost
+```
+
+The current located instance is:
+
+```text
+asgard.starfire.bifrost
+```
+
+The planned hosted location is:
+
+```text
+asgard.yggdrasil.bifrost
+```
+
+Surface resources hang under the located service. TUI and GUI are sibling
+lowerings, not one endpoint wearing two costumes:
+
+```text
+asgard.starfire.bifrost/eve/tui
+asgard.starfire.bifrost/eve/gui
+```
+
+CultNet routes are transport metadata for resolving those names. WebSocket and
+HTTP URLs are compatibility bridges or probes, not native Bifrost addresses.
 
 ## Nested Verses
 
