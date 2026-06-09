@@ -1,11 +1,17 @@
-# PayPal Patronage Intake
+# Provider Patronage Intake
 
-PayPal collection is a Heimdall-to-Bifrost crossing, not a Bifrost payment stack.
+Patreon and PayPal collection are Heimdall-to-Bifrost crossings, not a Bifrost
+payment stack.
 
 ## Authority
 
 - PayPal owns money movement, captures, subscription status, refunds, reversals, and chargebacks.
-- Heimdall owns PayPal app credentials, webhook receipt, PayPal signature verification, provider account linking, and provider-event normalization.
+- Patreon owns membership status, charge status, pledge amount, and tier
+  assignment.
+- Heimdall owns provider app credentials, webhook receipt where used, provider
+  signature verification, provider account linking, provider-event
+  normalization, and the linked Patreon membership reader already used for
+  Repixelizer access.
 - Bifrost owns patronage meaning: support events, point derivation, tier snapshots, voting weight, and audit records.
 
 ## Intake Endpoint
@@ -55,3 +61,33 @@ Valid `kind` values:
 - Refunds, reversals, and chargebacks: Heimdall records `SupportAdjustment` with a negative amount.
 
 Unlinked PayPal support must stay pending in Heimdall. Bifrost will not create voting power from a PayPal payer id alone.
+
+## Patreon Event Mapping
+
+Patreon recurring support uses Heimdall's existing linked Patreon identity and
+membership substrate. The same membership reader that evaluates Repixelizer and
+Bifrost tier access now feeds Bifrost support sync.
+
+Heimdall exposes an app-authenticated backend route:
+
+`POST /v1/apps/bifrost/patron-support/sync`
+
+Bifrost or an operator job supplies the linked Heimdall account id and required
+tier title. Heimdall refreshes the stored Patreon credential if needed, reads
+the Patreon identity profile with memberships and currently entitled tiers,
+finds an active paid member record for the requested tier, and posts a signed
+`RecurringSupportSnapshot` to Bifrost.
+
+The Patreon support fact uses:
+
+- `provider = Patreon`
+- `kind = RecurringSupportSnapshot`
+- `amount = currently_entitled_amount_cents / 100`
+- `currencyCode = Patreon campaign currency when available`
+- `providerPayerId = Patreon user id`
+- `providerSubscriptionId = Patreon member id`
+- `isCurrentRecurringSupport = true`
+
+Bifrost does not store Patreon access tokens and does not parse Patreon profile
+JSON. It verifies Heimdall's HMAC, resolves the Heimdall account id, records the
+support event, and derives points locally.

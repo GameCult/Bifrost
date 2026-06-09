@@ -111,6 +111,14 @@ PayPal and Patreon money movement enters Bifrost only as Heimdall-verified suppo
 
 Bifrost verifies Heimdall's intake HMAC and resolves the linked `HeimdallAccountId` to a Bifrost account. Only then does `PatronageService` record a `PatronSupportEvent`, point transaction, tier refresh, and audit event. Duplicate provider events are idempotent by `(Provider, ProviderEventId)`.
 
+For Patreon recurring support, Heimdall reuses the same linked Patreon identity
+and membership reader that already gates Repixelizer/Bifrost Patreon access.
+Bifrost or an operator job can call Heimdall's app-authenticated
+`/v1/apps/bifrost/patron-support/sync` route for a linked Heimdall account;
+Heimdall refreshes the stored Patreon credential, reads active paid tier
+membership evidence, and emits a signed `RecurringSupportSnapshot` to Bifrost.
+Bifrost does not parse Patreon JSON or hold Patreon tokens.
+
 PayPal one-time donation completions should arrive as `Provider = PayPal`, `Kind = OneTimeDonation`, and a positive amount after completed capture. PayPal subscription current-support snapshots should arrive as `Kind = RecurringSupportSnapshot` with `IsCurrentRecurringSupport = true` after Heimdall has verified active paid support. Refunds, reversals, and chargebacks should arrive as `Kind = SupportAdjustment` with a negative amount. Bifrost does not delete old support history to hide provider churn.
 
 ### VoidBot Owns
