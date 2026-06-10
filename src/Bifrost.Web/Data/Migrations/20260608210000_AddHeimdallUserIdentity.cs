@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore.Migrations;
 namespace Bifrost.Web.Data.Migrations
 {
     /// <inheritdoc />
+    [Migration("20260608210000_AddHeimdallUserIdentity")]
     public partial class AddHeimdallUserIdentity : Migration
     {
         /// <inheritdoc />
