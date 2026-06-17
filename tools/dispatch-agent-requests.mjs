@@ -561,12 +561,19 @@ function renderDispatchReceiptContent(request) {
 
 function buildBridgeContextEnv(request) {
   const hooksPath = resolve(bifrostRoot, "tools", "git-hooks");
+  const gitGatePath = resolve(bifrostRoot, "tools", "git-gate");
   return {
     BIFROST_BRIDGE_SOURCE_KIND: "bifrost_agent_transport_request",
     BIFROST_BRIDGE_SOURCE_ID: request.id,
     BIFROST_BRIDGE_AUTHORITY_REF: "bifrost_dispatch_execution",
     BIFROST_ENFORCE_GITHUB_GATE: "true",
+    BIFROST_GIT_EXECUTABLE: resolve(gitGatePath, "git.cmd"),
+    BIFROST_GH_EXECUTABLE: resolve(gitGatePath, "gh.cmd"),
+    BIFROST_REAL_GIT: resolveRealGitExecutable(),
+    ...buildRealGitHubCliEnv(),
+    BIFROST_NODE_EXECUTABLE: process.execPath,
     ...buildGitHooksConfigEnv(hooksPath),
+    ...buildPathPrependEnv(gitGatePath),
   };
 }
 
@@ -585,6 +592,50 @@ function buildGitHooksConfigEnv(hooksPath) {
     GIT_CONFIG_KEY_0: "core.hooksPath",
     GIT_CONFIG_VALUE_0: hooksPath,
   };
+}
+
+function buildPathPrependEnv(directory) {
+  const currentPath = process.env.Path ?? process.env.PATH ?? "";
+  const nextPath = currentPath ? `${directory};${currentPath}` : directory;
+  return {
+    PATH: nextPath,
+    Path: nextPath,
+  };
+}
+
+function buildRealGitHubCliEnv() {
+  const realGh = tryResolveExecutable("gh");
+  return realGh ? { BIFROST_REAL_GH: realGh } : {};
+}
+
+function resolveRealGitExecutable() {
+  const resolved = tryResolveExecutable("git");
+  if (!resolved) {
+    throw new Error("Could not resolve the real git executable for dispatched turn gating.");
+  }
+
+  return resolved;
+}
+
+function tryResolveExecutable(command) {
+  const locator = process.platform === "win32" ? "where.exe" : "which";
+  const result = spawnSync(locator, [command], {
+    cwd: bifrostRoot,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+  });
+
+  if (result.status !== 0) {
+    return "";
+  }
+
+  const matches = `${result.stdout ?? ""}`
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  return matches[0] ?? "";
 }
 
 class CodexAppServerClient {

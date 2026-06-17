@@ -92,7 +92,7 @@ Current CLI wiring:
 - GitHub commands now require both values by default, even for dry-run, so the normal path cannot silently bypass the gate
 - pass `--source-kind`, `--source-id`, `--authority-ref`, `--work-item-id`, or `--motion-id` so agent actions satisfy policy
 - the dispatcher now preloads `BIFROST_BRIDGE_SOURCE_KIND`, `BIFROST_BRIDGE_SOURCE_ID`, and `BIFROST_BRIDGE_AUTHORITY_REF` into Codex turns launched from Bifrost update requests, so normal bridge use inside a dispatched turn carries request provenance by default
-- those dispatched turns also inject a Bifrost-owned Git `pre-push` hook through environment config, so raw `git push` is blocked and `tools/bifrost-bridge.mjs` becomes the only normal publication path
+- those dispatched turns also inject Bifrost-owned GitHub gates through environment config: `git` and `gh` wrappers are prepended in `PATH`, a `pre-push` hook backs up raw Git pushes, raw `git push` stays blocked even when `--no-verify` is used, and mutating `gh` commands are blocked unless the bridge explicitly authorizes them
 - the dispatcher also uses that same bridge configuration to post dispatch-run start/complete/fail receipts, including the worker pid, thread/turn ids when available, and result/log paths for the local operator trail
 - the agent transport CLI uses that same bridge configuration to post request-lane receipts for queue, claim, release, and close events, so Bifrost does not go blind between intake and dispatch
 - the governance threads CLI uses that same bridge configuration to post governance receipts for topic opens, comments, approvals, and promotions, so Bifrost does not lose the pre-dispatch reasoning trail

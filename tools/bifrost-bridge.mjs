@@ -129,7 +129,11 @@ async function createGitHubDraftPr(options) {
         base,
         "--head",
         branch,
-      ], repoRoot);
+      ], repoRoot, {
+        env: {
+          BIFROST_GITHUB_MUTATION_AUTHORIZED: "true",
+        },
+      });
       prUrl = pr.stdout.trim();
       await bridgeAction?.complete({
         receiptUrl: prUrl,
@@ -218,6 +222,11 @@ async function commentGitHubPr(options) {
             "--input", payloadPath,
           ],
           repoRoot,
+          {
+            env: {
+              BIFROST_GITHUB_MUTATION_AUTHORIZED: "true",
+            },
+          },
         ).stdout,
         "GitHub PR comment response",
       );
@@ -867,7 +876,7 @@ async function readOptionText(options, inlineName, fileName, fallback) {
 }
 
 function git(args, cwd, options = {}) {
-  return run("git", args, cwd, options);
+  return run(resolveGitCommand(), args, cwd, options);
 }
 
 function runGitHubCli(options, args, cwd, runOptions = {}) {
@@ -876,16 +885,25 @@ function runGitHubCli(options, args, cwd, runOptions = {}) {
 }
 
 function run(command, args, cwd, options = {}) {
-  const result = spawnSync(command, args, {
-    cwd,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-    env: {
-      ...process.env,
-      ...(options.env ?? {}),
-    },
-    windowsHide: true,
-  });
+  const env = {
+    ...process.env,
+    ...(options.env ?? {}),
+  };
+  const result = isWindowsCommandScript(command)
+    ? spawnSync("cmd.exe", ["/d", "/s", "/c", command, ...args], {
+        cwd,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        env,
+        windowsHide: true,
+      })
+    : spawnSync(command, args, {
+        cwd,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        env,
+        windowsHide: true,
+      });
 
   if (result.status !== 0 && !options.allowFailure) {
     throw new Error(`${command} ${args.join(" ")} failed with ${result.status ?? "unknown"}:\n${result.stderr || result.stdout}`);
@@ -934,6 +952,10 @@ function optionalString(value) {
   }
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function resolveGitCommand() {
+  return optionalString(process.env.BIFROST_GIT_EXECUTABLE) ?? "git";
 }
 
 async function beginBridgeAction(options, action) {
@@ -1083,6 +1105,10 @@ function resolveGitHubCommand(options) {
     exe: optionalString(options["gh-executable"]) ?? optionalString(process.env.BIFROST_GH_EXECUTABLE) ?? "gh",
     args: splitCommandArgs(options["gh-exec-args"] ?? process.env.BIFROST_GH_EXEC_ARGS ?? ""),
   };
+}
+
+function isWindowsCommandScript(command) {
+  return /\.cmd$/i.test(command) || /\.bat$/i.test(command);
 }
 
 function splitCommandArgs(value) {

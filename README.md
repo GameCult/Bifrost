@@ -74,7 +74,7 @@ For the full staged roadmap, including contribution points, revenue share, patro
 - set `Bridge:LocalBridgeToken` to allow the transitional local bridge actuator to register and receipt governed actions through `/bridge/actions/*`
 - set `BIFROST_BRIDGE_BASE_URL` and `BIFROST_BRIDGE_TOKEN` when `tools/bifrost-bridge.mjs` should round-trip every action through the app ledger before mutating GitHub, Discord, or Reddit
 - the same bridge URL/token pair lets `tools/dispatch-agent-requests.mjs` record `/dispatch/runs/*` receipts for launched Codex work, so Bifrost keeps a live run trail even when a turn fails
-- Bifrost-dispatched Codex turns also inject a Git `pre-push` hook through environment config, so raw `git push` is blocked unless `tools/bifrost-bridge.mjs` explicitly authorizes the bridge-owned push
+- Bifrost-dispatched Codex turns also inject Bifrost-owned GitHub gates through environment config: `git` and `gh` wrappers are prepended in `PATH`, a `pre-push` hook backs up raw Git pushes, raw `git push` and mutating `gh` commands stay blocked, and only `tools/bifrost-bridge.mjs` is allowed to authorize the bridge-owned GitHub mutation path
 - `tools/agent-transport.mjs` also uses that bridge configuration to record `/transport/receipts` entries for queue, claim, release, and close events on the request lane
 - `tools/governance-threads.mjs` uses that same bridge configuration to record `/governance/receipts` entries for topic opens, comments, approvals, and promotions
 - those agent activity scripts now fail closed without the bridge URL/token pair; `--allow-unreceipted-activity true` or `BIFROST_ALLOW_UNRECEIPTED_ACTIVITY=true` is the explicit operator-recovery hatch

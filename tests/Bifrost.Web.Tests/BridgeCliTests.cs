@@ -225,13 +225,23 @@ console.log(JSON.stringify({
             await RunGitAsync(["commit", "-m", "Initial commit"], workDir);
             await RunGitAsync(["remote", "add", "origin", remoteDir], workDir);
 
-            var blocked = await RunGitAsync(
-                ["push", "-u", "origin", "main"],
+            var blocked = await RunCommandAsync(
+                "powershell",
+                ["-NoProfile", "-Command", "git push -u origin main"],
                 workDir,
                 BuildDispatchedGitHookEnv());
 
             Assert.NotEqual(0, blocked.ExitCode);
             Assert.Contains("Bifrost blocked git push", blocked.Stderr, StringComparison.OrdinalIgnoreCase);
+
+            var blockedNoVerify = await RunCommandAsync(
+                "powershell",
+                ["-NoProfile", "-Command", "git push --no-verify -u origin main"],
+                workDir,
+                BuildDispatchedGitGateEnv());
+
+            Assert.NotEqual(0, blockedNoVerify.ExitCode);
+            Assert.Contains("Bifrost blocked git push", blockedNoVerify.Stderr, StringComparison.OrdinalIgnoreCase);
         }
         finally
         {
@@ -263,17 +273,13 @@ console.log(JSON.stringify({
 
             var fakeGhPath = Path.Combine(fakeToolsDir, "fake-gh.js");
             await File.WriteAllTextAsync(fakeGhPath, """
-if (process.argv.includes("create")) {
-  console.log("https://github.com/GameCult/Bifrost/pull/999");
-  process.exit(0);
-}
-
-console.error(`Unexpected gh args: ${process.argv.slice(2).join(" ")}`);
-process.exit(1);
+console.log("https://github.com/GameCult/Bifrost/pull/999");
 """, Encoding.UTF8);
 
-            var environment = BuildDispatchedGitHookEnv();
+            var environment = BuildDispatchedGitGateEnv();
             environment["BIFROST_ALLOW_UNGATED_GITHUB"] = "true";
+            environment["BIFROST_REAL_GH"] = ResolveExecutable("node");
+            environment["BIFROST_REAL_GH_ARGS"] = fakeGhPath;
 
             var result = await RunNodeAsync([
                 "tools/bifrost-bridge.mjs",
@@ -285,8 +291,6 @@ process.exit(1);
                 "--content", "Bridge-owned push.",
                 "--body", "Bifrost bridge test PR.",
                 "--base", "main",
-                "--gh-executable", "node",
-                "--gh-exec-args", fakeGhPath,
             ], environment);
 
             Assert.Equal(0, result.ExitCode);
@@ -303,6 +307,40 @@ process.exit(1);
             DeleteDirectoryIfPresent(workDir);
             DeleteDirectoryIfPresent(remoteDir);
             DeleteDirectoryIfPresent(fakeToolsDir);
+        }
+    }
+
+    [Fact]
+    public async Task Dispatched_turn_github_cli_mutation_is_blocked_without_bridge_authorization()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), $"bifrost-gh-gate-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+
+        try
+        {
+            var fakeGhPath = Path.Combine(tempDir, "fake-gh.cmd");
+            await File.WriteAllTextAsync(fakeGhPath, """
+@echo off
+echo should-not-run
+exit /b 0
+""", Encoding.UTF8);
+
+            var environment = BuildDispatchedGitGateEnv();
+            environment["BIFROST_REAL_GH"] = fakeGhPath;
+
+            var blocked = await RunCommandAsync(
+                "powershell",
+                ["-NoProfile", "-Command", "gh pr comment 42 --body blocked"],
+                RepoRoot,
+                environment);
+
+            Assert.NotEqual(0, blocked.ExitCode);
+            Assert.Contains("Bifrost blocked GitHub CLI mutation", blocked.Stderr, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("should-not-run", blocked.Stdout, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            DeleteDirectoryIfPresent(tempDir);
         }
     }
 
@@ -349,12 +387,19 @@ process.exit(1);
     }
 
     private static async Task<ProcessResult> RunGitAsync(string[] args, string workingDirectory, IReadOnlyDictionary<string, string?>? environmentOverrides = null)
+        => await RunCommandAsync("git", args, workingDirectory, environmentOverrides);
+
+    private static async Task<ProcessResult> RunCommandAsync(
+        string fileName,
+        string[] args,
+        string workingDirectory,
+        IReadOnlyDictionary<string, string?>? environmentOverrides = null)
     {
         using var process = new Process
         {
             StartInfo = new ProcessStartInfo
             {
-                FileName = "git",
+                FileName = fileName,
                 WorkingDirectory = workingDirectory,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
@@ -386,13 +431,68 @@ process.exit(1);
     private static Dictionary<string, string?> BuildDispatchedGitHookEnv()
     {
         var hooksPath = Path.Combine(RepoRoot, "tools", "git-hooks");
+        var gatePath = Path.Combine(RepoRoot, "tools", "git-gate");
+        var path = Environment.GetEnvironmentVariable("Path")
+            ?? Environment.GetEnvironmentVariable("PATH")
+            ?? string.Empty;
+        var nextPath = string.IsNullOrWhiteSpace(path)
+            ? gatePath
+            : $"{gatePath};{path}";
         return new Dictionary<string, string?>
         {
             ["BIFROST_ENFORCE_GITHUB_GATE"] = "true",
+            ["BIFROST_GIT_EXECUTABLE"] = Path.Combine(gatePath, "git.cmd"),
+            ["BIFROST_GH_EXECUTABLE"] = Path.Combine(gatePath, "gh.cmd"),
+            ["BIFROST_REAL_GIT"] = ResolveRealGitExecutable(),
+            ["BIFROST_NODE_EXECUTABLE"] = ResolveExecutable("node"),
             ["GIT_CONFIG_COUNT"] = "1",
             ["GIT_CONFIG_KEY_0"] = "core.hooksPath",
             ["GIT_CONFIG_VALUE_0"] = hooksPath,
+            ["PATH"] = nextPath,
+            ["Path"] = nextPath,
         };
+    }
+
+    private static Dictionary<string, string?> BuildDispatchedGitGateEnv() => BuildDispatchedGitHookEnv();
+
+    private static string ResolveRealGitExecutable() => ResolveExecutable("git");
+
+    private static string ResolveExecutable(string command)
+    {
+        using var process = new Process
+        {
+            StartInfo = new ProcessStartInfo
+            {
+                FileName = "where.exe",
+                WorkingDirectory = RepoRoot,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+            }
+        };
+
+        process.StartInfo.ArgumentList.Add(command);
+        process.Start();
+        var stdout = process.StandardOutput.ReadToEnd();
+        var stderr = process.StandardError.ReadToEnd();
+        process.WaitForExit();
+
+        if (process.ExitCode != 0)
+        {
+            throw new InvalidOperationException($"Could not resolve {command} for tests: {stderr}{stdout}");
+        }
+
+        var path = stdout
+            .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(line => line.Trim())
+            .FirstOrDefault(line => !string.IsNullOrWhiteSpace(line));
+
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            throw new InvalidOperationException($"Could not resolve {command} for tests.");
+        }
+
+        return path;
     }
 
     private static void DeleteDirectoryIfPresent(string path)
