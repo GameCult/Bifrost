@@ -81,6 +81,7 @@ builder.Services.AddScoped<AuditTrailService>();
 builder.Services.AddScoped<DashboardSnapshotService>();
 builder.Services.AddScoped<BridgeActionService>();
 builder.Services.AddScoped<AgentDispatchRunService>();
+builder.Services.AddScoped<AgentTransportReceiptService>();
 builder.Services.AddScoped<MembershipSynchronizationService>();
 builder.Services.AddScoped<GitHubWebhookService>();
 builder.Services.AddScoped<MotionGovernanceService>();
@@ -534,6 +535,26 @@ dispatchRuns.MapPost("/{id:guid}/fail", async (
     return result is null
         ? Results.NotFound()
         : JsonResult(result, appJsonSerializerOptions);
+});
+
+var transportReceipts = app.MapGroup("/transport/receipts");
+
+transportReceipts.MapPost("", async (
+    HttpRequest request,
+    AgentTransportReceiptRequest command,
+    ICurrentBifrostActorAccessor actorAccessor,
+    AgentTransportReceiptService agentTransportReceiptService,
+    IOptions<BridgeOptions> bridgeOptions,
+    CancellationToken cancellationToken) =>
+{
+    var actor = await actorAccessor.GetAsync(cancellationToken);
+    if (!HasValidLocalBridgeToken(request, bridgeOptions.Value) && !actor.IsActiveMember)
+    {
+        return Results.Unauthorized();
+    }
+
+    var result = await agentTransportReceiptService.RecordAsync(command, actor.UserAccount?.Id, cancellationToken);
+    return JsonResult(result, appJsonSerializerOptions, StatusCodes.Status202Accepted);
 });
 
 var eveGovernance = app.MapGroup("/eve/governance")

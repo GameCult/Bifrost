@@ -11,7 +11,7 @@ public sealed class IndexModel(
     public CurrentBifrostActor Actor { get; private set; } = CurrentBifrostActor.Anonymous;
 
     public DashboardSnapshot Snapshot { get; private set; } =
-        new(0, 0, 0, 0, 0, 0, 0, 0, 0m, [], [], [], [], [], [], [], []);
+        new(0, 0, 0, 0, 0, 0, 0, 0, 0m, [], [], [], [], [], [], [], [], []);
 
     public async Task OnGetAsync(CancellationToken cancellationToken)
     {

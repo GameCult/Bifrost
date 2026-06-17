@@ -65,6 +65,12 @@ The hosted app also exposes a dispatch-run ledger for launched agent work:
 
 This is the companion trail to bridge actions. A bridge action says "this crossing into GitHub/Discord/Reddit was requested and receipted." A dispatch run says "this specific Codex worker actually launched, ran, and ended this way." One guards governed mutation. The other proves agent activity.
 
+The hosted app also exposes a request-lane receipt ledger for transport lifecycle events:
+
+- `POST /transport/receipts`
+
+This covers the activity that happens before or around a visible Codex turn: queueing a request, claiming it, releasing it, and closing it. The `.cc` packet is still the transport document. The hosted receipt row is the operator-facing witness that the activity happened.
+
 Current gate behavior:
 
 - active Bifrost members may request bridge actions from an authenticated app session
@@ -81,6 +87,7 @@ Current CLI wiring:
 - pass `--source-kind`, `--source-id`, `--authority-ref`, `--work-item-id`, or `--motion-id` so agent actions satisfy policy
 - the dispatcher now preloads `BIFROST_BRIDGE_SOURCE_KIND`, `BIFROST_BRIDGE_SOURCE_ID`, and `BIFROST_BRIDGE_AUTHORITY_REF` into Codex turns launched from Bifrost update requests, so normal bridge use inside a dispatched turn carries request provenance by default
 - the dispatcher also uses that same bridge configuration to post dispatch-run start/complete/fail receipts, including the worker pid, thread/turn ids when available, and result/log paths for the local operator trail
+- the agent transport CLI uses that same bridge configuration to post request-lane receipts for queue, claim, release, and close events, so Bifrost does not go blind between intake and dispatch
 
 If the app bridge configuration is absent, `tools/bifrost-bridge.mjs` keeps working as a local actuator. When configured, it asks Bifrost for authorization before acting and reports success or failure back to the same bridge action row.
 

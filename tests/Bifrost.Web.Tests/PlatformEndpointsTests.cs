@@ -506,6 +506,45 @@ public sealed class PlatformEndpointsTests : IClassFixture<TestWebApplicationFac
         Assert.Contains(dbContext.AuditEvents, x => x.EntityType == nameof(AgentDispatchRun) && x.Action == "agent-dispatch.failed");
     }
 
+    [Fact]
+    public async Task Local_bridge_token_can_record_transport_receipt()
+    {
+        using var client = _factory.CreateClient();
+
+        var payload = JsonSerializer.Serialize(new
+        {
+            requestId = "req_transport_123",
+            title = "Queue the GitHub bridge hardening pass",
+            targetRepoName = "Bifrost",
+            targetRepositoryFullName = "GameCult/Bifrost",
+            targetAgentIdentity = "nibu",
+            activityKind = "Claimed",
+            status = "claimed",
+            actorName = "bifrost-dispatcher",
+            note = "Request claimed for Bifrost."
+        });
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/transport/receipts");
+        request.Headers.Add("X-Bifrost-Bridge-Token", "test-bridge-token");
+        request.Content = new StringContent(payload, Encoding.UTF8, "application/json");
+
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+        var receipt = await response.Content.ReadFromJsonAsync<AgentTransportReceiptHttpResult>();
+        Assert.NotNull(receipt);
+        Assert.Equal("req_transport_123", receipt.RequestId);
+        Assert.Equal("Claimed", receipt.ActivityKind);
+
+        using var scope = _factory.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
+        var savedReceipt = dbContext.AgentTransportReceipts.Single(x => x.Id == receipt.Id);
+
+        Assert.Equal("Claimed", savedReceipt.ActivityKind.ToString());
+        Assert.Equal("bifrost-dispatcher", savedReceipt.ActorName);
+        Assert.Contains(dbContext.AuditEvents, x => x.EntityType == nameof(AgentTransportReceipt) && x.Action == "agent-transport.claimed");
+    }
+
     private static string ComputeSignature(string secret, string payload)
     {
         using var hasher = new HMACSHA256(Encoding.UTF8.GetBytes(secret));
@@ -533,5 +572,14 @@ public sealed class PlatformEndpointsTests : IClassFixture<TestWebApplicationFac
         public Guid Id { get; init; }
 
         public string Status { get; init; } = string.Empty;
+    }
+
+    private sealed class AgentTransportReceiptHttpResult
+    {
+        public Guid Id { get; init; }
+
+        public string RequestId { get; init; } = string.Empty;
+
+        public string ActivityKind { get; init; } = string.Empty;
     }
 }

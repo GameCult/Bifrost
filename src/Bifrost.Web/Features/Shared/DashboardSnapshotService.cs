@@ -134,6 +134,23 @@ public sealed class DashboardSnapshotService(BifrostDbContext dbContext, TimePro
                 x.UpdatedAtUtc))
             .ToListAsync(cancellationToken);
 
+        var recentTransportReceipts = await dbContext.AgentTransportReceipts
+            .AsNoTracking()
+            .OrderByDescending(x => x.OccurredAtUtc)
+            .Take(6)
+            .Select(x => new DashboardTransportReceipt(
+                x.Id,
+                x.RequestId,
+                x.Title,
+                x.TargetRepoName,
+                x.TargetAgentIdentity,
+                x.ActivityKind.ToString(),
+                x.Status,
+                x.ActorName,
+                x.Note,
+                x.OccurredAtUtc))
+            .ToListAsync(cancellationToken);
+
         var payoutPreviewNominal = await dbContext.LedgerEntries
             .AsNoTracking()
             .Where(x => x.Status == LedgerEntryStatus.Approved)
@@ -162,7 +179,8 @@ public sealed class DashboardSnapshotService(BifrostDbContext dbContext, TimePro
             MySubmittedWork: submittedByMe,
             RecentActivity: recentActivity,
             RecentBridgeActions: recentBridgeActions,
-            RecentDispatchRuns: recentDispatchRuns);
+            RecentDispatchRuns: recentDispatchRuns,
+            RecentTransportReceipts: recentTransportReceipts);
     }
 }
 
@@ -183,7 +201,8 @@ public sealed record DashboardSnapshot(
     IReadOnlyList<DashboardLaneItem> MySubmittedWork,
     IReadOnlyList<DashboardActivity> RecentActivity,
     IReadOnlyList<DashboardBridgeAction> RecentBridgeActions,
-    IReadOnlyList<DashboardDispatchRun> RecentDispatchRuns);
+    IReadOnlyList<DashboardDispatchRun> RecentDispatchRuns,
+    IReadOnlyList<DashboardTransportReceipt> RecentTransportReceipts);
 
 public sealed record DashboardWorkItem(
     Guid WorkItemId,
@@ -240,3 +259,15 @@ public sealed record DashboardDispatchRun(
     string TurnId,
     string Note,
     DateTimeOffset UpdatedAtUtc);
+
+public sealed record DashboardTransportReceipt(
+    Guid AgentTransportReceiptId,
+    string RequestId,
+    string Title,
+    string TargetRepoName,
+    string TargetAgentIdentity,
+    string ActivityKind,
+    string Status,
+    string ActorName,
+    string Note,
+    DateTimeOffset OccurredAtUtc);

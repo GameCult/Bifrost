@@ -223,6 +223,14 @@ public enum AgentDispatchRunStatus
     Failed
 }
 
+public enum AgentTransportReceiptKind
+{
+    Queued,
+    Claimed,
+    Released,
+    Closed
+}
+
 public sealed class UserAccount
 {
     public Guid Id { get; set; } = Guid.NewGuid();
@@ -274,6 +282,8 @@ public sealed class UserAccount
     public ICollection<BridgeAction> BridgeActions { get; set; } = [];
 
     public ICollection<AgentDispatchRun> AgentDispatchRuns { get; set; } = [];
+
+    public ICollection<AgentTransportReceipt> AgentTransportReceipts { get; set; } = [];
 
     public ICollection<AuditEvent> AuditEvents { get; set; } = [];
 }
@@ -973,6 +983,35 @@ public sealed class AgentDispatchRun
     public DateTimeOffset? CompletedAtUtc { get; set; }
 
     public UserAccount? StartedByUserAccount { get; set; }
+}
+
+public sealed class AgentTransportReceipt
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+
+    public string RequestId { get; set; } = string.Empty;
+
+    public string Title { get; set; } = string.Empty;
+
+    public string TargetRepoName { get; set; } = string.Empty;
+
+    public string TargetRepositoryFullName { get; set; } = string.Empty;
+
+    public string TargetAgentIdentity { get; set; } = string.Empty;
+
+    public AgentTransportReceiptKind ActivityKind { get; set; } = AgentTransportReceiptKind.Queued;
+
+    public string Status { get; set; } = string.Empty;
+
+    public Guid? ActorUserAccountId { get; set; }
+
+    public string ActorName { get; set; } = string.Empty;
+
+    public string Note { get; set; } = string.Empty;
+
+    public DateTimeOffset OccurredAtUtc { get; set; }
+
+    public UserAccount? ActorUserAccount { get; set; }
 }
 
 public sealed class AuditEvent

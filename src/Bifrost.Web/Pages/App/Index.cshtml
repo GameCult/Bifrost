@@ -235,6 +235,43 @@
     <article class="panel">
         <div class="panel-header">
             <div>
+                <h2>Transport receipts</h2>
+                <p class="muted">Queue, claim, release, and closure events recorded on the request lane.</p>
+            </div>
+        </div>
+
+        @if (Model.Snapshot.RecentTransportReceipts.Count == 0)
+        {
+            <div class="empty-state">No request-lane receipts have been recorded yet.</div>
+        }
+        else
+        {
+            <div class="list-grid">
+                @foreach (var receipt in Model.Snapshot.RecentTransportReceipts)
+                {
+                    <div class="status-banner">
+                        <strong>@receipt.TargetRepoName@if (!string.IsNullOrWhiteSpace(receipt.TargetAgentIdentity)) {<text> / @receipt.TargetAgentIdentity</text>}</strong>
+                        <span class="muted">@receipt.Title</span>
+                        <div class="inline-actions">
+                            <span class="pill">@receipt.ActivityKind</span>
+                            <span class="pill">@receipt.Status</span>
+                            <span class="pill">@receipt.ActorName</span>
+                        </div>
+                        <div class="muted">@receipt.RequestId</div>
+                        @if (!string.IsNullOrWhiteSpace(receipt.Note))
+                        {
+                            <div class="muted">@receipt.Note</div>
+                        }
+                        <div class="muted">@receipt.OccurredAtUtc.ToString("dd MMM yyyy HH:mm") UTC</div>
+                    </div>
+                }
+            </div>
+        }
+    </article>
+
+    <article class="panel">
+        <div class="panel-header">
+            <div>
                 <h2>Bridge receipts</h2>
                 <p class="muted">Recent agent and service crossings recorded by Bifrost.</p>
             </div>

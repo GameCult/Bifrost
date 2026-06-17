@@ -74,6 +74,7 @@ For the full staged roadmap, including contribution points, revenue share, patro
 - set `Bridge:LocalBridgeToken` to allow the transitional local bridge actuator to register and receipt governed actions through `/bridge/actions/*`
 - set `BIFROST_BRIDGE_BASE_URL` and `BIFROST_BRIDGE_TOKEN` when `tools/bifrost-bridge.mjs` should round-trip every action through the app ledger before mutating GitHub, Discord, or Reddit
 - the same bridge URL/token pair lets `tools/dispatch-agent-requests.mjs` record `/dispatch/runs/*` receipts for launched Codex work, so Bifrost keeps a live run trail even when a turn fails
+- `tools/agent-transport.mjs` also uses that bridge configuration to record `/transport/receipts` entries for queue, claim, release, and close events on the request lane
 - GitHub bridge mutations now fail closed without those values; `--allow-ungated-github true` is reserved for explicit operator recovery
 - set `BIFROST_REDDIT_CLIENT_ID`, `BIFROST_REDDIT_REFRESH_TOKEN`, and optionally `BIFROST_REDDIT_CLIENT_SECRET` before posting Reddit organizing threads
 - set `Heimdall:PatronSupportIntakeSecret` before enabling Heimdall patron support intake in production

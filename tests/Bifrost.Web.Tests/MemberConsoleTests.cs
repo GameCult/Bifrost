@@ -96,6 +96,20 @@ public sealed class MemberConsoleTests : IClassFixture<TestWebApplicationFactory
                 UpdatedAtUtc = DateTimeOffset.UtcNow.AddMinutes(-2),
                 CompletedAtUtc = DateTimeOffset.UtcNow.AddMinutes(-2)
             });
+            dbContext.AgentTransportReceipts.Add(new AgentTransportReceipt
+            {
+                RequestId = "req_transport_123",
+                Title = "Queue the GitHub bridge hardening pass",
+                TargetRepoName = "Bifrost",
+                TargetRepositoryFullName = "GameCult/Bifrost",
+                TargetAgentIdentity = "nibu",
+                ActivityKind = AgentTransportReceiptKind.Claimed,
+                Status = "claimed",
+                ActorUserAccountId = actor.Id,
+                ActorName = "bifrost-dispatcher",
+                Note = "Request claimed for Bifrost.",
+                OccurredAtUtc = DateTimeOffset.UtcNow.AddMinutes(-3)
+            });
             dbContext.SaveChanges();
         }
 
@@ -106,6 +120,8 @@ public sealed class MemberConsoleTests : IClassFixture<TestWebApplicationFactory
         var html = await response.Content.ReadAsStringAsync();
         Assert.Contains("Agent runs", html);
         Assert.Contains("req_dispatch_123", html);
+        Assert.Contains("Transport receipts", html);
+        Assert.Contains("req_transport_123", html);
         Assert.Contains("Bridge receipts", html);
         Assert.Contains("Draft motion implementation PR", html);
         Assert.Contains("nibu", html);

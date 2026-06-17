@@ -162,6 +162,12 @@ async function enqueue(cache, options) {
 
   await mirrorEnqueuedRequestOrThrow(request, options);
   await cache.put(updateRequestDefinition, request.id, request);
+  await recordTransportReceiptOrThrow(request, {
+    activityKind: "Queued",
+    status: request.status,
+    actorName: request.createdByAgent ?? "system",
+    note: "Update request queued.",
+  });
   printJson(request);
 }
 
@@ -286,6 +292,12 @@ async function claim(cache, options) {
     updatedAt: now,
   });
   await cache.put(updateRequestDefinition, claimed.id, claimed);
+  await recordTransportReceiptOrThrow(claimed, {
+    activityKind: "Claimed",
+    status: claimed.status,
+    actorName: claimed.claimedByAgent ?? claimed.targetAgentIdentity ?? "codex",
+    note: `Request claimed for ${claimed.targetRepoName}.`,
+  });
   printJson(claimed);
 }
 
@@ -310,6 +322,12 @@ async function closeRequest(cache, options) {
     updatedAt: now,
   });
   await cache.put(updateRequestDefinition, closed.id, closed);
+  await recordTransportReceiptOrThrow(closed, {
+    activityKind: "Closed",
+    status: closed.status,
+    actorName: current.claimedByAgent ?? current.targetAgentIdentity ?? "system",
+    note: closed.closeNote || `Request closed as ${closed.status}.`,
+  });
   printJson(closed);
 }
 
@@ -334,6 +352,12 @@ async function releaseRequest(cache, options) {
     updatedAt: now,
   });
   await cache.put(updateRequestDefinition, released.id, released);
+  await recordTransportReceiptOrThrow(released, {
+    activityKind: "Released",
+    status: released.status,
+    actorName: current.claimedByAgent ?? current.targetAgentIdentity ?? "system",
+    note: released.closeNote || "Claim released back to the queue.",
+  });
   printJson(released);
 }
 
@@ -377,6 +401,38 @@ async function applySnapshot(cache, options) {
     documentCount: message.documents?.length ?? 0,
     in: inPath,
   });
+}
+
+async function recordTransportReceiptOrThrow(request, receipt) {
+  const baseUrl = optionalString(process.env.BIFROST_BRIDGE_BASE_URL);
+  const token = optionalString(process.env.BIFROST_BRIDGE_TOKEN);
+  if (!baseUrl || !token) {
+    return;
+  }
+
+  const response = await fetch(new URL("/transport/receipts", ensureTrailingSlash(baseUrl)), {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Bifrost-Bridge-Token": token,
+    },
+    body: JSON.stringify({
+      requestId: request.id,
+      title: request.title,
+      targetRepoName: request.targetRepoName,
+      targetRepositoryFullName: request.targetRepositoryFullName ?? "",
+      targetAgentIdentity: request.targetAgentIdentity ?? "",
+      activityKind: receipt.activityKind,
+      status: receipt.status,
+      actorName: receipt.actorName,
+      note: receipt.note,
+    }),
+  });
+
+  const text = await response.text();
+  if (response.status !== 202) {
+    throw new Error(`Bifrost transport receipt failed with ${response.status}: ${text}`);
+  }
 }
 
 function filteredRequests(cache, options) {
@@ -548,6 +604,10 @@ function equalsIgnoreCase(left, right) {
 
 function resolveOptionPath(path) {
   return resolve(process.cwd(), path);
+}
+
+function ensureTrailingSlash(value) {
+  return value.endsWith("/") ? value : `${value}/`;
 }
 
 function runNodeJson(args, cwd) {
