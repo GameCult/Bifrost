@@ -119,6 +119,92 @@ console.log(JSON.stringify({
     }
 
     [Fact]
+    public async Task Agent_transport_apply_snapshot_fails_closed_without_bifrost_receipt_gate()
+    {
+        var sourceStorePath = Path.Combine(Path.GetTempPath(), $"bifrost-agent-transport-source-{Guid.NewGuid():N}.cc");
+        var targetStorePath = Path.Combine(Path.GetTempPath(), $"bifrost-agent-transport-target-{Guid.NewGuid():N}.cc");
+        var snapshotPath = Path.Combine(Path.GetTempPath(), $"bifrost-agent-transport-{Guid.NewGuid():N}.msgpack");
+
+        await RunNodeAsync([
+            "tools/agent-transport.mjs",
+            "enqueue",
+            "--repo", "Bifrost",
+            "--agent", "nibu",
+            "--title", "Snapshot gate seed",
+            "--request", "Do the thing.",
+            "--store", sourceStorePath,
+            "--allow-unmirrored", "true",
+            "--allow-unreceipted-activity", "true",
+        ]);
+
+        await RunNodeAsync([
+            "tools/agent-transport.mjs",
+            "snapshot",
+            "--store", sourceStorePath,
+            "--out", snapshotPath,
+        ]);
+
+        var result = await RunNodeAsync([
+            "tools/agent-transport.mjs",
+            "apply-snapshot",
+            "--store", targetStorePath,
+            "--in", snapshotPath,
+        ]);
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("BIFROST_BRIDGE_BASE_URL and BIFROST_BRIDGE_TOKEN", result.Stderr, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Agent_transport_apply_snapshot_allows_explicit_operator_recovery()
+    {
+        var sourceStorePath = Path.Combine(Path.GetTempPath(), $"bifrost-agent-transport-source-{Guid.NewGuid():N}.cc");
+        var targetStorePath = Path.Combine(Path.GetTempPath(), $"bifrost-agent-transport-target-{Guid.NewGuid():N}.cc");
+        var snapshotPath = Path.Combine(Path.GetTempPath(), $"bifrost-agent-transport-{Guid.NewGuid():N}.msgpack");
+
+        await RunNodeAsync([
+            "tools/agent-transport.mjs",
+            "enqueue",
+            "--repo", "Bifrost",
+            "--agent", "nibu",
+            "--title", "Snapshot recovery seed",
+            "--request", "Do the thing.",
+            "--store", sourceStorePath,
+            "--allow-unmirrored", "true",
+            "--allow-unreceipted-activity", "true",
+        ]);
+
+        await RunNodeAsync([
+            "tools/agent-transport.mjs",
+            "snapshot",
+            "--store", sourceStorePath,
+            "--out", snapshotPath,
+        ]);
+
+        var result = await RunNodeAsync([
+            "tools/agent-transport.mjs",
+            "apply-snapshot",
+            "--store", targetStorePath,
+            "--in", snapshotPath,
+            "--allow-unreceipted-activity", "true",
+        ]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        var listed = await RunNodeAsync([
+            "tools/agent-transport.mjs",
+            "list",
+            "--store", targetStorePath,
+        ]);
+
+        Assert.Equal(0, listed.ExitCode);
+        using var payload = JsonDocument.Parse(listed.Stdout);
+        Assert.Equal(1, payload.RootElement.GetArrayLength());
+        Assert.Equal("Snapshot recovery seed", payload.RootElement[0].GetProperty("title").GetString());
+        Assert.Equal("queued", payload.RootElement[0].GetProperty("status").GetString());
+    }
+
+    [Fact]
     public async Task Governance_mutation_fails_closed_without_bifrost_receipt_gate()
     {
         var storePath = Path.Combine(Path.GetTempPath(), $"bifrost-governance-{Guid.NewGuid():N}.cc");

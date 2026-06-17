@@ -76,6 +76,7 @@ For the full staged roadmap, including contribution points, revenue share, patro
 - the same bridge URL/token pair lets `tools/dispatch-agent-requests.mjs` record `/dispatch/runs/*` receipts for launched Codex work, so Bifrost keeps a live run trail even when a turn fails
 - Bifrost-dispatched Codex turns also inject Bifrost-owned GitHub gates through environment config: `git` and `gh` wrappers are prepended in `PATH`, a `pre-push` hook backs up raw Git pushes, raw `git push` and mutating `gh` commands stay blocked, and only `tools/bifrost-bridge.mjs` is allowed to authorize the bridge-owned GitHub mutation path
 - `tools/agent-transport.mjs` also uses that bridge configuration to record `/transport/receipts` entries for queue, claim, release, and close events on the request lane
+- `tools/agent-transport.mjs apply-snapshot` is also treated as a mutating import path now: it fails closed without the bridge receipt config and derives request-lane receipts from the imported state delta
 - `tools/governance-threads.mjs` uses that same bridge configuration to record `/governance/receipts` entries for topic opens, comments, approvals, and promotions
 - those agent activity scripts now fail closed without the bridge URL/token pair; `--allow-unreceipted-activity true` or `BIFROST_ALLOW_UNRECEIPTED_ACTIVITY=true` is the explicit operator-recovery hatch
 - GitHub bridge mutations now fail closed without those values; `--allow-ungated-github true` is reserved for explicit operator recovery

@@ -129,7 +129,11 @@ async function main() {
 }
 
 function isMutatingCommand(command) {
-  return command === "enqueue" || command === "claim" || command === "release" || command === "close";
+  return command === "enqueue"
+    || command === "claim"
+    || command === "release"
+    || command === "close"
+    || command === "apply-snapshot";
 }
 
 function ensureTransportReceiptGate(options) {
@@ -419,15 +423,120 @@ async function writeSnapshot(cache, options) {
 
 async function applySnapshot(cache, options) {
   const inPath = resolveOptionPath(requireOption(options, "in"));
+  const beforeRequests = mapRequestsById(cache.getAll(updateRequestDefinition));
   const message = decode(await readFile(inPath));
   await cultNetRegistry.applyRawSnapshotResponse(cache, message);
+  const afterRequests = mapRequestsById(cache.getAll(updateRequestDefinition));
+  const receipts = deriveSnapshotReceipts(beforeRequests, afterRequests);
+
+  try {
+    for (const { request, receipt } of receipts) {
+      await recordTransportReceiptOrThrow(request, receipt);
+    }
+  } catch (error) {
+    await restoreRequests(cache, beforeRequests, afterRequests);
+    throw error;
+  }
+
   printJson({
     applied: true,
     schemaVersion: message.schemaVersion,
     messageId: message.messageId,
     documentCount: message.documents?.length ?? 0,
+    receiptCount: receipts.length,
     in: inPath,
   });
+}
+
+function mapRequestsById(requests) {
+  return new Map(requests.map((request) => [request.id, request]));
+}
+
+function deriveSnapshotReceipts(beforeRequests, afterRequests) {
+  const receipts = [];
+
+  for (const [id, current] of afterRequests.entries()) {
+    const previous = beforeRequests.get(id);
+    if (previous && stableJson(previous) === stableJson(current)) {
+      continue;
+    }
+
+    receipts.push({
+      request: current,
+      receipt: buildSnapshotReceipt(previous, current),
+    });
+  }
+
+  return receipts;
+}
+
+function buildSnapshotReceipt(previous, current) {
+  if (!previous) {
+    return {
+      activityKind: activityKindForSnapshotState(current.status),
+      status: current.status,
+      actorName: receiptActorName(current),
+      note: `Snapshot import created request state as ${current.status}.`,
+    };
+  }
+
+  if (previous.status === "claimed" && current.status === "queued") {
+    return {
+      activityKind: "Released",
+      status: current.status,
+      actorName: previous.claimedByAgent ?? receiptActorName(current),
+      note: "Snapshot import released a claimed request back to the queue.",
+    };
+  }
+
+  if (previous.status !== "claimed" && current.status === "claimed") {
+    return {
+      activityKind: "Claimed",
+      status: current.status,
+      actorName: current.claimedByAgent ?? receiptActorName(current),
+      note: `Snapshot import claimed request for ${current.targetRepoName}.`,
+    };
+  }
+
+  if (current.status === "completed" || current.status === "cancelled") {
+    return {
+      activityKind: "Closed",
+      status: current.status,
+      actorName: current.claimedByAgent ?? previous.claimedByAgent ?? receiptActorName(current),
+      note: current.closeNote || `Snapshot import closed request as ${current.status}.`,
+    };
+  }
+
+  return {
+    activityKind: activityKindForSnapshotState(current.status),
+    status: current.status,
+    actorName: receiptActorName(current),
+    note: "Snapshot import refreshed request state.",
+  };
+}
+
+function activityKindForSnapshotState(status) {
+  return status === "claimed" ? "Claimed" : "Queued";
+}
+
+function receiptActorName(request) {
+  return request.claimedByAgent ?? request.createdByAgent ?? request.targetAgentIdentity ?? "system";
+}
+
+async function restoreRequests(cache, beforeRequests, afterRequests) {
+  for (const [id, request] of beforeRequests.entries()) {
+    await cache.put(updateRequestDefinition, id, request);
+  }
+
+  for (const id of afterRequests.keys()) {
+    if (!beforeRequests.has(id)) {
+      await cache.delete(updateRequestDefinition, id);
+    }
+  }
+}
+
+function stableJson(value) {
+  return JSON.stringify(value);
 }
 
 async function recordTransportReceiptOrThrow(request, receipt) {
