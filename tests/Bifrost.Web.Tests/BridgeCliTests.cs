@@ -773,6 +773,107 @@ exit /b 0
         }
     }
 
+    [Fact]
+    public async Task Dispatched_turn_github_cli_mutation_with_global_repo_flag_is_blocked_without_bridge_authorization()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), $"bifrost-gh-gate-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+
+        try
+        {
+            var fakeGhPath = Path.Combine(tempDir, "fake-gh.cmd");
+            await File.WriteAllTextAsync(fakeGhPath, """
+@echo off
+echo should-not-run
+exit /b 0
+""", Encoding.UTF8);
+
+            var environment = BuildDispatchedGitGateEnv();
+            environment["BIFROST_REAL_GH"] = fakeGhPath;
+
+            var blocked = await RunCommandAsync(
+                "powershell",
+                ["-NoProfile", "-Command", "gh -R GameCult/Bifrost pr comment 42 --body blocked"],
+                RepoRoot,
+                environment);
+
+            Assert.NotEqual(0, blocked.ExitCode);
+            Assert.Contains("Bifrost blocked GitHub CLI", blocked.Stderr, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("should-not-run", blocked.Stdout, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            DeleteDirectoryIfPresent(tempDir);
+        }
+    }
+
+    [Fact]
+    public async Task Dispatched_turn_github_workflow_run_is_blocked_without_bridge_authorization()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), $"bifrost-gh-gate-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+
+        try
+        {
+            var fakeGhPath = Path.Combine(tempDir, "fake-gh.cmd");
+            await File.WriteAllTextAsync(fakeGhPath, """
+@echo off
+echo should-not-run
+exit /b 0
+""", Encoding.UTF8);
+
+            var environment = BuildDispatchedGitGateEnv();
+            environment["BIFROST_REAL_GH"] = fakeGhPath;
+
+            var blocked = await RunCommandAsync(
+                "powershell",
+                ["-NoProfile", "-Command", "gh workflow run ci.yml"],
+                RepoRoot,
+                environment);
+
+            Assert.NotEqual(0, blocked.ExitCode);
+            Assert.Contains("Bifrost blocked GitHub CLI", blocked.Stderr, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("should-not-run", blocked.Stdout, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            DeleteDirectoryIfPresent(tempDir);
+        }
+    }
+
+    [Fact]
+    public async Task Dispatched_turn_github_cli_read_only_view_is_allowed_under_gate()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), $"bifrost-gh-gate-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+
+        try
+        {
+            var fakeGhPath = Path.Combine(tempDir, "fake-gh.cmd");
+            await File.WriteAllTextAsync(fakeGhPath, """
+@echo off
+echo read-only-ok
+exit /b 0
+""", Encoding.UTF8);
+
+            var environment = BuildDispatchedGitGateEnv();
+            environment["BIFROST_REAL_GH"] = fakeGhPath;
+
+            var allowed = await RunCommandAsync(
+                "powershell",
+                ["-NoProfile", "-Command", "gh -R GameCult/Bifrost pr view 42"],
+                RepoRoot,
+                environment);
+
+            Assert.Equal(0, allowed.ExitCode);
+            Assert.Contains("read-only-ok", allowed.Stdout, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            DeleteDirectoryIfPresent(tempDir);
+        }
+    }
+
     private static string RepoRoot =>
         Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
 

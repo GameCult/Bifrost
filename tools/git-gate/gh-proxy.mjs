@@ -7,39 +7,30 @@ const args = process.argv.slice(2);
 const wrapperDir = dirname(fileURLToPath(import.meta.url));
 const realGh = process.env.BIFROST_REAL_GH || resolveExecutable("gh", wrapperDir);
 const realGhArgs = splitCommandArgs(process.env.BIFROST_REAL_GH_ARGS ?? "");
-const mutatingCommands = new Set([
-  "gist create",
-  "gist delete",
-  "gist edit",
-  "issue close",
-  "issue comment",
-  "issue create",
-  "issue delete",
-  "issue edit",
-  "issue lock",
-  "issue reopen",
-  "pr close",
-  "pr comment",
-  "pr create",
-  "pr edit",
-  "pr lock",
-  "pr merge",
-  "pr ready",
-  "pr reopen",
-  "pr review",
-  "release create",
-  "release delete",
-  "release edit",
-  "repo archive",
-  "repo create",
-  "repo delete",
-  "repo edit",
-  "repo fork",
-  "repo rename",
-  "secret delete",
-  "secret set",
-  "variable delete",
-  "variable set",
+const readOnlyTopLevelCommands = new Set([
+  "",
+  "help",
+  "version",
+  "status",
+  "browse",
+  "search",
+]);
+const readOnlyScopedCommands = new Map([
+  ["auth", new Set(["status"])],
+  ["issue", new Set(["list", "status", "view"])],
+  ["pr", new Set(["checks", "diff", "list", "status", "view"])],
+  ["release", new Set(["download", "list", "view"])],
+  ["repo", new Set(["list", "view"])],
+  ["run", new Set(["download", "list", "view", "watch"])],
+  ["secret", new Set(["list"])],
+  ["variable", new Set(["list"])],
+  ["workflow", new Set(["list", "view"])],
+]);
+const globalOptionsWithSeparateValues = new Set([
+  "-R",
+  "--repo",
+  "-h",
+  "--hostname",
 ]);
 
 if (!realGh) {
@@ -49,11 +40,11 @@ if (!realGh) {
 
 if (
   process.env.BIFROST_ENFORCE_GITHUB_GATE === "true" &&
-  isMutatingGitHubCliCommand(args) &&
+  requiresBridgeAuthorization(args) &&
   process.env.BIFROST_GITHUB_MUTATION_AUTHORIZED !== "true"
 ) {
   process.stderr.write(
-    "Bifrost blocked GitHub CLI mutation in this dispatched turn. Use tools/bifrost-bridge.mjs so GitHub publication is gated and receipted.\n",
+    "Bifrost blocked GitHub CLI mutation or unclassified command in this dispatched turn. Use tools/bifrost-bridge.mjs so GitHub publication is gated and receipted.\n",
   );
   process.exit(1);
 }
@@ -108,32 +99,96 @@ function isWindowsCommandScript(command) {
   return /\.cmd$/i.test(command) || /\.bat$/i.test(command);
 }
 
-function isMutatingGitHubCliCommand(input) {
-  const [scope = "", action = ""] = input;
-  if (!scope) {
-    return false;
-  }
-
+function requiresBridgeAuthorization(input) {
+  const { scope, action } = parseCommand(input);
   if (scope === "api") {
     return apiMethod(input) !== "GET";
   }
 
-  return mutatingCommands.has(`${scope} ${action}`);
+  if (readOnlyTopLevelCommands.has(scope)) {
+    return false;
+  }
+
+  const readOnlyActions = readOnlyScopedCommands.get(scope);
+  if (readOnlyActions?.has(action)) {
+    return false;
+  }
+
+  return true;
+}
+
+function parseCommand(input) {
+  let index = 0;
+  while (index < input.length) {
+    const token = input[index];
+    if (!token) {
+      index += 1;
+      continue;
+    }
+
+    if (token === "--") {
+      index += 1;
+      break;
+    }
+
+    if (!token.startsWith("-")) {
+      break;
+    }
+
+    if (globalOptionsWithSeparateValues.has(token)) {
+      index += 2;
+      continue;
+    }
+
+    if (token.startsWith("--repo=") || token.startsWith("--hostname=")) {
+      index += 1;
+      continue;
+    }
+
+    index += 1;
+  }
+
+  return {
+    scope: input[index] ?? "",
+    action: input[index + 1] ?? "",
+  };
 }
 
 function apiMethod(input) {
   for (let index = 0; index < input.length; index += 1) {
     const token = input[index];
-    if (token === "--method") {
+    if (token === "--method" || token === "-X") {
       return `${input[index + 1] ?? "GET"}`.trim().toUpperCase();
     }
 
-    if (token.startsWith("--method=")) {
-      return token.slice("--method=".length).trim().toUpperCase();
+    if (token.startsWith("--method=") || token.startsWith("-X=")) {
+      const separator = token.includes("=") ? "=" : "";
+      const value = separator ? token.slice(token.indexOf("=") + 1) : "";
+      return value.trim().toUpperCase();
+    }
+
+    if (
+      token === "--input" ||
+      token === "-f" ||
+      token === "-F" ||
+      token === "--field" ||
+      token === "--raw-field"
+    ) {
+      return "POST";
+    }
+
+    if (
+      token.startsWith("--input=") ||
+      token.startsWith("-f=") ||
+      token.startsWith("-F=") ||
+      token.startsWith("--field=") ||
+      token.startsWith("--raw-field=")
+    ) {
+      return "POST";
     }
   }
 
-  return input.includes("--input") ? "POST" : "GET";
+  return "GET";
 }
 
 function splitCommandArgs(value) {
