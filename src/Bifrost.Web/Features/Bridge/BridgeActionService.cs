@@ -10,6 +10,10 @@ public sealed class BridgeActionService(
     AuditTrailService auditTrailService,
     TimeProvider timeProvider)
 {
+    private const string AgentTransportRequestSourceKind = "bifrost_agent_transport_request";
+    private const string GovernanceTopicSourceKind = "bifrost_governance_topic";
+    private const string LegacyGovernanceTopicSourceKind = "governance_topic";
+
     public async Task<BridgeActionResult> RequestAsync(
         BridgeActionRequest request,
         BridgeCaller caller,
@@ -223,13 +227,130 @@ public sealed class BridgeActionService(
             return BridgePolicyDecision.Reject("Referenced motion does not exist.");
         }
 
+        var provenanceDecision = await EvaluateBifrostOwnedProvenanceAsync(request, cancellationToken);
+        if (provenanceDecision is not null)
+        {
+            return provenanceDecision;
+        }
+
         return BridgePolicyDecision.Permit(
             caller.IsLocalBridge
                 ? "Authorized through the configured local Bifrost bridge token and Bifrost policy."
                 : "Authorized for an active Bifrost member through Bifrost policy.");
     }
 
+    private async Task<BridgePolicyDecision?> EvaluateBifrostOwnedProvenanceAsync(
+        BridgeActionRequest request,
+        CancellationToken cancellationToken)
+    {
+        var sourceKind = NormalizeText(request.SourceKind);
+        if (string.IsNullOrWhiteSpace(sourceKind))
+        {
+            return null;
+        }
+
+        if (string.Equals(sourceKind, AgentTransportRequestSourceKind, StringComparison.OrdinalIgnoreCase))
+        {
+            if (string.IsNullOrWhiteSpace(request.SourceId))
+            {
+                return BridgePolicyDecision.Reject("Bifrost request-backed bridge actions must cite the request id as sourceId.");
+            }
+
+            var linkedReceipt = await dbContext.AgentTransportReceipts
+                .AsNoTracking()
+                .Where(x => x.RequestId == request.SourceId)
+                .OrderByDescending(x => x.OccurredAtUtc)
+                .FirstOrDefaultAsync(cancellationToken);
+
+            if (linkedReceipt is null)
+            {
+                return BridgePolicyDecision.Reject($"Bifrost request-backed bridge action references unknown request {request.SourceId}.");
+            }
+
+            var repoMismatch = LinkedRepositoryMismatch(
+                request.TargetRepositoryFullName,
+                linkedReceipt.TargetRepositoryFullName,
+                linkedReceipt.TargetRepoName);
+            if (repoMismatch is not null)
+            {
+                return BridgePolicyDecision.Reject(repoMismatch);
+            }
+
+            return null;
+        }
+
+        if (string.Equals(sourceKind, GovernanceTopicSourceKind, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(sourceKind, LegacyGovernanceTopicSourceKind, StringComparison.OrdinalIgnoreCase))
+        {
+            if (string.IsNullOrWhiteSpace(request.SourceId))
+            {
+                return BridgePolicyDecision.Reject("Bifrost governance-backed bridge actions must cite the topic id as sourceId.");
+            }
+
+            var linkedReceipt = await dbContext.GovernanceActivityReceipts
+                .AsNoTracking()
+                .Where(x => x.TopicId == request.SourceId)
+                .OrderByDescending(x => x.OccurredAtUtc)
+                .FirstOrDefaultAsync(cancellationToken);
+
+            if (linkedReceipt is null)
+            {
+                return BridgePolicyDecision.Reject($"Bifrost governance-backed bridge action references unknown topic {request.SourceId}.");
+            }
+
+            var repoMismatch = LinkedRepositoryMismatch(
+                request.TargetRepositoryFullName,
+                string.Empty,
+                linkedReceipt.JurisdictionRepoName);
+            if (repoMismatch is not null)
+            {
+                return BridgePolicyDecision.Reject(repoMismatch);
+            }
+        }
+
+        return null;
+    }
+
+    private static string? LinkedRepositoryMismatch(
+        string targetRepositoryFullName,
+        string linkedTargetRepositoryFullName,
+        string linkedRepoName)
+    {
+        var normalizedTargetRepository = NormalizeRepository(targetRepositoryFullName);
+        var normalizedLinkedRepository = NormalizeRepository(linkedTargetRepositoryFullName);
+        if (!string.IsNullOrWhiteSpace(normalizedTargetRepository) &&
+            !string.IsNullOrWhiteSpace(normalizedLinkedRepository) &&
+            !string.Equals(normalizedTargetRepository, normalizedLinkedRepository, StringComparison.OrdinalIgnoreCase))
+        {
+            return "GitHub target repository does not match the linked Bifrost provenance.";
+        }
+
+        var targetRepoShortName = ShortRepositoryName(normalizedTargetRepository);
+        var normalizedLinkedRepoName = NormalizeText(linkedRepoName);
+        if (!string.IsNullOrWhiteSpace(targetRepoShortName) &&
+            !string.IsNullOrWhiteSpace(normalizedLinkedRepoName) &&
+            !string.Equals(targetRepoShortName, normalizedLinkedRepoName, StringComparison.OrdinalIgnoreCase))
+        {
+            return "GitHub target repository does not match the linked Bifrost provenance.";
+        }
+
+        return null;
+    }
+
     private static string NormalizeRepository(string value) => NormalizeText(value).ToLowerInvariant();
+
+    private static string ShortRepositoryName(string normalizedRepositoryFullName)
+    {
+        if (string.IsNullOrWhiteSpace(normalizedRepositoryFullName))
+        {
+            return string.Empty;
+        }
+
+        var slash = normalizedRepositoryFullName.LastIndexOf('/');
+        return slash >= 0 && slash < normalizedRepositoryFullName.Length - 1
+            ? normalizedRepositoryFullName[(slash + 1)..]
+            : normalizedRepositoryFullName;
+    }
 
     private static string NormalizeText(string? value) => value?.Trim() ?? string.Empty;
 }

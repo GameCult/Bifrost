@@ -299,6 +299,18 @@ public sealed class PlatformEndpointsTests : IClassFixture<TestWebApplicationFac
     public async Task Local_bridge_token_can_authorize_and_receipt_agent_github_action()
     {
         using var client = _factory.CreateClient();
+        await PostTransportReceiptAsync(client, new
+        {
+            requestId = "req_bridge_123",
+            title = "Queue the GitHub bridge hardening pass",
+            targetRepoName = "Bifrost",
+            targetRepositoryFullName = "GameCult/Bifrost",
+            targetAgentIdentity = "nibu",
+            activityKind = "Claimed",
+            status = "claimed",
+            actorName = "bifrost-dispatcher",
+            note = "Request claimed for Bifrost."
+        });
 
         var requestPayload = JsonSerializer.Serialize(new
         {
@@ -308,8 +320,8 @@ public sealed class PlatformEndpointsTests : IClassFixture<TestWebApplicationFac
             actionKind = "GitHubDraftPullRequest",
             targetRepositoryFullName = "GameCult/Bifrost",
             targetLocator = "pulls",
-            sourceKind = "governance_topic",
-            sourceId = "topic_123",
+            sourceKind = "bifrost_agent_transport_request",
+            sourceId = "req_bridge_123",
             authorityReference = "dispatch-approved",
             title = "Draft motion implementation PR",
             summary = "Open a draft PR for the approved topic."
@@ -390,6 +402,96 @@ public sealed class PlatformEndpointsTests : IClassFixture<TestWebApplicationFac
         Assert.Equal(BridgeActionStatus.Denied, savedAction.Status);
         Assert.Contains("must cite", savedAction.PolicyDecision, StringComparison.OrdinalIgnoreCase);
         Assert.Contains(dbContext.AuditEvents, x => x.EntityType == nameof(BridgeAction) && x.Action == "bridge.denied");
+    }
+
+    [Fact]
+    public async Task Agent_github_action_with_unknown_bifrost_request_is_denied_and_recorded()
+    {
+        using var client = _factory.CreateClient();
+
+        var requestPayload = JsonSerializer.Serialize(new
+        {
+            actorKind = "Agent",
+            actorName = "nibu",
+            targetSurface = "GitHub",
+            actionKind = "GitHubDraftPullRequest",
+            targetRepositoryFullName = "GameCult/Bifrost",
+            targetLocator = "pulls",
+            sourceKind = "bifrost_agent_transport_request",
+            sourceId = "req_missing_123",
+            authorityReference = "dispatch-approved",
+            title = "Unbacked request bridge action",
+            summary = "This should not pass policy."
+        });
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/bridge/actions/request");
+        request.Headers.Add("X-Bifrost-Bridge-Token", "test-bridge-token");
+        request.Content = new StringContent(requestPayload, Encoding.UTF8, "application/json");
+
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        var action = await response.Content.ReadFromJsonAsync<BridgeActionHttpResult>();
+        Assert.NotNull(action);
+        Assert.Equal("Denied", action.Status);
+
+        using var scope = _factory.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
+        var savedAction = dbContext.BridgeActions.Single(x => x.Id == action.Id);
+
+        Assert.Equal(BridgeActionStatus.Denied, savedAction.Status);
+        Assert.Contains("unknown request", savedAction.PolicyDecision, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Agent_github_action_with_mismatched_bifrost_request_repo_is_denied_and_recorded()
+    {
+        using var client = _factory.CreateClient();
+        await PostTransportReceiptAsync(client, new
+        {
+            requestId = "req_bridge_mismatch_123",
+            title = "Queue the VoidBot bridge hardening pass",
+            targetRepoName = "VoidBot",
+            targetRepositoryFullName = "GameCult/VoidBot",
+            targetAgentIdentity = "nibu",
+            activityKind = "Claimed",
+            status = "claimed",
+            actorName = "bifrost-dispatcher",
+            note = "Request claimed for VoidBot."
+        });
+
+        var requestPayload = JsonSerializer.Serialize(new
+        {
+            actorKind = "Agent",
+            actorName = "nibu",
+            targetSurface = "GitHub",
+            actionKind = "GitHubDraftPullRequest",
+            targetRepositoryFullName = "GameCult/Bifrost",
+            targetLocator = "pulls",
+            sourceKind = "bifrost_agent_transport_request",
+            sourceId = "req_bridge_mismatch_123",
+            authorityReference = "dispatch-approved",
+            title = "Repo mismatch bridge action",
+            summary = "This should not pass policy."
+        });
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/bridge/actions/request");
+        request.Headers.Add("X-Bifrost-Bridge-Token", "test-bridge-token");
+        request.Content = new StringContent(requestPayload, Encoding.UTF8, "application/json");
+
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        var action = await response.Content.ReadFromJsonAsync<BridgeActionHttpResult>();
+        Assert.NotNull(action);
+        Assert.Equal("Denied", action.Status);
+
+        using var scope = _factory.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
+        var savedAction = dbContext.BridgeActions.Single(x => x.Id == action.Id);
+
+        Assert.Equal(BridgeActionStatus.Denied, savedAction.Status);
+        Assert.Contains("target repository does not match", savedAction.PolicyDecision, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
