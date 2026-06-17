@@ -545,6 +545,46 @@ public sealed class PlatformEndpointsTests : IClassFixture<TestWebApplicationFac
         Assert.Contains(dbContext.AuditEvents, x => x.EntityType == nameof(AgentTransportReceipt) && x.Action == "agent-transport.claimed");
     }
 
+    [Fact]
+    public async Task Local_bridge_token_can_record_governance_receipt()
+    {
+        using var client = _factory.CreateClient();
+
+        var payload = JsonSerializer.Serialize(new
+        {
+            topicId = "topic_123",
+            commentId = "comment_123",
+            dispatchRequestId = "req_transport_123",
+            title = "Queue the GitHub bridge hardening pass",
+            jurisdictionRepoName = "Bifrost",
+            jurisdictionAgentIdentity = "nibu",
+            activityKind = "TopicPromoted",
+            actorKind = "face",
+            actorName = "nibu",
+            note = "Governance topic promoted to update request req_transport_123."
+        });
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/governance/receipts");
+        request.Headers.Add("X-Bifrost-Bridge-Token", "test-bridge-token");
+        request.Content = new StringContent(payload, Encoding.UTF8, "application/json");
+
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+        var receipt = await response.Content.ReadFromJsonAsync<GovernanceActivityReceiptHttpResult>();
+        Assert.NotNull(receipt);
+        Assert.Equal("topic_123", receipt.TopicId);
+        Assert.Equal("TopicPromoted", receipt.ActivityKind);
+
+        using var scope = _factory.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
+        var savedReceipt = dbContext.GovernanceActivityReceipts.Single(x => x.Id == receipt.Id);
+
+        Assert.Equal("TopicPromoted", savedReceipt.ActivityKind.ToString());
+        Assert.Equal("nibu", savedReceipt.ActorName);
+        Assert.Contains(dbContext.AuditEvents, x => x.EntityType == nameof(GovernanceActivityReceipt) && x.Action == "governance.topic-promoted");
+    }
+
     private static string ComputeSignature(string secret, string payload)
     {
         using var hasher = new HMACSHA256(Encoding.UTF8.GetBytes(secret));
@@ -579,6 +619,15 @@ public sealed class PlatformEndpointsTests : IClassFixture<TestWebApplicationFac
         public Guid Id { get; init; }
 
         public string RequestId { get; init; } = string.Empty;
+
+        public string ActivityKind { get; init; } = string.Empty;
+    }
+
+    private sealed class GovernanceActivityReceiptHttpResult
+    {
+        public Guid Id { get; init; }
+
+        public string TopicId { get; init; } = string.Empty;
 
         public string ActivityKind { get; init; } = string.Empty;
     }

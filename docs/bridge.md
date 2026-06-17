@@ -71,6 +71,12 @@ The hosted app also exposes a request-lane receipt ledger for transport lifecycl
 
 This covers the activity that happens before or around a visible Codex turn: queueing a request, claiming it, releasing it, and closing it. The `.cc` packet is still the transport document. The hosted receipt row is the operator-facing witness that the activity happened.
 
+The hosted app also exposes a governance activity receipt ledger:
+
+- `POST /governance/receipts`
+
+This covers the other side of the swarm's work: topic opens, comments, approvals, and promotions to dispatch. The topic and comment documents are still the governance substrate. The hosted receipt row is the Bifrost-side witness that an agent or operator performed the governance action.
+
 Current gate behavior:
 
 - active Bifrost members may request bridge actions from an authenticated app session
@@ -88,6 +94,7 @@ Current CLI wiring:
 - the dispatcher now preloads `BIFROST_BRIDGE_SOURCE_KIND`, `BIFROST_BRIDGE_SOURCE_ID`, and `BIFROST_BRIDGE_AUTHORITY_REF` into Codex turns launched from Bifrost update requests, so normal bridge use inside a dispatched turn carries request provenance by default
 - the dispatcher also uses that same bridge configuration to post dispatch-run start/complete/fail receipts, including the worker pid, thread/turn ids when available, and result/log paths for the local operator trail
 - the agent transport CLI uses that same bridge configuration to post request-lane receipts for queue, claim, release, and close events, so Bifrost does not go blind between intake and dispatch
+- the governance threads CLI uses that same bridge configuration to post governance receipts for topic opens, comments, approvals, and promotions, so Bifrost does not lose the pre-dispatch reasoning trail
 
 If the app bridge configuration is absent, `tools/bifrost-bridge.mjs` keeps working as a local actuator. When configured, it asks Bifrost for authorization before acting and reports success or failure back to the same bridge action row.
 

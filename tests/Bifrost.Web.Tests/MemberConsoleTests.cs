@@ -110,6 +110,21 @@ public sealed class MemberConsoleTests : IClassFixture<TestWebApplicationFactory
                 Note = "Request claimed for Bifrost.",
                 OccurredAtUtc = DateTimeOffset.UtcNow.AddMinutes(-3)
             });
+            dbContext.GovernanceActivityReceipts.Add(new GovernanceActivityReceipt
+            {
+                TopicId = "topic_123",
+                CommentId = "comment_123",
+                DispatchRequestId = "req_transport_123",
+                Title = "Queue the GitHub bridge hardening pass",
+                JurisdictionRepoName = "Bifrost",
+                JurisdictionAgentIdentity = "nibu",
+                ActivityKind = GovernanceActivityReceiptKind.TopicPromoted,
+                ActorKind = "face",
+                ActorName = "nibu",
+                Note = "Governance topic promoted to update request req_transport_123.",
+                ActorUserAccountId = actor.Id,
+                OccurredAtUtc = DateTimeOffset.UtcNow.AddMinutes(-4)
+            });
             dbContext.SaveChanges();
         }
 
@@ -122,6 +137,8 @@ public sealed class MemberConsoleTests : IClassFixture<TestWebApplicationFactory
         Assert.Contains("req_dispatch_123", html);
         Assert.Contains("Transport receipts", html);
         Assert.Contains("req_transport_123", html);
+        Assert.Contains("Governance receipts", html);
+        Assert.Contains("topic_123", html);
         Assert.Contains("Bridge receipts", html);
         Assert.Contains("Draft motion implementation PR", html);
         Assert.Contains("nibu", html);

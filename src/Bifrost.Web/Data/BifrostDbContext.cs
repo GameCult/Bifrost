@@ -59,6 +59,8 @@ public sealed class BifrostDbContext(DbContextOptions<BifrostDbContext> options)
 
     public DbSet<AgentTransportReceipt> AgentTransportReceipts => Set<AgentTransportReceipt>();
 
+    public DbSet<GovernanceActivityReceipt> GovernanceActivityReceipts => Set<GovernanceActivityReceipt>();
+
     public DbSet<AuditEvent> AuditEvents => Set<AuditEvent>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -471,6 +473,26 @@ public sealed class BifrostDbContext(DbContextOptions<BifrostDbContext> options)
             entity.HasIndex(x => new { x.TargetRepoName, x.TargetAgentIdentity, x.ActivityKind });
             entity.HasOne(x => x.ActorUserAccount)
                 .WithMany(x => x.AgentTransportReceipts)
+                .HasForeignKey(x => x.ActorUserAccountId)
+                .OnDelete(DeleteBehavior.SetNull);
+        });
+
+        modelBuilder.Entity<GovernanceActivityReceipt>(entity =>
+        {
+            entity.Property(x => x.TopicId).HasMaxLength(120);
+            entity.Property(x => x.CommentId).HasMaxLength(120);
+            entity.Property(x => x.DispatchRequestId).HasMaxLength(240);
+            entity.Property(x => x.Title).HasMaxLength(240);
+            entity.Property(x => x.JurisdictionRepoName).HasMaxLength(120);
+            entity.Property(x => x.JurisdictionAgentIdentity).HasMaxLength(160);
+            entity.Property(x => x.ActivityKind).HasConversion<string>();
+            entity.Property(x => x.ActorKind).HasMaxLength(40);
+            entity.Property(x => x.ActorName).HasMaxLength(160);
+            entity.HasIndex(x => x.TopicId);
+            entity.HasIndex(x => x.OccurredAtUtc);
+            entity.HasIndex(x => new { x.JurisdictionRepoName, x.JurisdictionAgentIdentity, x.ActivityKind });
+            entity.HasOne(x => x.ActorUserAccount)
+                .WithMany(x => x.GovernanceActivityReceipts)
                 .HasForeignKey(x => x.ActorUserAccountId)
                 .OnDelete(DeleteBehavior.SetNull);
         });

@@ -231,6 +231,14 @@ public enum AgentTransportReceiptKind
     Closed
 }
 
+public enum GovernanceActivityReceiptKind
+{
+    TopicOpened,
+    TopicCommented,
+    TopicApproved,
+    TopicPromoted
+}
+
 public sealed class UserAccount
 {
     public Guid Id { get; set; } = Guid.NewGuid();
@@ -284,6 +292,8 @@ public sealed class UserAccount
     public ICollection<AgentDispatchRun> AgentDispatchRuns { get; set; } = [];
 
     public ICollection<AgentTransportReceipt> AgentTransportReceipts { get; set; } = [];
+
+    public ICollection<GovernanceActivityReceipt> GovernanceActivityReceipts { get; set; } = [];
 
     public ICollection<AuditEvent> AuditEvents { get; set; } = [];
 }
@@ -1008,6 +1018,37 @@ public sealed class AgentTransportReceipt
     public string ActorName { get; set; } = string.Empty;
 
     public string Note { get; set; } = string.Empty;
+
+    public DateTimeOffset OccurredAtUtc { get; set; }
+
+    public UserAccount? ActorUserAccount { get; set; }
+}
+
+public sealed class GovernanceActivityReceipt
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+
+    public string TopicId { get; set; } = string.Empty;
+
+    public string CommentId { get; set; } = string.Empty;
+
+    public string DispatchRequestId { get; set; } = string.Empty;
+
+    public string Title { get; set; } = string.Empty;
+
+    public string JurisdictionRepoName { get; set; } = string.Empty;
+
+    public string JurisdictionAgentIdentity { get; set; } = string.Empty;
+
+    public GovernanceActivityReceiptKind ActivityKind { get; set; } = GovernanceActivityReceiptKind.TopicOpened;
+
+    public string ActorKind { get; set; } = string.Empty;
+
+    public string ActorName { get; set; } = string.Empty;
+
+    public string Note { get; set; } = string.Empty;
+
+    public Guid? ActorUserAccountId { get; set; }
 
     public DateTimeOffset OccurredAtUtc { get; set; }
 

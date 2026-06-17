@@ -272,6 +272,46 @@
     <article class="panel">
         <div class="panel-header">
             <div>
+                <h2>Governance receipts</h2>
+                <p class="muted">Hosted receipts for topic opens, comments, approvals, and promotions.</p>
+            </div>
+        </div>
+
+        @if (Model.Snapshot.RecentGovernanceReceipts.Count == 0)
+        {
+            <div class="empty-state">No governance receipts have been recorded yet.</div>
+        }
+        else
+        {
+            <div class="list-grid">
+                @foreach (var receipt in Model.Snapshot.RecentGovernanceReceipts)
+                {
+                    <div class="status-banner">
+                        <strong>@receipt.JurisdictionRepoName@if (!string.IsNullOrWhiteSpace(receipt.JurisdictionAgentIdentity)) {<text> / @receipt.JurisdictionAgentIdentity</text>}</strong>
+                        <span class="muted">@receipt.Title</span>
+                        <div class="inline-actions">
+                            <span class="pill">@receipt.ActivityKind</span>
+                            <span class="pill">@receipt.ActorName</span>
+                        </div>
+                        <div class="muted">Topic @receipt.TopicId</div>
+                        @if (!string.IsNullOrWhiteSpace(receipt.DispatchRequestId))
+                        {
+                            <div class="muted">Dispatch @receipt.DispatchRequestId</div>
+                        }
+                        @if (!string.IsNullOrWhiteSpace(receipt.Note))
+                        {
+                            <div class="muted">@receipt.Note</div>
+                        }
+                        <div class="muted">@receipt.OccurredAtUtc.ToString("dd MMM yyyy HH:mm") UTC</div>
+                    </div>
+                }
+            </div>
+        }
+    </article>
+
+    <article class="panel">
+        <div class="panel-header">
+            <div>
                 <h2>Bridge receipts</h2>
                 <p class="muted">Recent agent and service crossings recorded by Bifrost.</p>
             </div>

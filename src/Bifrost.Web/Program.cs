@@ -82,6 +82,7 @@ builder.Services.AddScoped<DashboardSnapshotService>();
 builder.Services.AddScoped<BridgeActionService>();
 builder.Services.AddScoped<AgentDispatchRunService>();
 builder.Services.AddScoped<AgentTransportReceiptService>();
+builder.Services.AddScoped<GovernanceActivityReceiptService>();
 builder.Services.AddScoped<MembershipSynchronizationService>();
 builder.Services.AddScoped<GitHubWebhookService>();
 builder.Services.AddScoped<MotionGovernanceService>();
@@ -554,6 +555,26 @@ transportReceipts.MapPost("", async (
     }
 
     var result = await agentTransportReceiptService.RecordAsync(command, actor.UserAccount?.Id, cancellationToken);
+    return JsonResult(result, appJsonSerializerOptions, StatusCodes.Status202Accepted);
+});
+
+var governanceReceipts = app.MapGroup("/governance/receipts");
+
+governanceReceipts.MapPost("", async (
+    HttpRequest request,
+    GovernanceActivityReceiptRequest command,
+    ICurrentBifrostActorAccessor actorAccessor,
+    GovernanceActivityReceiptService governanceActivityReceiptService,
+    IOptions<BridgeOptions> bridgeOptions,
+    CancellationToken cancellationToken) =>
+{
+    var actor = await actorAccessor.GetAsync(cancellationToken);
+    if (!HasValidLocalBridgeToken(request, bridgeOptions.Value) && !actor.IsActiveMember)
+    {
+        return Results.Unauthorized();
+    }
+
+    var result = await governanceActivityReceiptService.RecordAsync(command, actor.UserAccount?.Id, cancellationToken);
     return JsonResult(result, appJsonSerializerOptions, StatusCodes.Status202Accepted);
 });
 

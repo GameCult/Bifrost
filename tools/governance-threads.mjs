@@ -175,6 +175,14 @@ async function openTopic(cache, options) {
       fallbackContent: topic.summaryMarkdown,
       eventLabel: "opened",
     });
+    await recordGovernanceReceiptOrThrow(topic, {
+      commentId: "",
+      dispatchRequestId: "",
+      activityKind: "TopicOpened",
+      actorKind: "agent",
+      actorName: topic.createdByActor ?? "system",
+      note: "Governance topic opened.",
+    });
   } catch (error) {
     await cache.delete(topicDefinition, topic.id);
     throw error;
@@ -206,6 +214,14 @@ async function addComment(cache, options) {
       options,
       fallbackContent: comment.bodyMarkdown,
       eventLabel: comment.stance,
+    });
+    await recordGovernanceReceiptOrThrow(topic, {
+      commentId: comment.id,
+      dispatchRequestId: "",
+      activityKind: "TopicCommented",
+      actorKind: comment.authorKind,
+      actorName: comment.authorId,
+      note: `Governance topic ${comment.stance} comment recorded.`,
     });
   } catch (error) {
     await cache.delete(commentDefinition, comment.id);
@@ -253,6 +269,14 @@ async function approveTopic(cache, options) {
       options,
       fallbackContent: approvalBody ?? `Approved by ${approvedBy}.`,
       eventLabel: "approved",
+    });
+    await recordGovernanceReceiptOrThrow(approved, {
+      commentId: comment?.id ?? "",
+      dispatchRequestId: "",
+      activityKind: "TopicApproved",
+      actorKind: "face",
+      actorName: approvedBy,
+      note: "Governance topic approved.",
     });
   } catch (error) {
     await cache.put(topicDefinition, topic.id, topic);
@@ -330,6 +354,14 @@ async function promoteTopic(cache, options) {
       options,
       fallbackContent: receipt.bodyMarkdown,
       eventLabel: "dispatched",
+    });
+    await recordGovernanceReceiptOrThrow(dispatched, {
+      commentId: receipt.id,
+      dispatchRequestId: request.id,
+      activityKind: "TopicPromoted",
+      actorKind: "system",
+      actorName: topic.approvedByAgent ?? topic.createdByActor ?? "bifrost",
+      note: `Governance topic promoted to update request ${request.id}.`,
     });
   } catch (error) {
     await cache.put(topicDefinition, topic.id, topic);
@@ -457,6 +489,39 @@ function governanceMirrorEvent(eventLabel) {
 
 function truncateMarkdown(value, maxLength) {
   return value.length > maxLength ? `${value.slice(0, maxLength - 3)}...` : value;
+}
+
+async function recordGovernanceReceiptOrThrow(topic, receipt) {
+  const baseUrl = optionalString(process.env.BIFROST_BRIDGE_BASE_URL);
+  const token = optionalString(process.env.BIFROST_BRIDGE_TOKEN);
+  if (!baseUrl || !token) {
+    return;
+  }
+
+  const response = await fetch(new URL("/governance/receipts", ensureTrailingSlash(baseUrl)), {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Bifrost-Bridge-Token": token,
+    },
+    body: JSON.stringify({
+      topicId: topic.id,
+      commentId: receipt.commentId,
+      dispatchRequestId: receipt.dispatchRequestId,
+      title: topic.title,
+      jurisdictionRepoName: topic.jurisdictionRepoName,
+      jurisdictionAgentIdentity: topic.jurisdictionAgentIdentity ?? "",
+      activityKind: receipt.activityKind,
+      actorKind: receipt.actorKind,
+      actorName: receipt.actorName,
+      note: receipt.note,
+    }),
+  });
+
+  const text = await response.text();
+  if (response.status !== 202) {
+    throw new Error(`Bifrost governance receipt failed with ${response.status}: ${text}`);
+  }
 }
 
 function listTopics(cache, options) {
@@ -758,6 +823,10 @@ function loadLocalEnv(path) {
 
 function resolveOptionPath(path) {
   return resolve(process.cwd(), path);
+}
+
+function ensureTrailingSlash(value) {
+  return value.endsWith("/") ? value : `${value}/`;
 }
 
 function printJson(value) {

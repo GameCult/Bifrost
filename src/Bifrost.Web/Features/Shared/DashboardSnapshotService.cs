@@ -151,6 +151,25 @@ public sealed class DashboardSnapshotService(BifrostDbContext dbContext, TimePro
                 x.OccurredAtUtc))
             .ToListAsync(cancellationToken);
 
+        var recentGovernanceReceipts = await dbContext.GovernanceActivityReceipts
+            .AsNoTracking()
+            .OrderByDescending(x => x.OccurredAtUtc)
+            .Take(6)
+            .Select(x => new DashboardGovernanceReceipt(
+                x.Id,
+                x.TopicId,
+                x.CommentId,
+                x.DispatchRequestId,
+                x.Title,
+                x.JurisdictionRepoName,
+                x.JurisdictionAgentIdentity,
+                x.ActivityKind.ToString(),
+                x.ActorKind,
+                x.ActorName,
+                x.Note,
+                x.OccurredAtUtc))
+            .ToListAsync(cancellationToken);
+
         var payoutPreviewNominal = await dbContext.LedgerEntries
             .AsNoTracking()
             .Where(x => x.Status == LedgerEntryStatus.Approved)
@@ -180,7 +199,8 @@ public sealed class DashboardSnapshotService(BifrostDbContext dbContext, TimePro
             RecentActivity: recentActivity,
             RecentBridgeActions: recentBridgeActions,
             RecentDispatchRuns: recentDispatchRuns,
-            RecentTransportReceipts: recentTransportReceipts);
+            RecentTransportReceipts: recentTransportReceipts,
+            RecentGovernanceReceipts: recentGovernanceReceipts);
     }
 }
 
@@ -202,7 +222,8 @@ public sealed record DashboardSnapshot(
     IReadOnlyList<DashboardActivity> RecentActivity,
     IReadOnlyList<DashboardBridgeAction> RecentBridgeActions,
     IReadOnlyList<DashboardDispatchRun> RecentDispatchRuns,
-    IReadOnlyList<DashboardTransportReceipt> RecentTransportReceipts);
+    IReadOnlyList<DashboardTransportReceipt> RecentTransportReceipts,
+    IReadOnlyList<DashboardGovernanceReceipt> RecentGovernanceReceipts);
 
 public sealed record DashboardWorkItem(
     Guid WorkItemId,
@@ -268,6 +289,20 @@ public sealed record DashboardTransportReceipt(
     string TargetAgentIdentity,
     string ActivityKind,
     string Status,
+    string ActorName,
+    string Note,
+    DateTimeOffset OccurredAtUtc);
+
+public sealed record DashboardGovernanceReceipt(
+    Guid GovernanceActivityReceiptId,
+    string TopicId,
+    string CommentId,
+    string DispatchRequestId,
+    string Title,
+    string JurisdictionRepoName,
+    string JurisdictionAgentIdentity,
+    string ActivityKind,
+    string ActorKind,
     string ActorName,
     string Note,
     DateTimeOffset OccurredAtUtc);
