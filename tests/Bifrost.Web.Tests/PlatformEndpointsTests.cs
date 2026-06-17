@@ -397,6 +397,18 @@ public sealed class PlatformEndpointsTests : IClassFixture<TestWebApplicationFac
     {
         using var client = _factory.CreateClient();
         _ = await client.GetAsync("/App");
+        await PostTransportReceiptAsync(client, new
+        {
+            requestId = "req_dispatch_123",
+            title = "Queue the GitHub bridge hardening pass",
+            targetRepoName = "Bifrost",
+            targetRepositoryFullName = "GameCult/Bifrost",
+            targetAgentIdentity = "nibu",
+            activityKind = "Claimed",
+            status = "claimed",
+            actorName = "bifrost-dispatcher",
+            note = "Request claimed for Bifrost."
+        });
 
         var startPayload = JsonSerializer.Serialize(new
         {
@@ -457,6 +469,18 @@ public sealed class PlatformEndpointsTests : IClassFixture<TestWebApplicationFac
     {
         using var client = _factory.CreateClient();
         _ = await client.GetAsync("/App");
+        await PostTransportReceiptAsync(client, new
+        {
+            requestId = "req_dispatch_fail_123",
+            title = "Queue the GitHub bridge hardening pass",
+            targetRepoName = "Bifrost",
+            targetRepositoryFullName = "GameCult/Bifrost",
+            targetAgentIdentity = "nibu",
+            activityKind = "Claimed",
+            status = "claimed",
+            actorName = "bifrost-dispatcher",
+            note = "Request claimed for Bifrost."
+        });
 
         var startPayload = JsonSerializer.Serialize(new
         {
@@ -556,6 +580,18 @@ public sealed class PlatformEndpointsTests : IClassFixture<TestWebApplicationFac
     {
         using var client = _factory.CreateClient();
         _ = await client.GetAsync("/App");
+        await PostTransportReceiptAsync(client, new
+        {
+            requestId = "req_transport_123",
+            title = "Queue the GitHub bridge hardening pass",
+            targetRepoName = "Bifrost",
+            targetRepositoryFullName = "GameCult/Bifrost",
+            targetAgentIdentity = "nibu",
+            activityKind = "Queued",
+            status = "queued",
+            actorName = "bifrost-dispatcher",
+            note = "Request queued for Bifrost."
+        });
 
         var payload = JsonSerializer.Serialize(new
         {
@@ -620,6 +656,108 @@ public sealed class PlatformEndpointsTests : IClassFixture<TestWebApplicationFac
         using var response = await client.SendAsync(request);
 
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Dispatch_run_without_request_lane_receipt_is_rejected()
+    {
+        using var client = _factory.CreateClient();
+
+        var payload = JsonSerializer.Serialize(new
+        {
+            requestId = "req_dispatch_missing_123",
+            targetRepoName = "Bifrost",
+            targetRepositoryFullName = "GameCult/Bifrost",
+            targetAgentIdentity = "nibu",
+            launchMode = "app-server",
+            workerProcessId = 4242,
+            threadId = "thread_missing",
+            turnId = "turn_missing",
+            logPath = "E:/Projects/Bifrost/.bifrost/agent-dispatch/req_dispatch_missing_123/codex.log",
+            resultPath = "E:/Projects/Bifrost/.bifrost/agent-dispatch/req_dispatch_missing_123/result.json",
+            note = "Should fail because the request lane has no receipt."
+        });
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/dispatch/runs/start");
+        request.Headers.Add("X-Bifrost-Bridge-Token", "test-bridge-token");
+        request.Content = new StringContent(payload, Encoding.UTF8, "application/json");
+
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Contains("existing request-lane receipt", body, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Governance_promotion_receipt_requires_known_dispatch_request()
+    {
+        using var client = _factory.CreateClient();
+
+        var payload = JsonSerializer.Serialize(new
+        {
+            topicId = "topic_unknown_dispatch_123",
+            commentId = "comment_unknown_dispatch_123",
+            dispatchRequestId = "req_unknown_transport_123",
+            title = "Promote an unknown dispatch request",
+            jurisdictionRepoName = "Bifrost",
+            jurisdictionAgentIdentity = "nibu",
+            activityKind = "TopicPromoted",
+            actorKind = "face",
+            actorName = "nibu",
+            note = "Should fail because the dispatch request is unknown."
+        });
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/governance/receipts");
+        request.Headers.Add("X-Bifrost-Bridge-Token", "test-bridge-token");
+        request.Content = new StringContent(payload, Encoding.UTF8, "application/json");
+
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Contains("unknown dispatch request", body, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Request_lane_receipt_cannot_change_repo_identity_for_existing_request()
+    {
+        using var client = _factory.CreateClient();
+        await PostTransportReceiptAsync(client, new
+        {
+            requestId = "req_transport_conflict_123",
+            title = "Queue the GitHub bridge hardening pass",
+            targetRepoName = "Bifrost",
+            targetRepositoryFullName = "GameCult/Bifrost",
+            targetAgentIdentity = "nibu",
+            activityKind = "Queued",
+            status = "queued",
+            actorName = "bifrost-dispatcher",
+            note = "Request queued for Bifrost."
+        });
+
+        var conflictPayload = JsonSerializer.Serialize(new
+        {
+            requestId = "req_transport_conflict_123",
+            title = "Queue the GitHub bridge hardening pass",
+            targetRepoName = "VoidBot",
+            targetRepositoryFullName = "GameCult/VoidBot",
+            targetAgentIdentity = "nibu",
+            activityKind = "Claimed",
+            status = "claimed",
+            actorName = "bifrost-dispatcher",
+            note = "This should not be allowed to drift."
+        });
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/transport/receipts");
+        request.Headers.Add("X-Bifrost-Bridge-Token", "test-bridge-token");
+        request.Content = new StringContent(conflictPayload, Encoding.UTF8, "application/json");
+
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Contains("target repo", body, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -690,6 +828,19 @@ public sealed class PlatformEndpointsTests : IClassFixture<TestWebApplicationFac
         request.Headers.Add("X-Heimdall-Signature-256", ComputeSignature("test-heimdall-intake-secret", payload));
         request.Content = new StringContent(payload, Encoding.UTF8, "application/json");
         return request;
+    }
+
+    private static async Task PostTransportReceiptAsync(HttpClient client, object payload)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/transport/receipts");
+        request.Headers.Add("X-Bifrost-Bridge-Token", "test-bridge-token");
+        request.Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
+
+        using var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.True(
+            response.StatusCode == HttpStatusCode.Accepted,
+            $"Expected transport receipt seed to succeed but got {(int)response.StatusCode}: {body}");
     }
 
     private sealed class BridgeActionHttpResult

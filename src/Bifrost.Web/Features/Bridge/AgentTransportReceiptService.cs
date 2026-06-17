@@ -1,6 +1,7 @@
 using Bifrost.Web.Data;
 using Bifrost.Web.Domain;
 using Bifrost.Web.Features.Shared;
+using Microsoft.EntityFrameworkCore;
 
 namespace Bifrost.Web.Features.Bridge;
 
@@ -14,6 +15,9 @@ public sealed class AgentTransportReceiptService(
         Guid? actorUserAccountId,
         CancellationToken cancellationToken)
     {
+        ValidateRequest(request);
+        await EnsureConsistentIdentityAsync(request, cancellationToken);
+
         var receipt = new AgentTransportReceipt
         {
             RequestId = NormalizeText(request.RequestId),
@@ -40,6 +44,103 @@ public sealed class AgentTransportReceiptService(
             cancellationToken);
 
         return AgentTransportReceiptResult.From(receipt);
+    }
+
+    private async Task EnsureConsistentIdentityAsync(
+        AgentTransportReceiptRequest request,
+        CancellationToken cancellationToken)
+    {
+        var priorReceipt = await dbContext.AgentTransportReceipts
+            .AsNoTracking()
+            .Where(x => x.RequestId == request.RequestId)
+            .OrderByDescending(x => x.OccurredAtUtc)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (priorReceipt is not null)
+        {
+            EnsureSameIdentity(
+                "request-lane target repo",
+                request.TargetRepoName,
+                "prior request-lane target repo",
+                priorReceipt.TargetRepoName);
+            EnsureSameIdentity(
+                "request-lane target repository",
+                request.TargetRepositoryFullName,
+                "prior request-lane target repository",
+                priorReceipt.TargetRepositoryFullName);
+            EnsureSameIdentity(
+                "request-lane target agent",
+                request.TargetAgentIdentity,
+                "prior request-lane target agent",
+                priorReceipt.TargetAgentIdentity);
+        }
+
+        var linkedRun = await dbContext.AgentDispatchRuns
+            .AsNoTracking()
+            .Where(x => x.RequestId == request.RequestId)
+            .OrderByDescending(x => x.StartedAtUtc)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (linkedRun is not null)
+        {
+            EnsureSameIdentity(
+                "request-lane target repo",
+                request.TargetRepoName,
+                "dispatch-run target repo",
+                linkedRun.TargetRepoName);
+            EnsureSameIdentity(
+                "request-lane target repository",
+                request.TargetRepositoryFullName,
+                "dispatch-run target repository",
+                linkedRun.TargetRepositoryFullName);
+            EnsureSameIdentity(
+                "request-lane target agent",
+                request.TargetAgentIdentity,
+                "dispatch-run target agent",
+                linkedRun.TargetAgentIdentity);
+        }
+    }
+
+    private static void ValidateRequest(AgentTransportReceiptRequest request)
+    {
+        if (string.IsNullOrWhiteSpace(request.RequestId))
+        {
+            throw new AgentTransportReceiptException("Request-lane receipts require a request id.");
+        }
+
+        if (string.IsNullOrWhiteSpace(request.Title))
+        {
+            throw new AgentTransportReceiptException("Request-lane receipts require a title.");
+        }
+
+        if (string.IsNullOrWhiteSpace(request.TargetRepoName))
+        {
+            throw new AgentTransportReceiptException("Request-lane receipts require a target repo name.");
+        }
+
+        if (string.IsNullOrWhiteSpace(request.ActorName))
+        {
+            throw new AgentTransportReceiptException("Request-lane receipts require an actor name.");
+        }
+    }
+
+    private static void EnsureSameIdentity(
+        string currentLabel,
+        string currentValue,
+        string linkedLabel,
+        string linkedValue)
+    {
+        var normalizedCurrent = NormalizeText(currentValue);
+        var normalizedLinked = NormalizeText(linkedValue);
+        if (string.IsNullOrWhiteSpace(normalizedCurrent) || string.IsNullOrWhiteSpace(normalizedLinked))
+        {
+            return;
+        }
+
+        if (!string.Equals(normalizedCurrent, normalizedLinked, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new AgentTransportReceiptException($"{currentLabel} does not match the linked {linkedLabel}.");
+        }
     }
 
     private static string BuildAuditDetail(AgentTransportReceipt receipt)
@@ -89,3 +190,5 @@ public sealed record AgentTransportReceiptResult(
         receipt.Note,
         receipt.OccurredAtUtc);
 }
+
+public sealed class AgentTransportReceiptException(string message) : InvalidOperationException(message);

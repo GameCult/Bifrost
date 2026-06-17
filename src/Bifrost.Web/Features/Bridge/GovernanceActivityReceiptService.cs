@@ -1,6 +1,7 @@
 using Bifrost.Web.Data;
 using Bifrost.Web.Domain;
 using Bifrost.Web.Features.Shared;
+using Microsoft.EntityFrameworkCore;
 
 namespace Bifrost.Web.Features.Bridge;
 
@@ -14,6 +15,9 @@ public sealed class GovernanceActivityReceiptService(
         Guid? actorUserAccountId,
         CancellationToken cancellationToken)
     {
+        ValidateRequest(request);
+        await EnsureLinkedDispatchRequestAsync(request, cancellationToken);
+
         var receipt = new GovernanceActivityReceipt
         {
             TopicId = NormalizeText(request.TopicId),
@@ -41,6 +45,86 @@ public sealed class GovernanceActivityReceiptService(
             cancellationToken);
 
         return GovernanceActivityReceiptResult.From(receipt);
+    }
+
+    private async Task EnsureLinkedDispatchRequestAsync(
+        GovernanceActivityReceiptRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(request.DispatchRequestId))
+        {
+            return;
+        }
+
+        var linkedReceipt = await dbContext.AgentTransportReceipts
+            .AsNoTracking()
+            .Where(x => x.RequestId == request.DispatchRequestId)
+            .OrderByDescending(x => x.OccurredAtUtc)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (linkedReceipt is null)
+        {
+            throw new GovernanceActivityReceiptException(
+                $"Governance receipt references unknown dispatch request {request.DispatchRequestId}.");
+        }
+
+        EnsureSameIdentity(
+            "governance jurisdiction repo",
+            request.JurisdictionRepoName,
+            "dispatch request repo",
+            linkedReceipt.TargetRepoName);
+        EnsureSameIdentity(
+            "governance jurisdiction agent",
+            request.JurisdictionAgentIdentity,
+            "dispatch request agent",
+            linkedReceipt.TargetAgentIdentity);
+    }
+
+    private static void ValidateRequest(GovernanceActivityReceiptRequest request)
+    {
+        if (string.IsNullOrWhiteSpace(request.TopicId))
+        {
+            throw new GovernanceActivityReceiptException("Governance receipts require a topic id.");
+        }
+
+        if (string.IsNullOrWhiteSpace(request.Title))
+        {
+            throw new GovernanceActivityReceiptException("Governance receipts require a title.");
+        }
+
+        if (string.IsNullOrWhiteSpace(request.JurisdictionRepoName))
+        {
+            throw new GovernanceActivityReceiptException("Governance receipts require a jurisdiction repo name.");
+        }
+
+        if (string.IsNullOrWhiteSpace(request.ActorKind))
+        {
+            throw new GovernanceActivityReceiptException("Governance receipts require an actor kind.");
+        }
+
+        if (string.IsNullOrWhiteSpace(request.ActorName))
+        {
+            throw new GovernanceActivityReceiptException("Governance receipts require an actor name.");
+        }
+    }
+
+    private static void EnsureSameIdentity(
+        string currentLabel,
+        string currentValue,
+        string linkedLabel,
+        string linkedValue)
+    {
+        var normalizedCurrent = NormalizeText(currentValue);
+        var normalizedLinked = NormalizeText(linkedValue);
+        if (string.IsNullOrWhiteSpace(normalizedCurrent) || string.IsNullOrWhiteSpace(normalizedLinked))
+        {
+            return;
+        }
+
+        if (!string.Equals(normalizedCurrent, normalizedLinked, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new GovernanceActivityReceiptException($"{currentLabel} does not match the linked {linkedLabel}.");
+        }
     }
 
     private static string ToAuditSuffix(GovernanceActivityReceiptKind activityKind) => activityKind switch
@@ -102,3 +186,5 @@ public sealed record GovernanceActivityReceiptResult(
         receipt.Note,
         receipt.OccurredAtUtc);
 }
+
+public sealed class GovernanceActivityReceiptException(string message) : InvalidOperationException(message);

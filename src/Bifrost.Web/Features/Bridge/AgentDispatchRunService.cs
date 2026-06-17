@@ -15,6 +15,9 @@ public sealed class AgentDispatchRunService(
         Guid? startedByUserAccountId,
         CancellationToken cancellationToken)
     {
+        ValidateStartRequest(request);
+        await EnsureLinkedTransportRequestAsync(request, cancellationToken);
+
         var now = timeProvider.GetUtcNow();
         var run = new AgentDispatchRun
         {
@@ -126,6 +129,76 @@ public sealed class AgentDispatchRunService(
         return AgentDispatchRunResult.From(run);
     }
 
+    private async Task EnsureLinkedTransportRequestAsync(
+        AgentDispatchRunStartRequest request,
+        CancellationToken cancellationToken)
+    {
+        var linkedReceipt = await dbContext.AgentTransportReceipts
+            .AsNoTracking()
+            .Where(x => x.RequestId == request.RequestId)
+            .OrderByDescending(x => x.OccurredAtUtc)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (linkedReceipt is null)
+        {
+            throw new AgentDispatchRunException(
+                $"Dispatch runs require an existing request-lane receipt for request {request.RequestId}.");
+        }
+
+        EnsureSameIdentity(
+            "dispatch run target repo",
+            request.TargetRepoName,
+            "request-lane target repo",
+            linkedReceipt.TargetRepoName);
+        EnsureSameIdentity(
+            "dispatch run target repository",
+            request.TargetRepositoryFullName,
+            "request-lane target repository",
+            linkedReceipt.TargetRepositoryFullName);
+        EnsureSameIdentity(
+            "dispatch run target agent",
+            request.TargetAgentIdentity,
+            "request-lane target agent",
+            linkedReceipt.TargetAgentIdentity);
+    }
+
+    private static void ValidateStartRequest(AgentDispatchRunStartRequest request)
+    {
+        if (string.IsNullOrWhiteSpace(request.RequestId))
+        {
+            throw new AgentDispatchRunException("Dispatch runs require a request id.");
+        }
+
+        if (string.IsNullOrWhiteSpace(request.TargetRepoName))
+        {
+            throw new AgentDispatchRunException("Dispatch runs require a target repo name.");
+        }
+
+        if (string.IsNullOrWhiteSpace(request.LaunchMode))
+        {
+            throw new AgentDispatchRunException("Dispatch runs require a launch mode.");
+        }
+    }
+
+    private static void EnsureSameIdentity(
+        string currentLabel,
+        string currentValue,
+        string linkedLabel,
+        string linkedValue)
+    {
+        var normalizedCurrent = NormalizeText(currentValue);
+        var normalizedLinked = NormalizeText(linkedValue);
+        if (string.IsNullOrWhiteSpace(normalizedCurrent) || string.IsNullOrWhiteSpace(normalizedLinked))
+        {
+            return;
+        }
+
+        if (!string.Equals(normalizedCurrent, normalizedLinked, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new AgentDispatchRunException($"{currentLabel} does not match the linked {linkedLabel}.");
+        }
+    }
+
     private static string NormalizeText(string? value) => value?.Trim() ?? string.Empty;
 }
 
@@ -194,3 +267,5 @@ public sealed record AgentDispatchRunResult(
         run.UpdatedAtUtc,
         run.CompletedAtUtc);
 }
+
+public sealed class AgentDispatchRunException(string message) : InvalidOperationException(message);

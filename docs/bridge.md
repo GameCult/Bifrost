@@ -78,6 +78,7 @@ The hosted app also exposes a governance activity receipt ledger:
 This covers the other side of the swarm's work: topic opens, comments, approvals, and promotions to dispatch. The topic and comment documents are still the governance substrate. The hosted receipt row is the Bifrost-side witness that an agent or operator performed the governance action.
 
 These runtime receipt lanes are not generic member write surfaces. In the current machine, `/dispatch/runs/*`, `/transport/receipts`, and `/governance/receipts` are owned by the configured local bridge token. Active members may govern and request bridge actions through the app, but they may not mint worker-history rows directly through a browser session and impersonate runtime activity.
+They also now validate linkage across the hosted ledger instead of accepting isolated claims. A dispatch run must point at an already-seen request-lane receipt for the same request id. A governance promotion receipt that cites `dispatchRequestId` must point at a known request-lane request. Repeated request-lane rows for one request id may add activity, but they may not quietly change the repo or agent identity the request belongs to.
 
 Current gate behavior:
 

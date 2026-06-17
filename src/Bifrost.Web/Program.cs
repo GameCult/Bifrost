@@ -490,8 +490,15 @@ dispatchRuns.MapPost("/start", async (
         return Results.Unauthorized();
     }
 
-    var result = await agentDispatchRunService.StartAsync(command, null, cancellationToken);
-    return JsonResult(result, appJsonSerializerOptions, StatusCodes.Status202Accepted);
+    try
+    {
+        var result = await agentDispatchRunService.StartAsync(command, null, cancellationToken);
+        return JsonResult(result, appJsonSerializerOptions, StatusCodes.Status202Accepted);
+    }
+    catch (AgentDispatchRunException error)
+    {
+        return Results.Text(error.Message, statusCode: StatusCodes.Status400BadRequest);
+    }
 });
 
 dispatchRuns.MapPost("/{id:guid}/complete", async (
@@ -507,10 +514,17 @@ dispatchRuns.MapPost("/{id:guid}/complete", async (
         return Results.Unauthorized();
     }
 
-    var result = await agentDispatchRunService.CompleteAsync(id, command, null, cancellationToken);
-    return result is null
-        ? Results.NotFound()
-        : JsonResult(result, appJsonSerializerOptions);
+    try
+    {
+        var result = await agentDispatchRunService.CompleteAsync(id, command, null, cancellationToken);
+        return result is null
+            ? Results.NotFound()
+            : JsonResult(result, appJsonSerializerOptions);
+    }
+    catch (AgentDispatchRunException error)
+    {
+        return Results.Text(error.Message, statusCode: StatusCodes.Status400BadRequest);
+    }
 });
 
 dispatchRuns.MapPost("/{id:guid}/fail", async (
@@ -526,10 +540,17 @@ dispatchRuns.MapPost("/{id:guid}/fail", async (
         return Results.Unauthorized();
     }
 
-    var result = await agentDispatchRunService.FailAsync(id, command, null, cancellationToken);
-    return result is null
-        ? Results.NotFound()
-        : JsonResult(result, appJsonSerializerOptions);
+    try
+    {
+        var result = await agentDispatchRunService.FailAsync(id, command, null, cancellationToken);
+        return result is null
+            ? Results.NotFound()
+            : JsonResult(result, appJsonSerializerOptions);
+    }
+    catch (AgentDispatchRunException error)
+    {
+        return Results.Text(error.Message, statusCode: StatusCodes.Status400BadRequest);
+    }
 });
 
 var transportReceipts = app.MapGroup("/transport/receipts");
@@ -546,8 +567,15 @@ transportReceipts.MapPost("", async (
         return Results.Unauthorized();
     }
 
-    var result = await agentTransportReceiptService.RecordAsync(command, null, cancellationToken);
-    return JsonResult(result, appJsonSerializerOptions, StatusCodes.Status202Accepted);
+    try
+    {
+        var result = await agentTransportReceiptService.RecordAsync(command, null, cancellationToken);
+        return JsonResult(result, appJsonSerializerOptions, StatusCodes.Status202Accepted);
+    }
+    catch (AgentTransportReceiptException error)
+    {
+        return Results.Text(error.Message, statusCode: StatusCodes.Status400BadRequest);
+    }
 });
 
 var governanceReceipts = app.MapGroup("/governance/receipts");
@@ -564,8 +592,15 @@ governanceReceipts.MapPost("", async (
         return Results.Unauthorized();
     }
 
-    var result = await governanceActivityReceiptService.RecordAsync(command, null, cancellationToken);
-    return JsonResult(result, appJsonSerializerOptions, StatusCodes.Status202Accepted);
+    try
+    {
+        var result = await governanceActivityReceiptService.RecordAsync(command, null, cancellationToken);
+        return JsonResult(result, appJsonSerializerOptions, StatusCodes.Status202Accepted);
+    }
+    catch (GovernanceActivityReceiptException error)
+    {
+        return Results.Text(error.Message, statusCode: StatusCodes.Status400BadRequest);
+    }
 });
 
 var eveGovernance = app.MapGroup("/eve/governance")
