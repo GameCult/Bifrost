@@ -306,6 +306,19 @@ public sealed class BridgeActionService(
             {
                 return BridgePolicyDecision.Reject(repoMismatch);
             }
+
+            if (request.TargetSurface == BridgeTargetSurface.GitHub &&
+                !await dbContext.GovernanceActivityReceipts
+                    .AsNoTracking()
+                    .AnyAsync(
+                        x => x.TopicId == request.SourceId &&
+                             (x.ActivityKind == GovernanceActivityReceiptKind.TopicApproved ||
+                              x.ActivityKind == GovernanceActivityReceiptKind.TopicPromoted),
+                        cancellationToken))
+            {
+                return BridgePolicyDecision.Reject(
+                    $"GitHub bridge action references governance topic {request.SourceId}, but that topic has not been approved or promoted.");
+            }
         }
 
         return null;

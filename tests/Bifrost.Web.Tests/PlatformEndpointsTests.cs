@@ -495,6 +495,103 @@ public sealed class PlatformEndpointsTests : IClassFixture<TestWebApplicationFac
     }
 
     [Fact]
+    public async Task Agent_github_action_with_unapproved_governance_topic_is_denied_and_recorded()
+    {
+        using var client = _factory.CreateClient();
+        await PostGovernanceReceiptAsync(client, new
+        {
+            topicId = "topic_open_only_123",
+            commentId = "comment_open_only_123",
+            dispatchRequestId = string.Empty,
+            title = "Open topic only",
+            jurisdictionRepoName = "Bifrost",
+            jurisdictionAgentIdentity = "nibu",
+            activityKind = "TopicOpened",
+            actorKind = "face",
+            actorName = "nibu",
+            note = "Topic opened."
+        });
+
+        var requestPayload = JsonSerializer.Serialize(new
+        {
+            actorKind = "Agent",
+            actorName = "nibu",
+            targetSurface = "GitHub",
+            actionKind = "GitHubDraftPullRequest",
+            targetRepositoryFullName = "GameCult/Bifrost",
+            targetLocator = "pulls",
+            sourceKind = "governance_topic",
+            sourceId = "topic_open_only_123",
+            authorityReference = "dispatch-approved",
+            title = "Open-only topic bridge action",
+            summary = "This should not pass policy."
+        });
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/bridge/actions/request");
+        request.Headers.Add("X-Bifrost-Bridge-Token", "test-bridge-token");
+        request.Content = new StringContent(requestPayload, Encoding.UTF8, "application/json");
+
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        var action = await response.Content.ReadFromJsonAsync<BridgeActionHttpResult>();
+        Assert.NotNull(action);
+        Assert.Equal("Denied", action.Status);
+
+        using var scope = _factory.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
+        var savedAction = dbContext.BridgeActions.Single(x => x.Id == action.Id);
+
+        Assert.Equal(BridgeActionStatus.Denied, savedAction.Status);
+        Assert.Contains("not been approved or promoted", savedAction.PolicyDecision, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Agent_github_action_with_approved_governance_topic_is_authorized()
+    {
+        using var client = _factory.CreateClient();
+        await PostGovernanceReceiptAsync(client, new
+        {
+            topicId = "topic_approved_123",
+            commentId = "comment_approved_123",
+            dispatchRequestId = string.Empty,
+            title = "Approved governance topic",
+            jurisdictionRepoName = "Bifrost",
+            jurisdictionAgentIdentity = "nibu",
+            activityKind = "TopicApproved",
+            actorKind = "face",
+            actorName = "nibu",
+            note = "Topic approved."
+        });
+
+        var requestPayload = JsonSerializer.Serialize(new
+        {
+            actorKind = "Agent",
+            actorName = "nibu",
+            targetSurface = "GitHub",
+            actionKind = "GitHubDraftPullRequest",
+            targetRepositoryFullName = "GameCult/Bifrost",
+            targetLocator = "pulls",
+            sourceKind = "bifrost_governance_topic",
+            sourceId = "topic_approved_123",
+            authorityReference = "dispatch-approved",
+            title = "Approved topic bridge action",
+            summary = "This should pass policy."
+        });
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/bridge/actions/request");
+        request.Headers.Add("X-Bifrost-Bridge-Token", "test-bridge-token");
+        request.Content = new StringContent(requestPayload, Encoding.UTF8, "application/json");
+
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+        var action = await response.Content.ReadFromJsonAsync<BridgeActionHttpResult>();
+        Assert.NotNull(action);
+        Assert.Equal("Authorized", action.Status);
+    }
+
+    [Fact]
     public async Task Local_bridge_token_can_record_dispatch_run_lifecycle()
     {
         using var client = _factory.CreateClient();
@@ -943,6 +1040,19 @@ public sealed class PlatformEndpointsTests : IClassFixture<TestWebApplicationFac
         Assert.True(
             response.StatusCode == HttpStatusCode.Accepted,
             $"Expected transport receipt seed to succeed but got {(int)response.StatusCode}: {body}");
+    }
+
+    private static async Task PostGovernanceReceiptAsync(HttpClient client, object payload)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/governance/receipts");
+        request.Headers.Add("X-Bifrost-Bridge-Token", "test-bridge-token");
+        request.Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
+
+        using var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.True(
+            response.StatusCode == HttpStatusCode.Accepted,
+            $"Expected governance receipt seed to succeed but got {(int)response.StatusCode}: {body}");
     }
 
     private sealed class BridgeActionHttpResult
