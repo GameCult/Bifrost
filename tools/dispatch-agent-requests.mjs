@@ -285,7 +285,7 @@ async function runClaimedViaCodexExec(request, repoRoot, promptPath, logPath, op
 async function runClaimedViaAppServer(request, repoRoot, promptPath, logPath, options) {
   const model = options.model ?? process.env.CODEX_MODEL ?? "gpt-5.4";
   const reasoningEffort = options["reasoning-effort"] ?? process.env.CODEX_MODEL_REASONING_EFFORT ?? "medium";
-  const sandbox = options.sandbox ?? "danger-full-access";
+  const sandbox = options.sandbox ?? "workspace-write";
   const startedAt = new Date().toISOString();
   const prompt = await readFile(promptPath, "utf8");
   const resultPath = resolve(dirname(logPath), "result.json");
@@ -631,6 +631,7 @@ class CodexAppServerClient {
     this.buffer = "";
     this.pending = new Map();
     this.turnWaiters = [];
+    this.completedTurns = new Map();
   }
 
   async start() {
@@ -656,12 +657,18 @@ class CodexAppServerClient {
         waiter.reject(error);
       }
       this.turnWaiters = [];
+      this.completedTurns.clear();
     });
     this.child.on("error", (error) => {
       for (const waiter of this.pending.values()) {
         waiter.reject(error);
       }
       this.pending.clear();
+      for (const waiter of this.turnWaiters) {
+        waiter.reject(error);
+      }
+      this.turnWaiters = [];
+      this.completedTurns.clear();
     });
   }
 
@@ -673,7 +680,6 @@ class CodexAppServerClient {
     const id = this.nextId;
     this.nextId += 1;
     appendLog(this.logPath, `client-request ${method}#${id}`);
-    this.child.stdin.write(`${JSON.stringify({ id, method, params })}\n`);
     return new Promise((resolvePromise, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
@@ -689,10 +695,17 @@ class CodexAppServerClient {
           reject(error);
         },
       });
+      this.child.stdin.write(`${JSON.stringify({ id, method, params })}\n`);
     });
   }
 
   waitForTurnCompleted(threadId, turnId) {
+    const key = `${threadId}:${turnId}`;
+    const completed = this.completedTurns.get(key);
+    if (completed) {
+      this.completedTurns.delete(key);
+      return Promise.resolve(completed);
+    }
     return new Promise((resolvePromise, reject) => {
       this.turnWaiters.push({ threadId, turnId, resolve: resolvePromise, reject });
     });
@@ -741,15 +754,21 @@ class CodexAppServerClient {
     if (message.method === "turn/completed") {
       const params = message.params ?? {};
       const completedTurnId = params.turn?.id;
+      const key = `${params.threadId ?? ""}:${completedTurnId ?? ""}`;
       const remaining = [];
+      let resolved = false;
       for (const waiter of this.turnWaiters) {
         if (waiter.threadId === params.threadId && waiter.turnId === completedTurnId) {
           waiter.resolve(params);
+          resolved = true;
         } else {
           remaining.push(waiter);
         }
       }
       this.turnWaiters = remaining;
+      if (!resolved && params.threadId && completedTurnId) {
+        this.completedTurns.set(key, params);
+      }
     }
   }
 
@@ -778,13 +797,13 @@ function sandboxPolicyFromMode(mode) {
     return { type: "dangerFullAccess" };
   }
   if (mode === "read-only") {
-    return { type: "readOnly", access: { type: "fullAccess" }, networkAccess: true };
+    return { type: "readOnly", access: { type: "fullAccess" }, networkAccess: false };
   }
   return {
     type: "workspaceWrite",
     writableRoots: [],
     readOnlyAccess: { type: "fullAccess" },
-    networkAccess: true,
+    networkAccess: false,
     excludeTmpdirEnvVar: false,
     excludeSlashTmp: false,
   };

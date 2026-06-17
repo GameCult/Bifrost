@@ -500,6 +500,143 @@ writeFileSync(process.env.DISPATCH_ENV_DUMP, JSON.stringify({
     }
 
     [Fact]
+    public async Task Dispatch_worker_uses_workspace_write_without_network_for_app_server()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), $"bifrost-dispatch-appserver-{Guid.NewGuid():N}");
+        var transportStorePath = Path.Combine(RepoRoot, ".bifrost", "agent-transport.cc");
+        var transportStoreBackup = Path.Combine(Path.GetTempPath(), $"bifrost-agent-transport-backup-{Guid.NewGuid():N}.cc");
+        var hadTransportStore = File.Exists(transportStorePath);
+        Directory.CreateDirectory(tempDir);
+        var requestPath = Path.Combine(tempDir, "request.json");
+        var promptPath = Path.Combine(tempDir, "prompt.md");
+        var logPath = Path.Combine(tempDir, "codex.log");
+        var dumpPath = Path.Combine(tempDir, "app-server.json");
+        var fakeServerPath = Path.Combine(tempDir, "fake-app-server.mjs");
+
+        if (hadTransportStore)
+        {
+            File.Copy(transportStorePath, transportStoreBackup, overwrite: true);
+        }
+
+        try
+        {
+            await File.WriteAllTextAsync(requestPath, """
+{
+  "id": "req_dispatch_appserver_123",
+  "targetRepoName": "Bifrost",
+  "targetRepositoryFullName": "GameCult/Bifrost",
+  "targetAgentIdentity": "nibu",
+  "title": "Dispatch app-server test",
+  "requestMarkdown": "## Request\n\nInspect sandbox policy.",
+  "priority": 50,
+  "status": "claimed",
+  "sourceKind": "manual",
+  "sourceChannelId": "",
+  "sourceMessageIds": [],
+  "sourcePacketPath": "",
+  "sourcePromptPath": "",
+  "createdByAgent": "tester",
+  "claimedByAgent": "tester",
+  "closeNote": "",
+  "createdAt": "2026-06-17T00:00:00Z",
+  "updatedAt": "2026-06-17T00:00:00Z",
+  "claimedAt": "2026-06-17T00:00:00Z",
+  "closedAt": ""
+}
+""", new UTF8Encoding(false));
+            await File.WriteAllTextAsync(promptPath, "Hello", new UTF8Encoding(false));
+            await File.WriteAllTextAsync(fakeServerPath, """
+import { createInterface } from "node:readline";
+import { writeFileSync } from "node:fs";
+
+const dumpPath = process.env.DISPATCH_APP_SERVER_DUMP;
+const requests = [];
+const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
+
+rl.on("line", (line) => {
+  const message = JSON.parse(line);
+  requests.push({ method: message.method, params: message.params ?? null });
+
+  if (message.method === "initialize") {
+    process.stdout.write(JSON.stringify({ id: message.id, result: {} }) + "\n");
+    return;
+  }
+
+  if (message.method === "thread/start") {
+    process.stdout.write(JSON.stringify({ id: message.id, result: { thread: { id: "thread_test" } } }) + "\n");
+    return;
+  }
+
+  if (message.method === "turn/start") {
+    writeFileSync(dumpPath, JSON.stringify({
+      threadStart: requests.find((entry) => entry.method === "thread/start")?.params ?? null,
+      turnStart: message.params ?? null,
+    }, null, 2));
+    process.stdout.write(JSON.stringify({ id: message.id, result: { turn: { id: "turn_test" } } }) + "\n");
+    process.stdout.write(JSON.stringify({ method: "turn/completed", params: { threadId: "thread_test", turn: { id: "turn_test", status: "completed" } } }) + "\n");
+    return;
+  }
+
+  process.stdout.write(JSON.stringify({ id: message.id, result: {} }) + "\n");
+});
+""", Encoding.UTF8);
+
+            await RunNodeAsync([
+                "tools/agent-transport.mjs",
+                "enqueue",
+                "--id", "req_dispatch_appserver_123",
+                "--repo", "Bifrost",
+                "--agent", "nibu",
+                "--title", "Dispatch app-server seed",
+                "--request", "Seed the live request lane.",
+                "--allow-unmirrored", "true",
+                "--allow-unreceipted-activity", "true",
+            ]);
+
+            var result = await RunNodeAsync([
+                "tools/dispatch-agent-requests.mjs",
+                "run-claimed",
+                "--request-file", requestPath,
+                "--repo-root", RepoRoot,
+                "--prompt-file", promptPath,
+                "--log", logPath,
+                "--launch-mode", "app-server",
+                "--codex-executable", "node",
+                "--codex-exec-args", fakeServerPath,
+                "--no-discord", "true",
+            ], new Dictionary<string, string?>
+            {
+                ["BIFROST_ALLOW_UNRECEIPTED_ACTIVITY"] = "true",
+                ["DISPATCH_APP_SERVER_DUMP"] = dumpPath,
+            });
+
+            Assert.Equal(0, result.ExitCode);
+            Assert.True(File.Exists(dumpPath), "Fake app-server did not record dispatch policy.");
+            using var payload = JsonDocument.Parse(await File.ReadAllTextAsync(dumpPath, Encoding.UTF8));
+
+            var threadStart = payload.RootElement.GetProperty("threadStart");
+            Assert.Equal("workspace-write", threadStart.GetProperty("sandbox").GetString());
+
+            var turnStart = payload.RootElement.GetProperty("turnStart");
+            var sandboxPolicy = turnStart.GetProperty("sandboxPolicy");
+            Assert.Equal("workspaceWrite", sandboxPolicy.GetProperty("type").GetString());
+            Assert.False(sandboxPolicy.GetProperty("networkAccess").GetBoolean());
+        }
+        finally
+        {
+            if (hadTransportStore)
+            {
+                File.Copy(transportStoreBackup, transportStorePath, overwrite: true);
+                File.Delete(transportStoreBackup);
+            }
+            else if (File.Exists(transportStorePath))
+            {
+                File.Delete(transportStorePath);
+            }
+        }
+    }
+
+    [Fact]
     public async Task Dispatched_turn_git_hook_blocks_raw_git_push()
     {
         var remoteDir = Path.Combine(Path.GetTempPath(), $"bifrost-remote-{Guid.NewGuid():N}.git");

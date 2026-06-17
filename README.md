@@ -75,6 +75,7 @@ For the full staged roadmap, including contribution points, revenue share, patro
 - set `BIFROST_BRIDGE_BASE_URL` and `BIFROST_BRIDGE_TOKEN` when `tools/bifrost-bridge.mjs` should round-trip every action through the app ledger before mutating GitHub, Discord, or Reddit
 - the same bridge URL/token pair lets `tools/dispatch-agent-requests.mjs` record `/dispatch/runs/*` receipts for launched Codex work, so Bifrost keeps a live run trail even when a turn fails
 - Bifrost-dispatched Codex turns also inject Bifrost-owned GitHub gates through environment config: `git` and `gh` wrappers are prepended in `PATH`, a `pre-push` hook backs up raw Git pushes, raw `git push` and mutating `gh` commands stay blocked, and only `tools/bifrost-bridge.mjs` is allowed to authorize the bridge-owned GitHub mutation path
+- dispatched Codex turns now default to `workspace-write` instead of full machine access, and the app-server sandbox policy disables network access unless the operator explicitly chooses a broader sandbox
 - `tools/agent-transport.mjs` also uses that bridge configuration to record `/transport/receipts` entries for queue, claim, release, and close events on the request lane
 - `tools/agent-transport.mjs apply-snapshot` is also treated as a mutating import path now: it fails closed without the bridge receipt config and derives request-lane receipts from the imported state delta
 - `tools/governance-threads.mjs` uses that same bridge configuration to record `/governance/receipts` entries for topic opens, comments, approvals, and promotions
