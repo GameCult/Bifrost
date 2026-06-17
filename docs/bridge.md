@@ -95,6 +95,7 @@ Current CLI wiring:
 - the dispatcher also uses that same bridge configuration to post dispatch-run start/complete/fail receipts, including the worker pid, thread/turn ids when available, and result/log paths for the local operator trail
 - the agent transport CLI uses that same bridge configuration to post request-lane receipts for queue, claim, release, and close events, so Bifrost does not go blind between intake and dispatch
 - the governance threads CLI uses that same bridge configuration to post governance receipts for topic opens, comments, approvals, and promotions, so Bifrost does not lose the pre-dispatch reasoning trail
+- those agent-activity CLIs now fail closed without that bridge configuration; `--allow-unreceipted-activity true` or `BIFROST_ALLOW_UNRECEIPTED_ACTIVITY=true` is the deliberate operator-recovery hatch when you knowingly want local-only activity
 
 If the app bridge configuration is absent, `tools/bifrost-bridge.mjs` keeps working as a local actuator. When configured, it asks Bifrost for authorization before acting and reports success or failure back to the same bridge action row.
 

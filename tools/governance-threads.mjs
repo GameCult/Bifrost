@@ -18,12 +18,12 @@ const defaultPersonaName = "Bifrost";
 const defaultPersonaAvatarUrl =
   "https://raw.githubusercontent.com/GameCult/Bifrost/main/src/Bifrost.Web/wwwroot/img/bifrost-profile.png";
 
-const cultCacheRequire = createRequire(resolve(projectsRoot, "CultCacheTS", "package.json"));
+const cultCacheRequire = createRequire(resolve(projectsRoot, "CultCacheTS", "node_modules", "cultcache-ts", "package.json"));
 const {
   CultCache,
   SingleFileMessagePackBackingStore,
   defineDocumentType,
-} = cultCacheRequire(resolve(projectsRoot, "CultCacheTS", "dist", "index.js"));
+} = cultCacheRequire("cultcache-ts");
 
 const topicType = "bifrost.governance.topic";
 const topicSchemaId = "bifrost.governance.topic.v0";
@@ -99,6 +99,10 @@ async function main() {
   if (!command || command === "help" || command === "--help" || command === "-h") {
     printHelp();
     return;
+  }
+
+  if (isMutatingCommand(command)) {
+    ensureGovernanceReceiptGate(options);
   }
 
   const storePath = resolveOptionPath(options.store ?? defaultStorePath);
@@ -524,6 +528,29 @@ async function recordGovernanceReceiptOrThrow(topic, receipt) {
   }
 }
 
+function isMutatingCommand(command) {
+  return command === "open" || command === "comment" || command === "approve" || command === "promote";
+}
+
+function ensureGovernanceReceiptGate(options) {
+  if (hasBifrostBridgeConfig() || allowsUnreceiptedActivity(options)) {
+    return;
+  }
+
+  throw new Error(
+    "Bifrost governance mutations require BIFROST_BRIDGE_BASE_URL and BIFROST_BRIDGE_TOKEN so Bifrost can keep governance receipts. " +
+    "Set both values, or use --allow-unreceipted-activity true only for explicit operator recovery.",
+  );
+}
+
+function hasBifrostBridgeConfig() {
+  return Boolean(optionalString(process.env.BIFROST_BRIDGE_BASE_URL) && optionalString(process.env.BIFROST_BRIDGE_TOKEN));
+}
+
+function allowsUnreceiptedActivity(options) {
+  return options["allow-unreceipted-activity"] === "true" || process.env.BIFROST_ALLOW_UNRECEIPTED_ACTIVITY === "true";
+}
+
 function listTopics(cache, options) {
   const topics = cache.getAll(topicDefinition)
     .filter((topic) => !options.status || topic.status === options.status)
@@ -859,6 +886,7 @@ Mirror options:
   --mirror-content-file <path>        Read mirror text from a file
   --mirror-dry-run true               Exercise mirror plumbing without posting to Discord
   --allow-unmirrored true             Fixture/debug escape hatch; production writes should not use this
+  --allow-unreceipted-activity true   Operator-recovery hatch; lets a mutation proceed without hosted Bifrost receipts
 `);
 }
 

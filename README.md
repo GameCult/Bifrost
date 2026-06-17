@@ -76,6 +76,7 @@ For the full staged roadmap, including contribution points, revenue share, patro
 - the same bridge URL/token pair lets `tools/dispatch-agent-requests.mjs` record `/dispatch/runs/*` receipts for launched Codex work, so Bifrost keeps a live run trail even when a turn fails
 - `tools/agent-transport.mjs` also uses that bridge configuration to record `/transport/receipts` entries for queue, claim, release, and close events on the request lane
 - `tools/governance-threads.mjs` uses that same bridge configuration to record `/governance/receipts` entries for topic opens, comments, approvals, and promotions
+- those agent activity scripts now fail closed without the bridge URL/token pair; `--allow-unreceipted-activity true` or `BIFROST_ALLOW_UNRECEIPTED_ACTIVITY=true` is the explicit operator-recovery hatch
 - GitHub bridge mutations now fail closed without those values; `--allow-ungated-github true` is reserved for explicit operator recovery
 - set `BIFROST_REDDIT_CLIENT_ID`, `BIFROST_REDDIT_REFRESH_TOKEN`, and optionally `BIFROST_REDDIT_CLIENT_SECRET` before posting Reddit organizing threads
 - set `Heimdall:PatronSupportIntakeSecret` before enabling Heimdall patron support intake in production

@@ -27,6 +27,10 @@ async function main() {
     return;
   }
 
+  if (command === "dispatch" || command === "run-claimed") {
+    ensureDispatchReceiptGate(options);
+  }
+
   switch (command) {
     case "dispatch":
       await dispatchQueuedRequests(options);
@@ -78,6 +82,7 @@ async function dispatchQueuedRequests(options) {
         ...optionalArg("--channel-id", options["channel-id"]),
         ...optionalArg("--persona-name", options["persona-name"]),
         ...optionalArg("--persona-avatar-url", options["persona-avatar-url"]),
+        ...(options["allow-unreceipted-activity"] === "true" ? ["--allow-unreceipted-activity", "true"] : []),
         ...(options["no-discord"] === "true" ? ["--no-discord", "true"] : []),
       ],
       {
@@ -108,6 +113,25 @@ async function dispatchQueuedRequests(options) {
     dispatchedCount: dispatched.length,
     dispatched,
   });
+}
+
+function ensureDispatchReceiptGate(options) {
+  if (hasBifrostBridgeConfig() || allowsUnreceiptedActivity(options)) {
+    return;
+  }
+
+  throw new Error(
+    "Bifrost agent dispatch requires BIFROST_BRIDGE_BASE_URL and BIFROST_BRIDGE_TOKEN so Bifrost can keep request, run, and bridge receipts aligned. " +
+    "Set both values, or use --allow-unreceipted-activity true only for explicit operator recovery.",
+  );
+}
+
+function hasBifrostBridgeConfig() {
+  return Boolean(optionalString(process.env.BIFROST_BRIDGE_BASE_URL) && optionalString(process.env.BIFROST_BRIDGE_TOKEN));
+}
+
+function allowsUnreceiptedActivity(options) {
+  return options["allow-unreceipted-activity"] === "true" || process.env.BIFROST_ALLOW_UNRECEIPTED_ACTIVITY === "true";
 }
 
 async function runClaimedRequest(options) {
@@ -988,6 +1012,10 @@ Commands:
 
 Example:
   node tools/dispatch-agent-requests.mjs dispatch --repo AquaSynth --agent aqua --max 1
+  node tools/dispatch-agent-requests.mjs dispatch --repo AquaSynth --agent aqua --allow-unreceipted-activity true
+
+Recovery hatch:
+  BIFROST_ALLOW_UNRECEIPTED_ACTIVITY=true or --allow-unreceipted-activity true
 `);
 }
 
