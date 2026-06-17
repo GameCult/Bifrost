@@ -569,8 +569,6 @@ function buildBridgeContextEnv(request) {
     BIFROST_ENFORCE_GITHUB_GATE: "true",
     BIFROST_GIT_EXECUTABLE: resolve(gitGatePath, "git.cmd"),
     BIFROST_GH_EXECUTABLE: resolve(gitGatePath, "gh.cmd"),
-    BIFROST_REAL_GIT: resolveRealGitExecutable(),
-    ...buildRealGitHubCliEnv(),
     BIFROST_NODE_EXECUTABLE: process.execPath,
     ...buildGitHooksConfigEnv(hooksPath),
     ...buildPathPrependEnv(gitGatePath),
@@ -601,41 +599,6 @@ function buildPathPrependEnv(directory) {
     PATH: nextPath,
     Path: nextPath,
   };
-}
-
-function buildRealGitHubCliEnv() {
-  const realGh = tryResolveExecutable("gh");
-  return realGh ? { BIFROST_REAL_GH: realGh } : {};
-}
-
-function resolveRealGitExecutable() {
-  const resolved = tryResolveExecutable("git");
-  if (!resolved) {
-    throw new Error("Could not resolve the real git executable for dispatched turn gating.");
-  }
-
-  return resolved;
-}
-
-function tryResolveExecutable(command) {
-  const locator = process.platform === "win32" ? "where.exe" : "which";
-  const result = spawnSync(locator, [command], {
-    cwd: bifrostRoot,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-    windowsHide: true,
-  });
-
-  if (result.status !== 0) {
-    return "";
-  }
-
-  const matches = `${result.stdout ?? ""}`
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-
-  return matches[0] ?? "";
 }
 
 class CodexAppServerClient {

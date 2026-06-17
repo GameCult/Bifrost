@@ -1,8 +1,11 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const args = process.argv.slice(2);
-const realGit = process.env.BIFROST_REAL_GIT;
+const wrapperDir = dirname(fileURLToPath(import.meta.url));
+const realGit = process.env.BIFROST_REAL_GIT || resolveExecutable("git", wrapperDir);
 
 if (!realGit) {
   process.stderr.write("Bifrost Git gate has no real git executable configured.\n");
@@ -32,6 +35,34 @@ if (result.error) {
 }
 
 process.exit(result.status ?? 1);
+
+function resolveExecutable(command, excludedDir) {
+  const locator = process.platform === "win32" ? "where.exe" : "which";
+  const result = spawnSync(locator, [command], {
+    cwd: excludedDir,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+  });
+
+  if (result.status !== 0) {
+    return "";
+  }
+
+  const matches = `${result.stdout ?? ""}`
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => !isWithinExcludedDir(line, excludedDir));
+
+  return matches[0] ?? "";
+}
+
+function isWithinExcludedDir(candidate, excludedDir) {
+  const normalizedCandidate = resolve(candidate).toLowerCase();
+  const normalizedExcludedDir = `${resolve(excludedDir).toLowerCase()}\\`;
+  return normalizedCandidate.startsWith(normalizedExcludedDir);
+}
 
 function findGitSubcommand(input) {
   const optionsWithSeparateValues = new Set([

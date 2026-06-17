@@ -443,7 +443,6 @@ exit /b 0
             ["BIFROST_ENFORCE_GITHUB_GATE"] = "true",
             ["BIFROST_GIT_EXECUTABLE"] = Path.Combine(gatePath, "git.cmd"),
             ["BIFROST_GH_EXECUTABLE"] = Path.Combine(gatePath, "gh.cmd"),
-            ["BIFROST_REAL_GIT"] = ResolveRealGitExecutable(),
             ["BIFROST_NODE_EXECUTABLE"] = ResolveExecutable("node"),
             ["GIT_CONFIG_COUNT"] = "1",
             ["GIT_CONFIG_KEY_0"] = "core.hooksPath",
@@ -454,8 +453,6 @@ exit /b 0
     }
 
     private static Dictionary<string, string?> BuildDispatchedGitGateEnv() => BuildDispatchedGitHookEnv();
-
-    private static string ResolveRealGitExecutable() => ResolveExecutable("git");
 
     private static string ResolveExecutable(string command)
     {
