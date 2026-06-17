@@ -481,18 +481,16 @@ var dispatchRuns = app.MapGroup("/dispatch/runs");
 dispatchRuns.MapPost("/start", async (
     HttpRequest request,
     AgentDispatchRunStartRequest command,
-    ICurrentBifrostActorAccessor actorAccessor,
     AgentDispatchRunService agentDispatchRunService,
     IOptions<BridgeOptions> bridgeOptions,
     CancellationToken cancellationToken) =>
 {
-    var actor = await actorAccessor.GetAsync(cancellationToken);
-    if (!HasValidLocalBridgeToken(request, bridgeOptions.Value) && !actor.IsActiveMember)
+    if (!HasValidLocalBridgeToken(request, bridgeOptions.Value))
     {
         return Results.Unauthorized();
     }
 
-    var result = await agentDispatchRunService.StartAsync(command, actor.UserAccount?.Id, cancellationToken);
+    var result = await agentDispatchRunService.StartAsync(command, null, cancellationToken);
     return JsonResult(result, appJsonSerializerOptions, StatusCodes.Status202Accepted);
 });
 
@@ -500,18 +498,16 @@ dispatchRuns.MapPost("/{id:guid}/complete", async (
     Guid id,
     HttpRequest request,
     AgentDispatchRunCompletionRequest command,
-    ICurrentBifrostActorAccessor actorAccessor,
     AgentDispatchRunService agentDispatchRunService,
     IOptions<BridgeOptions> bridgeOptions,
     CancellationToken cancellationToken) =>
 {
-    var actor = await actorAccessor.GetAsync(cancellationToken);
-    if (!HasValidLocalBridgeToken(request, bridgeOptions.Value) && !actor.IsActiveMember)
+    if (!HasValidLocalBridgeToken(request, bridgeOptions.Value))
     {
         return Results.Unauthorized();
     }
 
-    var result = await agentDispatchRunService.CompleteAsync(id, command, actor.UserAccount?.Id, cancellationToken);
+    var result = await agentDispatchRunService.CompleteAsync(id, command, null, cancellationToken);
     return result is null
         ? Results.NotFound()
         : JsonResult(result, appJsonSerializerOptions);
@@ -521,18 +517,16 @@ dispatchRuns.MapPost("/{id:guid}/fail", async (
     Guid id,
     HttpRequest request,
     AgentDispatchRunFailureRequest command,
-    ICurrentBifrostActorAccessor actorAccessor,
     AgentDispatchRunService agentDispatchRunService,
     IOptions<BridgeOptions> bridgeOptions,
     CancellationToken cancellationToken) =>
 {
-    var actor = await actorAccessor.GetAsync(cancellationToken);
-    if (!HasValidLocalBridgeToken(request, bridgeOptions.Value) && !actor.IsActiveMember)
+    if (!HasValidLocalBridgeToken(request, bridgeOptions.Value))
     {
         return Results.Unauthorized();
     }
 
-    var result = await agentDispatchRunService.FailAsync(id, command, actor.UserAccount?.Id, cancellationToken);
+    var result = await agentDispatchRunService.FailAsync(id, command, null, cancellationToken);
     return result is null
         ? Results.NotFound()
         : JsonResult(result, appJsonSerializerOptions);
@@ -543,18 +537,16 @@ var transportReceipts = app.MapGroup("/transport/receipts");
 transportReceipts.MapPost("", async (
     HttpRequest request,
     AgentTransportReceiptRequest command,
-    ICurrentBifrostActorAccessor actorAccessor,
     AgentTransportReceiptService agentTransportReceiptService,
     IOptions<BridgeOptions> bridgeOptions,
     CancellationToken cancellationToken) =>
 {
-    var actor = await actorAccessor.GetAsync(cancellationToken);
-    if (!HasValidLocalBridgeToken(request, bridgeOptions.Value) && !actor.IsActiveMember)
+    if (!HasValidLocalBridgeToken(request, bridgeOptions.Value))
     {
         return Results.Unauthorized();
     }
 
-    var result = await agentTransportReceiptService.RecordAsync(command, actor.UserAccount?.Id, cancellationToken);
+    var result = await agentTransportReceiptService.RecordAsync(command, null, cancellationToken);
     return JsonResult(result, appJsonSerializerOptions, StatusCodes.Status202Accepted);
 });
 
@@ -563,18 +555,16 @@ var governanceReceipts = app.MapGroup("/governance/receipts");
 governanceReceipts.MapPost("", async (
     HttpRequest request,
     GovernanceActivityReceiptRequest command,
-    ICurrentBifrostActorAccessor actorAccessor,
     GovernanceActivityReceiptService governanceActivityReceiptService,
     IOptions<BridgeOptions> bridgeOptions,
     CancellationToken cancellationToken) =>
 {
-    var actor = await actorAccessor.GetAsync(cancellationToken);
-    if (!HasValidLocalBridgeToken(request, bridgeOptions.Value) && !actor.IsActiveMember)
+    if (!HasValidLocalBridgeToken(request, bridgeOptions.Value))
     {
         return Results.Unauthorized();
     }
 
-    var result = await governanceActivityReceiptService.RecordAsync(command, actor.UserAccount?.Id, cancellationToken);
+    var result = await governanceActivityReceiptService.RecordAsync(command, null, cancellationToken);
     return JsonResult(result, appJsonSerializerOptions, StatusCodes.Status202Accepted);
 });
 

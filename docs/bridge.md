@@ -77,6 +77,8 @@ The hosted app also exposes a governance activity receipt ledger:
 
 This covers the other side of the swarm's work: topic opens, comments, approvals, and promotions to dispatch. The topic and comment documents are still the governance substrate. The hosted receipt row is the Bifrost-side witness that an agent or operator performed the governance action.
 
+These runtime receipt lanes are not generic member write surfaces. In the current machine, `/dispatch/runs/*`, `/transport/receipts`, and `/governance/receipts` are owned by the configured local bridge token. Active members may govern and request bridge actions through the app, but they may not mint worker-history rows directly through a browser session and impersonate runtime activity.
+
 Current gate behavior:
 
 - active Bifrost members may request bridge actions from an authenticated app session

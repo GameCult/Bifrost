@@ -396,6 +396,7 @@ public sealed class PlatformEndpointsTests : IClassFixture<TestWebApplicationFac
     public async Task Local_bridge_token_can_record_dispatch_run_lifecycle()
     {
         using var client = _factory.CreateClient();
+        _ = await client.GetAsync("/App");
 
         var startPayload = JsonSerializer.Serialize(new
         {
@@ -447,6 +448,7 @@ public sealed class PlatformEndpointsTests : IClassFixture<TestWebApplicationFac
         Assert.Equal(AgentDispatchRunStatus.Completed, savedRun.Status);
         Assert.Equal("req_dispatch_123", savedRun.RequestId);
         Assert.Equal("turn_1", savedRun.TurnId);
+        Assert.Null(savedRun.StartedByUserAccountId);
         Assert.Contains(dbContext.AuditEvents, x => x.EntityType == nameof(AgentDispatchRun) && x.Action == "agent-dispatch.completed");
     }
 
@@ -454,6 +456,7 @@ public sealed class PlatformEndpointsTests : IClassFixture<TestWebApplicationFac
     public async Task Local_bridge_token_can_record_dispatch_run_failure()
     {
         using var client = _factory.CreateClient();
+        _ = await client.GetAsync("/App");
 
         var startPayload = JsonSerializer.Serialize(new
         {
@@ -503,6 +506,7 @@ public sealed class PlatformEndpointsTests : IClassFixture<TestWebApplicationFac
 
         Assert.Equal(AgentDispatchRunStatus.Failed, savedRun.Status);
         Assert.Equal("Codex app-server thread/start returned no thread id.", savedRun.Error);
+        Assert.Null(savedRun.StartedByUserAccountId);
         Assert.Contains(dbContext.AuditEvents, x => x.EntityType == nameof(AgentDispatchRun) && x.Action == "agent-dispatch.failed");
     }
 
@@ -510,6 +514,7 @@ public sealed class PlatformEndpointsTests : IClassFixture<TestWebApplicationFac
     public async Task Local_bridge_token_can_record_transport_receipt()
     {
         using var client = _factory.CreateClient();
+        _ = await client.GetAsync("/App");
 
         var payload = JsonSerializer.Serialize(new
         {
@@ -542,6 +547,7 @@ public sealed class PlatformEndpointsTests : IClassFixture<TestWebApplicationFac
 
         Assert.Equal("Claimed", savedReceipt.ActivityKind.ToString());
         Assert.Equal("bifrost-dispatcher", savedReceipt.ActorName);
+        Assert.Null(savedReceipt.ActorUserAccountId);
         Assert.Contains(dbContext.AuditEvents, x => x.EntityType == nameof(AgentTransportReceipt) && x.Action == "agent-transport.claimed");
     }
 
@@ -549,6 +555,7 @@ public sealed class PlatformEndpointsTests : IClassFixture<TestWebApplicationFac
     public async Task Local_bridge_token_can_record_governance_receipt()
     {
         using var client = _factory.CreateClient();
+        _ = await client.GetAsync("/App");
 
         var payload = JsonSerializer.Serialize(new
         {
@@ -582,7 +589,92 @@ public sealed class PlatformEndpointsTests : IClassFixture<TestWebApplicationFac
 
         Assert.Equal("TopicPromoted", savedReceipt.ActivityKind.ToString());
         Assert.Equal("nibu", savedReceipt.ActorName);
+        Assert.Null(savedReceipt.ActorUserAccountId);
         Assert.Contains(dbContext.AuditEvents, x => x.EntityType == nameof(GovernanceActivityReceipt) && x.Action == "governance.topic-promoted");
+    }
+
+    [Fact]
+    public async Task Active_member_session_cannot_record_dispatch_run_without_local_bridge_token()
+    {
+        using var client = _factory.CreateClient();
+        _ = await client.GetAsync("/App");
+
+        var payload = JsonSerializer.Serialize(new
+        {
+            requestId = "req_dispatch_member_123",
+            targetRepoName = "Bifrost",
+            targetRepositoryFullName = "GameCult/Bifrost",
+            targetAgentIdentity = "nibu",
+            launchMode = "app-server",
+            workerProcessId = 4242,
+            threadId = "thread_member",
+            turnId = "turn_member",
+            logPath = "E:/Projects/Bifrost/.bifrost/agent-dispatch/req_dispatch_member_123/codex.log",
+            resultPath = "E:/Projects/Bifrost/.bifrost/agent-dispatch/req_dispatch_member_123/result.json",
+            note = "Should be rejected without the local bridge token."
+        });
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/dispatch/runs/start");
+        request.Content = new StringContent(payload, Encoding.UTF8, "application/json");
+
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Active_member_session_cannot_record_transport_receipt_without_local_bridge_token()
+    {
+        using var client = _factory.CreateClient();
+        _ = await client.GetAsync("/App");
+
+        var payload = JsonSerializer.Serialize(new
+        {
+            requestId = "req_transport_member_123",
+            title = "Member should not mint runtime receipts",
+            targetRepoName = "Bifrost",
+            targetRepositoryFullName = "GameCult/Bifrost",
+            targetAgentIdentity = "nibu",
+            activityKind = "Claimed",
+            status = "claimed",
+            actorName = "test-admin",
+            note = "Should be rejected without the local bridge token."
+        });
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/transport/receipts");
+        request.Content = new StringContent(payload, Encoding.UTF8, "application/json");
+
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Active_member_session_cannot_record_governance_receipt_without_local_bridge_token()
+    {
+        using var client = _factory.CreateClient();
+        _ = await client.GetAsync("/App");
+
+        var payload = JsonSerializer.Serialize(new
+        {
+            topicId = "topic_member_123",
+            commentId = "comment_member_123",
+            dispatchRequestId = "req_transport_member_123",
+            title = "Member should not mint governance runtime receipts",
+            jurisdictionRepoName = "Bifrost",
+            jurisdictionAgentIdentity = "nibu",
+            activityKind = "TopicPromoted",
+            actorKind = "member",
+            actorName = "test-admin",
+            note = "Should be rejected without the local bridge token."
+        });
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/governance/receipts");
+        request.Content = new StringContent(payload, Encoding.UTF8, "application/json");
+
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
     }
 
     private static string ComputeSignature(string secret, string payload)
