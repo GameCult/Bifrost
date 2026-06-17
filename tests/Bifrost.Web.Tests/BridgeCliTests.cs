@@ -207,6 +207,105 @@ console.log(JSON.stringify({
         Assert.Contains("requires BIFROST_BRIDGE_BASE_URL and BIFROST_BRIDGE_TOKEN", result.Stderr, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public async Task Dispatched_turn_git_hook_blocks_raw_git_push()
+    {
+        var remoteDir = Path.Combine(Path.GetTempPath(), $"bifrost-remote-{Guid.NewGuid():N}.git");
+        var workDir = Path.Combine(Path.GetTempPath(), $"bifrost-work-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(workDir);
+
+        try
+        {
+            await RunGitAsync(["init", "--bare", remoteDir], RepoRoot);
+            await RunGitAsync(["init", "-b", "main"], workDir);
+            await RunGitAsync(["config", "user.name", "Bifrost Tests"], workDir);
+            await RunGitAsync(["config", "user.email", "bifrost-tests@example.invalid"], workDir);
+            await File.WriteAllTextAsync(Path.Combine(workDir, "README.md"), "# Gate Test\n", Encoding.UTF8);
+            await RunGitAsync(["add", "README.md"], workDir);
+            await RunGitAsync(["commit", "-m", "Initial commit"], workDir);
+            await RunGitAsync(["remote", "add", "origin", remoteDir], workDir);
+
+            var blocked = await RunGitAsync(
+                ["push", "-u", "origin", "main"],
+                workDir,
+                BuildDispatchedGitHookEnv());
+
+            Assert.NotEqual(0, blocked.ExitCode);
+            Assert.Contains("Bifrost blocked git push", blocked.Stderr, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            DeleteDirectoryIfPresent(workDir);
+            DeleteDirectoryIfPresent(remoteDir);
+        }
+    }
+
+    [Fact]
+    public async Task Bridge_owned_github_draft_pr_authorizes_push_under_dispatch_gate()
+    {
+        var remoteDir = Path.Combine(Path.GetTempPath(), $"bifrost-remote-{Guid.NewGuid():N}.git");
+        var workDir = Path.Combine(Path.GetTempPath(), $"bifrost-work-{Guid.NewGuid():N}");
+        var fakeToolsDir = Path.Combine(Path.GetTempPath(), $"bifrost-gh-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(workDir);
+        Directory.CreateDirectory(fakeToolsDir);
+
+        try
+        {
+            await RunGitAsync(["init", "--bare", remoteDir], RepoRoot);
+            await RunGitAsync(["init", "-b", "main"], workDir);
+            await RunGitAsync(["config", "user.name", "Bifrost Tests"], workDir);
+            await RunGitAsync(["config", "user.email", "bifrost-tests@example.invalid"], workDir);
+            await File.WriteAllTextAsync(Path.Combine(workDir, "README.md"), "# Bridge Gate Test\n", Encoding.UTF8);
+            await RunGitAsync(["add", "README.md"], workDir);
+            await RunGitAsync(["commit", "-m", "Initial commit"], workDir);
+            await RunGitAsync(["remote", "add", "origin", remoteDir], workDir);
+            await RunGitAsync(["push", "-u", "origin", "main"], workDir);
+
+            var fakeGhPath = Path.Combine(fakeToolsDir, "fake-gh.js");
+            await File.WriteAllTextAsync(fakeGhPath, """
+if (process.argv.includes("create")) {
+  console.log("https://github.com/GameCult/Bifrost/pull/999");
+  process.exit(0);
+}
+
+console.error(`Unexpected gh args: ${process.argv.slice(2).join(" ")}`);
+process.exit(1);
+""", Encoding.UTF8);
+
+            var environment = BuildDispatchedGitHookEnv();
+            environment["BIFROST_ALLOW_UNGATED_GITHUB"] = "true";
+
+            var result = await RunNodeAsync([
+                "tools/bifrost-bridge.mjs",
+                "github-draft-pr",
+                "--repo-root", workDir,
+                "--identity", "nibu",
+                "--title", "Bridge gate test",
+                "--path", "docs/receipt.md",
+                "--content", "Bridge-owned push.",
+                "--body", "Bifrost bridge test PR.",
+                "--base", "main",
+                "--gh-executable", "node",
+                "--gh-exec-args", fakeGhPath,
+            ], environment);
+
+            Assert.Equal(0, result.ExitCode);
+            using var payload = JsonDocument.Parse(result.Stdout);
+            Assert.Equal("github-draft-pr", payload.RootElement.GetProperty("action").GetString());
+            Assert.True(payload.RootElement.GetProperty("pushed").GetBoolean());
+            Assert.Equal("https://github.com/GameCult/Bifrost/pull/999", payload.RootElement.GetProperty("prUrl").GetString());
+
+            var heads = await RunGitAsync(["ls-remote", "--heads", "origin"], workDir);
+            Assert.Contains("refs/heads/bifrost/nibu/bridge-gate-test", heads.Stdout, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            DeleteDirectoryIfPresent(workDir);
+            DeleteDirectoryIfPresent(remoteDir);
+            DeleteDirectoryIfPresent(fakeToolsDir);
+        }
+    }
+
     private static string RepoRoot =>
         Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
 
@@ -247,6 +346,74 @@ console.log(JSON.stringify({
         await process.WaitForExitAsync();
 
         return new ProcessResult(process.ExitCode, stdout, stderr);
+    }
+
+    private static async Task<ProcessResult> RunGitAsync(string[] args, string workingDirectory, IReadOnlyDictionary<string, string?>? environmentOverrides = null)
+    {
+        using var process = new Process
+        {
+            StartInfo = new ProcessStartInfo
+            {
+                FileName = "git",
+                WorkingDirectory = workingDirectory,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+            }
+        };
+
+        foreach (var arg in args)
+        {
+            process.StartInfo.ArgumentList.Add(arg);
+        }
+
+        if (environmentOverrides is not null)
+        {
+            foreach (var pair in environmentOverrides)
+            {
+                process.StartInfo.Environment[pair.Key] = pair.Value ?? string.Empty;
+            }
+        }
+
+        process.Start();
+        var stdout = await process.StandardOutput.ReadToEndAsync();
+        var stderr = await process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
+
+        return new ProcessResult(process.ExitCode, stdout, stderr);
+    }
+
+    private static Dictionary<string, string?> BuildDispatchedGitHookEnv()
+    {
+        var hooksPath = Path.Combine(RepoRoot, "tools", "git-hooks");
+        return new Dictionary<string, string?>
+        {
+            ["BIFROST_ENFORCE_GITHUB_GATE"] = "true",
+            ["GIT_CONFIG_COUNT"] = "1",
+            ["GIT_CONFIG_KEY_0"] = "core.hooksPath",
+            ["GIT_CONFIG_VALUE_0"] = hooksPath,
+        };
+    }
+
+    private static void DeleteDirectoryIfPresent(string path)
+    {
+        if (!Directory.Exists(path))
+        {
+            return;
+        }
+
+        foreach (var file in Directory.GetFiles(path, "*", SearchOption.AllDirectories))
+        {
+            File.SetAttributes(file, FileAttributes.Normal);
+        }
+
+        foreach (var directory in Directory.GetDirectories(path, "*", SearchOption.AllDirectories))
+        {
+            File.SetAttributes(directory, FileAttributes.Normal);
+        }
+
+        File.SetAttributes(path, FileAttributes.Normal);
+        Directory.Delete(path, recursive: true);
     }
 
     private sealed record ProcessResult(int ExitCode, string Stdout, string Stderr);

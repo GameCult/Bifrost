@@ -1,0 +1,8 @@
+#!/bin/sh
+
+if [ "$BIFROST_ENFORCE_GITHUB_GATE" = "true" ] && [ "$BIFROST_GITHUB_PUSH_AUTHORIZED" != "true" ]; then
+  echo "Bifrost blocked git push in this dispatched turn. Use tools/bifrost-bridge.mjs so GitHub publication is gated and receipted." >&2
+  exit 1
+fi
+
+exit 0

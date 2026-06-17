@@ -110,7 +110,11 @@ async function createGitHubDraftPr(options) {
       await writeFile(targetPath, content, "utf8");
       git(["add", "--", relativePath], repoRoot);
       git(["commit", "-m", commitMessage], repoRoot);
-      git(["push", "-u", "origin", branch], repoRoot);
+      git(["push", "-u", "origin", branch], repoRoot, {
+        env: {
+          BIFROST_GITHUB_PUSH_AUTHORIZED: "true",
+        },
+      });
       pushed = true;
 
       const pr = runGitHubCli(options, [
@@ -876,6 +880,10 @@ function run(command, args, cwd, options = {}) {
     cwd,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
+    env: {
+      ...process.env,
+      ...(options.env ?? {}),
+    },
     windowsHide: true,
   });
 

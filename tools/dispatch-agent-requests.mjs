@@ -560,10 +560,30 @@ function renderDispatchReceiptContent(request) {
 }
 
 function buildBridgeContextEnv(request) {
+  const hooksPath = resolve(bifrostRoot, "tools", "git-hooks");
   return {
     BIFROST_BRIDGE_SOURCE_KIND: "bifrost_agent_transport_request",
     BIFROST_BRIDGE_SOURCE_ID: request.id,
     BIFROST_BRIDGE_AUTHORITY_REF: "bifrost_dispatch_execution",
+    BIFROST_ENFORCE_GITHUB_GATE: "true",
+    ...buildGitHooksConfigEnv(hooksPath),
+  };
+}
+
+function buildGitHooksConfigEnv(hooksPath) {
+  const existingCount = Number.parseInt(process.env.GIT_CONFIG_COUNT ?? "", 10);
+  if (Number.isInteger(existingCount) && existingCount >= 0) {
+    return {
+      GIT_CONFIG_COUNT: String(existingCount + 1),
+      [`GIT_CONFIG_KEY_${existingCount}`]: "core.hooksPath",
+      [`GIT_CONFIG_VALUE_${existingCount}`]: hooksPath,
+    };
+  }
+
+  return {
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: "core.hooksPath",
+    GIT_CONFIG_VALUE_0: hooksPath,
   };
 }
 
