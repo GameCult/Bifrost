@@ -567,6 +567,7 @@ function buildBridgeContextEnv(request) {
     BIFROST_BRIDGE_SOURCE_ID: request.id,
     BIFROST_BRIDGE_AUTHORITY_REF: "bifrost_dispatch_execution",
     BIFROST_ENFORCE_GITHUB_GATE: "true",
+    BIFROST_LOCK_RECOVERY_HATCHES: "true",
     BIFROST_GIT_EXECUTABLE: resolve(gitGatePath, "git.cmd"),
     BIFROST_GH_EXECUTABLE: resolve(gitGatePath, "gh.cmd"),
     BIFROST_NODE_EXECUTABLE: process.execPath,

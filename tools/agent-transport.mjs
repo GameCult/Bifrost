@@ -137,6 +137,13 @@ function isMutatingCommand(command) {
 }
 
 function ensureTransportReceiptGate(options) {
+  if (wantsUnreceiptedActivity(options) && process.env.BIFROST_LOCK_RECOVERY_HATCHES === "true") {
+    throw new Error(
+      "Dispatched Bifrost work cannot use --allow-unreceipted-activity or BIFROST_ALLOW_UNRECEIPTED_ACTIVITY. " +
+      "Request-lane mutations from a dispatched turn must keep Bifrost receipts.",
+    );
+  }
+
   if (hasBifrostBridgeConfig() || allowsUnreceiptedActivity(options)) {
     return;
   }
@@ -152,6 +159,10 @@ function hasBifrostBridgeConfig() {
 }
 
 function allowsUnreceiptedActivity(options) {
+  return wantsUnreceiptedActivity(options);
+}
+
+function wantsUnreceiptedActivity(options) {
   return options["allow-unreceipted-activity"] === "true" || process.env.BIFROST_ALLOW_UNRECEIPTED_ACTIVITY === "true";
 }
 

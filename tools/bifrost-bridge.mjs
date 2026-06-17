@@ -1036,6 +1036,13 @@ function ensureGitHubBridgeGate(options) {
     options["allow-ungated-github"] === "true" ||
     process.env.BIFROST_ALLOW_UNGATED_GITHUB === "true";
 
+  if (allowUngated && process.env.BIFROST_LOCK_RECOVERY_HATCHES === "true") {
+    throw new Error(
+      "Dispatched Bifrost work cannot use --allow-ungated-github or BIFROST_ALLOW_UNGATED_GITHUB. " +
+      "GitHub mutations from a dispatched turn must go through the normal Bifrost gate and receipt path.",
+    );
+  }
+
   if (baseUrl && token) {
     return;
   }

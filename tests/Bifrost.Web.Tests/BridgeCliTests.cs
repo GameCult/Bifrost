@@ -45,6 +45,28 @@ public sealed class BridgeCliTests
     }
 
     [Fact]
+    public async Task GitHub_bridge_recovery_hatch_is_rejected_inside_dispatched_turn()
+    {
+        var result = await RunNodeAsync([
+            "tools/bifrost-bridge.mjs",
+            "github-pr-comment",
+            "--repo-root", RepoRoot,
+            "--identity", "nibu",
+            "--pr", "1",
+            "--content", "test comment",
+            "--target-repository-full-name", "GameCult/Bifrost",
+            "--allow-ungated-github", "true",
+            "--dry-run", "true",
+        ], new Dictionary<string, string?>
+        {
+            ["BIFROST_LOCK_RECOVERY_HATCHES"] = "true",
+        });
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("cannot use --allow-ungated-github", result.Stderr, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task GitHub_pr_comment_returns_concrete_github_receipt()
     {
         var fakeToolsDir = Path.Combine(Path.GetTempPath(), $"bifrost-gh-{Guid.NewGuid():N}");
@@ -116,6 +138,29 @@ console.log(JSON.stringify({
         Assert.Equal(0, result.ExitCode);
         using var payload = JsonDocument.Parse(result.Stdout);
         Assert.Equal("queued", payload.RootElement.GetProperty("status").GetString());
+    }
+
+    [Fact]
+    public async Task Agent_transport_recovery_hatch_is_rejected_inside_dispatched_turn()
+    {
+        var storePath = Path.Combine(Path.GetTempPath(), $"bifrost-agent-transport-{Guid.NewGuid():N}.cc");
+        var result = await RunNodeAsync([
+            "tools/agent-transport.mjs",
+            "enqueue",
+            "--repo", "Bifrost",
+            "--agent", "nibu",
+            "--title", "Receipt gate recovery",
+            "--request", "Do the thing.",
+            "--store", storePath,
+            "--allow-unmirrored", "true",
+            "--allow-unreceipted-activity", "true",
+        ], new Dictionary<string, string?>
+        {
+            ["BIFROST_LOCK_RECOVERY_HATCHES"] = "true",
+        });
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("cannot use --allow-unreceipted-activity", result.Stderr, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -242,6 +287,29 @@ console.log(JSON.stringify({
         Assert.Equal(0, result.ExitCode);
         using var payload = JsonDocument.Parse(result.Stdout);
         Assert.Equal("open", payload.RootElement.GetProperty("status").GetString());
+    }
+
+    [Fact]
+    public async Task Governance_recovery_hatch_is_rejected_inside_dispatched_turn()
+    {
+        var storePath = Path.Combine(Path.GetTempPath(), $"bifrost-governance-{Guid.NewGuid():N}.cc");
+        var result = await RunNodeAsync([
+            "tools/governance-threads.mjs",
+            "open",
+            "--repo", "Bifrost",
+            "--agent", "nibu",
+            "--title", "Governance receipt recovery",
+            "--summary", "A topic body.",
+            "--store", storePath,
+            "--allow-unmirrored", "true",
+            "--allow-unreceipted-activity", "true",
+        ], new Dictionary<string, string?>
+        {
+            ["BIFROST_LOCK_RECOVERY_HATCHES"] = "true",
+        });
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("cannot use --allow-unreceipted-activity", result.Stderr, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

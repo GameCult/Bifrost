@@ -80,6 +80,7 @@ For the full staged roadmap, including contribution points, revenue share, patro
 - `tools/governance-threads.mjs` uses that same bridge configuration to record `/governance/receipts` entries for topic opens, comments, approvals, and promotions
 - those agent activity scripts now fail closed without the bridge URL/token pair; `--allow-unreceipted-activity true` or `BIFROST_ALLOW_UNRECEIPTED_ACTIVITY=true` is the explicit operator-recovery hatch
 - GitHub bridge mutations now fail closed without those values; `--allow-ungated-github true` is reserved for explicit operator recovery
+- dispatched Codex turns now lock those recovery hatches too: local-only `--allow-ungated-github` and `--allow-unreceipted-activity` escapes are refused inside dispatched work so a worker cannot silently downgrade itself out of Bifrost receipts
 - set `BIFROST_REDDIT_CLIENT_ID`, `BIFROST_REDDIT_REFRESH_TOKEN`, and optionally `BIFROST_REDDIT_CLIENT_SECRET` before posting Reddit organizing threads
 - set `Heimdall:PatronSupportIntakeSecret` before enabling Heimdall patron support intake in production
 - default connection string points at local PostgreSQL
