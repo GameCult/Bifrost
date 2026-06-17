@@ -174,6 +174,55 @@ public enum ExternalPatronProvider
     PayPal
 }
 
+public enum BridgeActorKind
+{
+    Member,
+    Agent,
+    Persona,
+    Service
+}
+
+public enum BridgeTargetSurface
+{
+    GitHub,
+    Discord,
+    Reddit,
+    CultNet,
+    CultCache,
+    Other
+}
+
+public enum BridgeActionKind
+{
+    GitHubDraftPullRequest,
+    GitHubPullRequestComment,
+    GitHubIssueComment,
+    DiscordPost,
+    DiscordDirectMessage,
+    RedditPost,
+    AgentUpdateRequest,
+    Other
+}
+
+public enum BridgeActionStatus
+{
+    Requested,
+    Authorized,
+    Denied,
+    InProgress,
+    Completed,
+    Failed,
+    Cancelled
+}
+
+public enum AgentDispatchRunStatus
+{
+    Started,
+    Completed,
+    Cancelled,
+    Failed
+}
+
 public sealed class UserAccount
 {
     public Guid Id { get; set; } = Guid.NewGuid();
@@ -221,6 +270,10 @@ public sealed class UserAccount
     public ICollection<PointTransaction> PointTransactions { get; set; } = [];
 
     public ICollection<PatronSupportEvent> PatronSupportEvents { get; set; } = [];
+
+    public ICollection<BridgeAction> BridgeActions { get; set; } = [];
+
+    public ICollection<AgentDispatchRun> AgentDispatchRuns { get; set; } = [];
 
     public ICollection<AuditEvent> AuditEvents { get; set; } = [];
 }
@@ -820,6 +873,106 @@ public sealed class RevenueShareLine
     public UserAccount? UserAccount { get; set; }
 
     public Project? Project { get; set; }
+}
+
+public sealed class BridgeAction
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+
+    public BridgeActorKind ActorKind { get; set; } = BridgeActorKind.Agent;
+
+    public Guid? ActorUserAccountId { get; set; }
+
+    public string ActorName { get; set; } = string.Empty;
+
+    public BridgeTargetSurface TargetSurface { get; set; } = BridgeTargetSurface.GitHub;
+
+    public BridgeActionKind ActionKind { get; set; } = BridgeActionKind.GitHubDraftPullRequest;
+
+    public BridgeActionStatus Status { get; set; } = BridgeActionStatus.Requested;
+
+    public Guid? WorkItemId { get; set; }
+
+    public Guid? MotionId { get; set; }
+
+    public string TargetRepositoryFullName { get; set; } = string.Empty;
+
+    public string TargetLocator { get; set; } = string.Empty;
+
+    public string SourceKind { get; set; } = string.Empty;
+
+    public string SourceId { get; set; } = string.Empty;
+
+    public string AuthorityReference { get; set; } = string.Empty;
+
+    public string PolicyDecision { get; set; } = string.Empty;
+
+    public string Title { get; set; } = string.Empty;
+
+    public string Summary { get; set; } = string.Empty;
+
+    public string ReceiptUrl { get; set; } = string.Empty;
+
+    public string ExternalReceiptId { get; set; } = string.Empty;
+
+    public string ReceiptPayload { get; set; } = string.Empty;
+
+    public string FailureReason { get; set; } = string.Empty;
+
+    public DateTimeOffset RequestedAtUtc { get; set; }
+
+    public DateTimeOffset UpdatedAtUtc { get; set; }
+
+    public DateTimeOffset? StartedAtUtc { get; set; }
+
+    public DateTimeOffset? CompletedAtUtc { get; set; }
+
+    public UserAccount? ActorUserAccount { get; set; }
+
+    public WorkItem? WorkItem { get; set; }
+
+    public Motion? Motion { get; set; }
+}
+
+public sealed class AgentDispatchRun
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+
+    public string RequestId { get; set; } = string.Empty;
+
+    public string TargetRepoName { get; set; } = string.Empty;
+
+    public string TargetRepositoryFullName { get; set; } = string.Empty;
+
+    public string TargetAgentIdentity { get; set; } = string.Empty;
+
+    public string LaunchMode { get; set; } = string.Empty;
+
+    public AgentDispatchRunStatus Status { get; set; } = AgentDispatchRunStatus.Started;
+
+    public Guid? StartedByUserAccountId { get; set; }
+
+    public int? WorkerProcessId { get; set; }
+
+    public string ThreadId { get; set; } = string.Empty;
+
+    public string TurnId { get; set; } = string.Empty;
+
+    public string LogPath { get; set; } = string.Empty;
+
+    public string ResultPath { get; set; } = string.Empty;
+
+    public string Note { get; set; } = string.Empty;
+
+    public string Error { get; set; } = string.Empty;
+
+    public DateTimeOffset StartedAtUtc { get; set; }
+
+    public DateTimeOffset UpdatedAtUtc { get; set; }
+
+    public DateTimeOffset? CompletedAtUtc { get; set; }
+
+    public UserAccount? StartedByUserAccount { get; set; }
 }
 
 public sealed class AuditEvent

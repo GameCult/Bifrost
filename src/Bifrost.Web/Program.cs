@@ -4,6 +4,8 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Bifrost.Web.Configuration;
 using Bifrost.Web.Data;
+using Bifrost.Web.Domain;
+using Bifrost.Web.Features.Bridge;
 using Bifrost.Web.Features.GitHub;
 using Bifrost.Web.Features.Heimdall;
 using Bifrost.Web.Features.Membership;
@@ -41,6 +43,10 @@ builder.Services
     .AddOptions<HeimdallOptions>()
     .BindConfiguration(HeimdallOptions.SectionName);
 
+builder.Services
+    .AddOptions<BridgeOptions>()
+    .BindConfiguration(BridgeOptions.SectionName);
+
 builder.Services.AddRazorPages(options =>
 {
     options.Conventions.AuthorizePage("/Membership/Status");
@@ -73,6 +79,8 @@ builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddScoped<ICurrentBifrostActorAccessor, CurrentBifrostActorAccessor>();
 builder.Services.AddScoped<AuditTrailService>();
 builder.Services.AddScoped<DashboardSnapshotService>();
+builder.Services.AddScoped<BridgeActionService>();
+builder.Services.AddScoped<AgentDispatchRunService>();
 builder.Services.AddScoped<MembershipSynchronizationService>();
 builder.Services.AddScoped<GitHubWebhookService>();
 builder.Services.AddScoped<MotionGovernanceService>();
@@ -164,7 +172,7 @@ builder.Services.AddAuthorization(options =>
 });
 
 var app = builder.Build();
-var eveJsonSerializerOptions = CreateEveJsonSerializerOptions();
+var appJsonSerializerOptions = CreateAppJsonSerializerOptions();
 
 app.Services.GetRequiredService<StartupConfigurationValidator>().Validate();
 await using (var scope = app.Services.CreateAsyncScope())
@@ -317,6 +325,217 @@ app.MapPost("/heimdall/patron-support/events", async (
     };
 }).AllowAnonymous();
 
+var bridgeActions = app.MapGroup("/bridge/actions");
+
+bridgeActions.MapPost("/request", async (
+    HttpRequest request,
+    BridgeActionRequest command,
+    ICurrentBifrostActorAccessor actorAccessor,
+    BridgeActionService bridgeActionService,
+    IOptions<BridgeOptions> bridgeOptions,
+    CancellationToken cancellationToken) =>
+{
+    var actor = await actorAccessor.GetAsync(cancellationToken);
+    var caller = BuildBridgeCaller(actor, request, bridgeOptions.Value);
+    if (!caller.IsAllowedTransport)
+    {
+        return Results.Unauthorized();
+    }
+
+    var result = await bridgeActionService.RequestAsync(command, caller, cancellationToken);
+    return result.Status == BridgeActionStatus.Denied
+        ? JsonResult(result, appJsonSerializerOptions, StatusCodes.Status403Forbidden)
+        : JsonResult(result, appJsonSerializerOptions, StatusCodes.Status202Accepted);
+});
+
+bridgeActions.MapGet("/{id:guid}", async (
+    Guid id,
+    HttpRequest request,
+    ICurrentBifrostActorAccessor actorAccessor,
+    BifrostDbContext dbContext,
+    IOptions<BridgeOptions> bridgeOptions,
+    CancellationToken cancellationToken) =>
+{
+    var actor = await actorAccessor.GetAsync(cancellationToken);
+    var caller = BuildBridgeCaller(actor, request, bridgeOptions.Value);
+    if (!caller.IsAllowedTransport)
+    {
+        return Results.Unauthorized();
+    }
+
+    var action = await dbContext.BridgeActions
+        .AsNoTracking()
+        .SingleOrDefaultAsync(x => x.Id == id, cancellationToken);
+
+    if (action is null)
+    {
+        return Results.NotFound();
+    }
+
+    if (!caller.CanOperate(action))
+    {
+        return Results.Forbid();
+    }
+
+    return JsonResult(BridgeActionResult.From(action), appJsonSerializerOptions);
+});
+
+bridgeActions.MapPost("/{id:guid}/start", async (
+    Guid id,
+    HttpRequest request,
+    ICurrentBifrostActorAccessor actorAccessor,
+    BridgeActionService bridgeActionService,
+    IOptions<BridgeOptions> bridgeOptions,
+    CancellationToken cancellationToken) =>
+{
+    var actor = await actorAccessor.GetAsync(cancellationToken);
+    var caller = BuildBridgeCaller(actor, request, bridgeOptions.Value);
+    if (!caller.IsAllowedTransport)
+    {
+        return Results.Unauthorized();
+    }
+
+    try
+    {
+        var result = await bridgeActionService.StartAsync(id, caller, cancellationToken);
+        return result is null
+            ? Results.NotFound()
+            : JsonResult(result, appJsonSerializerOptions, StatusCodes.Status202Accepted);
+    }
+    catch (UnauthorizedAccessException)
+    {
+        return Results.Forbid();
+    }
+    catch (BridgeActionException error)
+    {
+        return Results.BadRequest(error.Message);
+    }
+});
+
+bridgeActions.MapPost("/{id:guid}/complete", async (
+    Guid id,
+    HttpRequest request,
+    BridgeActionReceiptRequest command,
+    ICurrentBifrostActorAccessor actorAccessor,
+    BridgeActionService bridgeActionService,
+    IOptions<BridgeOptions> bridgeOptions,
+    CancellationToken cancellationToken) =>
+{
+    var actor = await actorAccessor.GetAsync(cancellationToken);
+    var caller = BuildBridgeCaller(actor, request, bridgeOptions.Value);
+    if (!caller.IsAllowedTransport)
+    {
+        return Results.Unauthorized();
+    }
+
+    try
+    {
+        var result = await bridgeActionService.CompleteAsync(id, command, caller, cancellationToken);
+        return result is null
+            ? Results.NotFound()
+            : JsonResult(result, appJsonSerializerOptions);
+    }
+    catch (UnauthorizedAccessException)
+    {
+        return Results.Forbid();
+    }
+    catch (BridgeActionException error)
+    {
+        return Results.BadRequest(error.Message);
+    }
+});
+
+bridgeActions.MapPost("/{id:guid}/fail", async (
+    Guid id,
+    HttpRequest request,
+    BridgeActionFailureRequest command,
+    ICurrentBifrostActorAccessor actorAccessor,
+    BridgeActionService bridgeActionService,
+    IOptions<BridgeOptions> bridgeOptions,
+    CancellationToken cancellationToken) =>
+{
+    var actor = await actorAccessor.GetAsync(cancellationToken);
+    var caller = BuildBridgeCaller(actor, request, bridgeOptions.Value);
+    if (!caller.IsAllowedTransport)
+    {
+        return Results.Unauthorized();
+    }
+
+    try
+    {
+        var result = await bridgeActionService.FailAsync(id, command, caller, cancellationToken);
+        return result is null
+            ? Results.NotFound()
+            : JsonResult(result, appJsonSerializerOptions);
+    }
+    catch (UnauthorizedAccessException)
+    {
+        return Results.Forbid();
+    }
+});
+
+var dispatchRuns = app.MapGroup("/dispatch/runs");
+
+dispatchRuns.MapPost("/start", async (
+    HttpRequest request,
+    AgentDispatchRunStartRequest command,
+    ICurrentBifrostActorAccessor actorAccessor,
+    AgentDispatchRunService agentDispatchRunService,
+    IOptions<BridgeOptions> bridgeOptions,
+    CancellationToken cancellationToken) =>
+{
+    var actor = await actorAccessor.GetAsync(cancellationToken);
+    if (!HasValidLocalBridgeToken(request, bridgeOptions.Value) && !actor.IsActiveMember)
+    {
+        return Results.Unauthorized();
+    }
+
+    var result = await agentDispatchRunService.StartAsync(command, actor.UserAccount?.Id, cancellationToken);
+    return JsonResult(result, appJsonSerializerOptions, StatusCodes.Status202Accepted);
+});
+
+dispatchRuns.MapPost("/{id:guid}/complete", async (
+    Guid id,
+    HttpRequest request,
+    AgentDispatchRunCompletionRequest command,
+    ICurrentBifrostActorAccessor actorAccessor,
+    AgentDispatchRunService agentDispatchRunService,
+    IOptions<BridgeOptions> bridgeOptions,
+    CancellationToken cancellationToken) =>
+{
+    var actor = await actorAccessor.GetAsync(cancellationToken);
+    if (!HasValidLocalBridgeToken(request, bridgeOptions.Value) && !actor.IsActiveMember)
+    {
+        return Results.Unauthorized();
+    }
+
+    var result = await agentDispatchRunService.CompleteAsync(id, command, actor.UserAccount?.Id, cancellationToken);
+    return result is null
+        ? Results.NotFound()
+        : JsonResult(result, appJsonSerializerOptions);
+});
+
+dispatchRuns.MapPost("/{id:guid}/fail", async (
+    Guid id,
+    HttpRequest request,
+    AgentDispatchRunFailureRequest command,
+    ICurrentBifrostActorAccessor actorAccessor,
+    AgentDispatchRunService agentDispatchRunService,
+    IOptions<BridgeOptions> bridgeOptions,
+    CancellationToken cancellationToken) =>
+{
+    var actor = await actorAccessor.GetAsync(cancellationToken);
+    if (!HasValidLocalBridgeToken(request, bridgeOptions.Value) && !actor.IsActiveMember)
+    {
+        return Results.Unauthorized();
+    }
+
+    var result = await agentDispatchRunService.FailAsync(id, command, actor.UserAccount?.Id, cancellationToken);
+    return result is null
+        ? Results.NotFound()
+        : JsonResult(result, appJsonSerializerOptions);
+});
+
 var eveGovernance = app.MapGroup("/eve/governance")
     .RequireAuthorization(ActiveMemberRequirement.PolicyName);
 
@@ -330,7 +549,7 @@ eveGovernance.MapGet("/surface", async (
     var state = await motionGovernanceService.GetStateAsync(actor, cancellationToken);
     var surface = motionEveSurfaceService.BuildSurface(state);
     return Results.Text(
-        JsonSerializer.Serialize(surface, eveJsonSerializerOptions),
+        JsonSerializer.Serialize(surface, appJsonSerializerOptions),
         "application/json");
 });
 
@@ -401,7 +620,7 @@ eveGovernance.MapPost("/commands", async (
     var state = await motionGovernanceService.GetStateAsync(actor, cancellationToken);
     var surface = motionEveSurfaceService.BuildSurface(state);
     return Results.Text(
-        JsonSerializer.Serialize(surface, eveJsonSerializerOptions),
+        JsonSerializer.Serialize(surface, appJsonSerializerOptions),
         "application/json");
 });
 
@@ -443,11 +662,39 @@ app.MapRazorPages();
 
 app.Run();
 
-static JsonSerializerOptions CreateEveJsonSerializerOptions()
+static IResult JsonResult<T>(T value, JsonSerializerOptions options, int statusCode = StatusCodes.Status200OK) =>
+    Results.Text(
+        JsonSerializer.Serialize(value, options),
+        "application/json",
+        statusCode: statusCode);
+
+static JsonSerializerOptions CreateAppJsonSerializerOptions()
 {
     var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
     options.Converters.Add(new JsonStringEnumConverter());
     return options;
+}
+
+static BridgeCaller BuildBridgeCaller(
+    CurrentBifrostActor actor,
+    HttpRequest request,
+    BridgeOptions bridgeOptions)
+{
+    var isLocalBridge = HasValidLocalBridgeToken(request, bridgeOptions);
+
+    return new BridgeCaller(
+        actor.IsActiveMember,
+        isLocalBridge,
+        actor.UserAccount?.Id,
+        actor.DisplayName);
+}
+
+static bool HasValidLocalBridgeToken(HttpRequest request, BridgeOptions bridgeOptions)
+{
+    var bridgeToken = request.Headers["X-Bifrost-Bridge-Token"].ToString();
+    return
+        bridgeOptions.HasLocalBridgeToken &&
+        string.Equals(bridgeToken, bridgeOptions.LocalBridgeToken, StringComparison.Ordinal);
 }
 
 public partial class Program;

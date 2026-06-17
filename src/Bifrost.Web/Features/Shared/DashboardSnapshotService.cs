@@ -100,6 +100,40 @@ public sealed class DashboardSnapshotService(BifrostDbContext dbContext, TimePro
                 x.OccurredAtUtc))
             .ToListAsync(cancellationToken);
 
+        var recentBridgeActions = await dbContext.BridgeActions
+            .AsNoTracking()
+            .OrderByDescending(x => x.UpdatedAtUtc)
+            .Take(6)
+            .Select(x => new DashboardBridgeAction(
+                x.Id,
+                x.ActorName,
+                x.ActorKind.ToString(),
+                x.TargetSurface.ToString(),
+                x.ActionKind.ToString(),
+                x.Status.ToString(),
+                x.Title,
+                x.TargetRepositoryFullName,
+                string.IsNullOrWhiteSpace(x.ReceiptUrl) ? x.ExternalReceiptId : x.ReceiptUrl,
+                x.UpdatedAtUtc))
+            .ToListAsync(cancellationToken);
+
+        var recentDispatchRuns = await dbContext.AgentDispatchRuns
+            .AsNoTracking()
+            .OrderByDescending(x => x.UpdatedAtUtc)
+            .Take(6)
+            .Select(x => new DashboardDispatchRun(
+                x.Id,
+                x.RequestId,
+                x.TargetRepoName,
+                x.TargetAgentIdentity,
+                x.LaunchMode,
+                x.Status.ToString(),
+                x.ThreadId,
+                x.TurnId,
+                string.IsNullOrWhiteSpace(x.Note) ? x.Error : x.Note,
+                x.UpdatedAtUtc))
+            .ToListAsync(cancellationToken);
+
         var payoutPreviewNominal = await dbContext.LedgerEntries
             .AsNoTracking()
             .Where(x => x.Status == LedgerEntryStatus.Approved)
@@ -114,13 +148,21 @@ public sealed class DashboardSnapshotService(BifrostDbContext dbContext, TimePro
             OpenMotions: await dbContext.Motions.AsNoTracking().CountAsync(x => x.Status == MotionStatus.Open && x.ClosesAtUtc >= now, cancellationToken),
             PendingMembershipApprovals: outstandingApprovals,
             AssignedToCurrentMember: assignedToMe.Count,
+            ActiveBridgeActions: await dbContext.BridgeActions.AsNoTracking().CountAsync(
+                x => x.Status == BridgeActionStatus.Authorized || x.Status == BridgeActionStatus.InProgress,
+                cancellationToken),
+            ActiveDispatchRuns: await dbContext.AgentDispatchRuns.AsNoTracking().CountAsync(
+                x => x.Status == AgentDispatchRunStatus.Started,
+                cancellationToken),
             ApprovedNominalPayoutValue: payoutPreviewNominal,
             RecentWorkItems: recentWorkItems,
             OpenMotionHighlights: openMotions,
             MyAssignedWork: assignedToMe,
             MyVolunteeredWork: volunteeredByMe,
             MySubmittedWork: submittedByMe,
-            RecentActivity: recentActivity);
+            RecentActivity: recentActivity,
+            RecentBridgeActions: recentBridgeActions,
+            RecentDispatchRuns: recentDispatchRuns);
     }
 }
 
@@ -131,13 +173,17 @@ public sealed record DashboardSnapshot(
     int OpenMotions,
     int PendingMembershipApprovals,
     int AssignedToCurrentMember,
+    int ActiveBridgeActions,
+    int ActiveDispatchRuns,
     decimal ApprovedNominalPayoutValue,
     IReadOnlyList<DashboardWorkItem> RecentWorkItems,
     IReadOnlyList<DashboardMotion> OpenMotionHighlights,
     IReadOnlyList<DashboardLaneItem> MyAssignedWork,
     IReadOnlyList<DashboardLaneItem> MyVolunteeredWork,
     IReadOnlyList<DashboardLaneItem> MySubmittedWork,
-    IReadOnlyList<DashboardActivity> RecentActivity);
+    IReadOnlyList<DashboardActivity> RecentActivity,
+    IReadOnlyList<DashboardBridgeAction> RecentBridgeActions,
+    IReadOnlyList<DashboardDispatchRun> RecentDispatchRuns);
 
 public sealed record DashboardWorkItem(
     Guid WorkItemId,
@@ -170,3 +216,27 @@ public sealed record DashboardActivity(
     string Detail,
     string ActorName,
     DateTimeOffset OccurredAtUtc);
+
+public sealed record DashboardBridgeAction(
+    Guid BridgeActionId,
+    string ActorName,
+    string ActorKind,
+    string TargetSurface,
+    string ActionKind,
+    string Status,
+    string Title,
+    string TargetRepositoryFullName,
+    string ReceiptLabel,
+    DateTimeOffset UpdatedAtUtc);
+
+public sealed record DashboardDispatchRun(
+    Guid AgentDispatchRunId,
+    string RequestId,
+    string TargetRepoName,
+    string TargetAgentIdentity,
+    string LaunchMode,
+    string Status,
+    string ThreadId,
+    string TurnId,
+    string Note,
+    DateTimeOffset UpdatedAtUtc);

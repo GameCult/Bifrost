@@ -3,6 +3,7 @@ using System;
 using Bifrost.Web.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Bifrost.Web.Data.Migrations
 {
     [DbContext(typeof(BifrostDbContext))]
-    partial class BifrostDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260617010537_AddBridgeActionLedger")]
+    partial class AddBridgeActionLedger
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -21,97 +24,6 @@ namespace Bifrost.Web.Data.Migrations
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
-
-            modelBuilder.Entity("Bifrost.Web.Domain.AgentDispatchRun", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid");
-
-                    b.Property<DateTimeOffset?>("CompletedAtUtc")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("Error")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<string>("LaunchMode")
-                        .IsRequired()
-                        .HasMaxLength(40)
-                        .HasColumnType("character varying(40)");
-
-                    b.Property<string>("LogPath")
-                        .IsRequired()
-                        .HasMaxLength(500)
-                        .HasColumnType("character varying(500)");
-
-                    b.Property<string>("Note")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<string>("RequestId")
-                        .IsRequired()
-                        .HasMaxLength(240)
-                        .HasColumnType("character varying(240)");
-
-                    b.Property<string>("ResultPath")
-                        .IsRequired()
-                        .HasMaxLength(500)
-                        .HasColumnType("character varying(500)");
-
-                    b.Property<DateTimeOffset>("StartedAtUtc")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<Guid?>("StartedByUserAccountId")
-                        .HasColumnType("uuid");
-
-                    b.Property<string>("Status")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<string>("TargetAgentIdentity")
-                        .IsRequired()
-                        .HasMaxLength(160)
-                        .HasColumnType("character varying(160)");
-
-                    b.Property<string>("TargetRepoName")
-                        .IsRequired()
-                        .HasMaxLength(120)
-                        .HasColumnType("character varying(120)");
-
-                    b.Property<string>("TargetRepositoryFullName")
-                        .IsRequired()
-                        .HasMaxLength(240)
-                        .HasColumnType("character varying(240)");
-
-                    b.Property<string>("ThreadId")
-                        .IsRequired()
-                        .HasMaxLength(120)
-                        .HasColumnType("character varying(120)");
-
-                    b.Property<string>("TurnId")
-                        .IsRequired()
-                        .HasMaxLength(120)
-                        .HasColumnType("character varying(120)");
-
-                    b.Property<DateTimeOffset>("UpdatedAtUtc")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<int?>("WorkerProcessId")
-                        .HasColumnType("integer");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("RequestId");
-
-                    b.HasIndex("StartedByUserAccountId");
-
-                    b.HasIndex("Status");
-
-                    b.HasIndex("TargetRepoName", "TargetAgentIdentity", "Status");
-
-                    b.ToTable("AgentDispatchRuns");
-                });
 
             modelBuilder.Entity("Bifrost.Web.Domain.Assignment", b =>
                 {
@@ -1338,16 +1250,6 @@ namespace Bifrost.Web.Data.Migrations
                     b.ToTable("WorkReviews");
                 });
 
-            modelBuilder.Entity("Bifrost.Web.Domain.AgentDispatchRun", b =>
-                {
-                    b.HasOne("Bifrost.Web.Domain.UserAccount", "StartedByUserAccount")
-                        .WithMany("AgentDispatchRuns")
-                        .HasForeignKey("StartedByUserAccountId")
-                        .OnDelete(DeleteBehavior.SetNull);
-
-                    b.Navigation("StartedByUserAccount");
-                });
-
             modelBuilder.Entity("Bifrost.Web.Domain.Assignment", b =>
                 {
                     b.HasOne("Bifrost.Web.Domain.UserAccount", "AssignedByUserAccount")
@@ -1808,8 +1710,6 @@ namespace Bifrost.Web.Data.Migrations
 
             modelBuilder.Entity("Bifrost.Web.Domain.UserAccount", b =>
                 {
-                    b.Navigation("AgentDispatchRuns");
-
                     b.Navigation("AssignedWorkItems");
 
                     b.Navigation("Assignments");

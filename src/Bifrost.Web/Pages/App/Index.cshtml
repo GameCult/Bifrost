@@ -194,6 +194,88 @@
     <article class="panel">
         <div class="panel-header">
             <div>
+                <h2>Agent runs</h2>
+                <p class="muted">Recent dispatched Codex runs recorded by Bifrost.</p>
+            </div>
+        </div>
+
+        @if (Model.Snapshot.RecentDispatchRuns.Count == 0)
+        {
+            <div class="empty-state">No dispatched agent runs have been recorded yet.</div>
+        }
+        else
+        {
+            <div class="list-grid">
+                @foreach (var run in Model.Snapshot.RecentDispatchRuns)
+                {
+                    <div class="status-banner">
+                        <strong>@run.TargetRepoName@if (!string.IsNullOrWhiteSpace(run.TargetAgentIdentity)) {<text> / @run.TargetAgentIdentity</text>}</strong>
+                        <span class="muted">@run.LaunchMode dispatch</span>
+                        <div class="inline-actions">
+                            <span class="pill">@run.Status</span>
+                            <span class="pill">@run.RequestId</span>
+                        </div>
+                        @if (!string.IsNullOrWhiteSpace(run.ThreadId) || !string.IsNullOrWhiteSpace(run.TurnId))
+                        {
+                            <div class="muted">Thread @run.ThreadId Turn @run.TurnId</div>
+                        }
+                        @if (!string.IsNullOrWhiteSpace(run.Note))
+                        {
+                            <div class="muted">@run.Note</div>
+                        }
+                        <div class="muted">@run.UpdatedAtUtc.ToString("dd MMM yyyy HH:mm") UTC</div>
+                    </div>
+                }
+            </div>
+        }
+    </article>
+</section>
+
+<section class="panel-grid" style="margin-top: 1.5rem;">
+    <article class="panel">
+        <div class="panel-header">
+            <div>
+                <h2>Bridge receipts</h2>
+                <p class="muted">Recent agent and service crossings recorded by Bifrost.</p>
+            </div>
+        </div>
+
+        @if (Model.Snapshot.RecentBridgeActions.Count == 0)
+        {
+            <div class="empty-state">No bridge actions have been recorded yet.</div>
+        }
+        else
+        {
+            <div class="list-grid">
+                @foreach (var action in Model.Snapshot.RecentBridgeActions)
+                {
+                    <div class="status-banner">
+                        <strong>@action.ActorName</strong>
+                        <span class="muted">@action.ActionKind on @action.TargetSurface</span>
+                        <div class="inline-actions">
+                            <span class="pill">@action.Status</span>
+                            @if (!string.IsNullOrWhiteSpace(action.TargetRepositoryFullName))
+                            {
+                                <span class="pill">@action.TargetRepositoryFullName</span>
+                            }
+                        </div>
+                        <div class="muted">@action.Title</div>
+                        @if (!string.IsNullOrWhiteSpace(action.ReceiptLabel))
+                        {
+                            <div class="muted">@action.ReceiptLabel</div>
+                        }
+                        <div class="muted">@action.UpdatedAtUtc.ToString("dd MMM yyyy HH:mm") UTC</div>
+                    </div>
+                }
+            </div>
+        }
+    </article>
+</section>
+
+<section class="panel-grid" style="margin-top: 1.5rem;">
+    <article class="panel">
+        <div class="panel-header">
+            <div>
                 <h2>Recent activity</h2>
                 <p class="muted">Audit trail excerpts across membership, work, motions, and ledger changes.</p>
             </div>

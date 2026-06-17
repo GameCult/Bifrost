@@ -30,6 +30,7 @@ public sealed class TestWebApplicationFactory : WebApplicationFactory<Program>
                 ["GitHubApp:WebhookSecret"] = "test-webhook-secret",
                 ["GitHubApp:PrivateKeyPem"] = "test-private-key",
                 ["GitHubApp:AppId"] = "1",
+                ["Bridge:LocalBridgeToken"] = "test-bridge-token",
                 ["Host:PublicBaseUrl"] = "https://localhost",
                 ["Host:ExpectedHost"] = "localhost",
                 ["Host:RequireStrictHostValidation"] = "false",

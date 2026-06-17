@@ -45,6 +45,45 @@ It intentionally uses boring local credentials while Heimdall's managed GitHub c
 
 The CLI is not the final permission system. It is the working bridge actuator Bifrost owns now, so VoidBot and repo Personas can stop carrying this machinery themselves.
 
+## Bridge Action Ledger
+
+The hosted app now exposes a first-class bridge action ledger for governed transport requests:
+
+- `POST /bridge/actions/request`
+- `GET /bridge/actions/{id}`
+- `POST /bridge/actions/{id}/start`
+- `POST /bridge/actions/{id}/complete`
+- `POST /bridge/actions/{id}/fail`
+
+The owner is Bifrost, not the local script. The script or agent may execute the crossing, but Bifrost records the request, policy decision, lifecycle state, and receipt.
+
+The hosted app also exposes a dispatch-run ledger for launched agent work:
+
+- `POST /dispatch/runs/start`
+- `POST /dispatch/runs/{id}/complete`
+- `POST /dispatch/runs/{id}/fail`
+
+This is the companion trail to bridge actions. A bridge action says "this crossing into GitHub/Discord/Reddit was requested and receipted." A dispatch run says "this specific Codex worker actually launched, ran, and ended this way." One guards governed mutation. The other proves agent activity.
+
+Current gate behavior:
+
+- active Bifrost members may request bridge actions from an authenticated app session
+- the transitional local bridge actuator may call the same endpoints with `X-Bifrost-Bridge-Token`
+- agent, Persona, and service actions must cite provenance: `authorityReference`, `sourceKind` plus `sourceId`, `workItemId`, or `motionId`
+- completed actions must report a receipt URL, external receipt id, or serialized receipt payload
+- GitHub mutation commands fail closed unless Bifrost authorization is configured; `--allow-ungated-github true` is the explicit operator-recovery hatch
+
+Current CLI wiring:
+
+- set `BIFROST_BRIDGE_BASE_URL` to the Bifrost app base URL
+- set `BIFROST_BRIDGE_TOKEN` to the configured local bridge token
+- GitHub commands now require both values by default, even for dry-run, so the normal path cannot silently bypass the gate
+- pass `--source-kind`, `--source-id`, `--authority-ref`, `--work-item-id`, or `--motion-id` so agent actions satisfy policy
+- the dispatcher now preloads `BIFROST_BRIDGE_SOURCE_KIND`, `BIFROST_BRIDGE_SOURCE_ID`, and `BIFROST_BRIDGE_AUTHORITY_REF` into Codex turns launched from Bifrost update requests, so normal bridge use inside a dispatched turn carries request provenance by default
+- the dispatcher also uses that same bridge configuration to post dispatch-run start/complete/fail receipts, including the worker pid, thread/turn ids when available, and result/log paths for the local operator trail
+
+If the app bridge configuration is absent, `tools/bifrost-bridge.mjs` keeps working as a local actuator. When configured, it asks Bifrost for authorization before acting and reports success or failure back to the same bridge action row.
+
 ### GitHub Draft PR
 
 ```powershell

@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Json;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -294,6 +295,217 @@ public sealed class PlatformEndpointsTests : IClassFixture<TestWebApplicationFac
         Assert.Contains(verificationContext.AuditEvents, x => x.Action == "motion.voted");
     }
 
+    [Fact]
+    public async Task Local_bridge_token_can_authorize_and_receipt_agent_github_action()
+    {
+        using var client = _factory.CreateClient();
+
+        var requestPayload = JsonSerializer.Serialize(new
+        {
+            actorKind = "Agent",
+            actorName = "nibu",
+            targetSurface = "GitHub",
+            actionKind = "GitHubDraftPullRequest",
+            targetRepositoryFullName = "GameCult/Bifrost",
+            targetLocator = "pulls",
+            sourceKind = "governance_topic",
+            sourceId = "topic_123",
+            authorityReference = "dispatch-approved",
+            title = "Draft motion implementation PR",
+            summary = "Open a draft PR for the approved topic."
+        });
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/bridge/actions/request");
+        request.Headers.Add("X-Bifrost-Bridge-Token", "test-bridge-token");
+        request.Content = new StringContent(requestPayload, Encoding.UTF8, "application/json");
+
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+        var action = await response.Content.ReadFromJsonAsync<BridgeActionHttpResult>();
+        Assert.NotNull(action);
+        Assert.Equal("Authorized", action.Status);
+
+        using var startRequest = new HttpRequestMessage(HttpMethod.Post, $"/bridge/actions/{action.Id}/start");
+        startRequest.Headers.Add("X-Bifrost-Bridge-Token", "test-bridge-token");
+        using var startResponse = await client.SendAsync(startRequest);
+        Assert.Equal(HttpStatusCode.Accepted, startResponse.StatusCode);
+
+        var completionPayload = JsonSerializer.Serialize(new
+        {
+            receiptUrl = "https://github.com/GameCult/Bifrost/pull/99",
+            externalReceiptId = "99",
+            receiptPayload = "{\"pr\":99}"
+        });
+        using var completeRequest = new HttpRequestMessage(HttpMethod.Post, $"/bridge/actions/{action.Id}/complete");
+        completeRequest.Headers.Add("X-Bifrost-Bridge-Token", "test-bridge-token");
+        completeRequest.Content = new StringContent(completionPayload, Encoding.UTF8, "application/json");
+
+        using var completeResponse = await client.SendAsync(completeRequest);
+
+        Assert.Equal(HttpStatusCode.OK, completeResponse.StatusCode);
+
+        using var scope = _factory.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
+        var savedAction = dbContext.BridgeActions.Single(x => x.Id == action.Id);
+
+        Assert.Equal(BridgeActionStatus.Completed, savedAction.Status);
+        Assert.Equal("https://github.com/GameCult/Bifrost/pull/99", savedAction.ReceiptUrl);
+        Assert.Equal("99", savedAction.ExternalReceiptId);
+        Assert.Contains(dbContext.AuditEvents, x => x.EntityType == nameof(BridgeAction) && x.Action == "bridge.completed");
+    }
+
+    [Fact]
+    public async Task Agent_github_action_without_provenance_is_denied_and_recorded()
+    {
+        using var client = _factory.CreateClient();
+
+        var requestPayload = JsonSerializer.Serialize(new
+        {
+            actorKind = "Agent",
+            actorName = "nibu",
+            targetSurface = "GitHub",
+            actionKind = "GitHubDraftPullRequest",
+            targetRepositoryFullName = "GameCult/Bifrost",
+            targetLocator = "pulls",
+            title = "Unproven draft",
+            summary = "This should not pass policy."
+        });
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/bridge/actions/request");
+        request.Headers.Add("X-Bifrost-Bridge-Token", "test-bridge-token");
+        request.Content = new StringContent(requestPayload, Encoding.UTF8, "application/json");
+
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        var action = await response.Content.ReadFromJsonAsync<BridgeActionHttpResult>();
+        Assert.NotNull(action);
+        Assert.Equal("Denied", action.Status);
+
+        using var scope = _factory.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
+        var savedAction = dbContext.BridgeActions.Single(x => x.Id == action.Id);
+
+        Assert.Equal(BridgeActionStatus.Denied, savedAction.Status);
+        Assert.Contains("must cite", savedAction.PolicyDecision, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(dbContext.AuditEvents, x => x.EntityType == nameof(BridgeAction) && x.Action == "bridge.denied");
+    }
+
+    [Fact]
+    public async Task Local_bridge_token_can_record_dispatch_run_lifecycle()
+    {
+        using var client = _factory.CreateClient();
+
+        var startPayload = JsonSerializer.Serialize(new
+        {
+            requestId = "req_dispatch_123",
+            targetRepoName = "Bifrost",
+            targetRepositoryFullName = "GameCult/Bifrost",
+            targetAgentIdentity = "nibu",
+            launchMode = "app-server",
+            workerProcessId = 4242,
+            threadId = "thread_1",
+            turnId = "turn_1",
+            logPath = "E:/Projects/Bifrost/.bifrost/agent-dispatch/req_dispatch_123/codex.log",
+            resultPath = "E:/Projects/Bifrost/.bifrost/agent-dispatch/req_dispatch_123/result.json",
+            note = "Codex app-server turn started."
+        });
+
+        using var startRequest = new HttpRequestMessage(HttpMethod.Post, "/dispatch/runs/start");
+        startRequest.Headers.Add("X-Bifrost-Bridge-Token", "test-bridge-token");
+        startRequest.Content = new StringContent(startPayload, Encoding.UTF8, "application/json");
+
+        using var startResponse = await client.SendAsync(startRequest);
+
+        Assert.Equal(HttpStatusCode.Accepted, startResponse.StatusCode);
+        var started = await startResponse.Content.ReadFromJsonAsync<AgentDispatchRunHttpResult>();
+        Assert.NotNull(started);
+        Assert.Equal("Started", started.Status);
+
+        var completePayload = JsonSerializer.Serialize(new
+        {
+            status = "Completed",
+            threadId = "thread_1",
+            turnId = "turn_1",
+            resultPath = "E:/Projects/Bifrost/.bifrost/agent-dispatch/req_dispatch_123/result.json",
+            note = "Codex app turn completed for thread_1/turn_1."
+        });
+
+        using var completeRequest = new HttpRequestMessage(HttpMethod.Post, $"/dispatch/runs/{started.Id}/complete");
+        completeRequest.Headers.Add("X-Bifrost-Bridge-Token", "test-bridge-token");
+        completeRequest.Content = new StringContent(completePayload, Encoding.UTF8, "application/json");
+
+        using var completeResponse = await client.SendAsync(completeRequest);
+
+        Assert.Equal(HttpStatusCode.OK, completeResponse.StatusCode);
+
+        using var scope = _factory.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
+        var savedRun = dbContext.AgentDispatchRuns.Single(x => x.Id == started.Id);
+
+        Assert.Equal(AgentDispatchRunStatus.Completed, savedRun.Status);
+        Assert.Equal("req_dispatch_123", savedRun.RequestId);
+        Assert.Equal("turn_1", savedRun.TurnId);
+        Assert.Contains(dbContext.AuditEvents, x => x.EntityType == nameof(AgentDispatchRun) && x.Action == "agent-dispatch.completed");
+    }
+
+    [Fact]
+    public async Task Local_bridge_token_can_record_dispatch_run_failure()
+    {
+        using var client = _factory.CreateClient();
+
+        var startPayload = JsonSerializer.Serialize(new
+        {
+            requestId = "req_dispatch_fail_123",
+            targetRepoName = "Bifrost",
+            targetRepositoryFullName = "GameCult/Bifrost",
+            targetAgentIdentity = "nibu",
+            launchMode = "app-server",
+            workerProcessId = 4242,
+            threadId = string.Empty,
+            turnId = string.Empty,
+            logPath = "E:/Projects/Bifrost/.bifrost/agent-dispatch/req_dispatch_fail_123/codex.log",
+            resultPath = "E:/Projects/Bifrost/.bifrost/agent-dispatch/req_dispatch_fail_123/result.json",
+            note = "Codex app-server launch started."
+        });
+
+        using var startRequest = new HttpRequestMessage(HttpMethod.Post, "/dispatch/runs/start");
+        startRequest.Headers.Add("X-Bifrost-Bridge-Token", "test-bridge-token");
+        startRequest.Content = new StringContent(startPayload, Encoding.UTF8, "application/json");
+
+        using var startResponse = await client.SendAsync(startRequest);
+
+        Assert.Equal(HttpStatusCode.Accepted, startResponse.StatusCode);
+        var started = await startResponse.Content.ReadFromJsonAsync<AgentDispatchRunHttpResult>();
+        Assert.NotNull(started);
+
+        var failPayload = JsonSerializer.Serialize(new
+        {
+            threadId = string.Empty,
+            turnId = string.Empty,
+            resultPath = "E:/Projects/Bifrost/.bifrost/agent-dispatch/req_dispatch_fail_123/result.json",
+            note = "Codex dispatch failed.",
+            error = "Codex app-server thread/start returned no thread id."
+        });
+
+        using var failRequest = new HttpRequestMessage(HttpMethod.Post, $"/dispatch/runs/{started.Id}/fail");
+        failRequest.Headers.Add("X-Bifrost-Bridge-Token", "test-bridge-token");
+        failRequest.Content = new StringContent(failPayload, Encoding.UTF8, "application/json");
+
+        using var failResponse = await client.SendAsync(failRequest);
+
+        Assert.Equal(HttpStatusCode.OK, failResponse.StatusCode);
+
+        using var scope = _factory.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
+        var savedRun = dbContext.AgentDispatchRuns.Single(x => x.Id == started.Id);
+
+        Assert.Equal(AgentDispatchRunStatus.Failed, savedRun.Status);
+        Assert.Equal("Codex app-server thread/start returned no thread id.", savedRun.Error);
+        Assert.Contains(dbContext.AuditEvents, x => x.EntityType == nameof(AgentDispatchRun) && x.Action == "agent-dispatch.failed");
+    }
+
     private static string ComputeSignature(string secret, string payload)
     {
         using var hasher = new HMACSHA256(Encoding.UTF8.GetBytes(secret));
@@ -307,5 +519,19 @@ public sealed class PlatformEndpointsTests : IClassFixture<TestWebApplicationFac
         request.Headers.Add("X-Heimdall-Signature-256", ComputeSignature("test-heimdall-intake-secret", payload));
         request.Content = new StringContent(payload, Encoding.UTF8, "application/json");
         return request;
+    }
+
+    private sealed class BridgeActionHttpResult
+    {
+        public Guid Id { get; init; }
+
+        public string Status { get; init; } = string.Empty;
+    }
+
+    private sealed class AgentDispatchRunHttpResult
+    {
+        public Guid Id { get; init; }
+
+        public string Status { get; init; } = string.Empty;
     }
 }

@@ -137,61 +137,125 @@ async function runClaimedViaCodexExec(request, repoRoot, promptPath, logPath, op
   const reasoningEffort = options["reasoning-effort"] ?? process.env.CODEX_MODEL_REASONING_EFFORT ?? "medium";
   const sandbox = options.sandbox ?? "workspace-write";
   const startedAt = new Date().toISOString();
-
+  const bridgeContextEnv = buildBridgeContextEnv(request);
+  const resultPath = resolve(dirname(logPath), "result.json");
   await mkdir(dirname(logPath), { recursive: true });
   appendLog(logPath, `started ${startedAt}`);
   appendLog(logPath, `request ${request.id}: ${request.title}`);
   appendLog(logPath, `repoRoot ${repoRoot}`);
+  let dispatchRun = null;
 
-  const prompt = await readFile(promptPath, "utf8");
-  const result = spawnSync(
-    codexExecutable,
-    [
-      ...codexExecArgs,
-      "exec",
-      "-m", model,
-      "-c", 'approval_policy="never"',
-      "-c", `model_reasoning_effort=${JSON.stringify(reasoningEffort)}`,
-      "--skip-git-repo-check",
-      "-s", sandbox,
-      "-",
-    ],
-    {
-      cwd: repoRoot,
-      input: prompt,
-      encoding: "utf8",
-      stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true,
-    },
-  );
+  try {
+    dispatchRun = await beginDispatchRun(request, {
+      launchMode: "codex-exec",
+      workerProcessId: process.pid,
+      threadId: "",
+      turnId: "",
+      logPath,
+      resultPath,
+      note: "Codex dispatch process started.",
+    });
 
-  appendLog(logPath, result.stdout ?? "");
-  appendLog(logPath, result.stderr ?? "");
-  const ok = result.status === 0;
-  const closeStatus = ok ? "completed" : "cancelled";
-  const note = ok
-    ? `Codex dispatch completed from Bifrost. Log: ${logPath}`
-    : `Codex dispatch failed with exit ${result.status ?? "unknown"}. Log: ${logPath}`;
-  const close = runNodeJson([
-    transportCli,
-    "close",
-    "--id", request.id,
-    "--status", closeStatus,
-    "--note", note,
-  ], bifrostRoot);
-  await writeFile(
-    resolve(dirname(logPath), "result.json"),
-    `${JSON.stringify({
+    const prompt = await readFile(promptPath, "utf8");
+    const result = spawnSync(
+      codexExecutable,
+      [
+        ...codexExecArgs,
+        "exec",
+        "-m", model,
+        "-c", 'approval_policy="never"',
+        "-c", `model_reasoning_effort=${JSON.stringify(reasoningEffort)}`,
+        "--skip-git-repo-check",
+        "-s", sandbox,
+        "-",
+      ],
+      {
+        cwd: repoRoot,
+        input: prompt,
+        encoding: "utf8",
+        stdio: ["pipe", "pipe", "pipe"],
+        env: {
+          ...process.env,
+          ...bridgeContextEnv,
+        },
+        windowsHide: true,
+      },
+    );
+
+    appendLog(logPath, result.stdout ?? "");
+    appendLog(logPath, result.stderr ?? "");
+    const launchError = result.error ? summarizeError(result.error) : "";
+    const ok = result.status === 0 && !launchError;
+    const closeStatus = ok ? "completed" : "cancelled";
+    const note = ok
+      ? `Codex dispatch completed from Bifrost. Log: ${logPath}`
+      : launchError
+        ? `Codex dispatch failed before completion: ${launchError}. Log: ${logPath}`
+        : `Codex dispatch failed with exit ${result.status ?? "unknown"}. Log: ${logPath}`;
+    const close = runNodeJson([
+      transportCli,
+      "close",
+      "--id", request.id,
+      "--status", closeStatus,
+      "--note", note,
+    ], bifrostRoot);
+
+    if (launchError) {
+      await dispatchRun?.fail({
+        threadId: "",
+        turnId: "",
+        resultPath,
+        note,
+        error: launchError,
+      });
+    } else {
+      await dispatchRun?.complete({
+        status: ok ? "Completed" : "Cancelled",
+        threadId: "",
+        turnId: "",
+        resultPath,
+        note,
+      });
+    }
+
+    await writeDispatchResult(logPath, {
       requestId: request.id,
       ok,
       exitCode: result.status,
+      error: launchError,
       launchMode: "codex-exec",
       startedAt,
       finishedAt: new Date().toISOString(),
       close,
-    }, null, 2)}\n`,
-    "utf8",
-  );
+    });
+  } catch (error) {
+    const message = summarizeError(error);
+    const note = `Codex dispatch failed before completion: ${message}. Log: ${logPath}`;
+    const close = runNodeJson([
+      transportCli,
+      "close",
+      "--id", request.id,
+      "--status", "cancelled",
+      "--note", note,
+    ], bifrostRoot);
+    await dispatchRun?.fail({
+      threadId: "",
+      turnId: "",
+      resultPath,
+      note,
+      error: message,
+    });
+    await writeDispatchResult(logPath, {
+      requestId: request.id,
+      ok: false,
+      error: message,
+      launchMode: "codex-exec",
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      close,
+    });
+    throw error;
+  }
 }
 
 async function runClaimedViaAppServer(request, repoRoot, promptPath, logPath, options) {
@@ -200,9 +264,11 @@ async function runClaimedViaAppServer(request, repoRoot, promptPath, logPath, op
   const sandbox = options.sandbox ?? "danger-full-access";
   const startedAt = new Date().toISOString();
   const prompt = await readFile(promptPath, "utf8");
+  const resultPath = resolve(dirname(logPath), "result.json");
   const client = new CodexAppServerClient({
     logPath,
     command: resolveCodexCommand(options),
+    env: buildBridgeContextEnv(request),
   });
 
   await mkdir(dirname(logPath), { recursive: true });
@@ -213,6 +279,15 @@ async function runClaimedViaAppServer(request, repoRoot, promptPath, logPath, op
 
   let threadId;
   let turnId;
+  const dispatchRun = await beginDispatchRun(request, {
+    launchMode: "app-server",
+    workerProcessId: process.pid,
+    threadId: "",
+    turnId: "",
+    logPath,
+    resultPath,
+    note: "Codex app-server launch started.",
+  });
   try {
     await client.start();
     await client.request("initialize", {
@@ -294,6 +369,13 @@ async function runClaimedViaAppServer(request, repoRoot, promptPath, logPath, op
       "--status", closeStatus,
       "--note", note,
     ], bifrostRoot);
+    await dispatchRun?.complete({
+      status: ok ? "Completed" : "Cancelled",
+      threadId,
+      turnId,
+      resultPath,
+      note,
+    });
     await writeDispatchResult(logPath, {
       requestId: request.id,
       ok,
@@ -305,9 +387,10 @@ async function runClaimedViaAppServer(request, repoRoot, promptPath, logPath, op
       close,
     });
   } catch (error) {
-    appendLog(logPath, error instanceof Error ? error.stack ?? error.message : String(error));
+    const message = summarizeError(error);
+    appendLog(logPath, message);
     if (!threadId || !turnId) {
-      releaseClaimedRequest(request.id, `Visible Codex app turn did not start: ${error instanceof Error ? error.message : String(error)}`);
+      releaseClaimedRequest(request.id, `Visible Codex app turn did not start: ${message}`);
     } else {
       runNodeJson([
         transportCli,
@@ -317,6 +400,13 @@ async function runClaimedViaAppServer(request, repoRoot, promptPath, logPath, op
         "--note", `Codex app dispatch failed after turn start for ${threadId}/${turnId}.`,
       ], bifrostRoot);
     }
+    await dispatchRun?.fail({
+      threadId: threadId ?? "",
+      turnId: turnId ?? "",
+      resultPath,
+      note: "Codex dispatch failed.",
+      error: message,
+    });
     await writeDispatchResult(logPath, {
       requestId: request.id,
       ok: false,
@@ -325,7 +415,7 @@ async function runClaimedViaAppServer(request, repoRoot, promptPath, logPath, op
       turnId,
       startedAt,
       finishedAt: new Date().toISOString(),
-      error: error instanceof Error ? error.message : String(error),
+      error: message,
     });
     process.exitCode = 1;
   } finally {
@@ -387,6 +477,7 @@ Priority: ${request.priority}
 Work the request in this workspace. Prefer a small coherent change, create or update tests/docs when appropriate, and leave the repo in a reviewable state. If this is only an analysis/proposal request, produce the artifact requested. Bifrost will close the transport request after this Codex turn exits.
 
 Transport policy: do not push to GitHub, open a pull request, or publish external changes unless this specific request explicitly asks for that. A Bifrost-dispatched turn may prepare local changes and report the commit/PR command it would run, but the bridge owns publication policy.
+If this request explicitly authorizes a governed crossing and you use \`tools/bifrost-bridge.mjs\`, the dispatch runtime already provides bridge provenance for request \`${request.id}\`. Preserve it.
 
 ${request.requestMarkdown}
 `;
@@ -408,6 +499,10 @@ function postDispatchReceipt(request, dispatchRecord, options) {
     "--channel-id", channelId,
     "--persona-name", personaName,
     "--content", content,
+    "--source-kind", "bifrost_agent_transport_request",
+    "--source-id", request.id,
+    "--authority-ref", "bifrost_dispatch_started_receipt",
+    ...optionalArg("--target-repository-full-name", request.targetRepositoryFullName),
     ...optionalArg("--persona-avatar-url", personaAvatarUrl),
   ], bifrostRoot);
 }
@@ -440,9 +535,18 @@ function renderDispatchReceiptContent(request) {
   ].join("\n");
 }
 
+function buildBridgeContextEnv(request) {
+  return {
+    BIFROST_BRIDGE_SOURCE_KIND: "bifrost_agent_transport_request",
+    BIFROST_BRIDGE_SOURCE_ID: request.id,
+    BIFROST_BRIDGE_AUTHORITY_REF: "bifrost_dispatch_execution",
+  };
+}
+
 class CodexAppServerClient {
-  constructor({ command, logPath }) {
+  constructor({ command, env, logPath }) {
     this.command = command;
+    this.env = env;
     this.logPath = logPath;
     this.child = undefined;
     this.nextId = 1;
@@ -454,6 +558,10 @@ class CodexAppServerClient {
   async start() {
     this.child = spawn(this.command.exe, [...this.command.args, "app-server", "--listen", "stdio://"], {
       cwd: bifrostRoot,
+      env: {
+        ...process.env,
+        ...this.env,
+      },
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
     });
@@ -619,6 +727,108 @@ async function writeDispatchResult(logPath, result) {
     `${JSON.stringify(result, null, 2)}\n`,
     "utf8",
   );
+}
+
+async function beginDispatchRun(request, input) {
+  const baseUrl = optionalString(process.env.BIFROST_BRIDGE_BASE_URL);
+  const token = optionalString(process.env.BIFROST_BRIDGE_TOKEN);
+  if (!baseUrl || !token) {
+    return null;
+  }
+
+  const started = await postDispatchRunJson(
+    baseUrl,
+    token,
+    "/dispatch/runs/start",
+    {
+      requestId: request.id,
+      targetRepoName: request.targetRepoName,
+      targetRepositoryFullName: request.targetRepositoryFullName ?? "",
+      targetAgentIdentity: request.targetAgentIdentity ?? "",
+      launchMode: input.launchMode,
+      workerProcessId: input.workerProcessId,
+      threadId: input.threadId,
+      turnId: input.turnId,
+      logPath: input.logPath,
+      resultPath: input.resultPath,
+      note: input.note,
+    },
+    new Set([202]),
+  );
+
+  const id = started.body?.id;
+  if (!id) {
+    throw new Error(`Bifrost dispatch run start returned no run id: ${started.text}`);
+  }
+
+  return {
+    async complete(payload) {
+      await postDispatchRunJson(
+        baseUrl,
+        token,
+        `/dispatch/runs/${id}/complete`,
+        payload,
+        new Set([200]),
+      );
+    },
+    async fail(payload) {
+      try {
+        await postDispatchRunJson(
+          baseUrl,
+          token,
+          `/dispatch/runs/${id}/fail`,
+          payload,
+          new Set([200]),
+        );
+      } catch {
+        // Best effort: the run failure still lands in the local result/log files.
+      }
+    },
+  };
+}
+
+async function postDispatchRunJson(baseUrl, token, path, payload, allowedStatuses) {
+  const url = new URL(path, ensureTrailingSlash(baseUrl));
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Bifrost-Bridge-Token": token,
+    },
+    body: JSON.stringify(payload),
+  });
+
+  const text = await response.text();
+  let body = null;
+  if (text) {
+    try {
+      body = JSON.parse(text);
+    } catch {
+      body = null;
+    }
+  }
+
+  if (!allowedStatuses.has(response.status)) {
+    throw new Error(`Bifrost dispatch run call to ${path} failed with ${response.status}: ${text}`);
+  }
+
+  return {
+    status: response.status,
+    text,
+    body,
+  };
+}
+
+function ensureTrailingSlash(value) {
+  return value.endsWith("/") ? value : `${value}/`;
+}
+
+function summarizeError(error) {
+  if (error instanceof Error) {
+    return error.stack ?? error.message;
+  }
+
+  return String(error);
 }
 
 function summarizeRequestTopic(request) {

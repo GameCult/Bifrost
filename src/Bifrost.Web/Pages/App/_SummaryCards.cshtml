@@ -26,6 +26,14 @@
         <strong>@Model.AssignedToCurrentMember</strong>
     </article>
     <article class="metric-card">
+        <span>Bridge actions live</span>
+        <strong>@Model.ActiveBridgeActions</strong>
+    </article>
+    <article class="metric-card">
+        <span>Dispatch runs live</span>
+        <strong>@Model.ActiveDispatchRuns</strong>
+    </article>
+    <article class="metric-card">
         <span>Approved nominal payout</span>
         <strong>@Model.ApprovedNominalPayoutValue.ToString("0.##")</strong>
     </article>

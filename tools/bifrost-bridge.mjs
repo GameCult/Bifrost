@@ -45,6 +45,7 @@ async function main() {
 }
 
 async function createGitHubDraftPr(options) {
+  ensureGitHubBridgeGate(options);
   const repoRoot = resolve(requireOption(options, "repo-root"));
   const identity = slugify(requireOption(options, "identity"));
   const title = requireOption(options, "title");
@@ -56,6 +57,9 @@ async function createGitHubDraftPr(options) {
   const commitMessage = options["commit-message"] ?? title;
   const allowDirty = options["allow-dirty"] === "true";
   const dryRun = options["dry-run"] === "true";
+  const targetRepositoryFullName =
+    optionalString(options["target-repository-full-name"]) ??
+    detectGitHubRepositoryFullName(repoRoot);
 
   const originalBranch = git(["branch", "--show-current"], repoRoot).stdout.trim();
   const status = git(["status", "--short"], repoRoot).stdout.trim();
@@ -85,31 +89,59 @@ async function createGitHubDraftPr(options) {
     return;
   }
 
+  const bridgeAction = await beginBridgeAction(options, {
+    actorKind: "Agent",
+    actorName: identity,
+    targetSurface: "GitHub",
+    actionKind: "GitHubDraftPullRequest",
+    targetRepositoryFullName,
+    targetLocator: relativePath,
+    title,
+    summary: body,
+  });
+
   let pushed = false;
   let prUrl = "";
   try {
-    git(["switch", "-c", branch], repoRoot);
-    await mkdir(dirname(targetPath), { recursive: true });
-    await writeFile(targetPath, content, "utf8");
-    git(["add", "--", relativePath], repoRoot);
-    git(["commit", "-m", commitMessage], repoRoot);
-    git(["push", "-u", "origin", branch], repoRoot);
-    pushed = true;
+    try {
+      await bridgeAction?.start();
+      git(["switch", "-c", branch], repoRoot);
+      await mkdir(dirname(targetPath), { recursive: true });
+      await writeFile(targetPath, content, "utf8");
+      git(["add", "--", relativePath], repoRoot);
+      git(["commit", "-m", commitMessage], repoRoot);
+      git(["push", "-u", "origin", branch], repoRoot);
+      pushed = true;
 
-    const pr = run("gh", [
-      "pr",
-      "create",
-      "--draft",
-      "--title",
-      title,
-      "--body",
-      body,
-      "--base",
-      base,
-      "--head",
-      branch,
-    ], repoRoot);
-    prUrl = pr.stdout.trim();
+      const pr = run("gh", [
+        "pr",
+        "create",
+        "--draft",
+        "--title",
+        title,
+        "--body",
+        body,
+        "--base",
+        base,
+        "--head",
+        branch,
+      ], repoRoot);
+      prUrl = pr.stdout.trim();
+      await bridgeAction?.complete({
+        receiptUrl: prUrl,
+        externalReceiptId: extractGitHubNumber(prUrl) ?? branch,
+        receiptPayload: JSON.stringify({
+          branch,
+          base,
+          path: relativePath,
+          commitMessage,
+          prUrl,
+        }),
+      });
+    } catch (error) {
+      await bridgeAction?.fail(error);
+      throw error;
+    }
   } finally {
     if (originalBranch) {
       git(["switch", originalBranch], repoRoot, { allowFailure: true });
@@ -131,12 +163,16 @@ async function createGitHubDraftPr(options) {
 }
 
 async function commentGitHubPr(options) {
+  ensureGitHubBridgeGate(options);
   const repoRoot = resolve(requireOption(options, "repo-root"));
   const identity = slugify(requireOption(options, "identity"));
   const pr = requireOption(options, "pr");
   const content = await readOptionText(options, "content", "content-file");
   const dryRun = options["dry-run"] === "true";
   const body = `${identity} says:\n\n${content.trim()}`;
+  const targetRepositoryFullName =
+    optionalString(options["target-repository-full-name"]) ??
+    detectGitHubRepositoryFullName(repoRoot);
 
   if (dryRun) {
     printJson({
@@ -150,7 +186,34 @@ async function commentGitHubPr(options) {
     return;
   }
 
-  run("gh", ["pr", "comment", pr, "--body", body], repoRoot);
+  const bridgeAction = await beginBridgeAction(options, {
+    actorKind: "Agent",
+    actorName: identity,
+    targetSurface: "GitHub",
+    actionKind: "GitHubPullRequestComment",
+    targetRepositoryFullName,
+    targetLocator: `pull/${pr}`,
+    title: `PR comment on #${pr}`,
+    summary: content,
+  });
+
+  try {
+    await bridgeAction?.start();
+    run("gh", ["pr", "comment", pr, "--body", body], repoRoot);
+    await bridgeAction?.complete({
+      receiptUrl: `https://github.com/${targetRepositoryFullName}/pull/${pr}#issuecomment-bridge`,
+      externalReceiptId: String(pr),
+      receiptPayload: JSON.stringify({
+        pullRequestNumber: Number(pr),
+        repositoryFullName: targetRepositoryFullName,
+        author: identity,
+        body,
+      }),
+    });
+  } catch (error) {
+    await bridgeAction?.fail(error);
+    throw error;
+  }
   printJson({
     action: "github-pr-comment",
     ok: true,
@@ -186,13 +249,41 @@ async function postDiscordMessage(options) {
     throw new Error("Set BIFROST_DISCORD_BOT_TOKEN or DISCORD_BOT_TOKEN before posting to Discord.");
   }
 
-  const result = personaName
-    ? await postDiscordPersonaMessage(token, channelId, content, {
-        personaName,
-        personaAvatarUrl,
-        replyToMessageId,
-      })
-    : await postDiscordBotMessage(token, channelId, content, replyToMessageId);
+  const bridgeAction = await beginBridgeAction(options, {
+    actorKind: personaName ? "Persona" : "Service",
+    actorName: personaName ?? "bifrost",
+    targetSurface: "Discord",
+    actionKind: "DiscordPost",
+    targetRepositoryFullName: options["target-repository-full-name"] ?? "",
+    targetLocator: `channel/${channelId}`,
+    title: personaName ? `Discord post from ${personaName}` : "Discord post",
+    summary: content,
+  });
+
+  let result;
+  try {
+    await bridgeAction?.start();
+    result = personaName
+      ? await postDiscordPersonaMessage(token, channelId, content, {
+          personaName,
+          personaAvatarUrl,
+          replyToMessageId,
+        })
+      : await postDiscordBotMessage(token, channelId, content, replyToMessageId);
+    await bridgeAction?.complete({
+      receiptUrl: `https://discord.com/channels/${result.guildId ?? "@me"}/${channelId}/${result.id}`,
+      externalReceiptId: result.id,
+      receiptPayload: JSON.stringify({
+        channelId,
+        messageId: result.id,
+        guildId: result.guildId ?? "",
+        transport: result.transport,
+      }),
+    });
+  } catch (error) {
+    await bridgeAction?.fail(error);
+    throw error;
+  }
 
   printJson({
     action: "discord-post",
@@ -224,8 +315,37 @@ async function sendDiscordDm(options) {
     throw new Error("Set BIFROST_DISCORD_BOT_TOKEN or DISCORD_BOT_TOKEN before sending a Discord DM.");
   }
 
-  const channelId = await openDiscordDmChannel(token, recipientId);
-  const result = await postDiscordBotMessage(token, channelId, content, undefined);
+  const bridgeAction = await beginBridgeAction(options, {
+    actorKind: "Service",
+    actorName: "bifrost",
+    targetSurface: "Discord",
+    actionKind: "DiscordDirectMessage",
+    targetRepositoryFullName: options["target-repository-full-name"] ?? "",
+    targetLocator: `recipient/${recipientId}`,
+    title: "Discord direct message",
+    summary: content,
+  });
+
+  let channelId;
+  let result;
+  try {
+    await bridgeAction?.start();
+    channelId = await openDiscordDmChannel(token, recipientId);
+    result = await postDiscordBotMessage(token, channelId, content, undefined);
+    await bridgeAction?.complete({
+      receiptUrl: `https://discord.com/channels/@me/${channelId}/${result.id}`,
+      externalReceiptId: result.id,
+      receiptPayload: JSON.stringify({
+        recipientId,
+        channelId,
+        messageId: result.id,
+        transport: result.transport,
+      }),
+    });
+  } catch (error) {
+    await bridgeAction?.fail(error);
+    throw error;
+  }
   printJson({
     action: "discord-dm",
     ok: true,
@@ -260,14 +380,44 @@ async function postRedditThread(options) {
     return;
   }
 
-  const accessToken = await getRedditAccessToken();
-  const result = await submitRedditSelfPost(accessToken, {
-    subreddit,
+  const bridgeAction = await beginBridgeAction(options, {
+    actorKind: personaName ? "Persona" : "Service",
+    actorName: personaName ?? "bifrost",
+    targetSurface: "Reddit",
+    actionKind: "RedditPost",
+    targetRepositoryFullName: options["target-repository-full-name"] ?? "",
+    targetLocator: `r/${subreddit}`,
     title,
-    content,
-    flairId: personaFlairId,
-    flairText: personaFlairText,
+    summary: content,
   });
+
+  let result;
+  try {
+    await bridgeAction?.start();
+    const accessToken = await getRedditAccessToken();
+    result = await submitRedditSelfPost(accessToken, {
+      subreddit,
+      title,
+      content,
+      flairId: personaFlairId,
+      flairText: personaFlairText,
+    });
+    await bridgeAction?.complete({
+      receiptUrl: result.url,
+      externalReceiptId: result.thingId,
+      receiptPayload: JSON.stringify({
+        subreddit,
+        thingId: result.thingId,
+        url: result.url,
+        personaName,
+        personaFlairId,
+        personaFlairText,
+      }),
+    });
+  } catch (error) {
+    await bridgeAction?.fail(error);
+    throw error;
+  }
 
   printJson({
     action: "reddit-post",
@@ -743,6 +893,140 @@ function optionalString(value) {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
+async function beginBridgeAction(options, action) {
+  const baseUrl = optionalString(options["bifrost-base-url"]) ?? optionalString(process.env.BIFROST_BRIDGE_BASE_URL);
+  if (!baseUrl) {
+    return null;
+  }
+
+  const token = optionalString(options["bifrost-token"]) ?? optionalString(process.env.BIFROST_BRIDGE_TOKEN);
+  if (!token) {
+    throw new Error("Set BIFROST_BRIDGE_TOKEN or pass --bifrost-token when using the Bifrost bridge action ledger.");
+  }
+
+  const payload = {
+    ...action,
+    sourceKind: optionalString(options["source-kind"]) ?? optionalString(process.env.BIFROST_BRIDGE_SOURCE_KIND) ?? "",
+    sourceId: optionalString(options["source-id"]) ?? optionalString(process.env.BIFROST_BRIDGE_SOURCE_ID) ?? "",
+    authorityReference: optionalString(options["authority-ref"]) ?? optionalString(process.env.BIFROST_BRIDGE_AUTHORITY_REF) ?? "",
+    workItemId: optionalString(options["work-item-id"]) ?? null,
+    motionId: optionalString(options["motion-id"]) ?? null,
+  };
+
+  const requested = await postBridgeJson(
+    baseUrl,
+    token,
+    "/bridge/actions/request",
+    payload,
+    new Set([202, 403]),
+  );
+
+  if (requested.status === 403) {
+    throw new Error(`Bifrost denied bridge action: ${requested.body?.policyDecision ?? requested.text}`);
+  }
+
+  const id = requested.body?.id;
+  if (!id) {
+    throw new Error(`Bifrost bridge request returned no action id: ${requested.text}`);
+  }
+
+  return {
+    id,
+    async start() {
+      await postBridgeJson(baseUrl, token, `/bridge/actions/${id}/start`, undefined, new Set([202]));
+    },
+    async complete(receipt) {
+      await postBridgeJson(baseUrl, token, `/bridge/actions/${id}/complete`, receipt, new Set([200]));
+    },
+    async fail(error) {
+      const failureReason = error instanceof Error ? error.message : String(error);
+      try {
+        await postBridgeJson(
+          baseUrl,
+          token,
+          `/bridge/actions/${id}/fail`,
+          { failureReason },
+          new Set([200, 400]),
+        );
+      } catch {
+        // Best effort: the underlying command error is still the real failure.
+      }
+    },
+  };
+}
+
+function ensureGitHubBridgeGate(options) {
+  const baseUrl = optionalString(options["bifrost-base-url"]) ?? optionalString(process.env.BIFROST_BRIDGE_BASE_URL);
+  const token = optionalString(options["bifrost-token"]) ?? optionalString(process.env.BIFROST_BRIDGE_TOKEN);
+  const allowUngated =
+    options["allow-ungated-github"] === "true" ||
+    process.env.BIFROST_ALLOW_UNGATED_GITHUB === "true";
+
+  if (baseUrl && token) {
+    return;
+  }
+
+  if (allowUngated) {
+    return;
+  }
+
+  throw new Error(
+    "GitHub bridge actions require Bifrost authorization and receipt logging. " +
+      "Set BIFROST_BRIDGE_BASE_URL and BIFROST_BRIDGE_TOKEN, or use --allow-ungated-github true only for explicit operator recovery.",
+  );
+}
+
+async function postBridgeJson(baseUrl, token, path, payload, allowedStatuses) {
+  const url = new URL(path, ensureTrailingSlash(baseUrl));
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Bifrost-Bridge-Token": token,
+    },
+    body: payload === undefined ? undefined : JSON.stringify(payload),
+  });
+
+  const text = await response.text();
+  let body = null;
+  if (text) {
+    try {
+      body = JSON.parse(text);
+    } catch {
+      body = null;
+    }
+  }
+
+  if (!allowedStatuses.has(response.status)) {
+    throw new Error(`Bifrost bridge call to ${path} failed with ${response.status}: ${text}`);
+  }
+
+  return {
+    status: response.status,
+    text,
+    body,
+  };
+}
+
+function ensureTrailingSlash(value) {
+  return value.endsWith("/") ? value : `${value}/`;
+}
+
+function detectGitHubRepositoryFullName(repoRoot) {
+  const result = run(
+    "gh",
+    ["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"],
+    repoRoot,
+    { allowFailure: true },
+  );
+  return optionalString(result.stdout) ?? "";
+}
+
+function extractGitHubNumber(value) {
+  const match = optionalString(value)?.match(/\/(\d+)(?:[#?].*)?$/);
+  return match ? match[1] : undefined;
+}
+
 function normalizeSubreddit(value) {
   const subreddit = optionalString(value)?.replace(/^\/?r\//i, "");
   if (!subreddit || !/^[A-Za-z0-9_]{3,21}$/.test(subreddit)) {
@@ -829,6 +1113,10 @@ Examples:
   node tools/bifrost-bridge.mjs discord-post --channel-id 1501196543150264332 --persona-name Nibu --content "Draft PR opened: https://github.com/..."
   node tools/bifrost-bridge.mjs discord-dm --recipient-id 123456789 --content "Moderation status update..."
   node tools/bifrost-bridge.mjs reddit-post --title "Nibu: Reset-loop continuity" --persona-name Nibu --content-file thread.md
+
+GitHub note:
+  GitHub actions require BIFROST_BRIDGE_BASE_URL and BIFROST_BRIDGE_TOKEN so Bifrost can gate and receipt the crossing.
+  Use --allow-ungated-github true only for explicit operator recovery.
 `);
 }
 
