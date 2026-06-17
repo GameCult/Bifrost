@@ -267,6 +267,7 @@ async function commentGitHubPr(options) {
 }
 
 async function postDiscordMessage(options) {
+  ensureBridgeReceiptGate(options);
   const token = process.env.BIFROST_DISCORD_BOT_TOKEN ?? process.env.DISCORD_BOT_TOKEN;
   const channelId = requireOption(options, "channel-id");
   const content = await readOptionText(options, "content", "content-file");
@@ -339,6 +340,7 @@ async function postDiscordMessage(options) {
 }
 
 async function sendDiscordDm(options) {
+  ensureBridgeReceiptGate(options);
   const token = process.env.BIFROST_DISCORD_BOT_TOKEN ?? process.env.DISCORD_BOT_TOKEN;
   const recipientId = requireOption(options, "recipient-id");
   const content = await readOptionText(options, "content", "content-file");
@@ -401,6 +403,7 @@ async function sendDiscordDm(options) {
 }
 
 async function postRedditThread(options) {
+  ensureBridgeReceiptGate(options);
   const subreddit = normalizeSubreddit(options.subreddit ?? process.env.BIFROST_REDDIT_SUBREDDIT ?? "GameCultOrg");
   const title = requireOption(options, "title");
   const content = await readOptionText(options, "content", "content-file");
@@ -1054,6 +1057,34 @@ function ensureGitHubBridgeGate(options) {
   throw new Error(
     "GitHub bridge actions require Bifrost authorization and receipt logging. " +
       "Set BIFROST_BRIDGE_BASE_URL and BIFROST_BRIDGE_TOKEN, or use --allow-ungated-github true only for explicit operator recovery.",
+  );
+}
+
+function ensureBridgeReceiptGate(options) {
+  const baseUrl = optionalString(options["bifrost-base-url"]) ?? optionalString(process.env.BIFROST_BRIDGE_BASE_URL);
+  const token = optionalString(options["bifrost-token"]) ?? optionalString(process.env.BIFROST_BRIDGE_TOKEN);
+  const allowUnreceipted =
+    options["allow-unreceipted-activity"] === "true" ||
+    process.env.BIFROST_ALLOW_UNRECEIPTED_ACTIVITY === "true";
+
+  if (allowUnreceipted && process.env.BIFROST_LOCK_RECOVERY_HATCHES === "true") {
+    throw new Error(
+      "Dispatched Bifrost work cannot use --allow-unreceipted-activity or BIFROST_ALLOW_UNRECEIPTED_ACTIVITY. " +
+      "External bridge activity from a dispatched turn must go through the normal Bifrost receipt path.",
+    );
+  }
+
+  if (baseUrl && token) {
+    return;
+  }
+
+  if (allowUnreceipted) {
+    return;
+  }
+
+  throw new Error(
+    "Bridge activity requires BIFROST_BRIDGE_BASE_URL and BIFROST_BRIDGE_TOKEN so Bifrost can receipt the external crossing. " +
+      "Set BIFROST_BRIDGE_BASE_URL and BIFROST_BRIDGE_TOKEN, or use --allow-unreceipted-activity true only for explicit operator recovery.",
   );
 }
 

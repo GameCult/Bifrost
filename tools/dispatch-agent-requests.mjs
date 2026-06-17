@@ -528,6 +528,7 @@ function postDispatchReceipt(request, dispatchRecord, options) {
     "--authority-ref", "bifrost_dispatch_started_receipt",
     ...optionalArg("--target-repository-full-name", request.targetRepositoryFullName),
     ...optionalArg("--persona-avatar-url", personaAvatarUrl),
+    ...bridgeRecoveryArgs(options),
   ], bifrostRoot);
 }
 
@@ -538,6 +539,10 @@ function resolveDispatchReceiptChannelId(options) {
     optionalString(process.env.DISCORD_BIFROST_CHANNEL_ID) ??
     defaultAquariumChannelId
   );
+}
+
+function bridgeRecoveryArgs(options) {
+  return allowsUnreceiptedActivity(options) ? ["--allow-unreceipted-activity", "true"] : [];
 }
 
 function renderDispatchReceiptContent(request) {

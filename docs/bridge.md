@@ -44,6 +44,7 @@ It intentionally uses boring local credentials while Heimdall's managed GitHub c
 - Reddit self-posts use `BIFROST_REDDIT_CLIENT_ID`, `BIFROST_REDDIT_REFRESH_TOKEN`, and optional `BIFROST_REDDIT_CLIENT_SECRET`.
 
 The CLI is not the final permission system. It is the working bridge actuator Bifrost owns now, so VoidBot and repo Personas can stop carrying this machinery themselves.
+It now fails closed for all external write surfaces by default. GitHub mutations already required the hosted bridge gate; Discord posts, Discord DMs, and Reddit self-posts now require the same `BIFROST_BRIDGE_BASE_URL` and `BIFROST_BRIDGE_TOKEN` receipt path unless an operator explicitly uses `--allow-unreceipted-activity true` for local recovery. Dispatched work is not allowed to use that recovery hatch.
 
 ## Bridge Action Ledger
 

@@ -414,6 +414,7 @@ async function mirrorTopicActivityOrThrow(cache, topic, input) {
     "--target-repository-full-name", topic.jurisdictionRepoName,
     ...optionalArg("--persona-avatar-url", personaAvatarUrl),
     ...optionalArg("--reply-to-message-id", input.options["mirror-reply-to-message-id"]),
+    ...bridgeRecoveryArgs(input.options),
     ...(input.options["mirror-dry-run"] === "true" ? ["--dry-run", "true"] : []),
   ], repoRoot);
   const bodyMarkdown = receipt.dryRun
@@ -443,6 +444,10 @@ function resolveMirrorChannelId(options) {
 
 function allowsUnmirrored(options) {
   return options["allow-unmirrored"] === "true" || process.env.BIFROST_ALLOW_UNMIRRORED_GOVERNANCE === "true";
+}
+
+function bridgeRecoveryArgs(options) {
+  return allowsUnreceiptedActivity(options) ? ["--allow-unreceipted-activity", "true"] : [];
 }
 
 function renderGovernanceMirrorContent(topic, eventLabel, content) {

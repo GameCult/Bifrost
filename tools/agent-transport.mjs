@@ -248,6 +248,7 @@ async function mirrorEnqueuedRequestOrThrow(request, options) {
     ...optionalArg("--target-repository-full-name", request.targetRepositoryFullName ?? request.targetRepoName),
     ...optionalArg("--persona-avatar-url", personaAvatarUrl),
     ...optionalArg("--reply-to-message-id", options["mirror-reply-to-message-id"]),
+    ...bridgeRecoveryArgs(options),
     ...(options["mirror-dry-run"] === "true" ? ["--dry-run", "true"] : []),
   ], repoRoot);
 }
@@ -262,6 +263,10 @@ function resolveMirrorChannelId(options) {
 
 function allowsUnmirrored(options) {
   return options["allow-unmirrored"] === "true" || process.env.BIFROST_ALLOW_UNMIRRORED_GOVERNANCE === "true";
+}
+
+function bridgeRecoveryArgs(options) {
+  return allowsUnreceiptedActivity(options) ? ["--allow-unreceipted-activity", "true"] : [];
 }
 
 function renderRequestMirrorFallback(request) {

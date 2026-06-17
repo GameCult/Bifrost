@@ -101,6 +101,88 @@ console.log(JSON.stringify({
     }
 
     [Fact]
+    public async Task Discord_bridge_command_fails_closed_without_bifrost_receipt_gate()
+    {
+        var result = await RunNodeAsync([
+            "tools/bifrost-bridge.mjs",
+            "discord-post",
+            "--channel-id", "1501196543150264332",
+            "--content", "test message",
+            "--dry-run", "true",
+        ]);
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("BIFROST_BRIDGE_BASE_URL and BIFROST_BRIDGE_TOKEN", result.Stderr, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Discord_bridge_command_allows_explicit_operator_recovery_dry_run()
+    {
+        var result = await RunNodeAsync([
+            "tools/bifrost-bridge.mjs",
+            "discord-post",
+            "--channel-id", "1501196543150264332",
+            "--content", "test message",
+            "--allow-unreceipted-activity", "true",
+            "--dry-run", "true",
+        ]);
+
+        Assert.True(result.ExitCode == 0, $"stdout:{Environment.NewLine}{result.Stdout}{Environment.NewLine}stderr:{Environment.NewLine}{result.Stderr}");
+        using var payload = JsonDocument.Parse(result.Stdout);
+        Assert.Equal("discord-post", payload.RootElement.GetProperty("action").GetString());
+        Assert.True(payload.RootElement.GetProperty("dryRun").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Discord_bridge_recovery_hatch_is_rejected_inside_dispatched_turn()
+    {
+        var result = await RunNodeAsync([
+            "tools/bifrost-bridge.mjs",
+            "discord-post",
+            "--channel-id", "1501196543150264332",
+            "--content", "test message",
+            "--allow-unreceipted-activity", "true",
+            "--dry-run", "true",
+        ], new Dictionary<string, string?>
+        {
+            ["BIFROST_LOCK_RECOVERY_HATCHES"] = "true",
+        });
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("cannot use --allow-unreceipted-activity", result.Stderr, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Reddit_bridge_command_fails_closed_without_bifrost_receipt_gate()
+    {
+        var result = await RunNodeAsync([
+            "tools/bifrost-bridge.mjs",
+            "reddit-post",
+            "--title", "Test thread",
+            "--content", "test message",
+            "--dry-run", "true",
+        ]);
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("BIFROST_BRIDGE_BASE_URL and BIFROST_BRIDGE_TOKEN", result.Stderr, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Discord_dm_bridge_command_fails_closed_without_bifrost_receipt_gate()
+    {
+        var result = await RunNodeAsync([
+            "tools/bifrost-bridge.mjs",
+            "discord-dm",
+            "--recipient-id", "123456789012345678",
+            "--content", "test message",
+            "--dry-run", "true",
+        ]);
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("BIFROST_BRIDGE_BASE_URL and BIFROST_BRIDGE_TOKEN", result.Stderr, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task Agent_transport_mutation_fails_closed_without_bifrost_receipt_gate()
     {
         var storePath = Path.Combine(Path.GetTempPath(), $"bifrost-agent-transport-{Guid.NewGuid():N}.cc");
