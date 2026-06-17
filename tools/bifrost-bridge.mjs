@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -59,7 +59,7 @@ async function createGitHubDraftPr(options) {
   const dryRun = options["dry-run"] === "true";
   const targetRepositoryFullName =
     optionalString(options["target-repository-full-name"]) ??
-    detectGitHubRepositoryFullName(repoRoot);
+    detectGitHubRepositoryFullName(options, repoRoot);
 
   const originalBranch = git(["branch", "--show-current"], repoRoot).stdout.trim();
   const status = git(["status", "--short"], repoRoot).stdout.trim();
@@ -113,7 +113,7 @@ async function createGitHubDraftPr(options) {
       git(["push", "-u", "origin", branch], repoRoot);
       pushed = true;
 
-      const pr = run("gh", [
+      const pr = runGitHubCli(options, [
         "pr",
         "create",
         "--draft",
@@ -172,7 +172,7 @@ async function commentGitHubPr(options) {
   const body = `${identity} says:\n\n${content.trim()}`;
   const targetRepositoryFullName =
     optionalString(options["target-repository-full-name"]) ??
-    detectGitHubRepositoryFullName(repoRoot);
+    detectGitHubRepositoryFullName(options, repoRoot);
 
   if (dryRun) {
     printJson({
@@ -199,28 +199,58 @@ async function commentGitHubPr(options) {
 
   try {
     await bridgeAction?.start();
-    run("gh", ["pr", "comment", pr, "--body", body], repoRoot);
+    const payloadPath = resolve(repoRoot, ".bifrost", `github-pr-comment-${Date.now()}-${Math.random().toString(16).slice(2)}.json`);
+    await mkdir(dirname(payloadPath), { recursive: true });
+    await writeFile(payloadPath, JSON.stringify({ body }), "utf8");
+    let comment;
+    try {
+      comment = parseRequiredJson(
+        runGitHubCli(
+          options,
+          [
+            "api",
+            `repos/${targetRepositoryFullName}/issues/${pr}/comments`,
+            "--method", "POST",
+            "--input", payloadPath,
+          ],
+          repoRoot,
+        ).stdout,
+        "GitHub PR comment response",
+      );
+    } finally {
+      await unlink(payloadPath).catch(() => {});
+    }
+    const receiptUrl = optionalString(comment.html_url);
+    const externalReceiptId = comment.id === undefined || comment.id === null ? "" : String(comment.id);
+    if (!receiptUrl || !externalReceiptId) {
+      throw new Error("GitHub PR comment response returned no concrete receipt URL or comment id.");
+    }
     await bridgeAction?.complete({
-      receiptUrl: `https://github.com/${targetRepositoryFullName}/pull/${pr}#issuecomment-bridge`,
-      externalReceiptId: String(pr),
+      receiptUrl,
+      externalReceiptId,
       receiptPayload: JSON.stringify({
         pullRequestNumber: Number(pr),
         repositoryFullName: targetRepositoryFullName,
+        issueCommentId: comment.id,
+        issueCommentNodeId: optionalString(comment.node_id) ?? "",
+        issueCommentUrl: receiptUrl,
         author: identity,
         body,
       }),
+    });
+    printJson({
+      action: "github-pr-comment",
+      ok: true,
+      repoRoot,
+      identity,
+      pr,
+      receiptUrl,
+      externalReceiptId,
     });
   } catch (error) {
     await bridgeAction?.fail(error);
     throw error;
   }
-  printJson({
-    action: "github-pr-comment",
-    ok: true,
-    repoRoot,
-    identity,
-    pr,
-  });
 }
 
 async function postDiscordMessage(options) {
@@ -836,6 +866,11 @@ function git(args, cwd, options = {}) {
   return run("git", args, cwd, options);
 }
 
+function runGitHubCli(options, args, cwd, runOptions = {}) {
+  const command = resolveGitHubCommand(options);
+  return run(command.exe, [...command.args, ...args], cwd, runOptions);
+}
+
 function run(command, args, cwd, options = {}) {
   const result = spawnSync(command, args, {
     cwd,
@@ -955,6 +990,15 @@ async function beginBridgeAction(options, action) {
   };
 }
 
+function parseRequiredJson(text, label) {
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`${label} was not valid JSON: ${detail}`);
+  }
+}
+
 function ensureGitHubBridgeGate(options) {
   const baseUrl = optionalString(options["bifrost-base-url"]) ?? optionalString(process.env.BIFROST_BRIDGE_BASE_URL);
   const token = optionalString(options["bifrost-token"]) ?? optionalString(process.env.BIFROST_BRIDGE_TOKEN);
@@ -1012,14 +1056,36 @@ function ensureTrailingSlash(value) {
   return value.endsWith("/") ? value : `${value}/`;
 }
 
-function detectGitHubRepositoryFullName(repoRoot) {
-  const result = run(
-    "gh",
+function detectGitHubRepositoryFullName(options, repoRoot) {
+  const result = runGitHubCli(
+    options,
     ["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"],
     repoRoot,
     { allowFailure: true },
   );
   return optionalString(result.stdout) ?? "";
+}
+
+function resolveGitHubExecutable(options) {
+  return resolveGitHubCommand(options).exe;
+}
+
+function resolveGitHubCommand(options) {
+  return {
+    exe: optionalString(options["gh-executable"]) ?? optionalString(process.env.BIFROST_GH_EXECUTABLE) ?? "gh",
+    args: splitCommandArgs(options["gh-exec-args"] ?? process.env.BIFROST_GH_EXEC_ARGS ?? ""),
+  };
+}
+
+function splitCommandArgs(value) {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    return [];
+  }
+
+  return value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
 }
 
 function extractGitHubNumber(value) {

@@ -45,6 +45,40 @@ public sealed class BridgeCliTests
     }
 
     [Fact]
+    public async Task GitHub_pr_comment_returns_concrete_github_receipt()
+    {
+        var fakeToolsDir = Path.Combine(Path.GetTempPath(), $"bifrost-gh-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(fakeToolsDir);
+        var fakeGhPath = Path.Combine(fakeToolsDir, "fake-gh.js");
+        await File.WriteAllTextAsync(fakeGhPath, """
+console.log(JSON.stringify({
+  id: 123456,
+  node_id: "IC_kwDOTest",
+  html_url: "https://github.com/GameCult/Bifrost/pull/1#issuecomment-123456"
+}));
+""", Encoding.UTF8);
+
+        var result = await RunNodeAsync([
+            "tools/bifrost-bridge.mjs",
+            "github-pr-comment",
+            "--repo-root", RepoRoot,
+            "--identity", "nibu",
+            "--pr", "1",
+            "--content", "test comment",
+            "--target-repository-full-name", "GameCult/Bifrost",
+            "--gh-executable", "node",
+            "--gh-exec-args", fakeGhPath,
+            "--allow-ungated-github", "true",
+        ]);
+
+        Assert.Equal(0, result.ExitCode);
+        using var payload = JsonDocument.Parse(result.Stdout);
+        Assert.Equal("github-pr-comment", payload.RootElement.GetProperty("action").GetString());
+        Assert.Equal("https://github.com/GameCult/Bifrost/pull/1#issuecomment-123456", payload.RootElement.GetProperty("receiptUrl").GetString());
+        Assert.Equal("123456", payload.RootElement.GetProperty("externalReceiptId").GetString());
+    }
+
+    [Fact]
     public async Task Agent_transport_mutation_fails_closed_without_bifrost_receipt_gate()
     {
         var storePath = Path.Combine(Path.GetTempPath(), $"bifrost-agent-transport-{Guid.NewGuid():N}.cc");
@@ -176,7 +210,7 @@ public sealed class BridgeCliTests
     private static string RepoRoot =>
         Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
 
-    private static async Task<ProcessResult> RunNodeAsync(string[] args)
+    private static async Task<ProcessResult> RunNodeAsync(string[] args, IReadOnlyDictionary<string, string?>? environmentOverrides = null)
     {
         using var process = new Process
         {
@@ -199,6 +233,13 @@ public sealed class BridgeCliTests
         process.StartInfo.Environment["BIFROST_BRIDGE_TOKEN"] = string.Empty;
         process.StartInfo.Environment["BIFROST_ALLOW_UNGATED_GITHUB"] = string.Empty;
         process.StartInfo.Environment["BIFROST_ALLOW_UNRECEIPTED_ACTIVITY"] = string.Empty;
+        if (environmentOverrides is not null)
+        {
+            foreach (var pair in environmentOverrides)
+            {
+                process.StartInfo.Environment[pair.Key] = pair.Value ?? string.Empty;
+            }
+        }
 
         process.Start();
         var stdout = await process.StandardOutput.ReadToEndAsync();

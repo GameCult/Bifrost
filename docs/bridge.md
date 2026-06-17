@@ -134,7 +134,7 @@ node .\tools\bifrost-bridge.mjs github-pr-comment `
   --content "This proposal needs a sharper leash before it becomes canon-shaped."
 ```
 
-The command leaves a signed PR comment through `gh` and prints a JSON receipt. Repo Personas should use this when the argument belongs on the review artifact instead of dissolving into Discord scrollback.
+The command leaves a signed PR comment through GitHub's issue-comment API via `gh api` and prints a JSON receipt with GitHub's own comment id and `html_url`. Repo Personas should use this when the argument belongs on the review artifact instead of dissolving into Discord scrollback.
 
 ### Discord Post
 
