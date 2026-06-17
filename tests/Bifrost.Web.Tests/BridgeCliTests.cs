@@ -38,7 +38,7 @@ public sealed class BridgeCliTests
             "--dry-run", "true",
         ]);
 
-        Assert.Equal(0, result.ExitCode);
+        Assert.True(result.ExitCode == 0, $"stdout:{Environment.NewLine}{result.Stdout}{Environment.NewLine}stderr:{Environment.NewLine}{result.Stderr}");
         using var payload = JsonDocument.Parse(result.Stdout);
         Assert.Equal("github-pr-comment", payload.RootElement.GetProperty("action").GetString());
         Assert.True(payload.RootElement.GetProperty("dryRun").GetBoolean());
@@ -93,7 +93,7 @@ console.log(JSON.stringify({
             "--allow-ungated-github", "true",
         ]);
 
-        Assert.Equal(0, result.ExitCode);
+        Assert.True(result.ExitCode == 0, $"stdout:{Environment.NewLine}{result.Stdout}{Environment.NewLine}stderr:{Environment.NewLine}{result.Stderr}");
         using var payload = JsonDocument.Parse(result.Stdout);
         Assert.Equal("github-pr-comment", payload.RootElement.GetProperty("action").GetString());
         Assert.Equal("https://github.com/GameCult/Bifrost/pull/1#issuecomment-123456", payload.RootElement.GetProperty("receiptUrl").GetString());
@@ -135,7 +135,7 @@ console.log(JSON.stringify({
             "--allow-unreceipted-activity", "true",
         ]);
 
-        Assert.Equal(0, result.ExitCode);
+        Assert.True(result.ExitCode == 0, $"stdout:{Environment.NewLine}{result.Stdout}{Environment.NewLine}stderr:{Environment.NewLine}{result.Stderr}");
         using var payload = JsonDocument.Parse(result.Stdout);
         Assert.Equal("queued", payload.RootElement.GetProperty("status").GetString());
     }
@@ -359,6 +359,144 @@ console.log(JSON.stringify({
 
         Assert.NotEqual(0, result.ExitCode);
         Assert.Contains("requires BIFROST_BRIDGE_BASE_URL and BIFROST_BRIDGE_TOKEN", result.Stderr, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Dispatch_worker_sanitizes_github_auth_state_for_codex_exec()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), $"bifrost-dispatch-env-{Guid.NewGuid():N}");
+        var transportStorePath = Path.Combine(RepoRoot, ".bifrost", "agent-transport.cc");
+        var transportStoreBackup = Path.Combine(Path.GetTempPath(), $"bifrost-agent-transport-backup-{Guid.NewGuid():N}.cc");
+        var hadTransportStore = File.Exists(transportStorePath);
+        Directory.CreateDirectory(tempDir);
+        var requestPath = Path.Combine(tempDir, "request.json");
+        var promptPath = Path.Combine(tempDir, "prompt.md");
+        var logPath = Path.Combine(tempDir, "codex.log");
+        var dumpPath = Path.Combine(tempDir, "env.json");
+        var fakeCodexPath = Path.Combine(tempDir, "fake-codex.mjs");
+
+        if (hadTransportStore)
+        {
+            File.Copy(transportStorePath, transportStoreBackup, overwrite: true);
+        }
+
+        try
+        {
+            await File.WriteAllTextAsync(requestPath, """
+{
+  "id": "req_dispatch_env_123",
+  "targetRepoName": "Bifrost",
+  "targetRepositoryFullName": "GameCult/Bifrost",
+  "targetAgentIdentity": "nibu",
+  "title": "Dispatch env test",
+  "requestMarkdown": "## Request\n\nInspect dispatch env.",
+  "priority": 50,
+  "status": "claimed",
+  "sourceKind": "manual",
+  "sourceChannelId": "",
+  "sourceMessageIds": [],
+  "sourcePacketPath": "",
+  "sourcePromptPath": "",
+  "createdByAgent": "tester",
+  "claimedByAgent": "tester",
+  "closeNote": "",
+  "createdAt": "2026-06-17T00:00:00Z",
+  "updatedAt": "2026-06-17T00:00:00Z",
+  "claimedAt": "2026-06-17T00:00:00Z",
+  "closedAt": ""
+}
+""", new UTF8Encoding(false));
+            await File.WriteAllTextAsync(promptPath, "Hello", new UTF8Encoding(false));
+            await File.WriteAllTextAsync(fakeCodexPath, """
+import { writeFileSync } from "node:fs";
+
+const configEntries = [];
+for (const key of Object.keys(process.env)) {
+  const match = /^GIT_CONFIG_KEY_(\d+)$/.exec(key);
+  if (!match) {
+    continue;
+  }
+
+  const index = Number.parseInt(match[1], 10);
+  configEntries.push({
+    index,
+    key: process.env[key] ?? "",
+    value: process.env[`GIT_CONFIG_VALUE_${index}`] ?? "",
+  });
+}
+
+configEntries.sort((left, right) => left.index - right.index);
+
+writeFileSync(process.env.DISPATCH_ENV_DUMP, JSON.stringify({
+  GH_CONFIG_DIR: process.env.GH_CONFIG_DIR ?? "",
+  GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL ?? "",
+  GH_TOKEN: process.env.GH_TOKEN ?? "",
+  GITHUB_TOKEN: process.env.GITHUB_TOKEN ?? "",
+  GIT_TERMINAL_PROMPT: process.env.GIT_TERMINAL_PROMPT ?? "",
+  GCM_INTERACTIVE: process.env.GCM_INTERACTIVE ?? "",
+  BIFROST_LOCK_RECOVERY_HATCHES: process.env.BIFROST_LOCK_RECOVERY_HATCHES ?? "",
+  configEntries,
+}, null, 2));
+""", Encoding.UTF8);
+
+            await RunNodeAsync([
+                "tools/agent-transport.mjs",
+                "enqueue",
+                "--id", "req_dispatch_env_123",
+                "--repo", "Bifrost",
+                "--agent", "nibu",
+                "--title", "Dispatch env seed",
+                "--request", "Seed the live request lane.",
+                "--allow-unmirrored", "true",
+                "--allow-unreceipted-activity", "true",
+            ]);
+
+            var result = await RunNodeAsync([
+                "tools/dispatch-agent-requests.mjs",
+                "run-claimed",
+                "--request-file", requestPath,
+                "--repo-root", RepoRoot,
+                "--prompt-file", promptPath,
+                "--log", logPath,
+                "--launch-mode", "codex-exec",
+                "--codex-executable", "node",
+                "--codex-exec-args", fakeCodexPath,
+            ], new Dictionary<string, string?>
+            {
+                ["BIFROST_ALLOW_UNRECEIPTED_ACTIVITY"] = "true",
+                ["GH_TOKEN"] = "parent-gh-token",
+                ["GITHUB_TOKEN"] = "parent-github-token",
+                ["DISPATCH_ENV_DUMP"] = dumpPath,
+            });
+
+            Assert.Equal(0, result.ExitCode);
+            Assert.True(File.Exists(dumpPath), $"Dispatch env dump was not created. stdout:{Environment.NewLine}{result.Stdout}{Environment.NewLine}stderr:{Environment.NewLine}{result.Stderr}");
+            using var payload = JsonDocument.Parse(await File.ReadAllTextAsync(dumpPath, Encoding.UTF8));
+            Assert.EndsWith("github-gh-config", payload.RootElement.GetProperty("GH_CONFIG_DIR").GetString(), StringComparison.OrdinalIgnoreCase);
+            Assert.EndsWith("github-gitconfig", payload.RootElement.GetProperty("GIT_CONFIG_GLOBAL").GetString(), StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(string.Empty, payload.RootElement.GetProperty("GH_TOKEN").GetString());
+            Assert.Equal(string.Empty, payload.RootElement.GetProperty("GITHUB_TOKEN").GetString());
+            Assert.Equal("0", payload.RootElement.GetProperty("GIT_TERMINAL_PROMPT").GetString());
+            Assert.Equal("never", payload.RootElement.GetProperty("GCM_INTERACTIVE").GetString());
+            Assert.Equal("true", payload.RootElement.GetProperty("BIFROST_LOCK_RECOVERY_HATCHES").GetString());
+
+            var configEntries = payload.RootElement.GetProperty("configEntries").EnumerateArray().ToArray();
+            Assert.Contains(configEntries, entry => entry.GetProperty("key").GetString() == "core.hooksPath");
+            Assert.Contains(configEntries, entry => entry.GetProperty("key").GetString() == "credential.helper" && entry.GetProperty("value").GetString() == string.Empty);
+            Assert.Contains(configEntries, entry => entry.GetProperty("key").GetString() == "credential.interactive" && entry.GetProperty("value").GetString() == "never");
+        }
+        finally
+        {
+            if (hadTransportStore)
+            {
+                File.Copy(transportStoreBackup, transportStorePath, overwrite: true);
+                File.Delete(transportStoreBackup);
+            }
+            else if (File.Exists(transportStorePath))
+            {
+                File.Delete(transportStorePath);
+            }
+        }
     }
 
     [Fact]

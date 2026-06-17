@@ -161,9 +161,9 @@ async function runClaimedViaCodexExec(request, repoRoot, promptPath, logPath, op
   const reasoningEffort = options["reasoning-effort"] ?? process.env.CODEX_MODEL_REASONING_EFFORT ?? "medium";
   const sandbox = options.sandbox ?? "workspace-write";
   const startedAt = new Date().toISOString();
-  const bridgeContextEnv = buildBridgeContextEnv(request);
   const resultPath = resolve(dirname(logPath), "result.json");
   await mkdir(dirname(logPath), { recursive: true });
+  const bridgeContextEnv = buildBridgeContextEnv(request, dirname(logPath));
   appendLog(logPath, `started ${startedAt}`);
   appendLog(logPath, `request ${request.id}: ${request.title}`);
   appendLog(logPath, `repoRoot ${repoRoot}`);
@@ -289,13 +289,13 @@ async function runClaimedViaAppServer(request, repoRoot, promptPath, logPath, op
   const startedAt = new Date().toISOString();
   const prompt = await readFile(promptPath, "utf8");
   const resultPath = resolve(dirname(logPath), "result.json");
+  await mkdir(dirname(logPath), { recursive: true });
   const client = new CodexAppServerClient({
     logPath,
     command: resolveCodexCommand(options),
-    env: buildBridgeContextEnv(request),
+    env: buildBridgeContextEnv(request, dirname(logPath)),
   });
 
-  await mkdir(dirname(logPath), { recursive: true });
   appendLog(logPath, `started ${startedAt}`);
   appendLog(logPath, `request ${request.id}: ${request.title}`);
   appendLog(logPath, `repoRoot ${repoRoot}`);
@@ -559,9 +559,15 @@ function renderDispatchReceiptContent(request) {
   ].join("\n");
 }
 
-function buildBridgeContextEnv(request) {
+function buildBridgeContextEnv(request, runtimeDir) {
   const hooksPath = resolve(bifrostRoot, "tools", "git-hooks");
   const gitGatePath = resolve(bifrostRoot, "tools", "git-gate");
+  const githubConfigDir = resolve(runtimeDir, "github-gh-config");
+  const gitGlobalConfigPath = resolve(runtimeDir, "github-gitconfig");
+  mkdirSync(githubConfigDir, { recursive: true });
+  if (!existsSync(gitGlobalConfigPath)) {
+    writeFileSync(gitGlobalConfigPath, "", "utf8");
+  }
   return {
     BIFROST_BRIDGE_SOURCE_KIND: "bifrost_agent_transport_request",
     BIFROST_BRIDGE_SOURCE_ID: request.id,
@@ -573,24 +579,37 @@ function buildBridgeContextEnv(request) {
     BIFROST_NODE_EXECUTABLE: process.execPath,
     ...buildGitHooksConfigEnv(hooksPath),
     ...buildPathPrependEnv(gitGatePath),
+    GH_CONFIG_DIR: githubConfigDir,
+    GIT_CONFIG_GLOBAL: gitGlobalConfigPath,
+    GH_TOKEN: "",
+    GITHUB_TOKEN: "",
+    GIT_ASKPASS: "",
+    SSH_ASKPASS: "",
+    SSH_AUTH_SOCK: "",
+    GIT_TERMINAL_PROMPT: "0",
+    GCM_INTERACTIVE: "never",
   };
 }
 
 function buildGitHooksConfigEnv(hooksPath) {
+  const entries = [
+    ["core.hooksPath", hooksPath],
+    ["credential.helper", ""],
+    ["credential.interactive", "never"],
+  ];
   const existingCount = Number.parseInt(process.env.GIT_CONFIG_COUNT ?? "", 10);
-  if (Number.isInteger(existingCount) && existingCount >= 0) {
-    return {
-      GIT_CONFIG_COUNT: String(existingCount + 1),
-      [`GIT_CONFIG_KEY_${existingCount}`]: "core.hooksPath",
-      [`GIT_CONFIG_VALUE_${existingCount}`]: hooksPath,
-    };
-  }
-
-  return {
-    GIT_CONFIG_COUNT: "1",
-    GIT_CONFIG_KEY_0: "core.hooksPath",
-    GIT_CONFIG_VALUE_0: hooksPath,
+  const startIndex = Number.isInteger(existingCount) && existingCount >= 0 ? existingCount : 0;
+  const env = {
+    GIT_CONFIG_COUNT: String(startIndex + entries.length),
   };
+
+  entries.forEach(([key, value], index) => {
+    const slot = startIndex + index;
+    env[`GIT_CONFIG_KEY_${slot}`] = key;
+    env[`GIT_CONFIG_VALUE_${slot}`] = value;
+  });
+
+  return env;
 }
 
 function buildPathPrependEnv(directory) {
