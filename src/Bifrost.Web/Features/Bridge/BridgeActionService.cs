@@ -213,15 +213,21 @@ public sealed class BridgeActionService(
                 return BridgePolicyDecision.Reject("Persona and agent Discord/Reddit bridge actions must carry a Bifrost identity.");
             }
 
-            var identityDecision = await EvaluateRegisteredBifrostIdentityAsync(request.BifrostIdentity, cancellationToken);
-            if (identityDecision is not null)
+            var identityResult = await ResolveRegisteredBifrostIdentityAsync(request.BifrostIdentity, cancellationToken);
+            if (identityResult.Decision is not null)
             {
-                return identityDecision;
+                return identityResult.Decision;
             }
 
             if (string.IsNullOrWhiteSpace(request.HeimdallCapabilityReference))
             {
                 return BridgePolicyDecision.Reject("Persona and agent Discord/Reddit bridge actions must carry a Heimdall-backed capability or account reference.");
+            }
+
+            var capabilityDecision = EvaluateHeimdallCapabilityReference(request, identityResult.UserAccount!);
+            if (capabilityDecision is not null)
+            {
+                return capabilityDecision;
             }
         }
 
@@ -264,7 +270,7 @@ public sealed class BridgeActionService(
                 : "Authorized for an active Bifrost member through Bifrost policy.");
     }
 
-    private async Task<BridgePolicyDecision?> EvaluateRegisteredBifrostIdentityAsync(
+    private async Task<RegisteredBifrostIdentityResult> ResolveRegisteredBifrostIdentityAsync(
         string bifrostIdentity,
         CancellationToken cancellationToken)
     {
@@ -275,15 +281,47 @@ public sealed class BridgeActionService(
         }
         catch (BifrostIdentityException exception)
         {
-            return BridgePolicyDecision.Reject(exception.Message);
+            return new RegisteredBifrostIdentityResult(null, BridgePolicyDecision.Reject(exception.Message));
         }
 
-        var exists = await dbContext.UserAccounts.AnyAsync(
+        var userAccount = await dbContext.UserAccounts.SingleOrDefaultAsync(
             x => x.NormalizedBifrostIdentity == normalizedIdentity,
             cancellationToken);
-        if (!exists)
+        if (userAccount is null)
         {
-            return BridgePolicyDecision.Reject("Persona and agent Discord/Reddit bridge actions must carry a registered Bifrost identity.");
+            return new RegisteredBifrostIdentityResult(
+                null,
+                BridgePolicyDecision.Reject("Persona and agent Discord/Reddit bridge actions must carry a registered Bifrost identity."));
+        }
+
+        return new RegisteredBifrostIdentityResult(userAccount, null);
+    }
+
+    private static BridgePolicyDecision? EvaluateHeimdallCapabilityReference(
+        BridgeActionRequest request,
+        UserAccount userAccount)
+    {
+        if (string.IsNullOrWhiteSpace(userAccount.HeimdallAccountId))
+        {
+            return BridgePolicyDecision.Reject("Persona and agent Discord/Reddit bridge actions require the Bifrost identity to be linked to a Heimdall account.");
+        }
+
+        var capabilityReference = NormalizeText(request.HeimdallCapabilityReference);
+        if (!capabilityReference.StartsWith("heimdall:", StringComparison.OrdinalIgnoreCase))
+        {
+            return BridgePolicyDecision.Reject("Persona and agent Discord/Reddit bridge actions must carry a Heimdall-backed capability or account reference.");
+        }
+
+        var expectedSurface = request.TargetSurface switch
+        {
+            BridgeTargetSurface.Discord => "discord",
+            BridgeTargetSurface.Reddit => "reddit",
+            _ => string.Empty
+        };
+        if (!string.IsNullOrWhiteSpace(expectedSurface) &&
+            !capabilityReference.Contains($":{expectedSurface}:", StringComparison.OrdinalIgnoreCase))
+        {
+            return BridgePolicyDecision.Reject("Heimdall capability reference does not match the requested bridge target surface.");
         }
 
         return null;
@@ -434,6 +472,10 @@ public sealed record BridgeCaller(
         IsLocalBridge ||
         (IsActiveMember && action.ActorUserAccountId == UserAccountId);
 }
+
+internal sealed record RegisteredBifrostIdentityResult(
+    UserAccount? UserAccount,
+    BridgePolicyDecision? Decision);
 
 public sealed record BridgeActionRequest(
     BridgeActorKind ActorKind,

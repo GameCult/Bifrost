@@ -802,7 +802,7 @@ public sealed class PlatformEndpointsTests : IClassFixture<TestWebApplicationFac
     public async Task Persona_discord_action_requires_heimdall_reference_after_bifrost_identity()
     {
         using var client = _factory.CreateClient();
-        await EnsureBifrostIdentityRegisteredAsync("epiphany.Persona");
+        await EnsureBifrostIdentityRegisteredAsync("epiphany.Persona", "heimdall-account-epiphany-persona");
 
         var requestPayload = JsonSerializer.Serialize(new
         {
@@ -836,6 +836,48 @@ public sealed class PlatformEndpointsTests : IClassFixture<TestWebApplicationFac
 
         Assert.Equal(BridgeActionStatus.Denied, savedAction.Status);
         Assert.Contains("Heimdall", savedAction.PolicyDecision, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Persona_discord_action_with_unlinked_heimdall_account_is_denied()
+    {
+        using var client = _factory.CreateClient();
+        var identity = $"native.{Guid.NewGuid():N}";
+        await EnsureBifrostIdentityRegisteredAsync(identity);
+
+        var requestPayload = JsonSerializer.Serialize(new
+        {
+            actorKind = "Persona",
+            actorName = "Native Persona",
+            targetSurface = "Discord",
+            actionKind = "DiscordPost",
+            targetLocator = "channel/1501196543150264332",
+            sourceKind = "epiphany_persona_speech",
+            sourceId = "persona-speech-audit-unlinked-heimdall",
+            authorityReference = "epiphany.persona_speech_audit",
+            bifrostIdentity = identity,
+            heimdallCapabilityReference = "heimdall:discord:capability:native-persona",
+            title = "Persona Discord post",
+            summary = "This should not pass until the Bifrost identity is linked to Heimdall."
+        });
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/bridge/actions/request");
+        request.Headers.Add("X-Bifrost-Bridge-Token", "test-bridge-token");
+        request.Content = new StringContent(requestPayload, Encoding.UTF8, "application/json");
+
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        var action = await response.Content.ReadFromJsonAsync<BridgeActionHttpResult>();
+        Assert.NotNull(action);
+        Assert.Equal("Denied", action.Status);
+
+        using var scope = _factory.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
+        var savedAction = dbContext.BridgeActions.Single(x => x.Id == action.Id);
+
+        Assert.Equal(BridgeActionStatus.Denied, savedAction.Status);
+        Assert.Contains("linked to a Heimdall account", savedAction.PolicyDecision, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -883,7 +925,7 @@ public sealed class PlatformEndpointsTests : IClassFixture<TestWebApplicationFac
     public async Task Persona_reddit_action_with_bifrost_identity_and_heimdall_reference_is_authorized_and_stored()
     {
         using var client = _factory.CreateClient();
-        await EnsureBifrostIdentityRegisteredAsync("epiphany.Persona");
+        await EnsureBifrostIdentityRegisteredAsync("epiphany.Persona", "heimdall-account-epiphany-persona");
 
         var requestPayload = JsonSerializer.Serialize(new
         {
@@ -1401,7 +1443,7 @@ public sealed class PlatformEndpointsTests : IClassFixture<TestWebApplicationFac
             $"Expected governance receipt seed to succeed but got {(int)response.StatusCode}: {body}");
     }
 
-    private async Task EnsureBifrostIdentityRegisteredAsync(string identity)
+    private async Task EnsureBifrostIdentityRegisteredAsync(string identity, string heimdallAccountId = "")
     {
         using var scope = _factory.Services.CreateScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
@@ -1416,6 +1458,7 @@ public sealed class PlatformEndpointsTests : IClassFixture<TestWebApplicationFac
         {
             BifrostIdentity = normalizedIdentity,
             NormalizedBifrostIdentity = normalizedIdentity,
+            HeimdallAccountId = heimdallAccountId,
             DisplayName = normalizedIdentity,
             CreatedAtUtc = now,
             LastSeenAtUtc = now,
