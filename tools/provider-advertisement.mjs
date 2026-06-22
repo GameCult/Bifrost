@@ -144,6 +144,15 @@ async function main() {
     case "print":
       printJson(buildAdvertisement(options));
       return;
+    case "print-surface":
+      printJson(buildOperatorSurface(await collectStats(options)));
+      return;
+    case "print-binding":
+      {
+        const stats = await collectStats(options);
+        printJson(buildInterfaceBinding(buildOperatorSurface(stats), stats));
+      }
+      return;
     case "schema":
       printJson({
         documentType,
@@ -204,6 +213,9 @@ function buildAdvertisement(options) {
       endpoint("operator-tui", `${locatedService}/eve/tui`, "gamecult.eve.surface.v1", ["tui", "nightwing-tui"]),
       endpoint("operator-gui", `${locatedService}/eve/gui`, "gamecult.eve.surface.v1", ["gui", "browser", "eve-native"]),
       endpoint("operator-commands", `${locatedService}/commands`, "bifrost.bridge_action.v0", ["command"]),
+      endpoint("bridge-action-ledger", `${locatedService}/bridge/actions`, "bifrost.bridge_action.v0", ["command", "bridge", "receipt"]),
+      endpoint("patron-support-intake", `${locatedService}/heimdall/patron-support/events`, "bifrost.patron_support_event.v0", ["heimdall", "patronage", "intake"]),
+      endpoint("github-webhooks", `${locatedService}/github/webhooks`, "bifrost.work_item.v0", ["github", "work-sync", "review-sync"]),
       endpoint("motion-surface", "https://bifrost.gamecult.org/eve/governance/surface", "gamecult.eve.surface.v1", ["product", "governance", "motion"]),
       endpoint("motion-commands", "https://bifrost.gamecult.org/eve/governance/commands", "bifrost.motion_command.v0", ["command", "governance", "motion"]),
     ],
@@ -239,8 +251,9 @@ function buildAdvertisement(options) {
       schema("bifrost.vote.v0", "bifrost.vote", "motion vote witness"),
       schema("bifrost.motion_command.v0", "bifrost.motion-command", "Eve Motion Verse command envelope for create, vote, and close"),
       schema("bifrost.ledger_entry.v0", "bifrost.ledger-entry", "planned contributor/patron ledger witness"),
-      schema("bifrost.bridge_action.v0", "bifrost.bridge-action", "planned governed crossing command witness"),
-      schema("bifrost.bridge_receipt.v0", "bifrost.bridge-receipt", "planned governed crossing result witness"),
+      schema("bifrost.bridge_action.v0", "bifrost.bridge-action", "current hosted governed crossing command witness"),
+      schema("bifrost.bridge_receipt.v0", "bifrost.bridge-receipt", "current hosted governed crossing result witness"),
+      schema("bifrost.patron_support_event.v0", "bifrost.patron-support-event", "current hosted Heimdall-signed patron support fact consumed by Bifrost"),
       schema("bifrost.member_capability_snapshot.v0", "bifrost.member-capability-snapshot", "planned Heimdall-consumed membership capability witness"),
     ],
     witnesses: [
@@ -324,10 +337,12 @@ function buildAdvertisement(options) {
       ]),
       boundary("patron", "Bifrost", [
         "record patron pressure",
+        "consume Heimdall-signed Patreon and PayPal support facts",
         "surface reward influence",
         "emit standing receipts",
       ], [
         "does not charge cards",
+        "does not store Patreon or PayPal provider tokens",
         "does not execute external payout rails",
       ]),
       boundary("project", "Bifrost plus project maintainers", [
@@ -349,6 +364,8 @@ function buildAdvertisement(options) {
         "prepare governed public crossings",
         "execute approved handoffs",
         "record receipts",
+        "open GitHub draft PRs and PR comments through Bifrost gate",
+        "record receipt-only future-surface requests before named actuators exist",
         "post Persona-flaired Reddit organizing threads",
       ], [
         "does not treat local protocol JSON as work authority",
@@ -426,8 +443,14 @@ async function collectStats(options) {
       redditPost: Boolean(process.env.BIFROST_REDDIT_CLIENT_ID && process.env.BIFROST_REDDIT_REFRESH_TOKEN),
       githubDraftPr: true,
       githubPrComment: true,
+      githubWebhookSync: true,
+      otherRequest: true,
+      patronSupportIntake: true,
+      bridgeLedgerConfigured: Boolean(process.env.BIFROST_BRIDGE_BASE_URL && process.env.BIFROST_BRIDGE_TOKEN),
       credentialSource: process.env.BIFROST_DISCORD_BOT_TOKEN ? "BIFROST_DISCORD_BOT_TOKEN" : process.env.DISCORD_BOT_TOKEN ? "DISCORD_BOT_TOKEN-fallback" : "missing",
       redditCredentialSource: process.env.BIFROST_REDDIT_CLIENT_ID && process.env.BIFROST_REDDIT_REFRESH_TOKEN ? "BIFROST_REDDIT_CLIENT_ID+BIFROST_REDDIT_REFRESH_TOKEN" : "missing",
+      bridgeLedgerCredentialSource: process.env.BIFROST_BRIDGE_BASE_URL && process.env.BIFROST_BRIDGE_TOKEN ? "BIFROST_BRIDGE_BASE_URL+BIFROST_BRIDGE_TOKEN" : "missing",
+      patronSupportAuthority: "Heimdall HMAC via /heimdall/patron-support/events",
     },
     summary: {
       status: health.ok && ready.ok ? "ready" : "degraded",
@@ -553,7 +576,12 @@ function buildOperatorSurface(stats) {
       metricNode("daemon", "Daemon", `health ${stats.summary.health} / ready ${stats.summary.ready}`, stats.health.ok && stats.ready.ok ? "ok" : "warn"),
       metricNode("containers", "Containers", `${stats.summary.dockerRunning} up / ${stats.summary.dockerHealthy} healthy`, stats.summary.dockerHealthy > 0 ? "ok" : "warn"),
       metricNode("stores", "Stores", witnessHealthLine(stats.witnesses), witnessHealthTone(stats.witnesses)),
-      metricNode("bridge", "Bridge", `Discord post ${yesNo(stats.bridge.discordPost)} / DM ${yesNo(stats.bridge.discordDm)} / Reddit ${yesNo(stats.bridge.redditPost)}`, stats.bridge.redditPost ? "ok" : "warn"),
+      metricNode(
+        "bridge",
+        "Bridge",
+        `GitHub ${yesNo(stats.bridge.githubDraftPr && stats.bridge.githubPrComment)} / Discord ${yesNo(stats.bridge.discordPost)} / Reddit ${yesNo(stats.bridge.redditPost)} / Other ${yesNo(stats.bridge.otherRequest)} / Patron ${yesNo(stats.bridge.patronSupportIntake)}`,
+        stats.bridge.githubDraftPr && stats.bridge.githubPrComment && stats.bridge.otherRequest && stats.bridge.patronSupportIntake ? "ok" : "warn",
+      ),
     ]),
     panelNode("activity", "Activity", [
       metricNode("topics", "Topics", `${stats.summary.governanceTopics} total / ${stats.summary.openTopics} open / ${stats.summary.recentGovernanceTopics} in ${stats.summary.recentWindowHours}h`, stats.governance.ok ? "ok" : "warn"),
@@ -616,7 +644,20 @@ function buildInterfaceBinding(surface, stats) {
         route("cultcache-witness", ".bifrost/provider-advertisement.cc", "local-cultcache", true),
         route("websocket-bridge", "ws://192.168.1.66:8797/eve/deck", "compatibility-eve-deck", true),
       ],
-      capabilities: ["operator-stats", "bridge-health", "governance-counts", "agent-transport-counts", "motion-surface", "motion-commands"],
+      capabilities: [
+        "operator-stats",
+        "bridge-health",
+        "governance-counts",
+        "agent-transport-counts",
+        "motion-surface",
+        "motion-commands",
+        "github-bridge",
+        "github-work-sync",
+        "discord-bridge",
+        "reddit-bridge",
+        "future-surface-bridge",
+        "heimdall-patron-support-intake",
+      ],
       usesCultMesh: true,
       status: stats.summary.status,
       transport: "CultMesh Eve interface binding.",
@@ -822,6 +863,22 @@ function parseAdvertisement(input) {
     }
   }
 
+  const requiredEndpoints = new Set(["bridge-action-ledger", "patron-support-intake", "github-webhooks"]);
+  const endpointIds = new Set(advertisement.endpoints.map((endpoint) => endpoint.id));
+  for (const id of requiredEndpoints) {
+    if (!endpointIds.has(id)) {
+      throw new Error(`Provider advertisement must name endpoint ${id}.`);
+    }
+  }
+
+  const requiredSchemas = new Set(["bifrost.bridge_action.v0", "bifrost.bridge_receipt.v0", "bifrost.patron_support_event.v0"]);
+  const schemaIds = new Set(advertisement.schemas.map((schema) => schema.id));
+  for (const id of requiredSchemas) {
+    if (!schemaIds.has(id)) {
+      throw new Error(`Provider advertisement must name schema ${id}.`);
+    }
+  }
+
   return advertisement;
 }
 
@@ -907,9 +964,11 @@ function printHelp() {
   process.stdout.write(`Bifrost Eve provider advertisement
 
 Commands:
-  export   Write the Bifrost gamecult.eve.provider_advertisement.v1 document to a CultCache .cc witness
-  print    Print the advertisement as protocol-debug JSON without writing state
-  schema   Print document type metadata
+  export          Write advertisement, operator surface, and interface binding to a CultCache .cc witness
+  print           Print the advertisement as protocol-debug JSON without writing state
+  print-surface   Print the current operator Eve surface JSON without writing state
+  print-binding   Print the current Eve interface binding JSON without writing state
+  schema          Print document type metadata
 
 Options:
   --out <path>            Override export path; defaults to .bifrost/provider-advertisement.cc
@@ -917,6 +976,7 @@ Options:
 
 Examples:
   node tools/provider-advertisement.mjs print
+  node tools/provider-advertisement.mjs print-binding
   node tools/provider-advertisement.mjs export --out .bifrost/provider-advertisement.cc
 `);
 }
