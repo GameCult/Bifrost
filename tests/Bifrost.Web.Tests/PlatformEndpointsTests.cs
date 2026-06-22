@@ -8,6 +8,7 @@ using Bifrost.Web.Data;
 using Bifrost.Web.Domain;
 using Bifrost.Web.Tests.Support;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Bifrost.Web.Tests;
@@ -37,6 +38,62 @@ public sealed class PlatformEndpointsTests : IClassFixture<TestWebApplicationFac
         using var response = await client.GetAsync("/readyz");
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Bifrost_native_registration_creates_authenticated_identity_without_oauth()
+    {
+        using var client = _factory.CreateClient();
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/auth/bifrost/register");
+        request.Headers.Add("X-Test-Anonymous", "true");
+        request.Content = JsonContent.Create(new
+        {
+            identity = $"native-{Guid.NewGuid():N}",
+            displayName = "Native Bifrost User",
+            returnUrl = "/App"
+        });
+
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var payload = await response.Content.ReadFromJsonAsync<JsonElement>();
+        var identity = payload.GetProperty("bifrostIdentity").GetString();
+        Assert.False(string.IsNullOrWhiteSpace(identity));
+        Assert.Equal("Authenticated", payload.GetProperty("membershipStatus").GetString());
+
+        using var scope = _factory.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
+        var userAccount = dbContext.UserAccounts
+            .Include(x => x.Membership)
+            .Single(x => x.BifrostIdentity == identity);
+
+        Assert.Null(userAccount.GitHubUserId);
+        Assert.Equal(string.Empty, userAccount.HeimdallAccountId);
+        Assert.Equal(MembershipStatus.Authenticated, userAccount.Membership!.Status);
+    }
+
+    [Fact]
+    public async Task Bifrost_native_registration_rejects_duplicate_identity()
+    {
+        using var client = _factory.CreateClient();
+        var identity = $"native-{Guid.NewGuid():N}";
+
+        using var firstRequest = new HttpRequestMessage(HttpMethod.Post, "/auth/bifrost/register");
+        firstRequest.Headers.Add("X-Test-Anonymous", "true");
+        firstRequest.Content = JsonContent.Create(new { identity, displayName = "First" });
+        using var firstResponse = await client.SendAsync(firstRequest);
+
+        using var secondRequest = new HttpRequestMessage(HttpMethod.Post, "/auth/bifrost/register");
+        secondRequest.Headers.Add("X-Test-Anonymous", "true");
+        secondRequest.Content = JsonContent.Create(new { identity = identity.ToUpperInvariant(), displayName = "Second" });
+        using var secondResponse = await client.SendAsync(secondRequest);
+
+        Assert.Equal(HttpStatusCode.OK, firstResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, secondResponse.StatusCode);
+
+        using var scope = _factory.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
+        Assert.Single(dbContext.UserAccounts.Where(x => x.NormalizedBifrostIdentity == identity));
     }
 
     [Fact]

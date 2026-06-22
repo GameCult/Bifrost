@@ -1227,6 +1227,11 @@ namespace Bifrost.Web.Data.Migrations
                         .HasMaxLength(500)
                         .HasColumnType("character varying(500)");
 
+                    b.Property<string>("BifrostIdentity")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)");
+
                     b.Property<DateTimeOffset>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
@@ -1251,6 +1256,11 @@ namespace Bifrost.Web.Data.Migrations
                     b.Property<DateTimeOffset>("LastSeenAtUtc")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<string>("NormalizedBifrostIdentity")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)");
+
                     b.Property<string>("NormalizedGitHubLogin")
                         .IsRequired()
                         .HasMaxLength(120)
@@ -1265,6 +1275,10 @@ namespace Bifrost.Web.Data.Migrations
                     b.HasIndex("HeimdallAccountId")
                         .IsUnique()
                         .HasFilter("\"HeimdallAccountId\" <> ''");
+
+                    b.HasIndex("NormalizedBifrostIdentity")
+                        .IsUnique()
+                        .HasFilter("\"NormalizedBifrostIdentity\" <> ''");
 
                     b.HasIndex("NormalizedGitHubLogin")
                         .IsUnique()

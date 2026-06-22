@@ -23,6 +23,8 @@ That means Bifrost owns the operational meaning of the crossing:
 
 It does not mean Bifrost should own OAuth sludge. Bifrost is both an identity provider and identity consumer: a GameCult actor should be able to register with Bifrost without OAuth, and that Bifrost identity should be enough to authenticate with most GameCult services. Heimdall owns outside-provider OAuth, linked-account token custody, grants, and signed account claims. Bifrost associates those Heimdall-backed accounts with the Bifrost identity, consumes the permission facts, and decides whether a bridge action is allowed in the Bifrost domain.
 
+The native registration surface is `POST /auth/bifrost/register`. It creates a Bifrost-owned `UserAccount` with `BifrostIdentity` and `NormalizedBifrostIdentity`, signs the caller in with the Bifrost cookie, and leaves membership at `Authenticated`. It does not grant active member access, mint outside-provider tokens, or replace Heimdall's account-link and capability custody.
+
 ## Ownership
 
 - Heimdall owns provider OAuth, outside-account credentials, token custody, and capability/account claims.

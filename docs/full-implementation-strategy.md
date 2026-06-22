@@ -14,7 +14,7 @@ It is currently a strong first application slice, not an internet-facing alpha. 
 
 - ASP.NET Core 8 Razor Pages app
 - PostgreSQL-backed EF Core model plus initial migration
-- GitHub OAuth wiring and startup config validation
+- Bifrost-native identity registration, GitHub OAuth wiring, and startup config validation
 - invite and approval gate with explicit member roles
 - member profile editing plus patron or contributor tier snapshots
 - project, work item, motion, member, and ledger UI
@@ -39,7 +39,7 @@ It is currently a strong first application slice, not an internet-facing alpha. 
 
 The labor platform concept doc establishes the social and economic model. Bifrost should implement that model with a few v1 clarifications:
 
-- keep GitHub sign-in only for Bifrost v1 even though the concept doc allows GitHub or GameCult accounts
+- keep Bifrost-native identity as the account root for v1, with GitHub and Heimdall-linked providers as attached external identities rather than account owners
 - keep the app invite-only during alpha
 - keep payout execution out of scope; only compute, review, and audit payout proposals
 - treat contribution points, patron points, decay, and revenue share as first-class product systems, not spreadsheet afterthoughts

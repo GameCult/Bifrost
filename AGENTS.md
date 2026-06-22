@@ -21,7 +21,7 @@
 
 - product name: `Bifrost`
 - v1 audience: invite-only member alpha
-- auth model: GitHub sign-in only
+- auth model: Bifrost-native identity registration, with GitHub and Heimdall-linked provider accounts attached as external identities
 - membership model: invite + approval gate before active participation
 - task sources: GitHub issues plus internal tasks
 - governance model: app-native motions and voting

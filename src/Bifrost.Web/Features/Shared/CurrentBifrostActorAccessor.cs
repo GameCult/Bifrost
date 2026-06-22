@@ -30,11 +30,17 @@ public sealed class CurrentBifrostActorAccessor(
             return Cache(httpContext, CurrentBifrostActor.Anonymous);
         }
 
+        var bifrostIdentity = httpContext.User.FindFirstValue(BifrostClaimTypes.BifrostIdentity);
+        var normalizedBifrostIdentity = string.IsNullOrWhiteSpace(bifrostIdentity)
+            ? string.Empty
+            : BifrostIdentityService.NormalizeIdentity(bifrostIdentity);
         var heimdallAccountId = httpContext.User.FindFirstValue(BifrostClaimTypes.HeimdallAccountId);
         var gitHubId = httpContext.User.FindFirstValue(ClaimTypes.NameIdentifier);
         var hasGitHubUserId = long.TryParse(gitHubId, out var gitHubUserId);
 
-        if (string.IsNullOrWhiteSpace(heimdallAccountId) && !hasGitHubUserId)
+        if (string.IsNullOrWhiteSpace(normalizedBifrostIdentity) &&
+            string.IsNullOrWhiteSpace(heimdallAccountId) &&
+            !hasGitHubUserId)
         {
             return Cache(httpContext, CurrentBifrostActor.Anonymous);
         }
@@ -47,7 +53,8 @@ public sealed class CurrentBifrostActorAccessor(
             .Include(x => x.Membership!)
                 .ThenInclude(x => x.TierSnapshots)
             .SingleOrDefaultAsync(
-                x => (!string.IsNullOrWhiteSpace(heimdallAccountId) && x.HeimdallAccountId == heimdallAccountId) ||
+                x => (!string.IsNullOrWhiteSpace(normalizedBifrostIdentity) && x.NormalizedBifrostIdentity == normalizedBifrostIdentity) ||
+                     (!string.IsNullOrWhiteSpace(heimdallAccountId) && x.HeimdallAccountId == heimdallAccountId) ||
                      (hasGitHubUserId && x.GitHubUserId == gitHubUserId),
                 cancellationToken);
 

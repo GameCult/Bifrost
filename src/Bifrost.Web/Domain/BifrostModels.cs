@@ -244,6 +244,10 @@ public sealed class UserAccount
 {
     public Guid Id { get; set; } = Guid.NewGuid();
 
+    public string BifrostIdentity { get; set; } = string.Empty;
+
+    public string NormalizedBifrostIdentity { get; set; } = string.Empty;
+
     public long? GitHubUserId { get; set; }
 
     public string HeimdallAccountId { get; set; } = string.Empty;

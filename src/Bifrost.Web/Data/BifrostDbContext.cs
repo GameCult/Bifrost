@@ -67,9 +67,12 @@ public sealed class BifrostDbContext(DbContextOptions<BifrostDbContext> options)
     {
         modelBuilder.Entity<UserAccount>(entity =>
         {
+            entity.HasIndex(x => x.NormalizedBifrostIdentity).IsUnique().HasFilter("\"NormalizedBifrostIdentity\" <> ''");
             entity.HasIndex(x => x.GitHubUserId).IsUnique().HasFilter("\"GitHubUserId\" IS NOT NULL");
             entity.HasIndex(x => x.HeimdallAccountId).IsUnique().HasFilter("\"HeimdallAccountId\" <> ''");
             entity.HasIndex(x => x.NormalizedGitHubLogin).IsUnique().HasFilter("\"NormalizedGitHubLogin\" <> ''");
+            entity.Property(x => x.BifrostIdentity).HasMaxLength(120);
+            entity.Property(x => x.NormalizedBifrostIdentity).HasMaxLength(120);
             entity.Property(x => x.HeimdallAccountId).HasMaxLength(160);
             entity.Property(x => x.GitHubLogin).HasMaxLength(120);
             entity.Property(x => x.NormalizedGitHubLogin).HasMaxLength(120);

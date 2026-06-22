@@ -39,7 +39,7 @@ The product center is the Labor Platform loop: eligible participants express pol
 
 After bootstrap, the next session should start implementing the first vertical slice:
 
-- GitHub OAuth sign-in
+- Bifrost-native identity registration plus GitHub OAuth linked sign-in
 - membership gating
 - core project/member data model
 - work items from GitHub and internal sources

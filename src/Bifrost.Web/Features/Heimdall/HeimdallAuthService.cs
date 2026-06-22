@@ -18,6 +18,7 @@ public sealed class HeimdallAuthService(
     HttpClient httpClient,
     HeimdallAuthAttemptStore attemptStore,
     BifrostDbContext dbContext,
+    BifrostIdentityService bifrostIdentityService,
     IOptions<HeimdallOptions> heimdallOptions,
     TimeProvider timeProvider)
 {
@@ -116,25 +117,8 @@ public sealed class HeimdallAuthService(
         }
 
         var userAccount = await UpsertUserAccountAsync(payload, attempt.RequiresMemberAccess, cancellationToken);
-        var claims = new List<Claim>
-        {
-            new(ClaimTypes.NameIdentifier, userAccount.GitHubUserId?.ToString() ?? userAccount.HeimdallAccountId),
-            new(ClaimTypes.Name, userAccount.DisplayName),
-            new(BifrostClaimTypes.HeimdallAccountId, userAccount.HeimdallAccountId),
-            new(BifrostClaimTypes.AuthProvider, payload.Provider ?? "heimdall"),
-            new(BifrostClaimTypes.DisplayName, userAccount.DisplayName),
-            new(BifrostClaimTypes.AvatarUrl, userAccount.AvatarUrl)
-        };
-
-        if (!string.IsNullOrWhiteSpace(userAccount.GitHubLogin))
-        {
-            claims.Add(new Claim(BifrostClaimTypes.GitHubLogin, userAccount.GitHubLogin));
-        }
-
-        var identity = new ClaimsIdentity(claims, CookieAuthenticationDefaults.AuthenticationScheme);
-        var principal = new ClaimsPrincipal(identity);
         return new HeimdallCompletedSignIn(
-            principal,
+            bifrostIdentityService.BuildPrincipal(userAccount, payload.Provider ?? "heimdall"),
             string.IsNullOrWhiteSpace(attempt.ReturnUrl) ? "/App" : attempt.ReturnUrl);
     }
 
@@ -206,6 +190,10 @@ public sealed class HeimdallAuthService(
 
         userAccount.MemberProfile!.Nickname = displayName;
         userAccount.MemberProfile.UpdatedAtUtc = now;
+        await bifrostIdentityService.EnsureIdentityAsync(
+            userAccount,
+            displayName,
+            cancellationToken);
         if (grantMemberAccess)
         {
             ApplicationBootstrapper.EnsureRole(

@@ -10,7 +10,7 @@ This repository now includes a viable alpha foundation slice of the ASP.NET Core
 
 - Razor Pages app under `src/Bifrost.Web`
 - PostgreSQL-backed EF Core model with an initial migration under `src/Bifrost.Web/Data/Migrations`
-- GitHub OAuth sign-in plus invite/approval-based membership gating
+- Bifrost-native identity registration plus GitHub OAuth and Heimdall-linked provider identities, with invite/approval-based membership gating
 - explicit member roles and admin-managed patron or contributor tier snapshots
 - patron support event recording with derived patron point summaries and tier refresh for voting weight
 - shared work board with estimates, actual time logs, review flow, and GitHub issue or PR links
@@ -37,13 +37,15 @@ It is closer to deployable now, but it is still not a finished internet-facing m
 - ASP.NET Core 8 LTS
 - Razor Pages + HTMX
 - PostgreSQL
-- GitHub OAuth for sign-in
+- Bifrost-native identity registration
+- GitHub OAuth for linked sign-in and repository integration
 - GitHub App for issue and pull request integration
 
 ## Alpha Scope
 
 - invite-only member portal
-- GitHub sign-in only
+- Bifrost identity registration without OAuth; membership remains invite/approval gated
+- GitHub and Heimdall-linked provider accounts as external identities
 - GitHub-backed and internal work items
 - app-native motions and voting
 - internal ledgers for patronage, contribution, point evidence, and payout eligibility
@@ -70,6 +72,7 @@ For the full staged roadmap, including contribution points, revenue share, patro
 ## Local Dev Notes
 
 - set `GitHubOAuth:ClientId` and `GitHubOAuth:ClientSecret` before using sign-in
+- POST `/auth/bifrost/register` with `identity`, optional `displayName`, and optional `returnUrl` to create a Bifrost-native account without OAuth; this signs in as `Authenticated` but does not grant active member access
 - set `Bootstrap:AdminGitHubLogins` with at least one GitHub login for the first active admin path
 - set `Bridge:LocalBridgeToken` to allow the transitional local bridge actuator to register and receipt governed actions through `/bridge/actions/*`
 - set `BIFROST_BRIDGE_BASE_URL` and `BIFROST_BRIDGE_TOKEN` when `tools/bifrost-bridge.mjs` should round-trip every action through the app ledger before mutating GitHub, Discord, or Reddit

@@ -15,7 +15,7 @@
 - One ASP.NET web app process for v1.
 - Server-rendered UI with HTMX for progressive interactions.
 - PostgreSQL as the system of record.
-- GitHub OAuth for login.
+- Bifrost-native identity registration for login, with GitHub OAuth available as a linked external identity.
 - GitHub App plus webhooks for issue and pull request lifecycle sync.
 - Discord and Reddit should become native Bifrost interfaces for work, voting/priority prompts, reward discussion, maintainer notices, public organizing threads, and agent swarm routing once identity/capability claims are available.
 - Yggdrasil-hosted deployment behind nginx with systemd-managed app service.
@@ -42,7 +42,7 @@
 ## Product Rules
 
 - Invite-only member alpha.
-- GitHub sign-in only in v1.
+- Bifrost-native identity is the local account root in v1; GitHub and Heimdall-linked providers attach to that root instead of owning it.
 - Authentication is separate from membership approval.
 - Work items may come from GitHub issues or internal platform-native tasks.
 - Voting is app-native and off-chain.

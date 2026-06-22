@@ -10,6 +10,7 @@ namespace Bifrost.Web.Features.Membership;
 
 public sealed class MembershipSynchronizationService(
     BifrostDbContext dbContext,
+    BifrostIdentityService bifrostIdentityService,
     IOptions<BootstrapOptions> bootstrapOptions,
     TimeProvider timeProvider)
 {
@@ -96,6 +97,11 @@ public sealed class MembershipSynchronizationService(
         {
             userAccount.MemberProfile.Nickname = userAccount.DisplayName;
         }
+
+        await bifrostIdentityService.EnsureIdentityAsync(
+            userAccount,
+            userAccount.GitHubLogin,
+            cancellationToken);
 
         if (invitation is not null && invitation.AcceptedByUserAccountId is null)
         {

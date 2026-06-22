@@ -88,6 +88,7 @@ builder.Services.AddScoped<AgentDispatchRunService>();
 builder.Services.AddScoped<AgentTransportReceiptService>();
 builder.Services.AddScoped<GovernanceActivityReceiptService>();
 builder.Services.AddScoped<MembershipSynchronizationService>();
+builder.Services.AddScoped<BifrostIdentityService>();
 builder.Services.AddScoped<GitHubWebhookService>();
 builder.Services.AddScoped<MotionGovernanceService>();
 builder.Services.AddScoped<MotionEveSurfaceService>();
@@ -280,6 +281,38 @@ app.MapGet("/auth/sign-in", async (HttpContext httpContext, IOptions<GitHubOAuth
     await httpContext.ChallengeAsync(
         GitHubAuthenticationDefaults.AuthenticationScheme,
         new() { RedirectUri = returnUrl });
+}).AllowAnonymous();
+
+app.MapPost("/auth/bifrost/register", async (
+    NativeBifrostRegistrationRequest request,
+    HttpContext httpContext,
+    BifrostIdentityService bifrostIdentityService,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var userAccount = await bifrostIdentityService.RegisterNativeAsync(
+            request.Identity,
+            request.DisplayName,
+            cancellationToken);
+        await httpContext.SignInAsync(
+            CookieAuthenticationDefaults.AuthenticationScheme,
+            bifrostIdentityService.BuildPrincipal(userAccount));
+
+        var returnUrl = string.IsNullOrWhiteSpace(request.ReturnUrl) ? "/App" : request.ReturnUrl;
+        return JsonResult(
+            new NativeBifrostRegistrationResponse(
+                userAccount.Id,
+                userAccount.BifrostIdentity,
+                userAccount.DisplayName,
+                userAccount.Membership?.Status.ToString() ?? MembershipStatus.Authenticated.ToString(),
+                returnUrl),
+            appJsonSerializerOptions);
+    }
+    catch (BifrostIdentityException error)
+    {
+        return Results.Text(error.Message, statusCode: StatusCodes.Status400BadRequest);
+    }
 }).AllowAnonymous();
 
 app.MapGet("/auth/heimdall/{provider}", async (
@@ -894,3 +927,15 @@ static bool HasValidLocalBridgeToken(HttpRequest request, BridgeOptions bridgeOp
 }
 
 public partial class Program;
+
+public sealed record NativeBifrostRegistrationRequest(
+    string Identity,
+    string? DisplayName,
+    string? ReturnUrl);
+
+public sealed record NativeBifrostRegistrationResponse(
+    Guid UserAccountId,
+    string BifrostIdentity,
+    string DisplayName,
+    string MembershipStatus,
+    string ReturnUrl);
