@@ -26,7 +26,7 @@ public sealed class ProviderAdvertisementTests
         AssertSchemaPurpose(root, "bifrost.bridge_receipt.v0", "current hosted governed crossing result witness");
         AssertSchemaPurpose(root, "bifrost.patron_support_event.v0", "current hosted Heimdall-signed patron support fact consumed by Bifrost");
         AssertBoundaryCommand(root, "bridge", "open GitHub draft PRs and PR comments through Bifrost gate");
-        AssertBoundaryCommand(root, "bridge", "record receipt-only future-surface requests before named actuators exist");
+        AssertBoundaryCommand(root, "bridge", "record receipt-only future-surface requests with named-surface Heimdall capability matching before named actuators exist");
         AssertBoundaryCommand(root, "patron", "consume Heimdall-signed Patreon and PayPal support facts");
         AssertBoundaryForbiddenAuthority(root, "patron", "does not store Patreon or PayPal provider tokens");
     }

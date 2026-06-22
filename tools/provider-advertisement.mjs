@@ -365,7 +365,7 @@ function buildAdvertisement(options) {
         "execute approved handoffs",
         "record receipts",
         "open GitHub draft PRs and PR comments through Bifrost gate",
-        "record receipt-only future-surface requests before named actuators exist",
+        "record receipt-only future-surface requests with named-surface Heimdall capability matching before named actuators exist",
         "post Persona-flaired Reddit organizing threads",
       ], [
         "does not treat local protocol JSON as work authority",

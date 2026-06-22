@@ -534,6 +534,7 @@ async function requestOtherBridgeAction(options) {
     actorName: identity,
     targetSurface: "Other",
     actionKind: "Other",
+    targetSurfaceName: surfaceName,
     targetRepositoryFullName: options["target-repository-full-name"] ?? "",
     targetLocator,
     title,

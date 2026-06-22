@@ -367,6 +367,11 @@ namespace Bifrost.Web.Data.Migrations
                         .HasMaxLength(240)
                         .HasColumnType("character varying(240)");
 
+                    b.Property<string>("TargetSurfaceName")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)");
+
                     b.Property<string>("TargetSurface")
                         .IsRequired()
                         .HasColumnType("text");
@@ -401,6 +406,8 @@ namespace Bifrost.Web.Data.Migrations
                     b.HasIndex("SourceKind", "SourceId");
 
                     b.HasIndex("TargetSurface", "ActionKind", "Status");
+
+                    b.HasIndex("TargetSurface", "TargetSurfaceName", "Status");
 
                     b.ToTable("BridgeActions");
                 });

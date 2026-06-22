@@ -924,6 +924,8 @@ public sealed class BridgeAction
 
     public string TargetLocator { get; set; } = string.Empty;
 
+    public string TargetSurfaceName { get; set; } = string.Empty;
+
     public string SourceKind { get; set; } = string.Empty;
 
     public string SourceId { get; set; } = string.Empty;

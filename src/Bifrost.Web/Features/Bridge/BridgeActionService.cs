@@ -36,6 +36,7 @@ public sealed class BridgeActionService(
             MotionId = normalizedRequest.MotionId,
             TargetRepositoryFullName = NormalizeRepository(normalizedRequest.TargetRepositoryFullName),
             TargetLocator = NormalizeText(normalizedRequest.TargetLocator),
+            TargetSurfaceName = NormalizeSurfaceName(normalizedRequest.TargetSurfaceName),
             SourceKind = NormalizeText(normalizedRequest.SourceKind),
             SourceId = NormalizeText(normalizedRequest.SourceId),
             AuthorityReference = NormalizeText(normalizedRequest.AuthorityReference),
@@ -316,8 +317,15 @@ public sealed class BridgeActionService(
         {
             BridgeTargetSurface.Discord => "discord",
             BridgeTargetSurface.Reddit => "reddit",
+            BridgeTargetSurface.Other => NormalizeSurfaceName(request.TargetSurfaceName),
             _ => string.Empty
         };
+        if (request.TargetSurface is BridgeTargetSurface.Other &&
+            string.IsNullOrWhiteSpace(expectedSurface))
+        {
+            return BridgePolicyDecision.Reject("Future outside-world bridge actions must name the requested target surface.");
+        }
+
         if (!string.IsNullOrWhiteSpace(expectedSurface) &&
             !capabilityReference.Contains($":{expectedSurface}:", StringComparison.OrdinalIgnoreCase))
         {
@@ -444,6 +452,21 @@ public sealed class BridgeActionService(
 
     private static string NormalizeRepository(string value) => NormalizeText(value).ToLowerInvariant();
 
+    private static string NormalizeSurfaceName(string? value)
+    {
+        var normalized = NormalizeText(value).ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return string.Empty;
+        }
+
+        return normalized.All(character =>
+            char.IsAsciiLetterOrDigit(character) ||
+            character is '-' or '_' or '.')
+            ? normalized
+            : string.Empty;
+    }
+
     private static string ShortRepositoryName(string normalizedRepositoryFullName)
     {
         if (string.IsNullOrWhiteSpace(normalizedRepositoryFullName))
@@ -484,6 +507,7 @@ public sealed record BridgeActionRequest(
     BridgeActionKind ActionKind,
     string TargetRepositoryFullName,
     string TargetLocator,
+    string TargetSurfaceName,
     string SourceKind,
     string SourceId,
     string AuthorityReference,
@@ -506,6 +530,7 @@ public sealed record BridgeActionRequest(
                 : NormalizeText(ActorName),
             TargetRepositoryFullName = NormalizeText(TargetRepositoryFullName),
             TargetLocator = NormalizeText(TargetLocator),
+            TargetSurfaceName = NormalizeSurfaceName(TargetSurfaceName),
             SourceKind = NormalizeText(SourceKind),
             SourceId = NormalizeText(SourceId),
             AuthorityReference = NormalizeText(AuthorityReference),
@@ -519,6 +544,21 @@ public sealed record BridgeActionRequest(
         };
 
     private static string NormalizeText(string? value) => value?.Trim() ?? string.Empty;
+
+    private static string NormalizeSurfaceName(string? value)
+    {
+        var normalized = NormalizeText(value).ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return string.Empty;
+        }
+
+        return normalized.All(character =>
+            char.IsAsciiLetterOrDigit(character) ||
+            character is '-' or '_' or '.')
+            ? normalized
+            : string.Empty;
+    }
 }
 
 public sealed record BridgeActionReceiptRequest(
@@ -537,6 +577,7 @@ public sealed record BridgeActionResult(
     BridgeActionStatus Status,
     string TargetRepositoryFullName,
     string TargetLocator,
+    string TargetSurfaceName,
     string SourceKind,
     string SourceId,
     string AuthorityReference,
@@ -561,6 +602,7 @@ public sealed record BridgeActionResult(
         action.Status,
         action.TargetRepositoryFullName,
         action.TargetLocator,
+        action.TargetSurfaceName,
         action.SourceKind,
         action.SourceId,
         action.AuthorityReference,
