@@ -90,6 +90,13 @@ console.log(JSON.stringify({
             "--target-repository-full-name", "GameCult/Bifrost",
             "--gh-executable", "node",
             "--gh-exec-args", fakeGhPath,
+            "--source-kind", "epiphany_repo_work",
+            "--source-id", "repo-work-public-proof-huginn",
+            "--authority-ref", "bifrost_publication_gate",
+            "--epiphany-run-id", "epiphany-run-123",
+            "--epiphany-lane-id", "hands-publication",
+            "--epiphany-agent-identity", "huginn",
+            "--heimdall-capability-ref", "heimdall-capability-abc",
             "--allow-ungated-github", "true",
         ]);
 
@@ -98,6 +105,15 @@ console.log(JSON.stringify({
         Assert.Equal("github-pr-comment", payload.RootElement.GetProperty("action").GetString());
         Assert.Equal("https://github.com/GameCult/Bifrost/pull/1#issuecomment-123456", payload.RootElement.GetProperty("receiptUrl").GetString());
         Assert.Equal("123456", payload.RootElement.GetProperty("externalReceiptId").GetString());
+        var provenance = payload.RootElement.GetProperty("provenance");
+        Assert.Equal("nibu", provenance.GetProperty("bifrostIdentity").GetString());
+        Assert.Equal("epiphany_repo_work", provenance.GetProperty("sourceKind").GetString());
+        Assert.Equal("repo-work-public-proof-huginn", provenance.GetProperty("sourceId").GetString());
+        Assert.Equal("bifrost_publication_gate", provenance.GetProperty("authorityReference").GetString());
+        Assert.Equal("epiphany-run-123", provenance.GetProperty("epiphanyRunId").GetString());
+        Assert.Equal("hands-publication", provenance.GetProperty("epiphanyLaneId").GetString());
+        Assert.Equal("huginn", provenance.GetProperty("epiphanyAgentIdentity").GetString());
+        Assert.Equal("heimdall-capability-abc", provenance.GetProperty("heimdallCapabilityRef").GetString());
     }
 
     [Fact]

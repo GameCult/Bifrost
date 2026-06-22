@@ -110,6 +110,8 @@ async function createGitHubDraftPr(options) {
 
   let pushed = false;
   let prUrl = "";
+  let commitSha = "";
+  let changedPaths = [];
   try {
     try {
       await bridgeAction?.start();
@@ -118,6 +120,12 @@ async function createGitHubDraftPr(options) {
       await writeFile(targetPath, content, "utf8");
       git(["add", "--", relativePath], repoRoot);
       git(["commit", "-m", commitMessage], repoRoot);
+      commitSha = git(["rev-parse", "HEAD"], repoRoot).stdout.trim();
+      changedPaths = git(["diff-tree", "--no-commit-id", "--name-only", "-r", commitSha], repoRoot)
+        .stdout
+        .split(/\r?\n/)
+        .map((path) => path.trim())
+        .filter(Boolean);
       git(["push", "-u", "origin", branch], repoRoot, {
         env: {
           BIFROST_GITHUB_PUSH_AUTHORIZED: "true",
@@ -146,13 +154,15 @@ async function createGitHubDraftPr(options) {
       await bridgeAction?.complete({
         receiptUrl: prUrl,
         externalReceiptId: extractGitHubNumber(prUrl) ?? branch,
-        receiptPayload: JSON.stringify({
+        receiptPayload: JSON.stringify(buildReceiptPayload(options, {
           branch,
           base,
           path: relativePath,
+          changedPaths,
+          commitSha,
           commitMessage,
           prUrl,
-        }),
+        })),
       });
     } catch (error) {
       await bridgeAction?.fail(error);
@@ -174,7 +184,10 @@ async function createGitHubDraftPr(options) {
     base,
     branch,
     pushed,
+    commitSha,
+    changedPaths,
     prUrl,
+    provenance: buildBridgeProvenance(options),
   });
 }
 
@@ -249,7 +262,7 @@ async function commentGitHubPr(options) {
     await bridgeAction?.complete({
       receiptUrl,
       externalReceiptId,
-      receiptPayload: JSON.stringify({
+      receiptPayload: JSON.stringify(buildReceiptPayload(options, {
         pullRequestNumber: Number(pr),
         repositoryFullName: targetRepositoryFullName,
         issueCommentId: comment.id,
@@ -257,7 +270,7 @@ async function commentGitHubPr(options) {
         issueCommentUrl: receiptUrl,
         author: identity,
         body,
-      }),
+      })),
     });
     printJson({
       action: "github-pr-comment",
@@ -267,6 +280,7 @@ async function commentGitHubPr(options) {
       pr,
       receiptUrl,
       externalReceiptId,
+      provenance: buildBridgeProvenance(options),
     });
   } catch (error) {
     await bridgeAction?.fail(error);
@@ -325,12 +339,12 @@ async function postDiscordMessage(options) {
     await bridgeAction?.complete({
       receiptUrl: `https://discord.com/channels/${result.guildId ?? "@me"}/${channelId}/${result.id}`,
       externalReceiptId: result.id,
-      receiptPayload: JSON.stringify({
+      receiptPayload: JSON.stringify(buildReceiptPayload(options, {
         channelId,
         messageId: result.id,
         guildId: result.guildId ?? "",
         transport: result.transport,
-      }),
+      })),
     });
   } catch (error) {
     await bridgeAction?.fail(error);
@@ -344,6 +358,7 @@ async function postDiscordMessage(options) {
     messageId: result.id,
     transport: result.transport,
     url: `https://discord.com/channels/${result.guildId ?? "@me"}/${channelId}/${result.id}`,
+    provenance: buildBridgeProvenance(options),
   });
 }
 
@@ -388,12 +403,12 @@ async function sendDiscordDm(options) {
     await bridgeAction?.complete({
       receiptUrl: `https://discord.com/channels/@me/${channelId}/${result.id}`,
       externalReceiptId: result.id,
-      receiptPayload: JSON.stringify({
+      receiptPayload: JSON.stringify(buildReceiptPayload(options, {
         recipientId,
         channelId,
         messageId: result.id,
         transport: result.transport,
-      }),
+      })),
     });
   } catch (error) {
     await bridgeAction?.fail(error);
@@ -407,6 +422,7 @@ async function sendDiscordDm(options) {
     messageId: result.id,
     transport: result.transport,
     url: `https://discord.com/channels/@me/${channelId}/${result.id}`,
+    provenance: buildBridgeProvenance(options),
   });
 }
 
@@ -459,14 +475,14 @@ async function postRedditThread(options) {
     await bridgeAction?.complete({
       receiptUrl: result.url,
       externalReceiptId: result.thingId,
-      receiptPayload: JSON.stringify({
+      receiptPayload: JSON.stringify(buildReceiptPayload(options, {
         subreddit,
         thingId: result.thingId,
         url: result.url,
         personaName,
         personaFlairId,
         personaFlairText,
-      }),
+      })),
     });
   } catch (error) {
     await bridgeAction?.fail(error);
@@ -483,6 +499,7 @@ async function postRedditThread(options) {
     personaFlairText,
     thingId: result.thingId,
     url: result.url,
+    provenance: buildBridgeProvenance(options),
   });
 }
 
@@ -965,6 +982,30 @@ function optionalString(value) {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
+function buildReceiptPayload(options, payload) {
+  return {
+    ...payload,
+    provenance: buildBridgeProvenance(options),
+  };
+}
+
+function buildBridgeProvenance(options) {
+  return {
+    bifrostIdentity: optionalString(options.identity) ?? optionalString(process.env.BIFROST_IDENTITY) ?? "",
+    sourceKind: optionalString(options["source-kind"]) ?? optionalString(process.env.BIFROST_BRIDGE_SOURCE_KIND) ?? "",
+    sourceId: optionalString(options["source-id"]) ?? optionalString(process.env.BIFROST_BRIDGE_SOURCE_ID) ?? "",
+    authorityReference: optionalString(options["authority-ref"]) ?? optionalString(process.env.BIFROST_BRIDGE_AUTHORITY_REF) ?? "",
+    epiphanyRunId: optionalString(options["epiphany-run-id"]) ?? optionalString(process.env.EPIPHANY_RUN_ID) ?? "",
+    epiphanyLaneId: optionalString(options["epiphany-lane-id"]) ?? optionalString(process.env.EPIPHANY_LANE_ID) ?? "",
+    epiphanyAgentIdentity: optionalString(options["epiphany-agent-identity"]) ?? optionalString(process.env.EPIPHANY_AGENT_IDENTITY) ?? "",
+    heimdallCapabilityRef:
+      optionalString(options["heimdall-capability-ref"]) ??
+      optionalString(process.env.HEIMDALL_CAPABILITY_REF) ??
+      optionalString(process.env.BIFROST_HEIMDALL_CAPABILITY_REF) ??
+      "",
+  };
+}
+
 function resolveGitCommand() {
   return optionalString(process.env.BIFROST_GIT_EXECUTABLE) ?? "git";
 }
@@ -1263,6 +1304,10 @@ Examples:
 GitHub note:
   GitHub actions require BIFROST_BRIDGE_BASE_URL and BIFROST_BRIDGE_TOKEN so Bifrost can gate and receipt the crossing.
   Use --allow-ungated-github true only for explicit operator recovery.
+
+Provenance note:
+  --identity names the Bifrost identity acting through the bridge.
+  --heimdall-capability-ref records the Heimdall-backed account/capability reference used for the outside-world crossing; do not pass bearer tokens here.
 `);
 }
 

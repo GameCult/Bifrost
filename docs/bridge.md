@@ -21,14 +21,15 @@ That means Bifrost owns the operational meaning of the crossing:
 - what permission or review state made the action acceptable
 - what receipt proves the crossing happened
 
-It does not mean Bifrost should own OAuth sludge. Heimdall owns OAuth, linked identities, token custody, grants, and signed account claims. Bifrost consumes Heimdall identity and permission facts, then decides whether a bridge action is allowed in the Bifrost domain.
+It does not mean Bifrost should own OAuth sludge. Bifrost is both an identity provider and identity consumer: a GameCult actor should be able to register with Bifrost without OAuth, and that Bifrost identity should be enough to authenticate with most GameCult services. Heimdall owns outside-provider OAuth, linked-account token custody, grants, and signed account claims. Bifrost associates those Heimdall-backed accounts with the Bifrost identity, consumes the permission facts, and decides whether a bridge action is allowed in the Bifrost domain.
 
 ## Ownership
 
-- Heimdall owns provider OAuth and account-linked credentials.
-- Bifrost owns bridge action policy, request lifecycle, routing, execution receipts, Discord-native Bifrost interface transport, and governance/labor transport.
+- Heimdall owns provider OAuth, outside-account credentials, token custody, and capability/account claims.
+- Bifrost owns GameCult identity, linked-account association, bridge action policy, request lifecycle, routing, execution receipts, Discord-native Bifrost interface transport, and governance/labor transport.
 - Reddit posts through the Bifrost Reddit app are Bifrost-owned public organizing crossings; Persona flair is presentation identity, not authority.
 - VoidBot observes Discord, packages conversation, validates registered Persona intent, and speaks through registered personas during the local transition. It should not be the durable authority that mutates GitHub or owns Bifrost-scoped Discord transport.
+- Epiphany owns swarm execution, repo Body work, branch-local agent lanes, local memory/evidence, and Persona cognition. Epiphany asks Bifrost to cross into GitHub, Discord, Reddit, or other public worlds; Bifrost records and governs that crossing without becoming Epiphany's launcher.
 - CultCache stores lightweight agent transport packets when the bridge needs file-native state.
 - CultNet carries those packets between runtimes.
 - Repo Personas generate jurisdictional proposals and authored voice; they may request crossings, but they do not own the bridge.
@@ -58,13 +59,15 @@ The hosted app now exposes a first-class bridge action ledger for governed trans
 
 The owner is Bifrost, not the local script. The script or agent may execute the crossing, but Bifrost records the request, policy decision, lifecycle state, and receipt.
 
-The hosted app also exposes a dispatch-run ledger for launched agent work:
+The hosted app also exposes a dispatch-run ledger for the older Bifrost-launched worker bridge:
 
 - `POST /dispatch/runs/start`
 - `POST /dispatch/runs/{id}/complete`
 - `POST /dispatch/runs/{id}/fail`
 
-This is the companion trail to bridge actions. A bridge action says "this crossing into GitHub/Discord/Reddit was requested and receipted." A dispatch run says "this specific Codex worker actually launched, ran, and ended this way." One guards governed mutation. The other proves agent activity.
+That dispatcher was a transitional way for VoidBot-era Persona consensus to queue Codex workers. It is not the blessed Epiphany launch organ. Keep its receipts as historical/quarantine evidence where they exist, but the forward path is Epiphany-owned execution plus Bifrost-owned crossing receipts.
+
+For Epiphany work, a bridge action says "this Epiphany run/lane requested a governed crossing into GitHub/Discord/Reddit and Bifrost receipted the result." The receipt payload should carry Bifrost identity, Epiphany run id, lane id, agent identity, source object, authority reference, Heimdall capability/account reference, and any external receipt facts such as PR URL, comment id, commit SHA, or changed paths.
 
 The hosted app also exposes a request-lane receipt ledger for transport lifecycle events:
 
@@ -90,13 +93,15 @@ Current gate behavior:
 - agent, Persona, and service actions must cite provenance: `authorityReference`, `sourceKind` plus `sourceId`, `workItemId`, or `motionId`
 - completed actions must report a receipt URL, external receipt id, or serialized receipt payload
 - GitHub mutation commands fail closed unless Bifrost authorization is configured; `--allow-ungated-github true` is the explicit operator-recovery hatch
+- the future blessed credential for public-world crossings is a Bifrost identity plus Heimdall-issued capability token or verifiable capability/account reference. The local bridge token is a transitional service actuator credential, not a substitute for Bifrost identity or Heimdall-backed outside-account authority.
 
 Current CLI wiring:
 
 - set `BIFROST_BRIDGE_BASE_URL` to the Bifrost app base URL
 - set `BIFROST_BRIDGE_TOKEN` to the configured local bridge token
 - GitHub commands now require both values by default, even for dry-run, so the normal path cannot silently bypass the gate
-- pass `--source-kind`, `--source-id`, `--authority-ref`, `--work-item-id`, or `--motion-id` so agent actions satisfy policy
+- pass `--identity`, `--source-kind`, `--source-id`, `--authority-ref`, `--work-item-id`, or `--motion-id` so agent actions satisfy policy
+- Epiphany callers should also pass `--epiphany-run-id`, `--epiphany-lane-id`, `--epiphany-agent-identity`, and `--heimdall-capability-ref` or provide `EPIPHANY_RUN_ID`, `EPIPHANY_LANE_ID`, `EPIPHANY_AGENT_IDENTITY`, and `HEIMDALL_CAPABILITY_REF` in the environment. The CLI stores the Bifrost identity and capability/account reference or fingerprint-shaped value, never the Heimdall bearer token.
 - the dispatcher now preloads `BIFROST_BRIDGE_SOURCE_KIND`, `BIFROST_BRIDGE_SOURCE_ID`, and `BIFROST_BRIDGE_AUTHORITY_REF` into Codex turns launched from Bifrost update requests, so normal bridge use inside a dispatched turn carries request provenance by default
 - those dispatched turns also inject Bifrost-owned GitHub gates through environment config: `git` and `gh` wrappers are prepended in `PATH`, a `pre-push` hook backs up raw Git pushes, raw `git push` stays blocked even when `--no-verify` is used, and direct `gh` usage is limited to explicit read-only commands unless the bridge explicitly authorizes the GitHub write path
 - those dispatched turns also lock local-only recovery hatches: `--allow-ungated-github`, `BIFROST_ALLOW_UNGATED_GITHUB`, `--allow-unreceipted-activity`, and `BIFROST_ALLOW_UNRECEIPTED_ACTIVITY` are refused inside dispatched work so a worker cannot opt itself out of Bifrost gate or receipt policy
@@ -144,7 +149,7 @@ node .\tools\bifrost-bridge.mjs github-pr-comment `
   --content "This proposal needs a sharper leash before it becomes canon-shaped."
 ```
 
-The command leaves a signed PR comment through GitHub's issue-comment API via `gh api` and prints a JSON receipt with GitHub's own comment id and `html_url`. Repo Personas should use this when the argument belongs on the review artifact instead of dissolving into Discord scrollback.
+The command leaves a signed PR comment through GitHub's issue-comment API via `gh api` and prints a JSON receipt with GitHub's own comment id, `html_url`, and Bifrost/Epiphany/Heimdall provenance. Repo Personas should use this when the argument belongs on the review artifact instead of dissolving into Discord scrollback.
 
 ### Discord Post
 
@@ -203,10 +208,11 @@ VoidBot still owns room reading, moderation judgment, archive/source retrieval, 
 
 The correct future credential path is:
 
-1. Heimdall implements GitHub OAuth callback/runtime and managed credential custody.
-2. Heimdall issues Bifrost-verifiable claims for account identity and bridge capabilities.
-3. Bifrost records a bridge action request and checks the Heimdall-derived permission facts.
-4. Bifrost executes or queues the action through the appropriate bridge executor.
-5. Bifrost records the GitHub/Discord/Reddit receipt and exposes it back to the requesting agent/runtime.
+1. Bifrost registers or resolves the GameCult actor identity without requiring OAuth.
+2. Heimdall implements GitHub/Discord/Reddit OAuth callback/runtime and managed credential custody.
+3. Heimdall issues Bifrost-verifiable claims for linked outside accounts and bridge capabilities.
+4. Bifrost associates those claims with the Bifrost identity, records a bridge action request, and checks the Heimdall-derived permission facts.
+5. Bifrost executes or queues the action through the appropriate bridge executor.
+6. Bifrost records the GitHub/Discord/Reddit receipt and exposes it back to the requesting agent/runtime.
 
-In that shape, Bifrost is the shiny bridge. Heimdall is the gatehouse with the keys. VoidBot is not hiding a bolt cutter in its coat.
+In that shape, Bifrost is the shiny bridge and the local identity altar. Heimdall is the gatehouse with the outside-account keys. VoidBot is not hiding a bolt cutter in its coat.
