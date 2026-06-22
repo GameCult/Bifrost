@@ -26,7 +26,9 @@ public sealed class ProviderAdvertisementTests
         AssertSchemaPurpose(root, "bifrost.bridge_receipt.v0", "current hosted governed crossing result witness");
         AssertSchemaPurpose(root, "bifrost.patron_support_event.v0", "current hosted Heimdall-signed patron support fact consumed by Bifrost");
         AssertBoundaryCommand(root, "bridge", "open GitHub draft PRs and PR comments through Bifrost gate");
+        AssertBoundaryCommand(root, "bridge", "post Discord messages and DMs through Bifrost gate with Heimdall-linked actor capability");
         AssertBoundaryCommand(root, "bridge", "record receipt-only future-surface requests with named-surface Heimdall capability matching before named actuators exist");
+        AssertBoundaryCommand(root, "bridge", "post Persona-flaired Reddit organizing threads");
         AssertBoundaryCommand(root, "patron", "consume Heimdall-signed Patreon and PayPal support facts");
         AssertBoundaryForbiddenAuthority(root, "patron", "does not store Patreon or PayPal provider tokens");
     }
@@ -48,6 +50,8 @@ public sealed class ProviderAdvertisementTests
 
         AssertArrayContains(provider.GetProperty("capabilities"), "github-bridge");
         AssertArrayContains(provider.GetProperty("capabilities"), "github-work-sync");
+        AssertArrayContains(provider.GetProperty("capabilities"), "discord-bridge");
+        AssertArrayContains(provider.GetProperty("capabilities"), "reddit-bridge");
         AssertArrayContains(provider.GetProperty("capabilities"), "future-surface-bridge");
         AssertArrayContains(provider.GetProperty("capabilities"), "heimdall-patron-support-intake");
 

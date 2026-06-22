@@ -365,6 +365,7 @@ function buildAdvertisement(options) {
         "execute approved handoffs",
         "record receipts",
         "open GitHub draft PRs and PR comments through Bifrost gate",
+        "post Discord messages and DMs through Bifrost gate with Heimdall-linked actor capability",
         "record receipt-only future-surface requests with named-surface Heimdall capability matching before named actuators exist",
         "post Persona-flaired Reddit organizing threads",
       ], [
