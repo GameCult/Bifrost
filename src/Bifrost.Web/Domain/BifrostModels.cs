@@ -171,7 +171,8 @@ public enum ExternalPatronProvider
 {
     Manual,
     Patreon,
-    PayPal
+    PayPal,
+    Stripe
 }
 
 public enum BridgeActorKind

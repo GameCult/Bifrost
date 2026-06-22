@@ -7,6 +7,7 @@ using Bifrost.Web.Features.Patronage;
 using Bifrost.Web.Data;
 using Bifrost.Web.Domain;
 using Bifrost.Web.Tests.Support;
+using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Bifrost.Web.Tests;
@@ -226,6 +227,116 @@ public sealed class PlatformEndpointsTests : IClassFixture<TestWebApplicationFac
             .ToList();
 
         Assert.Empty(currentPatronTiers);
+    }
+
+    [Fact]
+    public async Task Velvet_patronage_checkout_redirects_to_stripe_checkout()
+    {
+        using var client = _factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false
+        });
+
+        using var response = await client.GetAsync("/patronage/velvet/checkout?tier=velvet-room");
+
+        Assert.Equal(HttpStatusCode.Redirect, response.StatusCode);
+        Assert.Equal("https://checkout.stripe.com/c/pay/cs_test_velvet", response.Headers.Location?.ToString());
+    }
+
+    [Fact]
+    public async Task Velvet_patronage_checkout_requires_bifrost_account()
+    {
+        using var client = _factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false
+        });
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/patronage/velvet/checkout?tier=velvet-room");
+        request.Headers.Add("X-Test-Anonymous", "1");
+
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Redirect, response.StatusCode);
+        Assert.Equal(
+            "/auth/sign-in?returnUrl=%2Fpatronage%2Fvelvet%2Fcheckout%3Ftier%3Dvelvet-room",
+            response.Headers.Location?.ToString());
+    }
+
+    [Fact]
+    public async Task Sign_in_chooser_lists_supported_transport_providers()
+    {
+        using var client = _factory.CreateClient();
+
+        using var response = await client.GetAsync("/auth/sign-in?returnUrl=%2Fpatronage%2Fvelvet%2Fcheckout%3Ftier%3Dvelvet-room");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var html = await response.Content.ReadAsStringAsync();
+        Assert.Contains("GitHub", html);
+        Assert.Contains("/auth/heimdall/discord", html);
+        Assert.Contains("/auth/heimdall/patreon", html);
+        Assert.Contains("/auth/heimdall/twitch", html);
+    }
+
+    [Fact]
+    public async Task Stripe_checkout_completed_webhook_records_general_patronage()
+    {
+        using var client = _factory.CreateClient();
+        _ = await client.GetAsync("/App");
+        Guid patronageAccountId;
+        using (var setupScope = _factory.Services.CreateScope())
+        {
+            var setupContext = setupScope.ServiceProvider.GetRequiredService<BifrostDbContext>();
+            patronageAccountId = setupContext.UserAccounts.Single(x => x.NormalizedGitHubLogin == "TEST-ADMIN").Id;
+        }
+
+        var created = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var payload = JsonSerializer.Serialize(new
+        {
+            id = $"evt_{Guid.NewGuid():N}",
+            type = "checkout.session.completed",
+            created,
+            data = new
+            {
+                @object = new
+                {
+                    id = "cs_test_velvet_paid",
+                    customer = "cus_velvet_1",
+                    currency = "usd",
+                    amount_total = 3900,
+                    payment_status = "paid",
+                    metadata = new Dictionary<string, string>
+                    {
+                        ["source"] = "velvet.gamecult.org",
+                        ["ledger"] = "bifrost",
+                        ["purpose"] = "general_patronage",
+                        ["model"] = "deru",
+                        ["tier"] = "after-hours-bundle",
+                        ["bifrost_user_account_id"] = patronageAccountId.ToString("N"),
+                        ["bifrost_github_login"] = "test-admin"
+                    }
+                }
+            }
+        });
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/patronage/stripe/webhook");
+        request.Headers.Add("Stripe-Signature", ComputeStripeSignature("whsec_test_webhook_secret", payload));
+        request.Content = new StringContent(payload, Encoding.UTF8, "application/json");
+
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+
+        using var scope = _factory.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
+        var patronageAccount = dbContext.UserAccounts.Single(x => x.NormalizedGitHubLogin == "TEST-ADMIN");
+        var supportEvent = dbContext.PatronSupportEvents.Single(x => x.Provider == ExternalPatronProvider.Stripe);
+
+        Assert.Equal(patronageAccount.Id, supportEvent.UserAccountId);
+        Assert.Equal("cs_test_velvet_paid", supportEvent.ExternalSupportId);
+        Assert.Equal(39m, supportEvent.Amount);
+        Assert.Equal("USD", supportEvent.CurrencyCode);
+        Assert.Contains("after-hours-bundle", supportEvent.Notes);
+        Assert.Contains(dbContext.AuditEvents, x => x.Action == "patron-support.recorded");
     }
 
     [Fact]
@@ -1019,6 +1130,16 @@ public sealed class PlatformEndpointsTests : IClassFixture<TestWebApplicationFac
         using var hasher = new HMACSHA256(Encoding.UTF8.GetBytes(secret));
         var hash = hasher.ComputeHash(Encoding.UTF8.GetBytes(payload));
         return $"sha256={Convert.ToHexString(hash).ToLowerInvariant()}";
+    }
+
+    private static string ComputeStripeSignature(string secret, string payload)
+    {
+        var timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString();
+        using var hasher = new HMACSHA256(Encoding.UTF8.GetBytes(secret));
+        var signature = Convert.ToHexString(
+            hasher.ComputeHash(Encoding.UTF8.GetBytes($"{timestamp}.{payload}"))).ToLowerInvariant();
+
+        return $"t={timestamp},v1={signature}";
     }
 
     private static HttpRequestMessage CreateSignedHeimdallRequest(string payload)

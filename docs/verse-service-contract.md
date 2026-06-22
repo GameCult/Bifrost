@@ -71,6 +71,33 @@ Bifrost publishes under these CultMesh namespaces:
 Odin discovers Bifrost through the service namespace, then indexes the schema
 catalog and surface namespaces. Odin does not scrape Razor pages as truth.
 
+## Codex MCP Boundary
+
+Codex and similar external agents are xeno clients at the Verse boundary. The
+MCP surface that gives those clients access to Verse state belongs in Bifrost,
+not in an individual daemon package. Bifrost hosts the MCP because it owns the
+governed crossing: capability shaping, consent, policy, and the external
+protocol contract.
+
+The MCP should expose Verse-level tools rather than daemon-specific shortcuts.
+Those tools ask Odin for overview and discovery, then route to known CultMesh
+addresses in the local Verse. Odin supplies the current map of daemons,
+surfaces, schemas, capabilities, and routes; Bifrost decides what a xeno client
+is allowed to see or command across that map.
+
+Brokkr is one daemon that may be present in the local Verse. Its Unity editor
+TUI/Eve surface and CultCache mirror are discovered through Odin and addressed
+through CultMesh like any other resident service. Brokkr should not host the
+Codex MCP merely because it happens to be the daemon of interest for a given
+session.
+
+Useful MCP tool shapes are therefore conceptual Verse tools such as
+`verse.overview`, `verse.daemons`, `verse.surfaces`, `verse.read`,
+`verse.write_intent`, and `verse.poll_events`. Their implementations may call
+Odin for discovery and then use CultLib/CultMesh/CultCache primitives to read or
+write the addressed service state. Local scripts may still inspect a Brokkr
+cache directly for debugging and development, but that is not the xeno boundary.
+
 ## Provider Advertisement Export
 
 Bifrost has a read-only first-cut provider advertisement command:

@@ -24,13 +24,15 @@ public sealed class HeimdallAuthService(
     private static readonly HashSet<string> AllowedProviders = new(StringComparer.OrdinalIgnoreCase)
     {
         "discord",
-        "patreon"
+        "patreon",
+        "twitch"
     };
 
     public async Task<HeimdallAuthStartResult> StartAsync(
         string provider,
         string callbackBaseUrl,
         string returnUrl,
+        bool requireMemberAccess,
         CancellationToken cancellationToken)
     {
         if (!AllowedProviders.Contains(provider))
@@ -44,9 +46,9 @@ public sealed class HeimdallAuthService(
             throw new HeimdallAuthException("Heimdall is not configured.");
         }
 
-        var entitlementPolicy = provider.Equals("discord", StringComparison.OrdinalIgnoreCase)
-            ? BuildDiscordPolicy(options)
-            : BuildPatreonPolicy(options);
+        var entitlementPolicy = requireMemberAccess
+            ? BuildMemberAccessPolicy(provider, options)
+            : null;
         var attemptId = Guid.NewGuid().ToString("N");
         var callbackUrl = new Uri(new Uri(callbackBaseUrl.TrimEnd('/') + "/", UriKind.Absolute), "auth/heimdall/callback");
 
@@ -75,6 +77,7 @@ public sealed class HeimdallAuthService(
         }
 
         attemptStore.Create(attemptId, returnUrl);
+        attemptStore.SetRequiresMemberAccess(attemptId, requireMemberAccess);
         return new HeimdallAuthStartResult(new Uri(payload.AuthorizationUrl, UriKind.Absolute), attemptId);
     }
 
@@ -107,12 +110,12 @@ public sealed class HeimdallAuthService(
             throw new HeimdallAuthException(payload.ErrorDescription ?? payload.Error ?? "Heimdall auth did not succeed.");
         }
 
-        if (!payload.HasMemberAccess)
+        if (attempt.RequiresMemberAccess && !payload.HasMemberAccess)
         {
             throw new HeimdallAuthException("Heimdall did not grant Bifrost member access.");
         }
 
-        var userAccount = await UpsertUserAccountAsync(payload, cancellationToken);
+        var userAccount = await UpsertUserAccountAsync(payload, attempt.RequiresMemberAccess, cancellationToken);
         var claims = new List<Claim>
         {
             new(ClaimTypes.NameIdentifier, userAccount.GitHubUserId?.ToString() ?? userAccount.HeimdallAccountId),
@@ -137,6 +140,7 @@ public sealed class HeimdallAuthService(
 
     private async Task<UserAccount> UpsertUserAccountAsync(
         HeimdallBackendCallbackPayload payload,
+        bool grantMemberAccess,
         CancellationToken cancellationToken)
     {
         var now = timeProvider.GetUtcNow();
@@ -167,10 +171,12 @@ public sealed class HeimdallAuthService(
                 },
                 Membership = new Bifrost.Web.Domain.Membership
                 {
-                    Status = MembershipStatus.Active,
+                    Status = grantMemberAccess ? MembershipStatus.Active : MembershipStatus.Authenticated,
                     CreatedAtUtc = now,
-                    ApprovedAtUtc = now,
-                    Notes = "Activated by Heimdall member access claim"
+                    ApprovedAtUtc = grantMemberAccess ? now : null,
+                    Notes = grantMemberAccess
+                        ? "Activated by Heimdall member access claim"
+                        : $"Identity verified through Heimdall {payload.Provider}"
                 }
             };
             dbContext.UserAccounts.Add(userAccount);
@@ -191,18 +197,24 @@ public sealed class HeimdallAuthService(
                 UserAccountId = userAccount.Id,
                 CreatedAtUtc = now
             };
-            userAccount.Membership.Status = MembershipStatus.Active;
-            userAccount.Membership.ApprovedAtUtc ??= now;
+            if (grantMemberAccess)
+            {
+                userAccount.Membership.Status = MembershipStatus.Active;
+                userAccount.Membership.ApprovedAtUtc ??= now;
+            }
         }
 
         userAccount.MemberProfile!.Nickname = displayName;
         userAccount.MemberProfile.UpdatedAtUtc = now;
-        ApplicationBootstrapper.EnsureRole(
-            userAccount.Membership!,
-            MemberRole.StandardMember,
-            null,
-            now,
-            "Heimdall member access");
+        if (grantMemberAccess)
+        {
+            ApplicationBootstrapper.EnsureRole(
+                userAccount.Membership!,
+                MemberRole.StandardMember,
+                null,
+                now,
+                "Heimdall member access");
+        }
 
         await dbContext.SaveChangesAsync(cancellationToken);
         return userAccount;
@@ -236,6 +248,21 @@ public sealed class HeimdallAuthService(
             options.PatreonTierTitle);
     }
 
+    private static HeimdallEntitlementPolicy BuildMemberAccessPolicy(string provider, HeimdallOptions options)
+    {
+        if (provider.Equals("discord", StringComparison.OrdinalIgnoreCase))
+        {
+            return BuildDiscordPolicy(options);
+        }
+
+        if (provider.Equals("patreon", StringComparison.OrdinalIgnoreCase))
+        {
+            return BuildPatreonPolicy(options);
+        }
+
+        throw new HeimdallAuthException($"Heimdall provider '{provider}' does not support Bifrost member access.");
+    }
+
     private static string ToAttemptReturnUrl(string callbackBaseUrl, string attemptId, string returnUrl)
     {
         var baseUri = new Uri(callbackBaseUrl.TrimEnd('/') + "/", UriKind.Absolute);
@@ -262,6 +289,14 @@ public sealed class HeimdallAuthAttemptStore
         _attempts[attemptId] = new HeimdallAuthAttempt(returnUrl, null);
     }
 
+    public void SetRequiresMemberAccess(string attemptId, bool requiresMemberAccess)
+    {
+        _attempts.AddOrUpdate(
+            attemptId,
+            _ => new HeimdallAuthAttempt("/App", null, requiresMemberAccess),
+            (_, existing) => existing with { RequiresMemberAccess = requiresMemberAccess });
+    }
+
     public void Complete(string attemptId, HeimdallBackendCallbackPayload payload)
     {
         _attempts.AddOrUpdate(
@@ -276,14 +311,18 @@ public sealed class HeimdallAuthAttemptStore
     }
 }
 
-public sealed record HeimdallAuthAttempt(string ReturnUrl, HeimdallBackendCallbackPayload? Payload);
+public sealed record HeimdallAuthAttempt(
+    string ReturnUrl,
+    HeimdallBackendCallbackPayload? Payload,
+    bool RequiresMemberAccess = false);
 
 public sealed record HeimdallStartRequest(
     [property: JsonPropertyName("appSlug")] string AppSlug,
     [property: JsonPropertyName("mode")] string Mode,
     [property: JsonPropertyName("returnTo")] string ReturnTo,
     [property: JsonPropertyName("handoff")] HeimdallHandoff Handoff,
-    [property: JsonPropertyName("entitlementPolicy")] HeimdallEntitlementPolicy EntitlementPolicy);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [property: JsonPropertyName("entitlementPolicy")] HeimdallEntitlementPolicy? EntitlementPolicy);
 
 public sealed record HeimdallHandoff(
     [property: JsonPropertyName("kind")] string Kind,

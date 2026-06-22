@@ -9,6 +9,7 @@ public sealed class StartupConfigurationValidator(
     IOptions<GitHubOAuthOptions> gitHubOAuthOptions,
     IOptions<GitHubAppOptions> gitHubAppOptions,
     IOptions<HeimdallOptions> heimdallOptions,
+    IOptions<StripeOptions> stripeOptions,
     IOptions<BifrostHostOptions> hostOptions)
 {
     public void Validate()
@@ -39,6 +40,17 @@ public sealed class StartupConfigurationValidator(
             !heimdallOptions.Value.IsPatronSupportIntakeConfigured)
         {
             failures.Add("Heimdall:PatronSupportIntakeSecret is required when patron support intake is enabled.");
+        }
+
+        if (stripeOptions.Value.EnableCheckout)
+        {
+            if (!stripeOptions.Value.IsCheckoutConfigured)
+            {
+                failures.Add("Stripe:SecretKey, Stripe:SuccessUrl, and Stripe:CancelUrl are required when Stripe checkout is enabled.");
+            }
+
+            // Stripe:GeneralPatronageGitHubLogin is only a legacy fallback for old sessions
+            // that predate account-bound checkout metadata.
         }
 
         var allowedHosts = configuration["AllowedHosts"] ?? string.Empty;

@@ -30,9 +30,9 @@ public sealed class PatronageService(
             .Include(x => x.Membership)
             .SingleAsync(x => x.Id == userAccountId, cancellationToken);
 
-        if (user.Membership is null || user.Membership.Status != MembershipStatus.Active)
+        if (user.Membership is null || user.Membership.Status == MembershipStatus.Suspended)
         {
-            throw new InvalidOperationException("Patron support can only be recorded for an active member.");
+            throw new InvalidOperationException("Patron support can only be recorded for an unsuspended Bifrost account.");
         }
 
         if (amount <= 0 && kind != PatronSupportEventKind.SupportAdjustment)

@@ -44,6 +44,10 @@ builder.Services
     .BindConfiguration(HeimdallOptions.SectionName);
 
 builder.Services
+    .AddOptions<StripeOptions>()
+    .BindConfiguration(StripeOptions.SectionName);
+
+builder.Services
     .AddOptions<BridgeOptions>()
     .BindConfiguration(BridgeOptions.SectionName);
 
@@ -88,6 +92,7 @@ builder.Services.AddScoped<GitHubWebhookService>();
 builder.Services.AddScoped<MotionGovernanceService>();
 builder.Services.AddScoped<MotionEveSurfaceService>();
 builder.Services.AddScoped<PatronageService>();
+builder.Services.AddScoped<StripeWebhookService>();
 builder.Services.AddScoped<HeimdallPatronSupportIntakeService>();
 builder.Services.AddScoped<ReadinessService>();
 builder.Services.AddScoped<ApplicationBootstrapper>();
@@ -98,6 +103,10 @@ builder.Services.AddHttpClient<HeimdallAuthService>((serviceProvider, client) =>
 {
     var options = serviceProvider.GetRequiredService<IOptions<HeimdallOptions>>().Value;
     client.BaseAddress = new Uri(options.BaseUrl.TrimEnd('/'));
+});
+builder.Services.AddHttpClient<StripeCheckoutService>(client =>
+{
+    client.BaseAddress = new Uri("https://api.stripe.com/");
 });
 
 var dataProtectionKeysPath = builder.Configuration["DataProtection:KeysPath"];
@@ -243,21 +252,34 @@ app.MapPost("/github/webhooks", async (
 
 app.MapGet("/auth/sign-in", async (HttpContext httpContext, IOptions<GitHubOAuthOptions> gitHubOptions) =>
 {
+    var returnUrl = httpContext.Request.Query["returnUrl"].ToString();
+    if (string.IsNullOrWhiteSpace(returnUrl))
+    {
+        returnUrl = "/App";
+    }
+
+    var provider = httpContext.Request.Query["provider"].ToString();
+    if (string.IsNullOrWhiteSpace(provider))
+    {
+        await WriteSignInChooserAsync(httpContext, returnUrl);
+        return;
+    }
+
+    if (!provider.Equals("github", StringComparison.OrdinalIgnoreCase))
+    {
+        httpContext.Response.Redirect($"/auth/heimdall/{Uri.EscapeDataString(provider)}?returnUrl={Uri.EscapeDataString(returnUrl)}");
+        return;
+    }
+
     if (!gitHubOptions.Value.IsConfigured)
     {
         httpContext.Response.Redirect("/?auth=github-not-configured");
         return;
     }
 
-    var redirectUri = httpContext.Request.Query["returnUrl"].ToString();
-    if (string.IsNullOrWhiteSpace(redirectUri))
-    {
-        redirectUri = "/App";
-    }
-
     await httpContext.ChallengeAsync(
         GitHubAuthenticationDefaults.AuthenticationScheme,
-        new() { RedirectUri = redirectUri });
+        new() { RedirectUri = returnUrl });
 }).AllowAnonymous();
 
 app.MapGet("/auth/heimdall/{provider}", async (
@@ -275,10 +297,16 @@ app.MapGet("/auth/heimdall/{provider}", async (
             returnUrl = "/App";
         }
 
+        var requireMemberAccess = string.Equals(
+            httpContext.Request.Query["access"].ToString(),
+            "member",
+            StringComparison.OrdinalIgnoreCase);
+
         var start = await heimdallAuthService.StartAsync(
             provider,
             hostOptions.Value.PublicBaseUrl,
             returnUrl,
+            requireMemberAccess,
             cancellationToken);
 
         return Results.Redirect(start.AuthorizationUrl.ToString());
@@ -321,6 +349,66 @@ app.MapPost("/heimdall/patron-support/events", async (
             statusCode: StatusCodes.Status202Accepted),
         HeimdallPatronSupportIntakeStatus.BadRequest => Results.BadRequest(result.Message),
         HeimdallPatronSupportIntakeStatus.NotConfigured => Results.Text(
+            result.Message,
+            statusCode: StatusCodes.Status503ServiceUnavailable),
+        _ => Results.Text(result.Message, statusCode: StatusCodes.Status401Unauthorized)
+    };
+}).AllowAnonymous();
+
+app.MapGet("/patronage/velvet/checkout", async (
+    HttpRequest request,
+    ICurrentBifrostActorAccessor actorAccessor,
+    StripeCheckoutService stripeCheckoutService,
+    CancellationToken cancellationToken) =>
+{
+    var tier = request.Query["tier"].ToString();
+    if (string.IsNullOrWhiteSpace(tier))
+    {
+        return Results.BadRequest("Missing required tier query parameter.");
+    }
+
+    var actor = await actorAccessor.GetAsync(cancellationToken);
+    if (!actor.IsAuthenticated || actor.UserAccount is null)
+    {
+        var returnUrl = Uri.EscapeDataString($"{request.Path}{request.QueryString}");
+        return Results.Redirect($"/auth/sign-in?returnUrl={returnUrl}");
+    }
+
+    var result = await stripeCheckoutService.CreateVelvetCheckoutAsync(
+        tier,
+        actor.UserAccount,
+        cancellationToken);
+    return result.Status switch
+    {
+        StripeCheckoutStatus.Created => Results.Redirect(result.CheckoutUrl!.ToString()),
+        StripeCheckoutStatus.UnknownTier => Results.NotFound(result.Message),
+        StripeCheckoutStatus.NotConfigured => Results.Text(
+            result.Message,
+            statusCode: StatusCodes.Status503ServiceUnavailable),
+        _ => Results.Text(
+            result.Message,
+            statusCode: StatusCodes.Status502BadGateway)
+    };
+}).AllowAnonymous();
+
+app.MapPost("/patronage/stripe/webhook", async (
+    HttpRequest request,
+    StripeWebhookService webhookService,
+    CancellationToken cancellationToken) =>
+{
+    using var reader = new StreamReader(request.Body);
+    var payload = await reader.ReadToEndAsync(cancellationToken);
+    var signature = request.Headers["Stripe-Signature"].ToString();
+
+    var result = await webhookService.ProcessAsync(signature, payload, cancellationToken);
+    return result.Status switch
+    {
+        StripeWebhookStatus.Processed => Results.Text(
+            result.Message,
+            statusCode: StatusCodes.Status202Accepted),
+        StripeWebhookStatus.Ignored => Results.Text(result.Message),
+        StripeWebhookStatus.BadRequest => Results.BadRequest(result.Message),
+        StripeWebhookStatus.NotConfigured => Results.Text(
             result.Message,
             statusCode: StatusCodes.Status503ServiceUnavailable),
         _ => Results.Text(result.Message, statusCode: StatusCodes.Status401Unauthorized)
@@ -734,6 +822,47 @@ static IResult JsonResult<T>(T value, JsonSerializerOptions options, int statusC
         JsonSerializer.Serialize(value, options),
         "application/json",
         statusCode: statusCode);
+
+static async Task WriteSignInChooserAsync(HttpContext httpContext, string returnUrl)
+{
+    httpContext.Response.ContentType = "text/html; charset=utf-8";
+    var encodedReturnUrl = Uri.EscapeDataString(returnUrl);
+    var escapedReturnUrl = System.Net.WebUtility.HtmlEncode(returnUrl);
+    await httpContext.Response.WriteAsync($$"""
+        <!doctype html>
+        <html lang="en">
+          <head>
+            <meta charset="utf-8" />
+            <meta name="viewport" content="width=device-width, initial-scale=1" />
+            <title>Sign in - Bifrost</title>
+            <style>
+              body { margin: 0; min-height: 100svh; display: grid; place-items: center; background: #090908; color: #fff8ef; font-family: system-ui, sans-serif; }
+              main { width: min(92vw, 520px); padding: 28px; border: 1px solid rgba(255,248,239,.16); border-radius: 8px; background: #141110; }
+              h1 { margin: 0 0 10px; font-size: 2rem; line-height: 1; }
+              p { color: #c7b8ad; }
+              .providers { display: grid; gap: 10px; margin-top: 22px; }
+              a { display: flex; justify-content: space-between; align-items: center; min-height: 46px; padding: 0 14px; border-radius: 6px; background: #c43e4f; color: white; text-decoration: none; font-weight: 750; }
+              a.secondary { background: rgba(255,248,239,.08); border: 1px solid rgba(255,248,239,.22); }
+              small { color: #d9ad66; }
+            </style>
+          </head>
+          <body>
+            <main>
+              <small>Transport identity</small>
+              <h1>Create or use a Bifrost patron account</h1>
+              <p>Choose a provider to attach this checkout to a Bifrost account. Patron accounts do not automatically grant active member access.</p>
+              <div class="providers">
+                <a href="/auth/sign-in?provider=github&returnUrl={{encodedReturnUrl}}">GitHub <span>OAuth</span></a>
+                <a class="secondary" href="/auth/heimdall/discord?returnUrl={{encodedReturnUrl}}">Discord <span>Heimdall</span></a>
+                <a class="secondary" href="/auth/heimdall/patreon?returnUrl={{encodedReturnUrl}}">Patreon <span>Heimdall</span></a>
+                <a class="secondary" href="/auth/heimdall/twitch?returnUrl={{encodedReturnUrl}}">Twitch <span>Heimdall</span></a>
+              </div>
+              <p><small>After sign-in, Bifrost returns you to {{escapedReturnUrl}}.</small></p>
+            </main>
+          </body>
+        </html>
+        """);
+}
 
 static JsonSerializerOptions CreateAppJsonSerializerOptions()
 {
