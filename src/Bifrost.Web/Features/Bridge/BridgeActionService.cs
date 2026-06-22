@@ -210,7 +210,7 @@ public sealed class BridgeActionService(
         {
             if (string.IsNullOrWhiteSpace(request.BifrostIdentity))
             {
-                return BridgePolicyDecision.Reject("Persona and agent Discord/Reddit bridge actions must carry a Bifrost identity.");
+                return BridgePolicyDecision.Reject("Persona and agent outside-world bridge actions must carry a Bifrost identity.");
             }
 
             var identityResult = await ResolveRegisteredBifrostIdentityAsync(request.BifrostIdentity, cancellationToken);
@@ -221,7 +221,7 @@ public sealed class BridgeActionService(
 
             if (string.IsNullOrWhiteSpace(request.HeimdallCapabilityReference))
             {
-                return BridgePolicyDecision.Reject("Persona and agent Discord/Reddit bridge actions must carry a Heimdall-backed capability or account reference.");
+                return BridgePolicyDecision.Reject("Persona and agent outside-world bridge actions must carry a Heimdall-backed capability or account reference.");
             }
 
             var capabilityDecision = EvaluateHeimdallCapabilityReference(request, identityResult.UserAccount!);
@@ -291,7 +291,7 @@ public sealed class BridgeActionService(
         {
             return new RegisteredBifrostIdentityResult(
                 null,
-                BridgePolicyDecision.Reject("Persona and agent Discord/Reddit bridge actions must carry a registered Bifrost identity."));
+                BridgePolicyDecision.Reject("Persona and agent outside-world bridge actions must carry a registered Bifrost identity."));
         }
 
         return new RegisteredBifrostIdentityResult(userAccount, null);
@@ -303,13 +303,13 @@ public sealed class BridgeActionService(
     {
         if (string.IsNullOrWhiteSpace(userAccount.HeimdallAccountId))
         {
-            return BridgePolicyDecision.Reject("Persona and agent Discord/Reddit bridge actions require the Bifrost identity to be linked to a Heimdall account.");
+            return BridgePolicyDecision.Reject("Persona and agent outside-world bridge actions require the Bifrost identity to be linked to a Heimdall account.");
         }
 
         var capabilityReference = NormalizeText(request.HeimdallCapabilityReference);
         if (!capabilityReference.StartsWith("heimdall:", StringComparison.OrdinalIgnoreCase))
         {
-            return BridgePolicyDecision.Reject("Persona and agent Discord/Reddit bridge actions must carry a Heimdall-backed capability or account reference.");
+            return BridgePolicyDecision.Reject("Persona and agent outside-world bridge actions must carry a Heimdall-backed capability or account reference.");
         }
 
         var expectedSurface = request.TargetSurface switch
@@ -440,7 +440,7 @@ public sealed class BridgeActionService(
 
     private static bool RequiresExternalAccountCapability(BridgeActionRequest request) =>
         request.ActorKind is BridgeActorKind.Agent or BridgeActorKind.Persona &&
-        request.TargetSurface is BridgeTargetSurface.Discord or BridgeTargetSurface.Reddit;
+        request.TargetSurface is BridgeTargetSurface.Discord or BridgeTargetSurface.Reddit or BridgeTargetSurface.Other;
 
     private static string NormalizeRepository(string value) => NormalizeText(value).ToLowerInvariant();
 

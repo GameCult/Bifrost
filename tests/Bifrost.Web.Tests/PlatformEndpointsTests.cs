@@ -970,6 +970,94 @@ public sealed class PlatformEndpointsTests : IClassFixture<TestWebApplicationFac
     }
 
     [Fact]
+    public async Task Persona_other_surface_action_without_bifrost_identity_is_denied()
+    {
+        using var client = _factory.CreateClient();
+
+        var requestPayload = JsonSerializer.Serialize(new
+        {
+            actorKind = "Persona",
+            actorName = "Epiphany Persona",
+            targetSurface = "Other",
+            actionKind = "Other",
+            targetLocator = "future://public-surface/channel",
+            sourceKind = "epiphany_persona_public_surface",
+            sourceId = "persona-speech-audit-future-surface-missing-identity",
+            authorityReference = "epiphany.persona_speech_audit",
+            title = "Persona future public surface post",
+            summary = "This future outside-world crossing must not pass without identity provenance."
+        });
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/bridge/actions/request");
+        request.Headers.Add("X-Bifrost-Bridge-Token", "test-bridge-token");
+        request.Content = new StringContent(requestPayload, Encoding.UTF8, "application/json");
+
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        var action = await response.Content.ReadFromJsonAsync<BridgeActionHttpResult>();
+        Assert.NotNull(action);
+        Assert.Equal("Denied", action.Status);
+
+        using var scope = _factory.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
+        var savedAction = dbContext.BridgeActions.Single(x => x.Id == action.Id);
+
+        Assert.Equal(BridgeActionStatus.Denied, savedAction.Status);
+        Assert.Contains("outside-world", savedAction.PolicyDecision, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Bifrost identity", savedAction.PolicyDecision, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Persona_other_surface_action_with_bifrost_identity_and_heimdall_reference_is_authorized()
+    {
+        using var client = _factory.CreateClient();
+        await EnsureBifrostIdentityRegisteredAsync("epiphany.Persona", "heimdall-account-epiphany-persona");
+
+        var requestPayload = JsonSerializer.Serialize(new
+        {
+            actorKind = "Persona",
+            actorName = "Epiphany Persona",
+            targetSurface = "Other",
+            actionKind = "Other",
+            targetLocator = "future://public-surface/channel",
+            sourceKind = "epiphany_persona_public_surface",
+            sourceId = "persona-speech-audit-future-surface-authorized",
+            authorityReference = "epiphany.persona_speech_audit",
+            bifrostIdentity = "epiphany.Persona",
+            heimdallCapabilityReference = "heimdall:future-surface:capability:epiphany-persona",
+            epiphanyRunId = "epiphany-run-future-surface",
+            epiphanyLaneId = "Persona",
+            epiphanyAgentIdentity = "epiphany.Persona",
+            title = "Persona future public surface post",
+            summary = "This future outside-world crossing is allowed only with Bifrost and Heimdall provenance."
+        });
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/bridge/actions/request");
+        request.Headers.Add("X-Bifrost-Bridge-Token", "test-bridge-token");
+        request.Content = new StringContent(requestPayload, Encoding.UTF8, "application/json");
+
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+        var action = await response.Content.ReadFromJsonAsync<BridgeActionHttpResult>();
+        Assert.NotNull(action);
+        Assert.Equal("Authorized", action.Status);
+
+        using var scope = _factory.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
+        var savedAction = dbContext.BridgeActions.Single(x => x.Id == action.Id);
+
+        Assert.Equal(BridgeActionStatus.Authorized, savedAction.Status);
+        Assert.Equal(BridgeTargetSurface.Other, savedAction.TargetSurface);
+        Assert.Equal("epiphany.Persona", savedAction.BifrostIdentity);
+        Assert.Equal("heimdall:future-surface:capability:epiphany-persona", savedAction.HeimdallCapabilityReference);
+        Assert.Equal("epiphany-run-future-surface", savedAction.EpiphanyRunId);
+        Assert.Equal("Persona", savedAction.EpiphanyLaneId);
+        Assert.Equal("epiphany.Persona", savedAction.EpiphanyAgentIdentity);
+    }
+
+    [Fact]
     public async Task Local_bridge_token_can_record_dispatch_run_lifecycle()
     {
         using var client = _factory.CreateClient();

@@ -60,13 +60,14 @@ The hosted app now exposes a first-class bridge action ledger for governed trans
 - `POST /bridge/actions/{id}/fail`
 
 The owner is Bifrost, not the local script. The script or agent may execute the crossing, but Bifrost records the request, policy decision, lifecycle state, and receipt.
-Persona and agent actions that cross into Discord or Reddit must carry a Bifrost
-identity plus a Heimdall-backed capability/account reference at request time.
-The local bridge token only proves that the actuator may call the ledger; it is
-not the actor identity and not outside-provider authority. The ledger stores the
-Bifrost identity, Heimdall reference, Epiphany run id, lane id, and agent
-identity beside the action so later receipts can answer which agent did what
-without opening local transcripts or trusting helper-script folklore.
+Persona and agent actions that cross into Discord, Reddit, or a future
+outside-world surface (`Other` until the surface has a first-class enum value)
+must carry a Bifrost identity plus a Heimdall-backed capability/account reference
+at request time. The local bridge token only proves that the actuator may call
+the ledger; it is not the actor identity and not outside-provider authority. The
+ledger stores the Bifrost identity, Heimdall reference, Epiphany run id, lane id,
+and agent identity beside the action so later receipts can answer which agent
+did what without opening local transcripts or trusting helper-script folklore.
 
 The hosted app also exposes a dispatch-run ledger for the older Bifrost-launched worker bridge:
 
@@ -102,7 +103,7 @@ Current gate behavior:
 - agent, Persona, and service actions must cite provenance: `authorityReference`, `sourceKind` plus `sourceId`, `workItemId`, or `motionId`
 - completed actions must report a receipt URL, external receipt id, or serialized receipt payload
 - GitHub mutation commands fail closed unless Bifrost authorization is configured; `--allow-ungated-github true` is the explicit operator-recovery hatch
-- the future blessed credential for public-world crossings is a Bifrost identity plus Heimdall-issued capability token or verifiable capability/account reference. The local bridge token is a transitional service actuator credential, not a substitute for Bifrost identity or Heimdall-backed outside-account authority.
+- the future blessed credential for public-world crossings is a Bifrost identity plus Heimdall-issued capability token or verifiable capability/account reference. New outside-world bridge surfaces must start behind that same identity/capability gate, using `Other` only as a temporary enum bucket until the target surface gets a named contract. The local bridge token is a transitional service actuator credential, not a substitute for Bifrost identity or Heimdall-backed outside-account authority.
 
 Current CLI wiring:
 
