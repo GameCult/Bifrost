@@ -212,6 +212,83 @@ public sealed class PlatformEndpointsTests : IClassFixture<TestWebApplicationFac
     }
 
     [Fact]
+    public async Task Heimdall_patreon_support_event_records_current_patronage()
+    {
+        using var client = _factory.CreateClient();
+        var now = DateTimeOffset.UtcNow;
+        var heimdallAccountId = $"heimdall-patreon-{Guid.NewGuid():N}";
+        var providerEventId = $"patreon-member-sync-{Guid.NewGuid():N}";
+        Guid patronUserAccountId;
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var dbContext = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
+            var patron = new UserAccount
+            {
+                HeimdallAccountId = heimdallAccountId,
+                DisplayName = "Patreon Patron",
+                GitHubLogin = $"patreon-{Guid.NewGuid():N}",
+                NormalizedGitHubLogin = $"patreon-{Guid.NewGuid():N}",
+                CreatedAtUtc = now,
+                LastSeenAtUtc = now
+            };
+            patronUserAccountId = patron.Id;
+            patron.Membership = new Membership
+            {
+                UserAccountId = patron.Id,
+                Status = MembershipStatus.Active,
+                CreatedAtUtc = now
+            };
+            dbContext.UserAccounts.Add(patron);
+            await dbContext.SaveChangesAsync();
+        }
+
+        var payload = JsonSerializer.Serialize(new
+        {
+            heimdallAccountId,
+            provider = "Patreon",
+            providerEventId,
+            kind = "RecurringSupportSnapshot",
+            amount = 125m,
+            currencyCode = "USD",
+            externalSupportId = "patreon:campaign:member-current-support",
+            supportedAtUtc = now,
+            isCurrentRecurringSupport = true,
+            providerPayerId = "patreon-user-1",
+            providerSubscriptionId = "patreon-member-1",
+            notes = "Verified current Patreon entitlement from Heimdall."
+        });
+
+        using var request = CreateSignedHeimdallRequest(payload);
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+
+        using var verificationScope = _factory.Services.CreateScope();
+        var verificationContext = verificationScope.ServiceProvider.GetRequiredService<BifrostDbContext>();
+        var supportEvent = verificationContext.PatronSupportEvents
+            .Single(x => x.Provider == ExternalPatronProvider.Patreon && x.ProviderEventId == providerEventId);
+        var pointTransaction = verificationContext.PointTransactions
+            .Single(x => x.UserAccountId == patronUserAccountId);
+        var tierSnapshot = verificationContext.TierSnapshots
+            .Single(x => x.Kind == TierSnapshotKind.Patron &&
+                x.IsCurrent &&
+                x.Membership.UserAccountId == patronUserAccountId);
+
+        Assert.Equal(patronUserAccountId, supportEvent.UserAccountId);
+        Assert.Equal(PatronSupportEventKind.RecurringSupportSnapshot, supportEvent.Kind);
+        Assert.True(supportEvent.IsCurrentRecurringSupport);
+        Assert.Equal("patreon-user-1", supportEvent.ProviderPayerId);
+        Assert.Equal("patreon-member-1", supportEvent.ProviderSubscriptionId);
+        Assert.Equal(PointTransactionType.PatronSupport, pointTransaction.Type);
+        Assert.False(pointTransaction.IsDecaying);
+        Assert.Equal("Patron Silver", tierSnapshot.Label);
+        Assert.Equal(2m, tierSnapshot.Weight);
+        Assert.Contains(verificationContext.AuditEvents, x => x.Action == "patron-support.recorded");
+        Assert.Contains(verificationContext.AuditEvents, x => x.Action == "patron-tier.derived");
+    }
+
+    [Fact]
     public async Task Heimdall_paypal_adjustment_reduces_derived_patron_tier()
     {
         using var client = _factory.CreateClient();
