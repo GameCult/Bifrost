@@ -38,6 +38,9 @@ async function main() {
     case "reddit-post":
       await postRedditThread(options);
       return;
+    case "other-request":
+      await requestOtherBridgeAction(options);
+      return;
     default:
       throw new Error(`Unknown command "${command}". Run "node tools/bifrost-bridge.mjs help".`);
   }
@@ -499,6 +502,69 @@ async function postRedditThread(options) {
     personaFlairText,
     thingId: result.thingId,
     url: result.url,
+    provenance: buildBridgeProvenance(options),
+  });
+}
+
+async function requestOtherBridgeAction(options) {
+  ensureBridgeReceiptGate(options);
+  const identity = slugify(requireOption(options, "identity"));
+  const targetLocator = requireOption(options, "target-locator");
+  const surfaceName = optionalString(options["surface-name"]) ?? "future-surface";
+  const content = await readOptionText(options, "content", "content-file", "");
+  const title = optionalString(options.title) ?? `Outside-world bridge request for ${surfaceName}`;
+  const dryRun = options["dry-run"] === "true";
+
+  if (dryRun) {
+    printJson({
+      dryRun: true,
+      action: "other-request",
+      identity,
+      surfaceName,
+      targetLocator,
+      title,
+      content,
+      provenance: buildBridgeProvenance(options),
+    });
+    return;
+  }
+
+  const bridgeAction = await beginBridgeAction(options, {
+    actorKind: "Agent",
+    actorName: identity,
+    targetSurface: "Other",
+    actionKind: "Other",
+    targetRepositoryFullName: options["target-repository-full-name"] ?? "",
+    targetLocator,
+    title,
+    summary: content,
+  });
+
+  try {
+    await bridgeAction?.start();
+    await bridgeAction?.complete({
+      receiptUrl: `bifrost://bridge/actions/${bridgeAction.id}`,
+      externalReceiptId: bridgeAction.id,
+      receiptPayload: JSON.stringify(buildReceiptPayload(options, {
+        surfaceName,
+        targetLocator,
+        title,
+      })),
+    });
+  } catch (error) {
+    await bridgeAction?.fail(error);
+    throw error;
+  }
+
+  printJson({
+    action: "other-request",
+    ok: true,
+    bridgeActionId: bridgeAction.id,
+    receiptUrl: `bifrost://bridge/actions/${bridgeAction.id}`,
+    identity,
+    surfaceName,
+    targetLocator,
+    title,
     provenance: buildBridgeProvenance(options),
   });
 }
@@ -1302,6 +1368,7 @@ Commands:
   discord-post      Post a message to Discord through the bot token or persona webhook pipe
   discord-dm        Send a Discord DM through Bifrost's bridge-owned bot token
   reddit-post       Create a self-post in r/GameCultOrg through the Bifrost Reddit app
+  other-request     Record a Bifrost-gated request for a future outside-world surface
 
 Examples:
   node tools/bifrost-bridge.mjs github-draft-pr --repo-root E:/Projects/AetheriaLore --identity nibu --title "Nibu: Glitchcraft" --path Aetheria/Articles/Nibu/glitchcraft.md --content-file article.md
@@ -1309,6 +1376,7 @@ Examples:
   node tools/bifrost-bridge.mjs discord-post --channel-id 1501196543150264332 --persona-name Nibu --content "Draft PR opened: https://github.com/..."
   node tools/bifrost-bridge.mjs discord-dm --recipient-id 123456789 --content "Moderation status update..."
   node tools/bifrost-bridge.mjs reddit-post --title "Nibu: Reset-loop continuity" --persona-name Nibu --content-file thread.md
+  node tools/bifrost-bridge.mjs other-request --identity epiphany.Persona --surface-name bluesky --target-locator at://did:example/app.bsky.feed.post/123 --heimdall-capability-ref heimdall:bluesky:capability:epiphany-persona --content "Persona asks to speak."
 
 GitHub note:
   GitHub actions require BIFROST_BRIDGE_BASE_URL and BIFROST_BRIDGE_TOKEN so Bifrost can gate and receipt the crossing.

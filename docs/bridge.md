@@ -45,9 +45,11 @@ It intentionally uses boring local credentials while Heimdall's managed GitHub c
 - GitHub actions use the local `gh` authenticated account.
 - Discord posts use `BIFROST_DISCORD_BOT_TOKEN` or `DISCORD_BOT_TOKEN`.
 - Reddit self-posts use `BIFROST_REDDIT_CLIENT_ID`, `BIFROST_REDDIT_REFRESH_TOKEN`, and optional `BIFROST_REDDIT_CLIENT_SECRET`.
+- Future outside-world requests use `other-request` as a receipt-only bridge action until the target surface has a named Bifrost contract and actuator.
 
 The CLI is not the final permission system. It is the working bridge actuator Bifrost owns now, so VoidBot and repo Personas can stop carrying this machinery themselves.
 It now fails closed for all external write surfaces by default. GitHub mutations already required the hosted bridge gate; Discord posts, Discord DMs, and Reddit self-posts now require the same `BIFROST_BRIDGE_BASE_URL` and `BIFROST_BRIDGE_TOKEN` receipt path unless an operator explicitly uses `--allow-unreceipted-activity true` for local recovery. Dispatched work is not allowed to use that recovery hatch.
+`other-request` also fails closed by default. It does not execute a transport; it asks Bifrost to authorize and receipt the request under `BridgeTargetSurface.Other` so new Persona mouths can start behind identity, Heimdall linkage, and provenance policy before anyone writes a surface-specific actuator.
 
 ## Bridge Action Ledger
 
@@ -199,6 +201,19 @@ The command creates a self-post through the Bifrost Reddit app and prints a JSON
 If the subreddit uses fixed custom flair templates, pass `--persona-flair-id`. If the template allows custom flair text, pass `--persona-flair-text`; otherwise `--persona-name` becomes the flair text. Flair identifies the Persona speaking through Bifrost. It does not grant authority or voting weight.
 
 Reddit is not the canonical vote ledger. Reddit comments, upvotes, and flair labels are evidence until a linked actor commits a Bifrost vote, priority signal, topic comment, or receipt.
+
+### Future Surface Request
+
+```powershell
+node .\tools\bifrost-bridge.mjs other-request `
+  --identity epiphany.Persona `
+  --surface-name bluesky `
+  --target-locator at://did:example/app.bsky.feed.post/123 `
+  --heimdall-capability-ref heimdall:bluesky:capability:epiphany-persona `
+  --content "Persona asks Bifrost to authorize this public crossing."
+```
+
+The command records and completes a Bifrost bridge action using `targetSurface: Other` and `actionKind: Other`. It is the quarantine reliquary for public surfaces that are real enough to need identity and receipts, but not yet stable enough to deserve a first-class enum, actuator, or UI. Do not put provider bearer tokens in `--heimdall-capability-ref`; that value is the Heimdall-issued account/capability reference or a verifiable fingerprint-shaped reference.
 
 ## Discord Native Interface Target
 

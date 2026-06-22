@@ -184,6 +184,70 @@ console.log(JSON.stringify({
     }
 
     [Fact]
+    public async Task Other_bridge_request_fails_closed_without_bifrost_receipt_gate()
+    {
+        var result = await RunNodeAsync([
+            "tools/bifrost-bridge.mjs",
+            "other-request",
+            "--identity", "epiphany.Persona",
+            "--surface-name", "future-surface",
+            "--target-locator", "future://surface/thread/1",
+            "--content", "test message",
+            "--dry-run", "true",
+        ]);
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("BIFROST_BRIDGE_BASE_URL and BIFROST_BRIDGE_TOKEN", result.Stderr, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Other_bridge_request_allows_explicit_operator_recovery_dry_run()
+    {
+        var result = await RunNodeAsync([
+            "tools/bifrost-bridge.mjs",
+            "other-request",
+            "--identity", "epiphany.Persona",
+            "--surface-name", "future-surface",
+            "--target-locator", "future://surface/thread/1",
+            "--content", "test message",
+            "--heimdall-capability-ref", "heimdall:future-surface:capability:epiphany-persona",
+            "--allow-unreceipted-activity", "true",
+            "--dry-run", "true",
+        ]);
+
+        Assert.True(result.ExitCode == 0, $"stdout:{Environment.NewLine}{result.Stdout}{Environment.NewLine}stderr:{Environment.NewLine}{result.Stderr}");
+        using var payload = JsonDocument.Parse(result.Stdout);
+        Assert.Equal("other-request", payload.RootElement.GetProperty("action").GetString());
+        Assert.True(payload.RootElement.GetProperty("dryRun").GetBoolean());
+        Assert.Equal("future-surface", payload.RootElement.GetProperty("surfaceName").GetString());
+        Assert.Equal("future://surface/thread/1", payload.RootElement.GetProperty("targetLocator").GetString());
+        var provenance = payload.RootElement.GetProperty("provenance");
+        Assert.Equal("epiphany.Persona", provenance.GetProperty("bifrostIdentity").GetString());
+        Assert.Equal("heimdall:future-surface:capability:epiphany-persona", provenance.GetProperty("heimdallCapabilityRef").GetString());
+    }
+
+    [Fact]
+    public async Task Other_bridge_request_recovery_hatch_is_rejected_inside_dispatched_turn()
+    {
+        var result = await RunNodeAsync([
+            "tools/bifrost-bridge.mjs",
+            "other-request",
+            "--identity", "epiphany.Persona",
+            "--surface-name", "future-surface",
+            "--target-locator", "future://surface/thread/1",
+            "--content", "test message",
+            "--allow-unreceipted-activity", "true",
+            "--dry-run", "true",
+        ], new Dictionary<string, string?>
+        {
+            ["BIFROST_LOCK_RECOVERY_HATCHES"] = "true",
+        });
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("cannot use --allow-unreceipted-activity", result.Stderr, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task Discord_dm_bridge_command_fails_closed_without_bifrost_receipt_gate()
     {
         var result = await RunNodeAsync([
