@@ -437,21 +437,7 @@ async function collectStats(options) {
       latestUpdatedAt: latestTimestamp(requests.map((item) => item.updatedAt)),
     },
     witnesses,
-    bridge: {
-      discordPost: true,
-      discordDm: true,
-      redditPost: Boolean(process.env.BIFROST_REDDIT_CLIENT_ID && process.env.BIFROST_REDDIT_REFRESH_TOKEN),
-      githubDraftPr: true,
-      githubPrComment: true,
-      githubWebhookSync: true,
-      otherRequest: true,
-      patronSupportIntake: true,
-      bridgeLedgerConfigured: Boolean(process.env.BIFROST_BRIDGE_BASE_URL && process.env.BIFROST_BRIDGE_TOKEN),
-      credentialSource: process.env.BIFROST_DISCORD_BOT_TOKEN ? "BIFROST_DISCORD_BOT_TOKEN" : process.env.DISCORD_BOT_TOKEN ? "DISCORD_BOT_TOKEN-fallback" : "missing",
-      redditCredentialSource: process.env.BIFROST_REDDIT_CLIENT_ID && process.env.BIFROST_REDDIT_REFRESH_TOKEN ? "BIFROST_REDDIT_CLIENT_ID+BIFROST_REDDIT_REFRESH_TOKEN" : "missing",
-      bridgeLedgerCredentialSource: process.env.BIFROST_BRIDGE_BASE_URL && process.env.BIFROST_BRIDGE_TOKEN ? "BIFROST_BRIDGE_BASE_URL+BIFROST_BRIDGE_TOKEN" : "missing",
-      patronSupportAuthority: "Heimdall HMAC via /heimdall/patron-support/events",
-    },
+    bridge: buildBridgeStats(),
     summary: {
       status: health.ok && ready.ok ? "ready" : "degraded",
       health: health.value ?? health.error,
@@ -568,8 +554,96 @@ function witnessStat(relativePath) {
   };
 }
 
+function buildBridgeStats() {
+  const discordCredentialSource = process.env.BIFROST_DISCORD_BOT_TOKEN
+    ? "BIFROST_DISCORD_BOT_TOKEN"
+    : process.env.DISCORD_BOT_TOKEN
+      ? "DISCORD_BOT_TOKEN-fallback"
+      : "missing";
+  const redditCredentialSource = process.env.BIFROST_REDDIT_CLIENT_ID && process.env.BIFROST_REDDIT_REFRESH_TOKEN
+    ? "BIFROST_REDDIT_CLIENT_ID+BIFROST_REDDIT_REFRESH_TOKEN"
+    : "missing";
+  const bridgeLedgerCredentialSource = process.env.BIFROST_BRIDGE_BASE_URL && process.env.BIFROST_BRIDGE_TOKEN
+    ? "BIFROST_BRIDGE_BASE_URL+BIFROST_BRIDGE_TOKEN"
+    : "missing";
+
+  const surfaces = [
+    {
+      id: "github",
+      label: "GitHub",
+      prepared: true,
+      ready: true,
+      authority: "Bifrost bridge gate plus GitHub webhook sync",
+      credentialSource: "GitHub app/OAuth/gh runtime",
+      note: "draft PRs, PR comments, and webhook work sync are hooked",
+    },
+    {
+      id: "discord",
+      label: "Discord",
+      prepared: true,
+      ready: discordCredentialSource !== "missing",
+      authority: "Bifrost bridge gate plus Heimdall-linked account/capability reference",
+      credentialSource: discordCredentialSource,
+      note: discordCredentialSource === "missing"
+        ? "transport actuator token is not visible to this process"
+        : "transport actuator credential is visible",
+    },
+    {
+      id: "reddit",
+      label: "Reddit",
+      prepared: true,
+      ready: redditCredentialSource !== "missing",
+      authority: "Bifrost bridge gate plus Heimdall-linked reddit capability reference",
+      credentialSource: redditCredentialSource,
+      note: redditCredentialSource === "missing"
+        ? "reddit transport credentials are not visible to this process"
+        : "reddit transport credentials are visible",
+    },
+    {
+      id: "other",
+      label: "Other",
+      prepared: true,
+      ready: true,
+      authority: "Bifrost receipt-only future-surface gate with named Heimdall reference",
+      credentialSource: "not-required-for-receipt-only",
+      note: "records governed future-surface requests without provider transport",
+    },
+    {
+      id: "patron",
+      label: "Patron",
+      prepared: true,
+      ready: true,
+      authority: "Heimdall HMAC via /heimdall/patron-support/events",
+      credentialSource: "Heimdall:PatronSupportIntakeSecret",
+      note: "consumes Heimdall-signed Patreon/PayPal support facts; Bifrost stores no provider tokens",
+    },
+  ];
+
+  return {
+    discordPost: true,
+    discordDm: true,
+    redditPost: redditCredentialSource !== "missing",
+    githubDraftPr: true,
+    githubPrComment: true,
+    githubWebhookSync: true,
+    otherRequest: true,
+    patronSupportIntake: true,
+    bridgeLedgerConfigured: bridgeLedgerCredentialSource !== "missing",
+    credentialSource: discordCredentialSource,
+    redditCredentialSource,
+    bridgeLedgerCredentialSource,
+    patronSupportAuthority: "Heimdall HMAC via /heimdall/patron-support/events",
+    prepared: surfaces.every((surface) => surface.prepared),
+    ready: surfaces.every((surface) => surface.ready),
+    surfaces,
+  };
+}
+
 function buildOperatorSurface(stats) {
   const statusTone = stats.summary.status === "ready" ? "ok" : "warn";
+  const bridgeLine = stats.bridge.surfaces
+    .map((surface) => `${surface.label} ${surface.ready ? "live" : surface.prepared ? "prepared" : "no"}`)
+    .join(" / ");
   const children = [
     panelNode("service", "Service", [
       metricNode("status", "Status", stats.summary.status, statusTone),
@@ -579,8 +653,15 @@ function buildOperatorSurface(stats) {
       metricNode(
         "bridge",
         "Bridge",
-        `GitHub ${yesNo(stats.bridge.githubDraftPr && stats.bridge.githubPrComment)} / Discord ${yesNo(stats.bridge.discordPost)} / Reddit ${yesNo(stats.bridge.redditPost)} / Other ${yesNo(stats.bridge.otherRequest)} / Patron ${yesNo(stats.bridge.patronSupportIntake)}`,
-        stats.bridge.githubDraftPr && stats.bridge.githubPrComment && stats.bridge.otherRequest && stats.bridge.patronSupportIntake ? "ok" : "warn",
+        bridgeLine,
+        stats.bridge.ready ? "ok" : "warn",
+      ),
+      listNode(
+        "bridge-readiness",
+        "Bridge Readiness",
+        stats.bridge.surfaces.map((surface) =>
+          `${surface.id}: ${surface.ready ? "live" : surface.prepared ? "prepared" : "missing"}; authority=${surface.authority}; credential=${surface.credentialSource}; note=${surface.note}`,
+        ),
       ),
     ]),
     panelNode("activity", "Activity", [

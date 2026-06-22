@@ -63,9 +63,28 @@ public sealed class ProviderAdvertisementTests
             .Single(node => node.GetProperty("id").GetString() == "metric-bridge");
 
         var bridgeLine = bridgeMetric.GetProperty("props").GetProperty("value").GetString();
-        Assert.Contains("GitHub yes", bridgeLine, StringComparison.Ordinal);
-        Assert.Contains("Other yes", bridgeLine, StringComparison.Ordinal);
-        Assert.Contains("Patron yes", bridgeLine, StringComparison.Ordinal);
+        Assert.Contains("GitHub live", bridgeLine, StringComparison.Ordinal);
+        Assert.Contains("Discord prepared", bridgeLine, StringComparison.Ordinal);
+        Assert.Contains("Reddit prepared", bridgeLine, StringComparison.Ordinal);
+        Assert.Contains("Other live", bridgeLine, StringComparison.Ordinal);
+        Assert.Contains("Patron live", bridgeLine, StringComparison.Ordinal);
+
+        Assert.Equal("warn", bridgeMetric.GetProperty("props").GetProperty("tone").GetString());
+
+        var readinessRows = root
+            .GetProperty("surface")
+            .GetProperty("root")
+            .GetProperty("children")
+            .EnumerateArray()
+            .SelectMany(panel => panel.GetProperty("children").EnumerateArray())
+            .Single(node => node.GetProperty("id").GetString() == "list-bridge-readiness")
+            .GetProperty("children")
+            .EnumerateArray()
+            .Select(node => node.GetProperty("props").GetProperty("text").GetString())
+            .ToArray();
+
+        Assert.Contains(readinessRows, row => row is not null && row.Contains("reddit: prepared", StringComparison.Ordinal));
+        Assert.Contains(readinessRows, row => row is not null && row.Contains("patron: live", StringComparison.Ordinal) && row.Contains("Bifrost stores no provider tokens", StringComparison.Ordinal));
     }
 
     private static void AssertEndpoint(JsonElement root, string id, string schemaId, string lowering)
