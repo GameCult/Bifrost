@@ -105,7 +105,7 @@ Each request has:
 
 ## CLI
 
-`tools/agent-transport.mjs` is intentionally local and boring. It imports the sibling `CultCacheTS` and `CultNetTS` builds directly, writes a `.cc` store, and can emit/apply CultNet raw snapshots.
+`tools/agent-transport.mjs` is intentionally local and boring. It imports the local CultCache/CultNet TypeScript runtimes, preferring the current `CultLib\packages\cultcache-ts` and `CultLib\packages\cultnet-ts` packages while retaining the older sibling `CultCacheTS` / `CultNetTS` checkout paths as compatibility reliquaries. It writes a `.cc` store and can emit/apply CultNet raw snapshots.
 
 Default store:
 

@@ -11,7 +11,7 @@ const repoRoot = resolve(scriptDir, "..");
 const projectsRoot = resolve(repoRoot, "..");
 const defaultStorePath = resolve(repoRoot, ".bifrost", "provider-advertisement.cc");
 
-const cultCacheRequire = createRequire(resolve(projectsRoot, "CultCacheTS", "package.json"));
+const cultCacheRequire = createRequire(resolveCultCachePackagePath());
 const cultCacheRuntime = loadCultCacheRuntime();
 const {
   CultCache,
@@ -21,8 +21,8 @@ const {
 
 function loadCultCacheRuntime() {
   const candidates = [
-    resolve(projectsRoot, "CultCacheTS", "dist", "index.js"),
     resolve(projectsRoot, "CultLib", "packages", "cultcache-ts", "dist", "index.js"),
+    resolve(projectsRoot, "CultCacheTS", "dist", "index.js"),
   ];
 
   for (const candidate of candidates) {
@@ -37,6 +37,22 @@ function loadCultCacheRuntime() {
   }
 
   throw new Error("CultCache TypeScript runtime with document APIs is unavailable.");
+}
+
+function resolveCultCachePackagePath() {
+  const candidates = [
+    resolve(projectsRoot, "CultLib", "packages", "cultcache-ts", "package.json"),
+    resolve(projectsRoot, "CultCacheTS", "package.json"),
+    resolve(projectsRoot, "CultCacheTS", "node_modules", "cultcache-ts", "package.json"),
+  ];
+
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  throw new Error(`CultCache TypeScript runtime is unavailable. Tried: ${candidates.join(", ")}`);
 }
 
 const documentType = "gamecult.eve.provider_advertisement";

@@ -202,6 +202,25 @@ console.log(JSON.stringify({
     }
 
     [Fact]
+    public async Task Agent_transport_fixture_harness_does_not_inherit_live_discord_mirror_env()
+    {
+        var storePath = Path.Combine(Path.GetTempPath(), $"bifrost-agent-transport-{Guid.NewGuid():N}.cc");
+        var result = await RunNodeAsync([
+            "tools/agent-transport.mjs",
+            "enqueue",
+            "--repo", "Bifrost",
+            "--agent", "nibu",
+            "--title", "Discord inheritance guard",
+            "--request", "Do not post fixture noise.",
+            "--store", storePath,
+            "--allow-unreceipted-activity", "true",
+        ]);
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("require a Discord mirror", result.Stderr, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task Agent_transport_mutation_allows_explicit_operator_recovery()
     {
         var storePath = Path.Combine(Path.GetTempPath(), $"bifrost-agent-transport-{Guid.NewGuid():N}.cc");
@@ -982,6 +1001,8 @@ exit /b 0
         process.StartInfo.Environment["BIFROST_BRIDGE_TOKEN"] = string.Empty;
         process.StartInfo.Environment["BIFROST_ALLOW_UNGATED_GITHUB"] = string.Empty;
         process.StartInfo.Environment["BIFROST_ALLOW_UNRECEIPTED_ACTIVITY"] = string.Empty;
+        process.StartInfo.Environment["BIFROST_SKIP_LOCAL_ENV"] = "true";
+        ClearLiveDiscordMirrorEnvironment(process.StartInfo.Environment);
         if (environmentOverrides is not null)
         {
             foreach (var pair in environmentOverrides)
@@ -996,6 +1017,35 @@ exit /b 0
         await process.WaitForExitAsync();
 
         return new ProcessResult(process.ExitCode, stdout, stderr);
+    }
+
+    private static void ClearLiveDiscordMirrorEnvironment(IDictionary<string, string?> environment)
+    {
+        string[] exactKeys =
+        [
+            "BIFROST_ALLOW_UNMIRRORED_GOVERNANCE",
+            "BIFROST_DISCORD_BOT_TOKEN",
+            "BIFROST_DISCORD_CHANNEL_ID",
+            "BIFROST_DISCORD_PERSONA_AVATAR_URL",
+            "BIFROST_DISCORD_PERSONA_NAME",
+            "DISCORD_BIFROST_CHANNEL_ID",
+            "DISCORD_BOT_TOKEN",
+            "DISCORD_PERSONA_AVATAR_URL",
+            "DISCORD_PERSONA_AVATAR_URL_BIFROST",
+            "DISCORD_PERSONA_WEBHOOK_URL",
+        ];
+
+        foreach (var key in exactKeys)
+        {
+            environment[key] = string.Empty;
+        }
+
+        foreach (var key in environment.Keys
+            .Where(key => key.StartsWith("BIFROST_DISCORD_PERSONA_WEBHOOK_URL_", StringComparison.OrdinalIgnoreCase))
+            .ToArray())
+        {
+            environment[key] = string.Empty;
+        }
     }
 
     private static async Task<ProcessResult> RunGitAsync(string[] args, string workingDirectory, IReadOnlyDictionary<string, string?>? environmentOverrides = null)

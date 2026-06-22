@@ -18,12 +18,27 @@ const defaultPersonaName = "Bifrost";
 const defaultPersonaAvatarUrl =
   "https://raw.githubusercontent.com/GameCult/Bifrost/main/src/Bifrost.Web/wwwroot/img/bifrost-profile.png";
 
-const cultCacheRequire = createRequire(resolve(projectsRoot, "CultCacheTS", "node_modules", "cultcache-ts", "package.json"));
+const cultCachePackagePath = resolveFirstExisting("CultCache TypeScript runtime", [
+  resolve(projectsRoot, "CultLib", "packages", "cultcache-ts", "package.json"),
+  resolve(projectsRoot, "CultCacheTS", "package.json"),
+  resolve(projectsRoot, "CultCacheTS", "node_modules", "cultcache-ts", "package.json"),
+]);
+const cultCacheRequire = createRequire(cultCachePackagePath);
 const {
   CultCache,
   SingleFileMessagePackBackingStore,
   defineDocumentType,
 } = cultCacheRequire("cultcache-ts");
+
+function resolveFirstExisting(label, candidates) {
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  throw new Error(`${label} is unavailable. Tried: ${candidates.join(", ")}`);
+}
 
 const topicType = "bifrost.governance.topic";
 const topicSchemaId = "bifrost.governance.topic.v0";
@@ -91,8 +106,7 @@ const commentDefinition = defineDocumentType({
 });
 
 async function main() {
-  loadLocalEnv(resolve(repoRoot, ".env"));
-  loadLocalEnv(resolve(projectsRoot, "VoidBot", ".env"));
+  loadBifrostLocalEnv();
   const [command, ...rawArgs] = process.argv.slice(2);
   const options = parseArgs(rawArgs);
 
@@ -136,6 +150,15 @@ async function main() {
     default:
       throw new Error(`Unknown command "${command}". Run "node tools/governance-threads.mjs help".`);
   }
+}
+
+function loadBifrostLocalEnv() {
+  if (process.env.BIFROST_SKIP_LOCAL_ENV === "true") {
+    return;
+  }
+
+  loadLocalEnv(resolve(repoRoot, ".env"));
+  loadLocalEnv(resolve(projectsRoot, "VoidBot", ".env"));
 }
 
 async function openCache(storePath) {

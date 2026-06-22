@@ -13,8 +13,7 @@ const repoRoot = resolve(scriptDir, "..");
 const projectsRoot = resolve(repoRoot, "..");
 
 async function main() {
-  loadLocalEnv(resolve(repoRoot, ".env"));
-  loadLocalEnv(resolve(projectsRoot, "VoidBot", ".env"));
+  loadBifrostLocalEnv();
   const [command, ...rawArgs] = process.argv.slice(2);
   const options = parseArgs(rawArgs);
 
@@ -42,6 +41,15 @@ async function main() {
     default:
       throw new Error(`Unknown command "${command}". Run "node tools/bifrost-bridge.mjs help".`);
   }
+}
+
+function loadBifrostLocalEnv() {
+  if (process.env.BIFROST_SKIP_LOCAL_ENV === "true") {
+    return;
+  }
+
+  loadLocalEnv(resolve(repoRoot, ".env"));
+  loadLocalEnv(resolve(projectsRoot, "VoidBot", ".env"));
 }
 
 async function createGitHubDraftPr(options) {

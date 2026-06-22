@@ -16,8 +16,17 @@ const defaultPersonaName = "Bifrost";
 const defaultPersonaAvatarUrl =
   "https://raw.githubusercontent.com/GameCult/Bifrost/main/src/Bifrost.Web/wwwroot/img/bifrost-profile.png";
 
-const cultCacheRequire = createRequire(resolve(projectsRoot, "CultCacheTS", "node_modules", "cultcache-ts", "package.json"));
-const cultNetRequire = createRequire(resolve(projectsRoot, "CultNetTS", "package.json"));
+const cultCachePackagePath = resolveFirstExisting("CultCache TypeScript runtime", [
+  resolve(projectsRoot, "CultLib", "packages", "cultcache-ts", "package.json"),
+  resolve(projectsRoot, "CultCacheTS", "package.json"),
+  resolve(projectsRoot, "CultCacheTS", "node_modules", "cultcache-ts", "package.json"),
+]);
+const cultNetPackagePath = resolveFirstExisting("CultNet TypeScript runtime", [
+  resolve(projectsRoot, "CultLib", "packages", "cultnet-ts", "package.json"),
+  resolve(projectsRoot, "CultNetTS", "package.json"),
+]);
+const cultCacheRequire = createRequire(cultCachePackagePath);
+const cultNetRequire = createRequire(cultNetPackagePath);
 
 const {
   CultCache,
@@ -27,8 +36,18 @@ const {
 const {
   CultNetDocumentRegistry,
   defineCultNetDocumentBinding,
-} = cultNetRequire(resolve(projectsRoot, "CultNetTS", "dist", "index.js"));
+} = cultNetRequire("cultnet-ts");
 const { encode, decode } = cultNetRequire("@msgpack/msgpack");
+
+function resolveFirstExisting(label, candidates) {
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  throw new Error(`${label} is unavailable. Tried: ${candidates.join(", ")}`);
+}
 
 const documentType = "bifrost.agent-transport.update-request";
 const schemaId = "bifrost.agent-transport.update-request.v0";
@@ -81,8 +100,7 @@ const cultNetRegistry = new CultNetDocumentRegistry([
 ]);
 
 async function main() {
-  loadLocalEnv(resolve(repoRoot, ".env"));
-  loadLocalEnv(resolve(projectsRoot, "VoidBot", ".env"));
+  loadBifrostLocalEnv();
   const [command, ...rawArgs] = process.argv.slice(2);
   const options = parseArgs(rawArgs);
 
@@ -126,6 +144,15 @@ async function main() {
     default:
       throw new Error(`Unknown command "${command}". Run "node tools/agent-transport.mjs help".`);
   }
+}
+
+function loadBifrostLocalEnv() {
+  if (process.env.BIFROST_SKIP_LOCAL_ENV === "true") {
+    return;
+  }
+
+  loadLocalEnv(resolve(repoRoot, ".env"));
+  loadLocalEnv(resolve(projectsRoot, "VoidBot", ".env"));
 }
 
 function isMutatingCommand(command) {

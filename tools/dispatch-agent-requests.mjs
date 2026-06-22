@@ -17,8 +17,7 @@ const defaultPersonaAvatarUrl =
   "https://raw.githubusercontent.com/GameCult/Bifrost/main/src/Bifrost.Web/wwwroot/img/bifrost-profile.png";
 
 async function main() {
-  loadLocalEnv(resolve(bifrostRoot, ".env"));
-  loadLocalEnv(resolve(defaultProjectsRoot, "VoidBot", ".env"));
+  loadBifrostLocalEnv();
   const [command, ...rawArgs] = process.argv.slice(2);
   const options = parseArgs(rawArgs);
 
@@ -41,6 +40,15 @@ async function main() {
     default:
       throw new Error(`Unknown command "${command}". Run "node tools/dispatch-agent-requests.mjs help".`);
   }
+}
+
+function loadBifrostLocalEnv() {
+  if (process.env.BIFROST_SKIP_LOCAL_ENV === "true") {
+    return;
+  }
+
+  loadLocalEnv(resolve(bifrostRoot, ".env"));
+  loadLocalEnv(resolve(defaultProjectsRoot, "VoidBot", ".env"));
 }
 
 async function dispatchQueuedRequests(options) {
