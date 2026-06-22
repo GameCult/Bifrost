@@ -1,5 +1,6 @@
 using Bifrost.Web.Data;
 using Bifrost.Web.Domain;
+using Bifrost.Web.Features.Membership;
 using Bifrost.Web.Features.Shared;
 using Microsoft.EntityFrameworkCore;
 
@@ -212,6 +213,12 @@ public sealed class BridgeActionService(
                 return BridgePolicyDecision.Reject("Persona and agent Discord/Reddit bridge actions must carry a Bifrost identity.");
             }
 
+            var identityDecision = await EvaluateRegisteredBifrostIdentityAsync(request.BifrostIdentity, cancellationToken);
+            if (identityDecision is not null)
+            {
+                return identityDecision;
+            }
+
             if (string.IsNullOrWhiteSpace(request.HeimdallCapabilityReference))
             {
                 return BridgePolicyDecision.Reject("Persona and agent Discord/Reddit bridge actions must carry a Heimdall-backed capability or account reference.");
@@ -255,6 +262,31 @@ public sealed class BridgeActionService(
             caller.IsLocalBridge
                 ? "Authorized through the configured local Bifrost bridge token and Bifrost policy."
                 : "Authorized for an active Bifrost member through Bifrost policy.");
+    }
+
+    private async Task<BridgePolicyDecision?> EvaluateRegisteredBifrostIdentityAsync(
+        string bifrostIdentity,
+        CancellationToken cancellationToken)
+    {
+        string normalizedIdentity;
+        try
+        {
+            normalizedIdentity = BifrostIdentityService.NormalizeIdentity(bifrostIdentity);
+        }
+        catch (BifrostIdentityException exception)
+        {
+            return BridgePolicyDecision.Reject(exception.Message);
+        }
+
+        var exists = await dbContext.UserAccounts.AnyAsync(
+            x => x.NormalizedBifrostIdentity == normalizedIdentity,
+            cancellationToken);
+        if (!exists)
+        {
+            return BridgePolicyDecision.Reject("Persona and agent Discord/Reddit bridge actions must carry a registered Bifrost identity.");
+        }
+
+        return null;
     }
 
     private async Task<BridgePolicyDecision?> EvaluateBifrostOwnedProvenanceAsync(

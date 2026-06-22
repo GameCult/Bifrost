@@ -6,6 +6,7 @@ using System.Text.Json;
 using Bifrost.Web.Features.Patronage;
 using Bifrost.Web.Data;
 using Bifrost.Web.Domain;
+using Bifrost.Web.Features.Membership;
 using Bifrost.Web.Tests.Support;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
@@ -801,6 +802,7 @@ public sealed class PlatformEndpointsTests : IClassFixture<TestWebApplicationFac
     public async Task Persona_discord_action_requires_heimdall_reference_after_bifrost_identity()
     {
         using var client = _factory.CreateClient();
+        await EnsureBifrostIdentityRegisteredAsync("epiphany.Persona");
 
         var requestPayload = JsonSerializer.Serialize(new
         {
@@ -837,9 +839,51 @@ public sealed class PlatformEndpointsTests : IClassFixture<TestWebApplicationFac
     }
 
     [Fact]
+    public async Task Persona_discord_action_with_unregistered_bifrost_identity_is_denied()
+    {
+        using var client = _factory.CreateClient();
+        var identity = $"unregistered.{Guid.NewGuid():N}";
+
+        var requestPayload = JsonSerializer.Serialize(new
+        {
+            actorKind = "Persona",
+            actorName = "Epiphany Persona",
+            targetSurface = "Discord",
+            actionKind = "DiscordPost",
+            targetLocator = "channel/1501196543150264332",
+            sourceKind = "epiphany_persona_speech",
+            sourceId = "persona-speech-audit-unregistered-identity",
+            authorityReference = "epiphany.persona_speech_audit",
+            bifrostIdentity = identity,
+            heimdallCapabilityReference = "heimdall:discord:capability:epiphany-persona",
+            title = "Persona Discord post",
+            summary = "This should not pass with an unregistered Bifrost identity."
+        });
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/bridge/actions/request");
+        request.Headers.Add("X-Bifrost-Bridge-Token", "test-bridge-token");
+        request.Content = new StringContent(requestPayload, Encoding.UTF8, "application/json");
+
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        var action = await response.Content.ReadFromJsonAsync<BridgeActionHttpResult>();
+        Assert.NotNull(action);
+        Assert.Equal("Denied", action.Status);
+
+        using var scope = _factory.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
+        var savedAction = dbContext.BridgeActions.Single(x => x.Id == action.Id);
+
+        Assert.Equal(BridgeActionStatus.Denied, savedAction.Status);
+        Assert.Contains("registered Bifrost identity", savedAction.PolicyDecision, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task Persona_reddit_action_with_bifrost_identity_and_heimdall_reference_is_authorized_and_stored()
     {
         using var client = _factory.CreateClient();
+        await EnsureBifrostIdentityRegisteredAsync("epiphany.Persona");
 
         var requestPayload = JsonSerializer.Serialize(new
         {
@@ -1355,6 +1399,34 @@ public sealed class PlatformEndpointsTests : IClassFixture<TestWebApplicationFac
         Assert.True(
             response.StatusCode == HttpStatusCode.Accepted,
             $"Expected governance receipt seed to succeed but got {(int)response.StatusCode}: {body}");
+    }
+
+    private async Task EnsureBifrostIdentityRegisteredAsync(string identity)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
+        var normalizedIdentity = BifrostIdentityService.NormalizeIdentity(identity);
+        if (await dbContext.UserAccounts.AnyAsync(x => x.NormalizedBifrostIdentity == normalizedIdentity))
+        {
+            return;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        dbContext.UserAccounts.Add(new UserAccount
+        {
+            BifrostIdentity = normalizedIdentity,
+            NormalizedBifrostIdentity = normalizedIdentity,
+            DisplayName = normalizedIdentity,
+            CreatedAtUtc = now,
+            LastSeenAtUtc = now,
+            Membership = new Bifrost.Web.Domain.Membership
+            {
+                Status = MembershipStatus.Authenticated,
+                CreatedAtUtc = now,
+                Notes = "Registered test Bifrost identity"
+            }
+        });
+        await dbContext.SaveChangesAsync();
     }
 
     private sealed class BridgeActionHttpResult
