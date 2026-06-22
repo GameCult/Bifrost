@@ -1026,6 +1026,15 @@ async function beginBridgeAction(options, action) {
     sourceKind: optionalString(options["source-kind"]) ?? optionalString(process.env.BIFROST_BRIDGE_SOURCE_KIND) ?? "",
     sourceId: optionalString(options["source-id"]) ?? optionalString(process.env.BIFROST_BRIDGE_SOURCE_ID) ?? "",
     authorityReference: optionalString(options["authority-ref"]) ?? optionalString(process.env.BIFROST_BRIDGE_AUTHORITY_REF) ?? "",
+    bifrostIdentity: optionalString(options.identity) ?? optionalString(process.env.BIFROST_IDENTITY) ?? "",
+    heimdallCapabilityReference:
+      optionalString(options["heimdall-capability-ref"]) ??
+      optionalString(process.env.HEIMDALL_CAPABILITY_REF) ??
+      optionalString(process.env.BIFROST_HEIMDALL_CAPABILITY_REF) ??
+      "",
+    epiphanyRunId: optionalString(options["epiphany-run-id"]) ?? optionalString(process.env.EPIPHANY_RUN_ID) ?? "",
+    epiphanyLaneId: optionalString(options["epiphany-lane-id"]) ?? optionalString(process.env.EPIPHANY_LANE_ID) ?? "",
+    epiphanyAgentIdentity: optionalString(options["epiphany-agent-identity"]) ?? optionalString(process.env.EPIPHANY_AGENT_IDENTITY) ?? "",
     workItemId: optionalString(options["work-item-id"]) ?? null,
     motionId: optionalString(options["motion-id"]) ?? null,
   };

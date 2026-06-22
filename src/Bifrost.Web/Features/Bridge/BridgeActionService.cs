@@ -38,6 +38,11 @@ public sealed class BridgeActionService(
             SourceKind = NormalizeText(normalizedRequest.SourceKind),
             SourceId = NormalizeText(normalizedRequest.SourceId),
             AuthorityReference = NormalizeText(normalizedRequest.AuthorityReference),
+            BifrostIdentity = NormalizeText(normalizedRequest.BifrostIdentity),
+            HeimdallCapabilityReference = NormalizeText(normalizedRequest.HeimdallCapabilityReference),
+            EpiphanyRunId = NormalizeText(normalizedRequest.EpiphanyRunId),
+            EpiphanyLaneId = NormalizeText(normalizedRequest.EpiphanyLaneId),
+            EpiphanyAgentIdentity = NormalizeText(normalizedRequest.EpiphanyAgentIdentity),
             PolicyDecision = policy.Decision,
             Title = NormalizeText(normalizedRequest.Title),
             Summary = NormalizeText(normalizedRequest.Summary),
@@ -200,6 +205,19 @@ public sealed class BridgeActionService(
             }
         }
 
+        if (RequiresExternalAccountCapability(request))
+        {
+            if (string.IsNullOrWhiteSpace(request.BifrostIdentity))
+            {
+                return BridgePolicyDecision.Reject("Persona and agent Discord/Reddit bridge actions must carry a Bifrost identity.");
+            }
+
+            if (string.IsNullOrWhiteSpace(request.HeimdallCapabilityReference))
+            {
+                return BridgePolicyDecision.Reject("Persona and agent Discord/Reddit bridge actions must carry a Heimdall-backed capability or account reference.");
+            }
+        }
+
         if (request.WorkItemId is not null)
         {
             var workItem = await dbContext.WorkItems
@@ -350,6 +368,10 @@ public sealed class BridgeActionService(
         return null;
     }
 
+    private static bool RequiresExternalAccountCapability(BridgeActionRequest request) =>
+        request.ActorKind is BridgeActorKind.Agent or BridgeActorKind.Persona &&
+        request.TargetSurface is BridgeTargetSurface.Discord or BridgeTargetSurface.Reddit;
+
     private static string NormalizeRepository(string value) => NormalizeText(value).ToLowerInvariant();
 
     private static string ShortRepositoryName(string normalizedRepositoryFullName)
@@ -391,6 +413,11 @@ public sealed record BridgeActionRequest(
     string SourceKind,
     string SourceId,
     string AuthorityReference,
+    string BifrostIdentity,
+    string HeimdallCapabilityReference,
+    string EpiphanyRunId,
+    string EpiphanyLaneId,
+    string EpiphanyAgentIdentity,
     string Title,
     string Summary,
     Guid? WorkItemId = null,
@@ -408,6 +435,11 @@ public sealed record BridgeActionRequest(
             SourceKind = NormalizeText(SourceKind),
             SourceId = NormalizeText(SourceId),
             AuthorityReference = NormalizeText(AuthorityReference),
+            BifrostIdentity = NormalizeText(BifrostIdentity),
+            HeimdallCapabilityReference = NormalizeText(HeimdallCapabilityReference),
+            EpiphanyRunId = NormalizeText(EpiphanyRunId),
+            EpiphanyLaneId = NormalizeText(EpiphanyLaneId),
+            EpiphanyAgentIdentity = NormalizeText(EpiphanyAgentIdentity),
             Title = NormalizeText(Title),
             Summary = NormalizeText(Summary)
         };
@@ -434,6 +466,11 @@ public sealed record BridgeActionResult(
     string SourceKind,
     string SourceId,
     string AuthorityReference,
+    string BifrostIdentity,
+    string HeimdallCapabilityReference,
+    string EpiphanyRunId,
+    string EpiphanyLaneId,
+    string EpiphanyAgentIdentity,
     string PolicyDecision,
     string Title,
     string ReceiptUrl,
@@ -453,6 +490,11 @@ public sealed record BridgeActionResult(
         action.SourceKind,
         action.SourceId,
         action.AuthorityReference,
+        action.BifrostIdentity,
+        action.HeimdallCapabilityReference,
+        action.EpiphanyRunId,
+        action.EpiphanyLaneId,
+        action.EpiphanyAgentIdentity,
         action.PolicyDecision,
         action.Title,
         action.ReceiptUrl,

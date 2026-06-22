@@ -926,6 +926,16 @@ public sealed class BridgeAction
 
     public string AuthorityReference { get; set; } = string.Empty;
 
+    public string BifrostIdentity { get; set; } = string.Empty;
+
+    public string HeimdallCapabilityReference { get; set; } = string.Empty;
+
+    public string EpiphanyRunId { get; set; } = string.Empty;
+
+    public string EpiphanyLaneId { get; set; } = string.Empty;
+
+    public string EpiphanyAgentIdentity { get; set; } = string.Empty;
+
     public string PolicyDecision { get; set; } = string.Empty;
 
     public string Title { get; set; } = string.Empty;

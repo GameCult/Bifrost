@@ -279,8 +279,28 @@ namespace Bifrost.Web.Data.Migrations
                         .HasMaxLength(240)
                         .HasColumnType("character varying(240)");
 
+                    b.Property<string>("BifrostIdentity")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("character varying(160)");
+
                     b.Property<DateTimeOffset?>("CompletedAtUtc")
                         .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("EpiphanyAgentIdentity")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("character varying(160)");
+
+                    b.Property<string>("EpiphanyLaneId")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)");
+
+                    b.Property<string>("EpiphanyRunId")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("character varying(160)");
 
                     b.Property<string>("ExternalReceiptId")
                         .IsRequired()
@@ -290,6 +310,11 @@ namespace Bifrost.Web.Data.Migrations
                     b.Property<string>("FailureReason")
                         .IsRequired()
                         .HasColumnType("text");
+
+                    b.Property<string>("HeimdallCapabilityReference")
+                        .IsRequired()
+                        .HasMaxLength(240)
+                        .HasColumnType("character varying(240)");
 
                     b.Property<Guid?>("MotionId")
                         .HasColumnType("uuid");
@@ -360,6 +385,10 @@ namespace Bifrost.Web.Data.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("ActorUserAccountId");
+
+                    b.HasIndex("BifrostIdentity");
+
+                    b.HasIndex("HeimdallCapabilityReference");
 
                     b.HasIndex("MotionId");
 

@@ -415,6 +415,11 @@ public sealed class BifrostDbContext(DbContextOptions<BifrostDbContext> options)
             entity.Property(x => x.SourceKind).HasMaxLength(120);
             entity.Property(x => x.SourceId).HasMaxLength(240);
             entity.Property(x => x.AuthorityReference).HasMaxLength(240);
+            entity.Property(x => x.BifrostIdentity).HasMaxLength(160);
+            entity.Property(x => x.HeimdallCapabilityReference).HasMaxLength(240);
+            entity.Property(x => x.EpiphanyRunId).HasMaxLength(160);
+            entity.Property(x => x.EpiphanyLaneId).HasMaxLength(120);
+            entity.Property(x => x.EpiphanyAgentIdentity).HasMaxLength(160);
             entity.Property(x => x.PolicyDecision).HasMaxLength(500);
             entity.Property(x => x.Title).HasMaxLength(240);
             entity.Property(x => x.ReceiptUrl).HasMaxLength(500);
@@ -423,6 +428,8 @@ public sealed class BifrostDbContext(DbContextOptions<BifrostDbContext> options)
             entity.HasIndex(x => new { x.TargetSurface, x.ActionKind, x.Status });
             entity.HasIndex(x => new { x.ActorKind, x.ActorName });
             entity.HasIndex(x => new { x.SourceKind, x.SourceId });
+            entity.HasIndex(x => x.BifrostIdentity);
+            entity.HasIndex(x => x.HeimdallCapabilityReference);
             entity.HasOne(x => x.ActorUserAccount)
                 .WithMany(x => x.BridgeActions)
                 .HasForeignKey(x => x.ActorUserAccountId)

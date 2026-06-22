@@ -58,6 +58,13 @@ The hosted app now exposes a first-class bridge action ledger for governed trans
 - `POST /bridge/actions/{id}/fail`
 
 The owner is Bifrost, not the local script. The script or agent may execute the crossing, but Bifrost records the request, policy decision, lifecycle state, and receipt.
+Persona and agent actions that cross into Discord or Reddit must carry a Bifrost
+identity plus a Heimdall-backed capability/account reference at request time.
+The local bridge token only proves that the actuator may call the ledger; it is
+not the actor identity and not outside-provider authority. The ledger stores the
+Bifrost identity, Heimdall reference, Epiphany run id, lane id, and agent
+identity beside the action so later receipts can answer which agent did what
+without opening local transcripts or trusting helper-script folklore.
 
 The hosted app also exposes a dispatch-run ledger for the older Bifrost-launched worker bridge:
 
