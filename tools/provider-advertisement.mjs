@@ -12,12 +12,18 @@ const projectsRoot = resolve(repoRoot, "..");
 const defaultStorePath = resolve(repoRoot, ".bifrost", "provider-advertisement.cc");
 
 const cultCacheRequire = createRequire(resolveCultCachePackagePath());
+const cultMeshRequire = createRequire(resolveCultMeshPackagePath());
+const cultNetRequire = createRequire(resolveCultNetPackagePath());
 const cultCacheRuntime = loadCultCacheRuntime();
+const cultMeshRuntime = loadCultMeshRuntime();
+const cultNetRuntime = loadCultNetRuntime();
 const {
   CultCache,
   SingleFileMessagePackBackingStore,
   defineDocumentType,
 } = cultCacheRuntime;
+const { CultMesh } = cultMeshRuntime;
+const { defineCultNetDocumentBinding } = cultNetRuntime;
 
 function loadCultCacheRuntime() {
   const candidates = [
@@ -53,6 +59,78 @@ function resolveCultCachePackagePath() {
   }
 
   throw new Error(`CultCache TypeScript runtime is unavailable. Tried: ${candidates.join(", ")}`);
+}
+
+function loadCultMeshRuntime() {
+  const candidates = [
+    resolve(projectsRoot, "CultLib", "packages", "cultmesh-ts", "dist", "index.js"),
+    resolve(projectsRoot, "CultMeshTS", "dist", "index.js"),
+  ];
+
+  for (const candidate of candidates) {
+    try {
+      const runtime = cultMeshRequire(candidate);
+      if (runtime.CultMesh) {
+        return runtime;
+      }
+    } catch {
+      // Try the next local CultMesh runtime candidate.
+    }
+  }
+
+  throw new Error("CultMesh TypeScript runtime is unavailable.");
+}
+
+function resolveCultMeshPackagePath() {
+  const candidates = [
+    resolve(projectsRoot, "CultLib", "packages", "cultmesh-ts", "package.json"),
+    resolve(projectsRoot, "CultMeshTS", "package.json"),
+    resolve(projectsRoot, "CultMeshTS", "node_modules", "cultmesh-ts", "package.json"),
+  ];
+
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  throw new Error(`CultMesh TypeScript runtime is unavailable. Tried: ${candidates.join(", ")}`);
+}
+
+function loadCultNetRuntime() {
+  const candidates = [
+    resolve(projectsRoot, "CultLib", "packages", "cultnet-ts", "dist", "index.js"),
+    resolve(projectsRoot, "CultNetTS", "dist", "index.js"),
+  ];
+
+  for (const candidate of candidates) {
+    try {
+      const runtime = cultNetRequire(candidate);
+      if (runtime.defineCultNetDocumentBinding) {
+        return runtime;
+      }
+    } catch {
+      // Try the next local CultNet runtime candidate.
+    }
+  }
+
+  throw new Error("CultNet TypeScript runtime is unavailable.");
+}
+
+function resolveCultNetPackagePath() {
+  const candidates = [
+    resolve(projectsRoot, "CultLib", "packages", "cultnet-ts", "package.json"),
+    resolve(projectsRoot, "CultNetTS", "package.json"),
+    resolve(projectsRoot, "CultNetTS", "node_modules", "cultnet-ts", "package.json"),
+  ];
+
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  throw new Error(`CultNet TypeScript runtime is unavailable. Tried: ${candidates.join(", ")}`);
 }
 
 const documentType = "gamecult.eve.provider_advertisement";
@@ -140,6 +218,9 @@ async function main() {
   switch (command) {
     case "export":
       await exportAdvertisement(options);
+      return;
+    case "publish-odin":
+      await publishOdinAdvertisement(options);
       return;
     case "print":
       printJson(buildAdvertisement(options));
@@ -553,6 +634,35 @@ function witnessStat(relativePath) {
     exists: true,
     updatedAt: stat.mtime.toISOString(),
   };
+}
+
+async function publishOdinAdvertisement(options) {
+  const endpoint = options["odin-cultmesh-rudp"] ?? options.odin ?? process.env.BIFROST_ODIN_CULTMESH_RUDP;
+  if (!endpoint) {
+    throw new Error("Bifrost Odin publication requires --odin-cultmesh-rudp <host:port> or BIFROST_ODIN_CULTMESH_RUDP.");
+  }
+
+  const advertisement = buildAdvertisement(options);
+  await CultMesh.publishRudpDocumentOnce(
+    "bifrost",
+    0x0d1d0002,
+    normalizeRudpEndpoint(endpoint),
+    defineCultNetDocumentBinding({ definition: advertisementDefinition }),
+    advertisement.providerId,
+    advertisement,
+    {
+      sourceRole: "bifrost.provider",
+      tags: ["startup-respect", "odin-verse-discovery"],
+    },
+  );
+
+  printJson({
+    ok: true,
+    documentType,
+    schemaId,
+    providerId: advertisement.providerId,
+    odinCultMeshRudp: endpoint,
+  });
 }
 
 function buildBridgeStats() {
@@ -1038,6 +1148,14 @@ function resolveOptionPath(path) {
   return resolve(process.cwd(), path);
 }
 
+function normalizeRudpEndpoint(endpoint) {
+  const text = String(endpoint || "").trim();
+  if (!text) {
+    throw new Error("Odin CultMesh/RUDP endpoint must be non-empty.");
+  }
+  return text.toLowerCase().startsWith("rudp://") ? text : `rudp://${text}`;
+}
+
 function printJson(value) {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 }
@@ -1047,6 +1165,7 @@ function printHelp() {
 
 Commands:
   export          Write advertisement, operator surface, and interface binding to a CultCache .cc witness
+  publish-odin    Publish the provider advertisement once to Odin over CultMesh/RUDP
   print           Print the advertisement as protocol-debug JSON without writing state
   print-surface   Print the current operator Eve surface JSON without writing state
   print-binding   Print the current Eve interface binding JSON without writing state
@@ -1054,12 +1173,15 @@ Commands:
 
 Options:
   --out <path>            Override export path; defaults to .bifrost/provider-advertisement.cc
+  --odin-cultmesh-rudp <host:port>
+                          Odin CultMesh/RUDP document catalog endpoint; also reads BIFROST_ODIN_CULTMESH_RUDP
   --generated-at <iso>    Pin generatedAt for deterministic fixture checks
 
 Examples:
   node tools/provider-advertisement.mjs print
   node tools/provider-advertisement.mjs print-binding
   node tools/provider-advertisement.mjs export --out .bifrost/provider-advertisement.cc
+  node tools/provider-advertisement.mjs publish-odin --odin-cultmesh-rudp 127.0.0.1:17871
 `);
 }
 

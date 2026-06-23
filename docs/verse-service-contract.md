@@ -104,6 +104,7 @@ Bifrost has a read-only first-cut provider advertisement command:
 
 ```powershell
 node tools/provider-advertisement.mjs export --out .bifrost/provider-advertisement.cc
+node tools/provider-advertisement.mjs publish-odin --odin-cultmesh-rudp 127.0.0.1:17871
 ```
 
 It writes Bifrost-owned Eve discovery documents into
@@ -124,6 +125,9 @@ This export does not migrate Postgres state, read secrets, execute bridge
 actions, or make Razor Pages, HTTP probes, Discord mirrors, Reddit threads, or
 local dispatch JSON canonical. The operator surface may display those probes, but the provider
 owned `.cc` witness remains the discovery and dashboard source.
+When `BIFROST_ODIN_CULTMESH_RUDP` or `--odin-cultmesh-rudp` is configured, the
+same provider advertisement can be published once to Odin's CultMesh/RUDP
+document catalog through the provider-advertisement tool.
 
 For protocol-debug inspection without writing a witness:
 
@@ -229,7 +233,8 @@ Bifrost.
    service registration, and Eve surface publication.
 3. Add Postgres-to-CultCache witness export for alpha entities before replacing
    the transactional store.
-4. Publish `gamecult.bifrost.service` and schema catalog through CultMesh.
+4. Extend the existing Odin provider-advertisement publication into
+   `gamecult.bifrost.service` and schema catalog publication through CultMesh.
 5. Publish operator surfaces first: readiness, witness freshness, bridge queue,
    failed crossings, and migration drift.
 6. Publish product surfaces for account, project, work, motion, patron, and
