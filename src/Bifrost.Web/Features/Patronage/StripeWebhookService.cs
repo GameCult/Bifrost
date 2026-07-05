@@ -72,6 +72,12 @@ public sealed class StripeWebhookService(
                 "Stripe checkout session is not linked to an unsuspended Bifrost patron account.");
         }
 
+        var projectId = await ResolveProjectIdAsync(session, cancellationToken);
+        if (projectId.Status != StripeWebhookProjectStatus.Resolved)
+        {
+            return StripeWebhookResult.BadRequest(projectId.Message);
+        }
+
         var amount = session.AmountTotal.Value / 100m;
         var currencyCode = string.IsNullOrWhiteSpace(session.Currency)
             ? "USD"
@@ -91,7 +97,8 @@ public sealed class StripeWebhookService(
             DateTimeOffset.FromUnixTimeSeconds(stripeEvent.Created),
             isCurrentRecurringSupport: false,
             BuildNotes(session),
-            cancellationToken);
+            cancellationToken,
+            projectId.ProjectId);
 
         return StripeWebhookResult.Processed("Stripe patronage support event recorded.");
     }
@@ -120,10 +127,61 @@ public sealed class StripeWebhookService(
         return null;
     }
 
+    private async Task<StripeWebhookProjectResolution> ResolveProjectIdAsync(
+        StripeCheckoutSession session,
+        CancellationToken cancellationToken)
+    {
+        if (session.Metadata.TryGetValue("project_id", out var projectIdText) &&
+            Guid.TryParse(projectIdText, out var projectId))
+        {
+            var project = await dbContext.Projects
+                .AsNoTracking()
+                .SingleOrDefaultAsync(x => x.Id == projectId, cancellationToken);
+            if (project is null || project.Status != ProjectStatus.Active)
+            {
+                return StripeWebhookProjectResolution.Invalid(
+                    $"Stripe checkout session references inactive or unknown project id '{projectIdText}'.");
+            }
+
+            if (session.Metadata.TryGetValue("project", out var metadataProjectSlug) &&
+                !string.IsNullOrWhiteSpace(metadataProjectSlug) &&
+                !string.Equals(project.Slug, metadataProjectSlug.Trim(), StringComparison.OrdinalIgnoreCase))
+            {
+                return StripeWebhookProjectResolution.Invalid(
+                    $"Stripe checkout session project slug '{metadataProjectSlug}' does not match project id '{projectIdText}'.");
+            }
+
+            return StripeWebhookProjectResolution.Resolved(projectId);
+        }
+
+        if (session.Metadata.TryGetValue("project", out var projectSlug) &&
+            !string.IsNullOrWhiteSpace(projectSlug))
+        {
+            var normalizedSlug = projectSlug.Trim();
+            var project = await dbContext.Projects
+                .AsNoTracking()
+                .Where(x => x.Slug == normalizedSlug)
+                .OrderBy(x => x.CreatedAtUtc)
+                .FirstOrDefaultAsync(cancellationToken);
+            return project is not null && project.Status == ProjectStatus.Active
+                ? StripeWebhookProjectResolution.Resolved(project.Id)
+                : StripeWebhookProjectResolution.Invalid($"Stripe checkout session references inactive or unknown project '{normalizedSlug}'.");
+        }
+
+        return StripeWebhookProjectResolution.Resolved(null);
+    }
+
     private static string BuildNotes(StripeCheckoutSession session)
     {
+        session.Metadata.TryGetValue("project", out var project);
+        session.Metadata.TryGetValue("item", out var item);
         session.Metadata.TryGetValue("tier", out var tier);
         session.Metadata.TryGetValue("source", out var source);
+        if (!string.IsNullOrWhiteSpace(project) || !string.IsNullOrWhiteSpace(item))
+        {
+            return $"Verified Stripe checkout session for {source ?? "unknown source"} project {project ?? "unknown project"} item {item ?? "unknown item"}.";
+        }
+
         return $"Verified Stripe checkout session for {source ?? "unknown source"} tier {tier ?? "unknown tier"}.";
     }
 
@@ -180,6 +238,24 @@ public enum StripeWebhookStatus
     BadRequest,
     Unauthorized,
     NotConfigured
+}
+
+internal sealed record StripeWebhookProjectResolution(
+    StripeWebhookProjectStatus Status,
+    Guid? ProjectId,
+    string Message)
+{
+    public static StripeWebhookProjectResolution Resolved(Guid? projectId) =>
+        new(StripeWebhookProjectStatus.Resolved, projectId, "Project resolved.");
+
+    public static StripeWebhookProjectResolution Invalid(string message) =>
+        new(StripeWebhookProjectStatus.Invalid, null, message);
+}
+
+internal enum StripeWebhookProjectStatus
+{
+    Resolved,
+    Invalid
 }
 
 public sealed class StripeWebhookEvent

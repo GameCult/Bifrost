@@ -908,6 +908,9 @@ namespace Bifrost.Web.Data.Migrations
                         .HasMaxLength(240)
                         .HasColumnType("character varying(240)");
 
+                    b.Property<Guid?>("ProjectId")
+                        .HasColumnType("uuid");
+
                     b.Property<DateTimeOffset>("RecordedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
@@ -922,6 +925,8 @@ namespace Bifrost.Web.Data.Migrations
                     b.HasIndex("Provider", "ProviderEventId")
                         .IsUnique()
                         .HasFilter("\"ProviderEventId\" <> ''");
+
+                    b.HasIndex("ProjectId");
 
                     b.HasIndex("UserAccountId", "Kind", "IsCurrentRecurringSupport");
 
@@ -1734,11 +1739,18 @@ namespace Bifrost.Web.Data.Migrations
 
             modelBuilder.Entity("Bifrost.Web.Domain.PatronSupportEvent", b =>
                 {
+                    b.HasOne("Bifrost.Web.Domain.Project", "Project")
+                        .WithMany("PatronSupportEvents")
+                        .HasForeignKey("ProjectId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
                     b.HasOne("Bifrost.Web.Domain.UserAccount", "UserAccount")
                         .WithMany("PatronSupportEvents")
                         .HasForeignKey("UserAccountId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
+
+                    b.Navigation("Project");
 
                     b.Navigation("UserAccount");
                 });
@@ -1997,6 +2009,8 @@ namespace Bifrost.Web.Data.Migrations
                     b.Navigation("LedgerEntries");
 
                     b.Navigation("Motions");
+
+                    b.Navigation("PatronSupportEvents");
 
                     b.Navigation("PointTransactions");
 

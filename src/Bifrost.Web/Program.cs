@@ -388,16 +388,27 @@ app.MapPost("/heimdall/patron-support/events", async (
     };
 }).AllowAnonymous();
 
-app.MapGet("/patronage/velvet/checkout", async (
+app.MapGet("/patronage/{project}/checkout", async (
+    string project,
     HttpRequest request,
     ICurrentBifrostActorAccessor actorAccessor,
     StripeCheckoutService stripeCheckoutService,
     CancellationToken cancellationToken) =>
 {
-    var tier = request.Query["tier"].ToString();
-    if (string.IsNullOrWhiteSpace(tier))
+    var amountCentsText = request.Query["amountCents"].ToString();
+    if (!int.TryParse(amountCentsText, out var amountCents))
     {
-        return Results.BadRequest("Missing required tier query parameter.");
+        return Results.Text(
+            "Missing or invalid required amountCents query parameter.",
+            statusCode: StatusCodes.Status400BadRequest);
+    }
+
+    var item = request.Query["item"].ToString();
+    if (string.IsNullOrWhiteSpace(item))
+    {
+        return Results.Text(
+            "Missing required item query parameter.",
+            statusCode: StatusCodes.Status400BadRequest);
     }
 
     var actor = await actorAccessor.GetAsync(cancellationToken);
@@ -407,14 +418,25 @@ app.MapGet("/patronage/velvet/checkout", async (
         return Results.Redirect($"/auth/sign-in?returnUrl={returnUrl}");
     }
 
-    var result = await stripeCheckoutService.CreateVelvetCheckoutAsync(
-        tier,
+    var result = await stripeCheckoutService.CreateProjectDonationCheckoutAsync(
+        new StripeDonationCheckoutRequest(
+            project,
+            request.Query["project"].ToString(),
+            item,
+            amountCents,
+            request.Query["currency"].ToString(),
+            request.Query["source"].ToString()),
         actor.UserAccount,
         cancellationToken);
     return result.Status switch
     {
         StripeCheckoutStatus.Created => Results.Redirect(result.CheckoutUrl!.ToString()),
-        StripeCheckoutStatus.UnknownTier => Results.NotFound(result.Message),
+        StripeCheckoutStatus.InvalidRequest => Results.Text(
+            result.Message,
+            statusCode: StatusCodes.Status400BadRequest),
+        StripeCheckoutStatus.UnknownProject => Results.Text(
+            result.Message,
+            statusCode: StatusCodes.Status404NotFound),
         StripeCheckoutStatus.NotConfigured => Results.Text(
             result.Message,
             statusCode: StatusCodes.Status503ServiceUnavailable),

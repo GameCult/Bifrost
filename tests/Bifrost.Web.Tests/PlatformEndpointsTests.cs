@@ -371,8 +371,9 @@ public sealed class PlatformEndpointsTests : IClassFixture<TestWebApplicationFac
         {
             AllowAutoRedirect = false
         });
+        await EnsureVelvetProjectAsync(client);
 
-        using var response = await client.GetAsync("/patronage/velvet/checkout?tier=velvet-room");
+        using var response = await client.GetAsync("/patronage/velvet/checkout?amountCents=1900&item=velvet-room&project=velvet");
 
         Assert.Equal(HttpStatusCode.Redirect, response.StatusCode);
         Assert.Equal("https://checkout.stripe.com/c/pay/cs_test_velvet", response.Headers.Location?.ToString());
@@ -385,16 +386,31 @@ public sealed class PlatformEndpointsTests : IClassFixture<TestWebApplicationFac
         {
             AllowAutoRedirect = false
         });
+        await EnsureVelvetProjectAsync(client);
 
-        using var request = new HttpRequestMessage(HttpMethod.Get, "/patronage/velvet/checkout?tier=velvet-room");
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/patronage/velvet/checkout?amountCents=1900&item=velvet-room&project=velvet");
         request.Headers.Add("X-Test-Anonymous", "1");
 
         using var response = await client.SendAsync(request);
 
         Assert.Equal(HttpStatusCode.Redirect, response.StatusCode);
         Assert.Equal(
-            "/auth/sign-in?returnUrl=%2Fpatronage%2Fvelvet%2Fcheckout%3Ftier%3Dvelvet-room",
+            "/auth/sign-in?returnUrl=%2Fpatronage%2Fvelvet%2Fcheckout%3FamountCents%3D1900%26item%3Dvelvet-room%26project%3Dvelvet",
             response.Headers.Location?.ToString());
+    }
+
+    [Fact]
+    public async Task Velvet_patronage_checkout_rejects_out_of_policy_amount()
+    {
+        using var client = _factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false
+        });
+        await EnsureVelvetProjectAsync(client);
+
+        using var response = await client.GetAsync("/patronage/velvet/checkout?amountCents=50&item=velvet-room&project=velvet");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
 
     [Fact]
@@ -402,7 +418,7 @@ public sealed class PlatformEndpointsTests : IClassFixture<TestWebApplicationFac
     {
         using var client = _factory.CreateClient();
 
-        using var response = await client.GetAsync("/auth/sign-in?returnUrl=%2Fpatronage%2Fvelvet%2Fcheckout%3Ftier%3Dvelvet-room");
+        using var response = await client.GetAsync("/auth/sign-in?returnUrl=%2Fpatronage%2Fvelvet%2Fcheckout%3FamountCents%3D1900%26item%3Dvelvet-room%26project%3Dvelvet");
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var html = await response.Content.ReadAsStringAsync();
@@ -418,10 +434,12 @@ public sealed class PlatformEndpointsTests : IClassFixture<TestWebApplicationFac
         using var client = _factory.CreateClient();
         _ = await client.GetAsync("/App");
         Guid patronageAccountId;
+        Guid projectId;
         using (var setupScope = _factory.Services.CreateScope())
         {
             var setupContext = setupScope.ServiceProvider.GetRequiredService<BifrostDbContext>();
             patronageAccountId = setupContext.UserAccounts.Single(x => x.NormalizedGitHubLogin == "TEST-ADMIN").Id;
+            projectId = await EnsureVelvetProjectAsync(setupContext, patronageAccountId);
         }
 
         var created = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
@@ -444,8 +462,10 @@ public sealed class PlatformEndpointsTests : IClassFixture<TestWebApplicationFac
                         ["source"] = "velvet.gamecult.org",
                         ["ledger"] = "bifrost",
                         ["purpose"] = "general_patronage",
+                        ["project"] = "velvet",
+                        ["project_id"] = projectId.ToString("N"),
+                        ["item"] = "after-hours-bundle",
                         ["model"] = "deru",
-                        ["tier"] = "after-hours-bundle",
                         ["bifrost_user_account_id"] = patronageAccountId.ToString("N"),
                         ["bifrost_github_login"] = "test-admin"
                     }
@@ -468,8 +488,10 @@ public sealed class PlatformEndpointsTests : IClassFixture<TestWebApplicationFac
 
         Assert.Equal(patronageAccount.Id, supportEvent.UserAccountId);
         Assert.Equal("cs_test_velvet_paid", supportEvent.ExternalSupportId);
+        Assert.Equal(projectId, supportEvent.ProjectId);
         Assert.Equal(39m, supportEvent.Amount);
         Assert.Equal("USD", supportEvent.CurrencyCode);
+        Assert.Contains("velvet", supportEvent.Notes);
         Assert.Contains("after-hours-bundle", supportEvent.Notes);
         Assert.Contains(dbContext.AuditEvents, x => x.Action == "patron-support.recorded");
     }
@@ -1659,6 +1681,49 @@ public sealed class PlatformEndpointsTests : IClassFixture<TestWebApplicationFac
             hasher.ComputeHash(Encoding.UTF8.GetBytes($"{timestamp}.{payload}"))).ToLowerInvariant();
 
         return $"t={timestamp},v1={signature}";
+    }
+
+    private async Task<Guid> EnsureVelvetProjectAsync(HttpClient client)
+    {
+        _ = await client.GetAsync("/App");
+
+        using var scope = _factory.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
+        var owner = await dbContext.UserAccounts.SingleAsync(x => x.NormalizedGitHubLogin == "TEST-ADMIN");
+        return await EnsureVelvetProjectAsync(dbContext, owner.Id);
+    }
+
+    private static async Task<Guid> EnsureVelvetProjectAsync(BifrostDbContext dbContext, Guid ownerUserAccountId)
+    {
+        var existing = await dbContext.Projects
+            .Where(x => x.Slug == "velvet")
+            .OrderBy(x => x.CreatedAtUtc)
+            .FirstOrDefaultAsync();
+        if (existing is not null)
+        {
+            if (existing.Status != ProjectStatus.Active)
+            {
+                existing.Status = ProjectStatus.Active;
+                await dbContext.SaveChangesAsync();
+            }
+
+            return existing.Id;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var project = new Project
+        {
+            OwnerUserAccountId = ownerUserAccountId,
+            Slug = "velvet",
+            Name = "Velvet",
+            Summary = "General patronage for Velvet publication.",
+            Status = ProjectStatus.Active,
+            CreatedAtUtc = now,
+            UpdatedAtUtc = now
+        };
+        dbContext.Projects.Add(project);
+        await dbContext.SaveChangesAsync();
+        return project.Id;
     }
 
     private static HttpRequestMessage CreateSignedHeimdallRequest(string payload)

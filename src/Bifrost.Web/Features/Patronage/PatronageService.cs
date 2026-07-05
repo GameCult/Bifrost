@@ -24,7 +24,8 @@ public sealed class PatronageService(
         DateTimeOffset supportedAtUtc,
         bool isCurrentRecurringSupport,
         string notes,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Guid? projectId = null)
     {
         var user = await dbContext.UserAccounts
             .Include(x => x.Membership)
@@ -88,6 +89,7 @@ public sealed class PatronageService(
         var supportEvent = new PatronSupportEvent
         {
             UserAccountId = userAccountId,
+            ProjectId = projectId,
             Kind = kind,
             ExternalSupportId = externalSupportId.Trim(),
             Provider = provider,
@@ -106,6 +108,7 @@ public sealed class PatronageService(
         dbContext.PointTransactions.Add(new PointTransaction
         {
             UserAccountId = userAccountId,
+            ProjectId = projectId,
             Type = PointTransactionType.PatronSupport,
             Amount = amount,
             IsDecaying = kind == PatronSupportEventKind.OneTimeDonation,

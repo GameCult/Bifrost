@@ -360,6 +360,10 @@ public sealed class BifrostDbContext(DbContextOptions<BifrostDbContext> options)
                 .WithMany(x => x.PatronSupportEvents)
                 .HasForeignKey(x => x.UserAccountId)
                 .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(x => x.Project)
+                .WithMany(x => x.PatronSupportEvents)
+                .HasForeignKey(x => x.ProjectId)
+                .OnDelete(DeleteBehavior.SetNull);
         });
 
         modelBuilder.Entity<DecayRun>(entity =>

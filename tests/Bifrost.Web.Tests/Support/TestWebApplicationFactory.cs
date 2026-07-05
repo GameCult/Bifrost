@@ -84,6 +84,7 @@ public sealed class TestWebApplicationFactory : WebApplicationFactory<Program>
 
                 return new StripeCheckoutService(
                     client,
+                    serviceProvider.GetRequiredService<BifrostDbContext>(),
                     serviceProvider.GetRequiredService<IOptions<Bifrost.Web.Configuration.StripeOptions>>());
             });
         });
@@ -99,6 +100,8 @@ public sealed class TestWebApplicationFactory : WebApplicationFactory<Program>
             var hasExpectedMetadata =
                 form.Contains("metadata%5Bpurpose%5D=general_patronage", StringComparison.Ordinal) &&
                 form.Contains("metadata%5Bledger%5D=bifrost", StringComparison.Ordinal) &&
+                form.Contains("metadata%5Bproject%5D=velvet", StringComparison.Ordinal) &&
+                form.Contains("metadata%5Bitem%5D=velvet-room", StringComparison.Ordinal) &&
                 form.Contains("metadata%5Bbifrost_user_account_id%5D=", StringComparison.Ordinal);
 
             if (request.RequestUri?.PathAndQuery != "/v1/checkout/sessions" || !hasExpectedMetadata)

@@ -458,6 +458,8 @@ public sealed class Project
 
     public ICollection<PointTransaction> PointTransactions { get; set; } = [];
 
+    public ICollection<PatronSupportEvent> PatronSupportEvents { get; set; } = [];
+
     public ICollection<RevenueEvent> RevenueEvents { get; set; } = [];
 
     public ICollection<RevenueShareLine> RevenueShareLines { get; set; } = [];
@@ -801,6 +803,8 @@ public sealed class PatronSupportEvent
 
     public Guid UserAccountId { get; set; }
 
+    public Guid? ProjectId { get; set; }
+
     public string ExternalSupportId { get; set; } = string.Empty;
 
     public ExternalPatronProvider Provider { get; set; } = ExternalPatronProvider.Manual;
@@ -826,6 +830,8 @@ public sealed class PatronSupportEvent
     public string Notes { get; set; } = string.Empty;
 
     public UserAccount UserAccount { get; set; } = null!;
+
+    public Project? Project { get; set; }
 }
 
 public sealed class DecayRun
