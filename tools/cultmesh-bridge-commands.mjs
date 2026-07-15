@@ -16,6 +16,7 @@ import {
 
 const repoRoot = resolve(import.meta.dirname, "..");
 const projectsRoot = resolve(repoRoot, "..");
+const cultLibRoot = resolve(process.env.VOIDBOT_CULTLIB_ROOT || resolve(projectsRoot, "CultLib"));
 const defaultStorePath = resolve(repoRoot, ".bifrost", "provider-store.cc");
 
 async function main() {
@@ -292,7 +293,7 @@ function genericDocument(defineDocumentType, type, schemaId, name) {
 
 function loadCultMeshRuntime() {
   const candidates = [
-    resolve(projectsRoot, "CultLib", "packages", "cultmesh-ts", "package.json"),
+    resolve(cultLibRoot, "packages", "cultmesh-ts", "package.json"),
     resolve(projectsRoot, "CultMeshTS", "package.json"),
   ];
 

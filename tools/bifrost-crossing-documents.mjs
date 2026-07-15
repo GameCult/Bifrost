@@ -6,6 +6,7 @@ import { dirname, resolve } from "node:path";
 
 const repoRoot = resolve(import.meta.dirname, "..");
 const projectsRoot = resolve(repoRoot, "..");
+const cultLibRoot = resolve(process.env.VOIDBOT_CULTLIB_ROOT || resolve(projectsRoot, "CultLib"));
 
 export const crossingReceiptDocumentType = "bifrost.crossing_receipt";
 export const crossingReceiptSchemaId = "bifrost.crossing_receipt.v1";
@@ -267,7 +268,7 @@ function loadCultCacheRuntime() {
     return cachedRuntime;
   }
   const packagePath = resolveFirstExisting("CultCache TypeScript runtime", [
-    resolve(projectsRoot, "CultLib", "packages", "cultcache-ts", "package.json"),
+    resolve(cultLibRoot, "packages", "cultcache-ts", "package.json"),
     resolve(projectsRoot, "CultCacheTS", "package.json"),
     resolve(projectsRoot, "CultCacheTS", "node_modules", "cultcache-ts", "package.json"),
   ]);

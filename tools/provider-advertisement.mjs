@@ -24,6 +24,7 @@ import {
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
 const projectsRoot = resolve(repoRoot, "..");
+const cultLibRoot = resolve(process.env.VOIDBOT_CULTLIB_ROOT || resolve(projectsRoot, "CultLib"));
 const defaultStorePath = resolve(repoRoot, ".bifrost", "provider-store.cc");
 const defaultOdinCultMeshUri = "cultmesh://odin/rendezvous/provider-catalog";
 
@@ -43,7 +44,7 @@ const { defineCultNetDocumentBinding } = cultNetRuntime;
 
 function loadCultCacheRuntime() {
   const candidates = [
-    resolve(projectsRoot, "CultLib", "packages", "cultcache-ts", "dist", "index.js"),
+    resolve(cultLibRoot, "packages", "cultcache-ts", "dist", "index.js"),
     resolve(projectsRoot, "CultCacheTS", "dist", "index.js"),
   ];
 
@@ -63,7 +64,7 @@ function loadCultCacheRuntime() {
 
 function resolveCultCachePackagePath() {
   const candidates = [
-    resolve(projectsRoot, "CultLib", "packages", "cultcache-ts", "package.json"),
+    resolve(cultLibRoot, "packages", "cultcache-ts", "package.json"),
     resolve(projectsRoot, "CultCacheTS", "package.json"),
     resolve(projectsRoot, "CultCacheTS", "node_modules", "cultcache-ts", "package.json"),
   ];
@@ -79,7 +80,7 @@ function resolveCultCachePackagePath() {
 
 function loadCultMeshRuntime() {
   const candidates = [
-    resolve(projectsRoot, "CultLib", "packages", "cultmesh-ts", "dist", "index.js"),
+    resolve(cultLibRoot, "packages", "cultmesh-ts", "dist", "index.js"),
     resolve(projectsRoot, "CultMeshTS", "dist", "index.js"),
   ];
 
@@ -99,7 +100,7 @@ function loadCultMeshRuntime() {
 
 function resolveCultMeshPackagePath() {
   const candidates = [
-    resolve(projectsRoot, "CultLib", "packages", "cultmesh-ts", "package.json"),
+    resolve(cultLibRoot, "packages", "cultmesh-ts", "package.json"),
     resolve(projectsRoot, "CultMeshTS", "package.json"),
     resolve(projectsRoot, "CultMeshTS", "node_modules", "cultmesh-ts", "package.json"),
   ];
@@ -115,7 +116,7 @@ function resolveCultMeshPackagePath() {
 
 function loadCultNetRuntime() {
   const candidates = [
-    resolve(projectsRoot, "CultLib", "packages", "cultnet-ts", "dist", "index.js"),
+    resolve(cultLibRoot, "packages", "cultnet-ts", "dist", "index.js"),
     resolve(projectsRoot, "CultNetTS", "dist", "index.js"),
   ];
 
@@ -135,7 +136,7 @@ function loadCultNetRuntime() {
 
 function resolveCultNetPackagePath() {
   const candidates = [
-    resolve(projectsRoot, "CultLib", "packages", "cultnet-ts", "package.json"),
+    resolve(cultLibRoot, "packages", "cultnet-ts", "package.json"),
     resolve(projectsRoot, "CultNetTS", "package.json"),
     resolve(projectsRoot, "CultNetTS", "node_modules", "cultnet-ts", "package.json"),
   ];
