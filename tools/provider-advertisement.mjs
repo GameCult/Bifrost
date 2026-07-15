@@ -5,11 +5,27 @@ import { mkdir } from "node:fs/promises";
 import { existsSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  crossingReceiptDefinition,
+  crossingReceiptDocumentType,
+  crossingReceiptSchemaId,
+  openCrossingReceiptStore,
+  resolveCrossingReceiptStorePath,
+} from "./bifrost-crossing-documents.mjs";
+import {
+  discordPostCommandDefinition,
+  discordPostCommandDocumentType,
+  discordPostCommandSchemaId,
+  discordPostReceiptDefinition,
+  discordPostReceiptDocumentType,
+  discordPostReceiptSchemaId,
+} from "./bifrost-discord-command-documents.mjs";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
 const projectsRoot = resolve(repoRoot, "..");
-const defaultStorePath = resolve(repoRoot, ".bifrost", "provider-advertisement.cc");
+const defaultStorePath = resolve(repoRoot, ".bifrost", "provider-store.cc");
+const defaultOdinCultMeshUri = "cultmesh://odin/rendezvous/provider-catalog";
 
 const cultCacheRequire = createRequire(resolveCultCachePackagePath());
 const cultMeshRequire = createRequire(resolveCultMeshPackagePath());
@@ -146,6 +162,8 @@ const currentMachine = "starfire";
 const canonicalService = `${rootVerse}.bifrost`;
 const locatedService = `${rootVerse}.${currentMachine}.bifrost`;
 const plannedLocatedService = `${rootVerse}.yggdrasil.bifrost`;
+const motionSurfaceCultMeshUri = `cultmesh://${locatedService}/eve/governance/surface`;
+const motionCommandCultMeshUri = `cultmesh://${locatedService}/commands/motion`;
 
 const advertisementDefinition = defineDocumentType({
   type: documentType,
@@ -153,7 +171,12 @@ const advertisementDefinition = defineDocumentType({
   schemaName: documentType,
   schemaVersion: schemaId,
   schema: {
-    parse: parseAdvertisement,
+    // Persisted provider stores can contain an older advertisement revision
+    // beside live command and receipt documents. Decode that generated
+    // discovery metadata so export can replace it without discarding the
+    // command ledger; only newly built advertisements must satisfy the current
+    // contract below.
+    parse: (input) => parseAdvertisement(input, { requireCurrentContract: false }),
   },
   name: "providerId",
   indexes: {
@@ -215,6 +238,8 @@ async function main() {
     return;
   }
 
+  rejectRemovedHttpProbeConfig(options);
+
   switch (command) {
     case "export":
       await exportAdvertisement(options);
@@ -255,6 +280,9 @@ async function exportAdvertisement(options) {
     .withDocumentType(advertisementDefinition)
     .withDocumentType(surfaceDefinition)
     .withDocumentType(interfaceBindingDefinition)
+    .withDocumentType(discordPostCommandDefinition(defineDocumentType))
+    .withDocumentType(discordPostReceiptDefinition(defineDocumentType))
+    .withDocumentType(crossingReceiptDefinition(defineDocumentType))
     .withGenericStore(new SingleFileMessagePackBackingStore(storePath))
     .build();
 
@@ -294,15 +322,16 @@ function buildAdvertisement(options) {
       endpoint("operator-tui", `${locatedService}/eve/tui`, "gamecult.eve.surface.v1", ["tui", "nightwing-tui"]),
       endpoint("operator-gui", `${locatedService}/eve/gui`, "gamecult.eve.surface.v1", ["gui", "browser", "eve-native"]),
       endpoint("operator-commands", `${locatedService}/commands`, "bifrost.bridge_action.v0", ["command"]),
-      endpoint("bridge-action-ledger", `${locatedService}/bridge/actions`, "bifrost.bridge_action.v0", ["command", "bridge", "receipt"]),
+      endpoint("crossing-receipts", `${locatedService}/receipts/crossings`, crossingReceiptSchemaId, ["receipt", "bridge", "cultmesh"]),
+      endpoint("discord-post-commands", `${locatedService}/commands/discord-post`, discordPostCommandSchemaId, ["command", "discord", "cultmesh"]),
+      endpoint("discord-post-receipts", `${locatedService}/receipts/discord-post`, discordPostReceiptSchemaId, ["receipt", "discord", "cultmesh"]),
       endpoint("patron-support-intake", `${locatedService}/heimdall/patron-support/events`, "bifrost.patron_support_event.v0", ["heimdall", "patronage", "intake"]),
       endpoint("github-webhooks", `${locatedService}/github/webhooks`, "bifrost.work_item.v0", ["github", "work-sync", "review-sync"]),
-      endpoint("motion-surface", "https://bifrost.gamecult.org/eve/governance/surface", "gamecult.eve.surface.v1", ["product", "governance", "motion"]),
-      endpoint("motion-commands", "https://bifrost.gamecult.org/eve/governance/commands", "bifrost.motion_command.v0", ["command", "governance", "motion"]),
+      endpoint("motion-surface", motionSurfaceCultMeshUri, "gamecult.eve.surface.v1", ["cultmesh", "governance", "motion"]),
+      endpoint("motion-commands", motionCommandCultMeshUri, "bifrost.motion_command.v0", ["command", "cultmesh", "governance", "motion"]),
     ],
     routes: [
-      route("cultcache-witness", ".bifrost/provider-advertisement.cc", "local-cultcache", true),
-      route("websocket-bridge", "ws://192.168.1.66:8797/eve/deck", "compatibility-eve-deck", true),
+      route("cultmesh-store", ".bifrost/provider-store.cc", "local-cultmesh", true),
     ],
     authority: {
       owner: "Bifrost",
@@ -334,22 +363,25 @@ function buildAdvertisement(options) {
       schema("bifrost.ledger_entry.v0", "bifrost.ledger-entry", "planned contributor/patron ledger witness"),
       schema("bifrost.bridge_action.v0", "bifrost.bridge-action", "current hosted governed crossing command witness"),
       schema("bifrost.bridge_receipt.v0", "bifrost.bridge-receipt", "current hosted governed crossing result witness"),
+      schema(crossingReceiptSchemaId, crossingReceiptDocumentType, "canonical Bifrost-owned public crossing receipt"),
+      schema(discordPostCommandSchemaId, discordPostCommandDocumentType, "CultMesh command request for Bifrost-owned Discord persona/bot posts"),
+      schema(discordPostReceiptSchemaId, discordPostReceiptDocumentType, "CultMesh receipt for Bifrost-owned Discord persona/bot posts"),
       schema("bifrost.patron_support_event.v0", "bifrost.patron-support-event", "current hosted Heimdall-signed patron support fact consumed by Bifrost"),
       schema("bifrost.member_capability_snapshot.v0", "bifrost.member-capability-snapshot", "planned Heimdall-consumed membership capability witness"),
     ],
     witnesses: [
-      witness(".bifrost/provider-advertisement.cc", schemaId, "current", "read-only provider advertisement exported by this tool"),
+      witness(".bifrost/provider-store.cc", `${schemaId}; ${surfaceSchemaId}; ${interfaceBindingSchemaId}; ${discordPostCommandSchemaId}; ${discordPostReceiptSchemaId}`, "current", "typed provider advertisement, operator surface, Eve interface binding, and Bifrost Discord command request/receipt store"),
       witness(".bifrost/governance-threads.cc", "bifrost.governance.topic.v0; bifrost.governance.topic_comment.v0", "current", "governance discussion, approvals, and dispatch promotion topics"),
       witness(".bifrost/agent-transport.cc", "bifrost.agent-transport.update-request.v0", "current", "repo Persona update requests and dispatch queue state"),
       witness(".bifrost/work-items.cc", "bifrost.work_item.v0", "planned-export", "work items exported from the alpha transactional store"),
       witness(".bifrost/motions.cc", "bifrost.motion.v0; bifrost.vote.v0", "planned-export", "app-native motions and votes exported from the alpha transactional store"),
       witness(".bifrost/ledger.cc", "bifrost.ledger_entry.v0", "planned-export", "patron and contributor ledger entries exported from the alpha transactional store"),
       witness(".bifrost/member-capabilities.cc", "bifrost.member_capability_snapshot.v0", "planned-export", "membership and account capability snapshots consumed by Bifrost"),
-      witness(".bifrost/bridge-receipts.cc", "bifrost.bridge_action.v0; bifrost.bridge_receipt.v0", "planned-export", "governed public crossing actions and receipts"),
-      witness(".bifrost/eve-surfaces.cc", "gamecult.eve.surface.v1", "planned-export", "product and operator Eve/CultUI surface publications"),
+      witness(".bifrost/bridge-receipts.cc", crossingReceiptSchemaId, "current", "canonical governed public crossing receipt history"),
+      witness(".bifrost/eve-surfaces.cc", "gamecult.eve.surface.v1", "planned-export", "future product Eve/CultUI surfaces not yet in the provider store"),
     ],
     surfaces: [
-      surface("bifrost", "Bifrost Operator Dashboard", "gamecult.bifrost.surface.operator", "gamecult.eve.surface_state.v1", ".bifrost/provider-advertisement.cc", "eve", [
+      surface("bifrost", "Bifrost Operator Dashboard", "gamecult.bifrost.surface.operator", "gamecult.eve.surface_state.v1", ".bifrost/provider-store.cc", "eve", [
         "service health",
         "compact service status",
         "topic and request status",
@@ -445,12 +477,15 @@ function buildAdvertisement(options) {
         "prepare governed public crossings",
         "execute approved handoffs",
         "record receipts",
+        "own canonical bifrost.crossing_receipt.v1 documents for every crossing attempt",
         "open GitHub draft PRs and PR comments through Bifrost gate",
         "post Discord messages and DMs through Bifrost gate with Heimdall-linked actor capability",
         "record receipt-only future-surface requests with named-surface Heimdall capability matching before named actuators exist",
         "post Persona-flaired Reddit organizing threads",
+        "accept typed CultMesh Discord post command requests and write typed Discord post receipts",
       ], [
         "does not treat local protocol JSON as work authority",
+        "surface-specific receipts cannot decide crossing completion",
         "does not touch secrets in this advertisement",
       ]),
     ],
@@ -463,40 +498,54 @@ function buildAdvertisement(options) {
     ],
     demotions: [
       "Razor Pages are browser lowerings, not the canonical presentation owner.",
-      "HTTP health/readiness JSON is a probe, not service truth.",
+      "HTTP health/readiness JSON is product smoke output only; provider readiness comes from typed CultMesh/Idunn state.",
       "Discord messages are mirrors and input surfaces until Bifrost commits typed state.",
       "Reddit threads are organizing surfaces until Bifrost commits typed votes, priority signals, comments, or receipts.",
       "Local dispatch JSON is evidence for receipts, not command authority.",
       "This advertisement is read-only discovery metadata and does not migrate runtime state.",
+    ],
+    commands: [
+      command("discord.post", "write", "Write a bifrost.bridge.discord_post_command.v1 document into the provider CultMesh store and wait for a bifrost.bridge.discord_post_receipt.v1 receipt.", {
+        transport: "cultmesh-command-document",
+        commandDocumentType: discordPostCommandDocumentType,
+        commandSchemaId: discordPostCommandSchemaId,
+        receiptDocumentType: discordPostReceiptDocumentType,
+        receiptSchemaId: discordPostReceiptSchemaId,
+        storeRoute: ".bifrost/provider-store.cc",
+        cultMeshUri: `${locatedService}/commands/discord-post`,
+      }),
     ],
   });
 }
 
 async function collectStats(options) {
   const generatedAt = options["generated-at"] ?? new Date().toISOString();
-  const health = await fetchProbe("http://127.0.0.1:5080/healthz");
-  const ready = await fetchProbe("http://127.0.0.1:5080/readyz");
   const transport = runJsonTool(["tools/agent-transport.mjs", "list", "--json"]);
   const governance = runJsonTool(["tools/governance-threads.mjs", "list", "--json"]);
+  const crossingReceipts = await readCrossingReceipts(options);
   const docker = dockerContainers();
   const witnesses = [
-    witnessStat(".bifrost/provider-advertisement.cc"),
+    witnessStat(".bifrost/provider-store.cc"),
     witnessStat(".bifrost/governance-threads.cc"),
     witnessStat(".bifrost/agent-transport.cc"),
+    witnessStat(".bifrost/bridge-receipts.cc"),
     witnessStat(".bifrost/discord-webhook-cache.json"),
   ];
   const topics = Array.isArray(governance.value) ? governance.value : [];
   const requests = Array.isArray(transport.value) ? transport.value : [];
   const topicCounts = countBy(topics, "status");
   const requestCounts = countBy(requests, "status");
+  const receiptCounts = countBy(crossingReceipts.value, "status");
   const recentWindowHours = 24;
   const dockerHealthy = docker.items.filter((item) => /healthy/i.test(item.status)).length;
   const dockerRunning = docker.items.filter((item) => /^Up\b/i.test(item.status)).length;
+  const bridge = buildBridgeStats();
+  const service = buildTypedServiceStatus({ witnesses, transport, governance, bridge });
 
   return {
     generatedAt,
-    health,
-    ready,
+    health: service.health,
+    ready: service.ready,
     docker,
     governance: {
       ok: governance.ok,
@@ -518,16 +567,27 @@ async function collectStats(options) {
       recentChannelCounts: countRecentBy(requests, "sourceKind", recentWindowHours),
       latestUpdatedAt: latestTimestamp(requests.map((item) => item.updatedAt)),
     },
+    crossingReceipts: {
+      ok: crossingReceipts.ok,
+      error: crossingReceipts.error,
+      count: crossingReceipts.value.length,
+      statusCounts: receiptCounts,
+      recentCount: countRecent(crossingReceipts.value, recentWindowHours),
+      gapRows: buildReceiptGapRows(crossingReceipts.value),
+      latestUpdatedAt: latestTimestamp(crossingReceipts.value.map((item) => item.completedAt || item.startedAt || item.requestedAt)),
+    },
     witnesses,
-    bridge: buildBridgeStats(),
+    bridge,
     summary: {
-      status: health.ok && ready.ok ? "ready" : "degraded",
-      health: health.value ?? health.error,
-      ready: ready.value ?? ready.error,
+      status: service.ready.ok ? "ready" : "degraded",
+      health: service.health.value,
+      ready: service.ready.value,
       dockerRunning,
       dockerHealthy,
       governanceTopics: topics.length,
       transportRequests: requests.length,
+      crossingReceipts: crossingReceipts.value.length,
+      crossingReceiptGaps: buildReceiptGapRows(crossingReceipts.value).length,
       recentGovernanceTopics: countRecent(topics, recentWindowHours),
       recentTransportRequests: countRecent(requests, recentWindowHours),
       openTopics: topicCounts.open ?? 0,
@@ -537,23 +597,64 @@ async function collectStats(options) {
   };
 }
 
-async function fetchProbe(url) {
+async function readCrossingReceipts(options) {
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 2500);
-    const response = await fetch(url, { signal: controller.signal });
-    clearTimeout(timeout);
-    const text = (await response.text()).trim();
-    return {
-      ok: response.ok,
-      statusCode: response.status,
-      value: text,
-    };
+    const storePath = resolveCrossingReceiptStorePath(options);
+    if (!existsSync(storePath)) {
+      return { ok: true, error: "", value: [] };
+    }
+    const store = await openCrossingReceiptStore(storePath);
+    return { ok: true, error: "", value: store.getAll() };
   } catch (error) {
     return {
       ok: false,
       error: error instanceof Error ? error.message : String(error),
+      value: [],
     };
+  }
+}
+
+function buildReceiptGapRows(receipts) {
+  return receipts
+    .filter((receipt) => receipt.status === "failed" || receipt.status === "running" || receipt.status === "requested")
+    .sort((left, right) => String(right.requestedAt).localeCompare(String(left.requestedAt)))
+    .slice(0, 8)
+    .map((receipt) =>
+      `${receipt.receiptId}: ${receipt.crossingKind} ${receipt.status}; source=${receipt.source?.kind || "unknown"}/${receipt.source?.id || "unknown"}; target=${receipt.target?.surface || "unknown"} ${receipt.target?.locator || ""}`.trim(),
+    );
+}
+
+function buildTypedServiceStatus({ witnesses, transport, governance, bridge }) {
+  const providerStore = witnesses.find((item) => item.path === ".bifrost/provider-store.cc");
+  const storesReady = witnesses.every((item) => item.exists);
+  const healthOk = Boolean(providerStore?.exists) && transport.ok && governance.ok;
+  const readyOk = healthOk && storesReady && bridge.ready;
+  return {
+    health: {
+      ok: healthOk,
+      value: healthOk
+        ? `typed-store ${providerStore.path} / command stores readable`
+        : `typed-store ${providerStore?.exists ? "present" : "missing"} / command stores ${transport.ok && governance.ok ? "readable" : "degraded"}`,
+    },
+    ready: {
+      ok: readyOk,
+      value: readyOk
+        ? "CultMesh command/surface store ready"
+        : `CultMesh command/surface store ${storesReady ? "present" : "incomplete"} / bridge ${bridge.ready ? "ready" : "not-ready"}`,
+    },
+  };
+}
+
+function rejectRemovedHttpProbeConfig(options) {
+  const removed = [
+    ["--health-url", options["health-url"]],
+    ["--ready-url", options["ready-url"]],
+    ["BIFROST_HEALTH_URL", process.env.BIFROST_HEALTH_URL],
+    ["BIFROST_READY_URL", process.env.BIFROST_READY_URL],
+  ].filter(([, value]) => optionalString(value));
+
+  if (removed.length > 0) {
+    throw new Error(`${removed.map(([name]) => name).join(" / ")} were removed from provider advertisement status. Publish Bifrost readiness through typed CultMesh/Idunn state instead of HTTP probes.`);
   }
 }
 
@@ -637,16 +738,19 @@ function witnessStat(relativePath) {
 }
 
 async function publishOdinAdvertisement(options) {
-  const endpoint = options["odin-cultmesh-rudp"] ?? options.odin ?? process.env.BIFROST_ODIN_CULTMESH_RUDP;
-  if (!endpoint) {
-    throw new Error("Bifrost Odin publication requires --odin-cultmesh-rudp <host:port> or BIFROST_ODIN_CULTMESH_RUDP.");
+  if (options["odin-cultmesh-rudp"] || process.env.BIFROST_ODIN_CULTMESH_RUDP) {
+    throw new Error("--odin-cultmesh-rudp and BIFROST_ODIN_CULTMESH_RUDP were removed. Configure --odin-cultmesh-uri cultmesh://odin/rendezvous/provider-catalog and let CultMesh resolve Odin's transport.");
+  }
+  const odinCultMeshUri = options["odin-cultmesh-uri"] ?? options.odin ?? process.env.BIFROST_ODIN_CULTMESH_URI ?? defaultOdinCultMeshUri;
+  if (!odinCultMeshUri) {
+    throw new Error("Bifrost Odin publication requires an Odin CultMesh URI.");
   }
 
   const advertisement = buildAdvertisement(options);
   await CultMesh.publishRudpDocumentOnce(
     "bifrost",
     0x0d1d0002,
-    normalizeRudpEndpoint(endpoint),
+    odinCultMeshUri,
     defineCultNetDocumentBinding({ definition: advertisementDefinition }),
     advertisement.providerId,
     advertisement,
@@ -661,7 +765,7 @@ async function publishOdinAdvertisement(options) {
     documentType,
     schemaId,
     providerId: advertisement.providerId,
-    odinCultMeshRudp: endpoint,
+    odinCultMeshUri,
   });
 }
 
@@ -674,17 +778,13 @@ function buildBridgeStats() {
   const redditCredentialSource = process.env.BIFROST_REDDIT_CLIENT_ID && process.env.BIFROST_REDDIT_REFRESH_TOKEN
     ? "BIFROST_REDDIT_CLIENT_ID+BIFROST_REDDIT_REFRESH_TOKEN"
     : "missing";
-  const bridgeLedgerCredentialSource = process.env.BIFROST_BRIDGE_BASE_URL && process.env.BIFROST_BRIDGE_TOKEN
-    ? "BIFROST_BRIDGE_BASE_URL+BIFROST_BRIDGE_TOKEN"
-    : "missing";
-
   const surfaces = [
     {
       id: "github",
       label: "GitHub",
       prepared: true,
       ready: true,
-      authority: "Bifrost bridge gate plus GitHub webhook sync",
+      authority: "Bifrost typed CultMesh command gate plus GitHub webhook sync",
       credentialSource: "GitHub app/OAuth/gh runtime",
       note: "draft PRs, PR comments, and webhook work sync are hooked",
     },
@@ -693,7 +793,7 @@ function buildBridgeStats() {
       label: "Discord",
       prepared: true,
       ready: discordCredentialSource !== "missing",
-      authority: "Bifrost bridge gate plus Heimdall-linked account/capability reference",
+      authority: "Bifrost typed CultMesh command gate plus Heimdall-linked account/capability reference",
       credentialSource: discordCredentialSource,
       note: discordCredentialSource === "missing"
         ? "transport actuator token is not visible to this process"
@@ -704,7 +804,7 @@ function buildBridgeStats() {
       label: "Reddit",
       prepared: true,
       ready: redditCredentialSource !== "missing",
-      authority: "Bifrost bridge gate plus Heimdall-linked reddit capability reference",
+      authority: "Bifrost typed CultMesh command gate plus Heimdall-linked reddit capability reference",
       credentialSource: redditCredentialSource,
       note: redditCredentialSource === "missing"
         ? "reddit transport credentials are not visible to this process"
@@ -714,10 +814,10 @@ function buildBridgeStats() {
       id: "other",
       label: "Other",
       prepared: true,
-      ready: true,
-      authority: "Bifrost receipt-only future-surface gate with named Heimdall reference",
-      credentialSource: "not-required-for-receipt-only",
-      note: "records governed future-surface requests without provider transport",
+      ready: false,
+      authority: "typed CultMesh command contract required before use",
+      credentialSource: "not-configured",
+      note: "the old receipt-only HTTP bridge hatch is removed",
     },
     {
       id: "patron",
@@ -739,10 +839,10 @@ function buildBridgeStats() {
     githubWebhookSync: true,
     otherRequest: true,
     patronSupportIntake: true,
-    bridgeLedgerConfigured: bridgeLedgerCredentialSource !== "missing",
     credentialSource: discordCredentialSource,
     redditCredentialSource,
-    bridgeLedgerCredentialSource,
+    bridgeLedgerConfigured: false,
+    bridgeLedgerCredentialSource: "removed-http-bridge",
     patronSupportAuthority: "Heimdall HMAC via /heimdall/patron-support/events",
     prepared: surfaces.every((surface) => surface.prepared),
     ready: surfaces.every((surface) => surface.ready),
@@ -778,10 +878,13 @@ function buildOperatorSurface(stats) {
     panelNode("activity", "Activity", [
       metricNode("topics", "Topics", `${stats.summary.governanceTopics} total / ${stats.summary.openTopics} open / ${stats.summary.recentGovernanceTopics} in ${stats.summary.recentWindowHours}h`, stats.governance.ok ? "ok" : "warn"),
       metricNode("requests", "Requests", `${stats.summary.transportRequests} total / ${stats.summary.queuedRequests} queued / ${stats.summary.recentTransportRequests} in ${stats.summary.recentWindowHours}h`, stats.transport.ok ? "ok" : "warn"),
+      metricNode("crossing-receipts", "Crossing Receipts", `${stats.summary.crossingReceipts} total / ${stats.summary.crossingReceiptGaps} gaps`, stats.crossingReceipts.ok && stats.summary.crossingReceiptGaps === 0 ? "ok" : "warn"),
       listNode("status", "Status", [
         `topics: ${compactCounts(stats.governance.statusCounts)}`,
         `requests: ${compactCounts(stats.transport.statusCounts)}`,
+        `crossing receipts: ${compactCounts(stats.crossingReceipts.statusCounts)}`,
       ]),
+      listNode("receipt-gaps", "Receipt Gaps", stats.crossingReceipts.gapRows),
       listNode("channels", "Dispatch Channels", compactChannelLines(stats.transport.channelCounts, stats.transport.recentChannelCounts, stats.summary.recentWindowHours)),
     ]),
   ];
@@ -796,6 +899,17 @@ function buildOperatorSurface(stats) {
       schema: "gamecult.eve.surface.v1",
       id: "bifrost-operator-dashboard",
       title: "Bifrost Operator Dashboard",
+      commands: [
+        command("discord.post", "write", "Post to Discord through Bifrost's CultMesh command request/receipt documents.", {
+          transport: "cultmesh-command-document",
+          commandDocumentType: discordPostCommandDocumentType,
+          commandSchemaId: discordPostCommandSchemaId,
+          receiptDocumentType: discordPostReceiptDocumentType,
+          receiptSchemaId: discordPostReceiptSchemaId,
+          storeRoute: ".bifrost/provider-store.cc",
+          cultMeshUri: `${locatedService}/commands/discord-post`,
+        }),
+      ],
       root: {
         id: "bifrost-root",
         kind: "dashboard",
@@ -833,8 +947,7 @@ function buildInterfaceBinding(surface, stats) {
         endpoint("operator-gui", `${locatedService}/eve/gui`, "gamecult.eve.surface.v1", ["gui", "browser", "eve-native"]),
       ],
       routes: [
-        route("cultcache-witness", ".bifrost/provider-advertisement.cc", "local-cultcache", true),
-        route("websocket-bridge", "ws://192.168.1.66:8797/eve/deck", "compatibility-eve-deck", true),
+        route("cultmesh-store", ".bifrost/provider-store.cc", "local-cultmesh", true),
       ],
       capabilities: [
         "operator-stats",
@@ -1008,6 +1121,16 @@ function boundary(area, owner, commands, forbiddenAuthority) {
   return { area, owner, commands, forbiddenAuthority };
 }
 
+function command(id, mode, purpose, metadata = {}) {
+  return {
+    id,
+    command: id,
+    mode,
+    purpose,
+    ...metadata,
+  };
+}
+
 function style(area, capabilities) {
   return { area, capabilities };
 }
@@ -1020,7 +1143,7 @@ function route(id, address, transport, demoted) {
   return { id, address, transport, demoted };
 }
 
-function parseAdvertisement(input) {
+function parseAdvertisement(input, { requireCurrentContract = true } = {}) {
   if (!input || typeof input !== "object") {
     throw new Error("Provider advertisement must be an object.");
   }
@@ -1047,6 +1170,10 @@ function parseAdvertisement(input) {
     demotions: requireStringArray(input.demotions, "demotions"),
   };
 
+  if (!requireCurrentContract) {
+    return advertisement;
+  }
+
   const requiredSurfaces = new Set(["bifrost.work", "bifrost.motion", "bifrost.patron", "bifrost.project", "bifrost.account"]);
   const surfaceIds = new Set(advertisement.surfaces.map((surface) => surface.id));
   for (const id of requiredSurfaces) {
@@ -1055,7 +1182,7 @@ function parseAdvertisement(input) {
     }
   }
 
-  const requiredEndpoints = new Set(["bridge-action-ledger", "patron-support-intake", "github-webhooks"]);
+  const requiredEndpoints = new Set(["crossing-receipts", "discord-post-commands", "discord-post-receipts", "patron-support-intake", "github-webhooks"]);
   const endpointIds = new Set(advertisement.endpoints.map((endpoint) => endpoint.id));
   for (const id of requiredEndpoints) {
     if (!endpointIds.has(id)) {
@@ -1063,7 +1190,7 @@ function parseAdvertisement(input) {
     }
   }
 
-  const requiredSchemas = new Set(["bifrost.bridge_action.v0", "bifrost.bridge_receipt.v0", "bifrost.patron_support_event.v0"]);
+  const requiredSchemas = new Set([crossingReceiptSchemaId, "bifrost.bridge_action.v0", "bifrost.bridge_receipt.v0", "bifrost.patron_support_event.v0"]);
   const schemaIds = new Set(advertisement.schemas.map((schema) => schema.id));
   for (const id of requiredSchemas) {
     if (!schemaIds.has(id)) {
@@ -1148,14 +1275,6 @@ function resolveOptionPath(path) {
   return resolve(process.cwd(), path);
 }
 
-function normalizeRudpEndpoint(endpoint) {
-  const text = String(endpoint || "").trim();
-  if (!text) {
-    throw new Error("Odin CultMesh/RUDP endpoint must be non-empty.");
-  }
-  return text.toLowerCase().startsWith("rudp://") ? text : `rudp://${text}`;
-}
-
 function printJson(value) {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 }
@@ -1164,24 +1283,25 @@ function printHelp() {
   process.stdout.write(`Bifrost Eve provider advertisement
 
 Commands:
-  export          Write advertisement, operator surface, and interface binding to a CultCache .cc witness
-  publish-odin    Publish the provider advertisement once to Odin over CultMesh/RUDP
+  export          Write advertisement, operator surface, and interface binding to the Bifrost provider store
+  publish-odin    Publish the provider advertisement once to Odin through its CultMesh rendezvous URI
   print           Print the advertisement as protocol-debug JSON without writing state
   print-surface   Print the current operator Eve surface JSON without writing state
   print-binding   Print the current Eve interface binding JSON without writing state
   schema          Print document type metadata
 
 Options:
-  --out <path>            Override export path; defaults to .bifrost/provider-advertisement.cc
-  --odin-cultmesh-rudp <host:port>
-                          Odin CultMesh/RUDP document catalog endpoint; also reads BIFROST_ODIN_CULTMESH_RUDP
+  --out <path>            Override export path; defaults to .bifrost/provider-store.cc
+  --odin-cultmesh-uri <cultmesh-uri>
+                          Odin CultMesh rendezvous URI; also reads BIFROST_ODIN_CULTMESH_URI
   --generated-at <iso>    Pin generatedAt for deterministic fixture checks
 
 Examples:
   node tools/provider-advertisement.mjs print
   node tools/provider-advertisement.mjs print-binding
-  node tools/provider-advertisement.mjs export --out .bifrost/provider-advertisement.cc
-  node tools/provider-advertisement.mjs publish-odin --odin-cultmesh-rudp 127.0.0.1:17871
+  node tools/provider-advertisement.mjs export --out .bifrost/provider-store.cc
+  node tools/provider-advertisement.mjs print-surface
+  $env:BIFROST_ODIN_CULTMESH_URI="cultmesh://odin/rendezvous/provider-catalog"; node tools/provider-advertisement.mjs publish-odin
 `);
 }
 

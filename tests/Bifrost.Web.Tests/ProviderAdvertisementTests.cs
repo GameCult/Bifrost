@@ -19,16 +19,18 @@ public sealed class ProviderAdvertisementTests
         using var payload = JsonDocument.Parse(result.Stdout);
         var root = payload.RootElement;
 
-        AssertEndpoint(root, "bridge-action-ledger", "bifrost.bridge_action.v0", "bridge");
+        AssertEndpoint(root, "crossing-receipts", "bifrost.crossing_receipt.v1", "bridge");
         AssertEndpoint(root, "patron-support-intake", "bifrost.patron_support_event.v0", "patronage");
         AssertEndpoint(root, "github-webhooks", "bifrost.work_item.v0", "github");
-        AssertSchemaPurpose(root, "bifrost.bridge_action.v0", "current hosted governed crossing command witness");
-        AssertSchemaPurpose(root, "bifrost.bridge_receipt.v0", "current hosted governed crossing result witness");
+        AssertSchemaPurpose(root, "bifrost.crossing_receipt.v1", "canonical Bifrost-owned public crossing receipt");
         AssertSchemaPurpose(root, "bifrost.patron_support_event.v0", "current hosted Heimdall-signed patron support fact consumed by Bifrost");
+        AssertWitness(root, ".bifrost/bridge-receipts.cc", "bifrost.crossing_receipt.v1", "current");
         AssertBoundaryCommand(root, "bridge", "open GitHub draft PRs and PR comments through Bifrost gate");
+        AssertBoundaryCommand(root, "bridge", "own canonical bifrost.crossing_receipt.v1 documents for every crossing attempt");
         AssertBoundaryCommand(root, "bridge", "post Discord messages and DMs through Bifrost gate with Heimdall-linked actor capability");
         AssertBoundaryCommand(root, "bridge", "record receipt-only future-surface requests with named-surface Heimdall capability matching before named actuators exist");
         AssertBoundaryCommand(root, "bridge", "post Persona-flaired Reddit organizing threads");
+        AssertBoundaryForbiddenAuthority(root, "bridge", "surface-specific receipts cannot decide crossing completion");
         AssertBoundaryCommand(root, "patron", "consume Heimdall-signed Patreon and PayPal support facts");
         AssertBoundaryForbiddenAuthority(root, "patron", "does not store Patreon or PayPal provider tokens");
     }
@@ -70,7 +72,7 @@ public sealed class ProviderAdvertisementTests
         Assert.Contains("GitHub live", bridgeLine, StringComparison.Ordinal);
         Assert.Contains("Discord prepared", bridgeLine, StringComparison.Ordinal);
         Assert.Contains("Reddit prepared", bridgeLine, StringComparison.Ordinal);
-        Assert.Contains("Other live", bridgeLine, StringComparison.Ordinal);
+        Assert.Contains("Other prepared", bridgeLine, StringComparison.Ordinal);
         Assert.Contains("Patron live", bridgeLine, StringComparison.Ordinal);
 
         Assert.Equal("warn", bridgeMetric.GetProperty("props").GetProperty("tone").GetString());
@@ -89,6 +91,16 @@ public sealed class ProviderAdvertisementTests
 
         Assert.Contains(readinessRows, row => row is not null && row.Contains("reddit: prepared", StringComparison.Ordinal));
         Assert.Contains(readinessRows, row => row is not null && row.Contains("patron: live", StringComparison.Ordinal) && row.Contains("Bifrost stores no provider tokens", StringComparison.Ordinal));
+
+        var receiptMetric = root
+            .GetProperty("surface")
+            .GetProperty("root")
+            .GetProperty("children")
+            .EnumerateArray()
+            .SelectMany(panel => panel.GetProperty("children").EnumerateArray())
+            .Single(node => node.GetProperty("id").GetString() == "metric-crossing-receipts");
+
+        Assert.Contains("total", receiptMetric.GetProperty("props").GetProperty("value").GetString(), StringComparison.Ordinal);
     }
 
     private static void AssertEndpoint(JsonElement root, string id, string schemaId, string lowering)
@@ -106,6 +118,15 @@ public sealed class ProviderAdvertisementTests
             .EnumerateArray()
             .Single(item => item.GetProperty("id").GetString() == id);
         Assert.Equal(purpose, schema.GetProperty("purpose").GetString());
+    }
+
+    private static void AssertWitness(JsonElement root, string path, string schemaId, string status)
+    {
+        var witness = root.GetProperty("witnesses")
+            .EnumerateArray()
+            .Single(item => item.GetProperty("path").GetString() == path);
+        Assert.Equal(schemaId, witness.GetProperty("schemaIds").GetString());
+        Assert.Equal(status, witness.GetProperty("status").GetString());
     }
 
     private static void AssertBoundaryCommand(JsonElement root, string area, string command)

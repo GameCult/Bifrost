@@ -34,6 +34,9 @@ Current witnesses:
 - `.bifrost/agent-transport.cc` stores
   `bifrost.agent-transport.update-request` documents and can emit raw CultNet
   snapshots.
+- `.bifrost/bridge-receipts.cc` stores canonical
+  `bifrost.crossing_receipt.v1` documents for governed public crossing
+  attempts.
 
 Required witness path for the hosted service:
 
@@ -103,12 +106,12 @@ cache directly for debugging and development, but that is not the xeno boundary.
 Bifrost has a read-only first-cut provider advertisement command:
 
 ```powershell
-node tools/provider-advertisement.mjs export --out .bifrost/provider-advertisement.cc
-node tools/provider-advertisement.mjs publish-odin --odin-cultmesh-rudp 127.0.0.1:17871
+node tools/provider-advertisement.mjs export --out .bifrost/provider-store.cc
+$env:BIFROST_ODIN_CULTMESH_URI="cultmesh://odin/rendezvous/provider-catalog"; node tools/provider-advertisement.mjs publish-odin
 ```
 
 It writes Bifrost-owned Eve discovery documents into
-`.bifrost/provider-advertisement.cc`:
+`.bifrost/provider-store.cc`:
 
 - `gamecult.eve.provider_advertisement.v1` names Bifrost's Account, Patron,
   Project, Work, Motion, and Operator Verse surfaces; current and planned
@@ -125,9 +128,11 @@ This export does not migrate Postgres state, read secrets, execute bridge
 actions, or make Razor Pages, HTTP probes, Discord mirrors, Reddit threads, or
 local dispatch JSON canonical. The operator surface may display those probes, but the provider
 owned `.cc` witness remains the discovery and dashboard source.
-When `BIFROST_ODIN_CULTMESH_RUDP` or `--odin-cultmesh-rudp` is configured, the
-same provider advertisement can be published once to Odin's CultMesh/RUDP
-document catalog through the provider-advertisement tool.
+When `BIFROST_ODIN_CULTMESH_URI` or `--odin-cultmesh-uri` is configured, the
+same provider advertisement can be published once to Odin's CultMesh rendezvous
+URI through the provider-advertisement tool. Concrete RUDP bootstrap endpoints
+belong behind CultMesh URI resolution, not in Bifrost provider publication
+configuration.
 
 For protocol-debug inspection without writing a witness:
 
@@ -146,6 +151,19 @@ Product surfaces are the canonical interface compositions for:
 - work claims, review, completion, receipts, and contributor credit;
 - bridge receipts and public handoff targets.
 
+Canonical crossing receipts use `bifrost.crossing_receipt.v1` in
+`.bifrost/bridge-receipts.cc`. A receipt records `receiptId`, `commandId`,
+`crossingKind`, lifecycle status, Bifrost actor, source provenance, authority
+reference, optional Heimdall claim/grant references, optional Epiphany run/lane
+identity, target locator, external receipt facts, error details, and related
+receipt ids. Surface-specific receipts such as
+`bifrost.bridge.discord_post_receipt.v1` may remain as details, but they must
+reference the canonical crossing receipt and cannot decide crossing completion.
+Heimdall values recorded here are stable references or redacted snapshots:
+claim `jti`, `account_id`, `access_revision`, `exp`, grant id/ref, and
+revoked/expired behavior. Provider bearer tokens do not belong in Bifrost
+receipts.
+
 Operator surfaces are the canonical interface compositions for:
 
 - readiness, build/version, config validation, and deploy target;
@@ -160,11 +178,18 @@ Operator surfaces are the canonical interface compositions for:
 - Reddit bridge readiness for `r/GameCultOrg` organizing posts and Persona flair.
 
 The Motion Verse has begun the migration from Razor-owned behavior to Eve-owned
-presentation. `/eve/governance/surface` emits a `gamecult.eve.surface.v1`
-composition for motions and voting. `/eve/governance/commands` accepts
-`motion.create`, `motion.vote`, and `motion.close` commands, then routes those
-commands through the same Bifrost motion governance service used by the Razor
-forms.
+presentation. Bifrost publishes the motion surface and command target as
+CultMesh addresses discovered through Odin:
+
+```text
+cultmesh://asgard.starfire.bifrost/eve/governance/surface
+cultmesh://asgard.starfire.bifrost/commands/motion
+```
+
+The transitional browser product may lower motion state for members, but it is
+not a Verse command transport. `motion.create`, `motion.vote`, and
+`motion.close` are command documents for the CultMesh route, then commit through
+the same Bifrost motion governance service used by the Razor forms.
 
 The current Razor Pages app is now a transitional browser lowering for motions,
 not the behavior owner. Existing health/readiness endpoints lower operator
@@ -226,10 +251,10 @@ Bifrost.
 ## Migration Order
 
 1. Catalog current Bifrost state owners: EF/Postgres tables, `.cc` stores,
-   bridge receipts, Discord mirrors, Reddit receipts, webhook cache, and app
+   crossing receipts, Discord mirrors, Reddit receipts, webhook cache, and app
    readiness state.
 2. Define schema ids for missing Bifrost documents: work item, motion, vote,
-   ledger entry, bridge action, bridge receipt, member capability snapshot,
+   ledger entry, bridge action, crossing receipt, member capability snapshot,
    service registration, and Eve surface publication.
 3. Add Postgres-to-CultCache witness export for alpha entities before replacing
    the transactional store.
@@ -253,10 +278,15 @@ Demoted surfaces and stores:
 
 - Razor Pages views are no longer the canonical Bifrost presentation owner; they
   are browser lowerings of Bifrost product/operator surfaces.
-- `/healthz`, `/readyz`, and any future HTTP dashboard/status JSON are probes or
-  xenos-boundary exports, not service truth.
+- `/healthz`, `/readyz`, and any future HTTP dashboard/status JSON are product
+  smoke probes or xenos-boundary exports, not service truth. Provider
+  advertisements and Odin-facing operator readiness must reject HTTP probe
+  configuration and derive status from typed CultMesh/Idunn state.
 - `.bifrost/discord-webhook-cache.json` is webhook address cache only; it does
   not prove governance, speech authority, or receipt completion.
+- `bifrost.bridge.discord_post_receipt.v1` and other surface receipts are
+  surface-specific evidence only. `bifrost.crossing_receipt.v1` is the
+  canonical crossing receipt owner.
 - `.bifrost/agent-dispatch/**/request.json`, `dispatch.json`, `result.json`, and
   app-server protocol JSON are local dispatch/protocol artifacts. They may be
   evidence attached to typed receipts, but they cannot decide request status,

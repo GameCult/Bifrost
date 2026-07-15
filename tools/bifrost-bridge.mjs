@@ -4,6 +4,10 @@ import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  beginCrossingReceipt,
+  crossingProvenanceFromOptions,
+} from "./bifrost-crossing-documents.mjs";
 
 const PERSONA_WEBHOOK_NAME = "Bifrost Persona Pipe";
 const PERSONA_WEBHOOK_CACHE_PATH = resolve(".bifrost/discord-webhook-cache.json");
@@ -190,6 +194,7 @@ async function createGitHubDraftPr(options) {
     commitSha,
     changedPaths,
     prUrl,
+    crossingReceiptId: bridgeAction?.receiptId ?? "",
     provenance: buildBridgeProvenance(options),
   });
 }
@@ -283,6 +288,7 @@ async function commentGitHubPr(options) {
       pr,
       receiptUrl,
       externalReceiptId,
+      crossingReceiptId: bridgeAction?.receiptId ?? "",
       provenance: buildBridgeProvenance(options),
     });
   } catch (error) {
@@ -314,10 +320,6 @@ async function postDiscordMessage(options) {
     return;
   }
 
-  if (!token) {
-    throw new Error("Set BIFROST_DISCORD_BOT_TOKEN or DISCORD_BOT_TOKEN before posting to Discord.");
-  }
-
   const bridgeAction = await beginBridgeAction(options, {
     actorKind: personaName ? "Persona" : "Service",
     actorName: personaName ?? "bifrost",
@@ -332,6 +334,9 @@ async function postDiscordMessage(options) {
   let result;
   try {
     await bridgeAction?.start();
+    if (!token) {
+      throw new Error("Set BIFROST_DISCORD_BOT_TOKEN or DISCORD_BOT_TOKEN before posting to Discord.");
+    }
     result = personaName
       ? await postDiscordPersonaMessage(token, channelId, content, {
           personaName,
@@ -361,6 +366,7 @@ async function postDiscordMessage(options) {
     messageId: result.id,
     transport: result.transport,
     url: `https://discord.com/channels/${result.guildId ?? "@me"}/${channelId}/${result.id}`,
+    crossingReceiptId: bridgeAction?.receiptId ?? "",
     provenance: buildBridgeProvenance(options),
   });
 }
@@ -382,10 +388,6 @@ async function sendDiscordDm(options) {
     return;
   }
 
-  if (!token) {
-    throw new Error("Set BIFROST_DISCORD_BOT_TOKEN or DISCORD_BOT_TOKEN before sending a Discord DM.");
-  }
-
   const bridgeAction = await beginBridgeAction(options, {
     actorKind: "Service",
     actorName: "bifrost",
@@ -401,6 +403,9 @@ async function sendDiscordDm(options) {
   let result;
   try {
     await bridgeAction?.start();
+    if (!token) {
+      throw new Error("Set BIFROST_DISCORD_BOT_TOKEN or DISCORD_BOT_TOKEN before sending a Discord DM.");
+    }
     channelId = await openDiscordDmChannel(token, recipientId);
     result = await postDiscordBotMessage(token, channelId, content, undefined);
     await bridgeAction?.complete({
@@ -425,6 +430,7 @@ async function sendDiscordDm(options) {
     messageId: result.id,
     transport: result.transport,
     url: `https://discord.com/channels/@me/${channelId}/${result.id}`,
+    crossingReceiptId: bridgeAction?.receiptId ?? "",
     provenance: buildBridgeProvenance(options),
   });
 }
@@ -502,6 +508,7 @@ async function postRedditThread(options) {
     personaFlairText,
     thingId: result.thingId,
     url: result.url,
+    crossingReceiptId: bridgeAction?.receiptId ?? "",
     provenance: buildBridgeProvenance(options),
   });
 }
@@ -529,45 +536,10 @@ async function requestOtherBridgeAction(options) {
     return;
   }
 
-  const bridgeAction = await beginBridgeAction(options, {
-    actorKind: "Agent",
-    actorName: identity,
-    targetSurface: "Other",
-    actionKind: "Other",
-    targetSurfaceName: surfaceName,
-    targetRepositoryFullName: options["target-repository-full-name"] ?? "",
-    targetLocator,
-    title,
-    summary: content,
-  });
-
-  try {
-    await bridgeAction?.start();
-    await bridgeAction?.complete({
-      receiptUrl: `bifrost://bridge/actions/${bridgeAction.id}`,
-      externalReceiptId: bridgeAction.id,
-      receiptPayload: JSON.stringify(buildReceiptPayload(options, {
-        surfaceName,
-        targetLocator,
-        title,
-      })),
-    });
-  } catch (error) {
-    await bridgeAction?.fail(error);
-    throw error;
-  }
-
-  printJson({
-    action: "other-request",
-    ok: true,
-    bridgeActionId: bridgeAction.id,
-    receiptUrl: `bifrost://bridge/actions/${bridgeAction.id}`,
-    identity,
-    surfaceName,
-    targetLocator,
-    title,
-    provenance: buildBridgeProvenance(options),
-  });
+  throw new Error(
+    "other-request was a receipt-only HTTP bridge hatch and has been removed. " +
+    "Define a typed Bifrost CultMesh command/receipt document for this surface before executing it.",
+  );
 }
 
 async function getRedditAccessToken() {
@@ -1078,74 +1050,84 @@ function resolveGitCommand() {
 }
 
 async function beginBridgeAction(options, action) {
-  const baseUrl = optionalString(options["bifrost-base-url"]) ?? optionalString(process.env.BIFROST_BRIDGE_BASE_URL);
-  if (!baseUrl) {
-    return null;
-  }
-
-  const token = optionalString(options["bifrost-token"]) ?? optionalString(process.env.BIFROST_BRIDGE_TOKEN);
-  if (!token) {
-    throw new Error("Set BIFROST_BRIDGE_TOKEN or pass --bifrost-token when using the Bifrost bridge action ledger.");
-  }
-
-  const payload = {
-    ...action,
-    sourceKind: optionalString(options["source-kind"]) ?? optionalString(process.env.BIFROST_BRIDGE_SOURCE_KIND) ?? "",
-    sourceId: optionalString(options["source-id"]) ?? optionalString(process.env.BIFROST_BRIDGE_SOURCE_ID) ?? "",
-    authorityReference: optionalString(options["authority-ref"]) ?? optionalString(process.env.BIFROST_BRIDGE_AUTHORITY_REF) ?? "",
-    bifrostIdentity: optionalString(options.identity) ?? optionalString(process.env.BIFROST_IDENTITY) ?? "",
-    heimdallCapabilityReference:
-      optionalString(options["heimdall-capability-ref"]) ??
-      optionalString(process.env.HEIMDALL_CAPABILITY_REF) ??
-      optionalString(process.env.BIFROST_HEIMDALL_CAPABILITY_REF) ??
-      "",
-    epiphanyRunId: optionalString(options["epiphany-run-id"]) ?? optionalString(process.env.EPIPHANY_RUN_ID) ?? "",
-    epiphanyLaneId: optionalString(options["epiphany-lane-id"]) ?? optionalString(process.env.EPIPHANY_LANE_ID) ?? "",
-    epiphanyAgentIdentity: optionalString(options["epiphany-agent-identity"]) ?? optionalString(process.env.EPIPHANY_AGENT_IDENTITY) ?? "",
-    workItemId: optionalString(options["work-item-id"]) ?? null,
-    motionId: optionalString(options["motion-id"]) ?? null,
-  };
-
-  const requested = await postBridgeJson(
-    baseUrl,
-    token,
-    "/bridge/actions/request",
-    payload,
-    new Set([202, 403]),
-  );
-
-  if (requested.status === 403) {
-    throw new Error(`Bifrost denied bridge action: ${requested.body?.policyDecision ?? requested.text}`);
-  }
-
-  const id = requested.body?.id;
-  if (!id) {
-    throw new Error(`Bifrost bridge request returned no action id: ${requested.text}`);
-  }
+  rejectRemovedHttpBridgeConfig(options);
+  const provenance = crossingProvenanceFromOptions(options);
+  const actorName = action.actorName ?? provenance.actor.name ?? "bifrost";
+  const targetSurface = normalizeSurface(action.targetSurface);
+  const crossingKind = crossingKindForAction(action.actionKind);
+  const lifecycle = await beginCrossingReceipt(options, {
+    commandId: provenance.commandId,
+    crossingKind,
+    actor: {
+      kind: action.actorKind ?? provenance.actor.kind ?? "Service",
+      name: actorName,
+      bifrostIdentity: provenance.actor.bifrostIdentity || actorName,
+    },
+    source: provenance.source,
+    authority: provenance.authority,
+    epiphany: provenance.epiphany,
+    target: {
+      surface: targetSurface,
+      repositoryFullName: action.targetRepositoryFullName ?? "",
+      locator: action.targetLocator ?? "",
+      title: action.title ?? "",
+      summary: action.summary ?? "",
+    },
+  });
 
   return {
-    id,
+    receiptId: lifecycle.receiptId,
+    commandId: lifecycle.commandId,
     async start() {
-      await postBridgeJson(baseUrl, token, `/bridge/actions/${id}/start`, undefined, new Set([202]));
+      return lifecycle.start();
     },
-    async complete(receipt) {
-      await postBridgeJson(baseUrl, token, `/bridge/actions/${id}/complete`, receipt, new Set([200]));
+    async complete(result) {
+      return lifecycle.complete({
+        externalReceipt: {
+          url: result?.receiptUrl ?? "",
+          id: result?.externalReceiptId ?? "",
+          transport: targetSurface.toLowerCase(),
+          payload: parseOptionalJson(result?.receiptPayload),
+        },
+      });
     },
     async fail(error) {
-      const failureReason = error instanceof Error ? error.message : String(error);
-      try {
-        await postBridgeJson(
-          baseUrl,
-          token,
-          `/bridge/actions/${id}/fail`,
-          { failureReason },
-          new Set([200, 400]),
-        );
-      } catch {
-        // Best effort: the underlying command error is still the real failure.
-      }
+      return lifecycle.fail(error);
     },
   };
+}
+
+function crossingKindForAction(actionKind) {
+  switch (actionKind) {
+    case "GitHubDraftPullRequest":
+      return "github.draft_pr";
+    case "GitHubPullRequestComment":
+      return "github.pr_comment";
+    case "DiscordPost":
+      return "discord.post";
+    case "DiscordDirectMessage":
+      return "discord.dm";
+    case "RedditPost":
+      return "reddit.post";
+    default:
+      return "future_surface.request";
+  }
+}
+
+function normalizeSurface(value) {
+  return optionalString(value) ?? "future-surface";
+}
+
+function parseOptionalJson(value) {
+  const text = optionalString(value);
+  if (!text) {
+    return {};
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { raw: text };
+  }
 }
 
 function parseRequiredJson(text, label) {
@@ -1158,59 +1140,67 @@ function parseRequiredJson(text, label) {
 }
 
 function ensureGitHubBridgeGate(options) {
-  const baseUrl = optionalString(options["bifrost-base-url"]) ?? optionalString(process.env.BIFROST_BRIDGE_BASE_URL);
-  const token = optionalString(options["bifrost-token"]) ?? optionalString(process.env.BIFROST_BRIDGE_TOKEN);
+  rejectRemovedHttpBridgeConfig(options);
+  const cultMeshCommandId =
+    optionalString(options["cultmesh-command-id"]) ?? optionalString(process.env.BIFROST_CULTMESH_COMMAND_ID);
   const allowUngated =
     options["allow-ungated-github"] === "true" ||
     process.env.BIFROST_ALLOW_UNGATED_GITHUB === "true";
 
-  if (allowUngated && process.env.BIFROST_LOCK_RECOVERY_HATCHES === "true") {
+  if (allowUngated) {
     throw new Error(
-      "Dispatched Bifrost work cannot use --allow-ungated-github or BIFROST_ALLOW_UNGATED_GITHUB. " +
-      "GitHub mutations from a dispatched turn must go through the normal Bifrost gate and receipt path.",
+      "Bifrost GitHub mutations cannot use --allow-ungated-github or BIFROST_ALLOW_UNGATED_GITHUB. " +
+      "Use a typed Bifrost CultMesh command request/receipt route instead of mutating off-book.",
     );
   }
 
-  if (baseUrl && token) {
-    return;
-  }
-
-  if (allowUngated) {
+  if (cultMeshCommandId) {
     return;
   }
 
   throw new Error(
     "GitHub bridge actions require Bifrost authorization and receipt logging. " +
-      "Set BIFROST_BRIDGE_BASE_URL and BIFROST_BRIDGE_TOKEN, or use --allow-ungated-github true only for explicit operator recovery.",
+      "Provide BIFROST_CULTMESH_COMMAND_ID from a typed CultMesh command request; HTTP bridge hatches have been removed.",
   );
 }
 
 function ensureBridgeReceiptGate(options) {
-  const baseUrl = optionalString(options["bifrost-base-url"]) ?? optionalString(process.env.BIFROST_BRIDGE_BASE_URL);
-  const token = optionalString(options["bifrost-token"]) ?? optionalString(process.env.BIFROST_BRIDGE_TOKEN);
+  rejectRemovedHttpBridgeConfig(options);
+  const cultMeshCommandId =
+    optionalString(options["cultmesh-command-id"]) ?? optionalString(process.env.BIFROST_CULTMESH_COMMAND_ID);
   const allowUnreceipted =
     options["allow-unreceipted-activity"] === "true" ||
     process.env.BIFROST_ALLOW_UNRECEIPTED_ACTIVITY === "true";
 
-  if (allowUnreceipted && process.env.BIFROST_LOCK_RECOVERY_HATCHES === "true") {
+  if (allowUnreceipted) {
     throw new Error(
-      "Dispatched Bifrost work cannot use --allow-unreceipted-activity or BIFROST_ALLOW_UNRECEIPTED_ACTIVITY. " +
-      "External bridge activity from a dispatched turn must go through the normal Bifrost receipt path.",
+      "Bifrost bridge activity cannot use --allow-unreceipted-activity or BIFROST_ALLOW_UNRECEIPTED_ACTIVITY. " +
+      "Use a typed Bifrost CultMesh command request/receipt route instead of mutating off-book.",
     );
   }
 
-  if (baseUrl && token) {
-    return;
-  }
-
-  if (allowUnreceipted) {
+  if (cultMeshCommandId) {
     return;
   }
 
   throw new Error(
-    "Bridge activity requires BIFROST_BRIDGE_BASE_URL and BIFROST_BRIDGE_TOKEN so Bifrost can receipt the external crossing. " +
-      "Set BIFROST_BRIDGE_BASE_URL and BIFROST_BRIDGE_TOKEN, or use --allow-unreceipted-activity true only for explicit operator recovery.",
+    "Bridge activity requires a Bifrost CultMesh command id so Bifrost can receipt the external crossing. " +
+      "Use a typed CultMesh command request/receipt route; HTTP and unreceipted bridge hatches have been removed.",
   );
+}
+
+function rejectRemovedHttpBridgeConfig(options) {
+  if (
+    optionalString(options["bifrost-base-url"]) ||
+    optionalString(options["bifrost-token"]) ||
+    optionalString(process.env.BIFROST_BRIDGE_BASE_URL) ||
+    optionalString(process.env.BIFROST_BRIDGE_TOKEN)
+  ) {
+    throw new Error(
+      "BIFROST_BRIDGE_BASE_URL / BIFROST_BRIDGE_TOKEN and --bifrost-base-url / --bifrost-token were removed. " +
+      "Use typed Bifrost CultMesh command request/receipt documents discovered through Odin.",
+    );
+  }
 }
 
 async function postBridgeJson(baseUrl, token, path, payload, allowedStatuses) {
@@ -1380,8 +1370,7 @@ Examples:
   node tools/bifrost-bridge.mjs other-request --identity epiphany.Persona --surface-name bluesky --target-locator at://did:example/app.bsky.feed.post/123 --heimdall-capability-ref heimdall:bluesky:capability:epiphany-persona --content "Persona asks to speak."
 
 GitHub note:
-  GitHub actions require BIFROST_BRIDGE_BASE_URL and BIFROST_BRIDGE_TOKEN so Bifrost can gate and receipt the crossing.
-  Use --allow-ungated-github true only for explicit operator recovery.
+  GitHub actions require typed Bifrost CultMesh command provenance such as BIFROST_CULTMESH_COMMAND_ID so Bifrost can gate and receipt the crossing.
 
 Provenance note:
   --identity names the Bifrost identity acting through the bridge.

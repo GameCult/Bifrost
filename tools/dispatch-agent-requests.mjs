@@ -90,7 +90,6 @@ async function dispatchQueuedRequests(options) {
         ...optionalArg("--channel-id", options["channel-id"]),
         ...optionalArg("--persona-name", options["persona-name"]),
         ...optionalArg("--persona-avatar-url", options["persona-avatar-url"]),
-        ...(options["allow-unreceipted-activity"] === "true" ? ["--allow-unreceipted-activity", "true"] : []),
         ...(options["no-discord"] === "true" ? ["--no-discord", "true"] : []),
       ],
       {
@@ -124,21 +123,26 @@ async function dispatchQueuedRequests(options) {
 }
 
 function ensureDispatchReceiptGate(options) {
-  if (hasBifrostBridgeConfig() || allowsUnreceiptedActivity(options)) {
-    return;
+  if (wantsUnreceiptedActivity(options)) {
+    throw new Error(
+      "Bifrost dispatch cannot use --allow-unreceipted-activity or BIFROST_ALLOW_UNRECEIPTED_ACTIVITY. " +
+      "Use the typed Bifrost CultCache/CultMesh dispatch store instead of launching off-book work.",
+    );
   }
 
-  throw new Error(
-    "Bifrost agent dispatch requires BIFROST_BRIDGE_BASE_URL and BIFROST_BRIDGE_TOKEN so Bifrost can keep request, run, and bridge receipts aligned. " +
-    "Set both values, or use --allow-unreceipted-activity true only for explicit operator recovery.",
-  );
+  if (hasRemovedHttpBridgeConfig()) {
+    throw new Error(
+      "BIFROST_BRIDGE_BASE_URL / BIFROST_BRIDGE_TOKEN were removed. " +
+      "Bifrost dispatch receipts are written to the typed CultCache/CultMesh request/run artifacts.",
+    );
+  }
 }
 
-function hasBifrostBridgeConfig() {
-  return Boolean(optionalString(process.env.BIFROST_BRIDGE_BASE_URL) && optionalString(process.env.BIFROST_BRIDGE_TOKEN));
+function hasRemovedHttpBridgeConfig() {
+  return Boolean(optionalString(process.env.BIFROST_BRIDGE_BASE_URL) || optionalString(process.env.BIFROST_BRIDGE_TOKEN));
 }
 
-function allowsUnreceiptedActivity(options) {
+function wantsUnreceiptedActivity(options) {
   return options["allow-unreceipted-activity"] === "true" || process.env.BIFROST_ALLOW_UNRECEIPTED_ACTIVITY === "true";
 }
 
@@ -550,7 +554,7 @@ function resolveDispatchReceiptChannelId(options) {
 }
 
 function bridgeRecoveryArgs(options) {
-  return allowsUnreceiptedActivity(options) ? ["--allow-unreceipted-activity", "true"] : [];
+  return [];
 }
 
 function renderDispatchReceiptContent(request) {
@@ -840,61 +844,9 @@ async function writeDispatchResult(logPath, result) {
 }
 
 async function beginDispatchRun(request, input) {
-  const baseUrl = optionalString(process.env.BIFROST_BRIDGE_BASE_URL);
-  const token = optionalString(process.env.BIFROST_BRIDGE_TOKEN);
-  if (!baseUrl || !token) {
-    return null;
-  }
-
-  const started = await postDispatchRunJson(
-    baseUrl,
-    token,
-    "/dispatch/runs/start",
-    {
-      requestId: request.id,
-      targetRepoName: request.targetRepoName,
-      targetRepositoryFullName: request.targetRepositoryFullName ?? "",
-      targetAgentIdentity: request.targetAgentIdentity ?? "",
-      launchMode: input.launchMode,
-      workerProcessId: input.workerProcessId,
-      threadId: input.threadId,
-      turnId: input.turnId,
-      logPath: input.logPath,
-      resultPath: input.resultPath,
-      note: input.note,
-    },
-    new Set([202]),
-  );
-
-  const id = started.body?.id;
-  if (!id) {
-    throw new Error(`Bifrost dispatch run start returned no run id: ${started.text}`);
-  }
-
-  return {
-    async complete(payload) {
-      await postDispatchRunJson(
-        baseUrl,
-        token,
-        `/dispatch/runs/${id}/complete`,
-        payload,
-        new Set([200]),
-      );
-    },
-    async fail(payload) {
-      try {
-        await postDispatchRunJson(
-          baseUrl,
-          token,
-          `/dispatch/runs/${id}/fail`,
-          payload,
-          new Set([200]),
-        );
-      } catch {
-        // Best effort: the run failure still lands in the local result/log files.
-      }
-    },
-  };
+  void request;
+  void input;
+  return null;
 }
 
 async function postDispatchRunJson(baseUrl, token, path, payload, allowedStatuses) {
@@ -1098,10 +1050,6 @@ Commands:
 
 Example:
   node tools/dispatch-agent-requests.mjs dispatch --repo AquaSynth --agent aqua --max 1
-  node tools/dispatch-agent-requests.mjs dispatch --repo AquaSynth --agent aqua --allow-unreceipted-activity true
-
-Recovery hatch:
-  BIFROST_ALLOW_UNRECEIPTED_ACTIVITY=true or --allow-unreceipted-activity true
 `);
 }
 

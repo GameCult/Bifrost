@@ -24,7 +24,27 @@ public sealed class BridgeCliTests
     }
 
     [Fact]
-    public async Task GitHub_bridge_command_allows_explicit_operator_recovery_dry_run()
+    public async Task GitHub_bridge_command_allows_bifrost_gate_dry_run()
+    {
+        var result = await RunNodeAsync([
+            "tools/bifrost-bridge.mjs",
+            "github-pr-comment",
+            "--repo-root", RepoRoot,
+            "--identity", "nibu",
+            "--pr", "1",
+            "--content", "test comment",
+            "--target-repository-full-name", "GameCult/Bifrost",
+            "--dry-run", "true",
+        ], TypedCommandEnv());
+
+        Assert.True(result.ExitCode == 0, $"stdout:{Environment.NewLine}{result.Stdout}{Environment.NewLine}stderr:{Environment.NewLine}{result.Stderr}");
+        using var payload = JsonDocument.Parse(result.Stdout);
+        Assert.Equal("github-pr-comment", payload.RootElement.GetProperty("action").GetString());
+        Assert.True(payload.RootElement.GetProperty("dryRun").GetBoolean());
+    }
+
+    [Fact]
+    public async Task GitHub_bridge_recovery_hatch_is_rejected()
     {
         var result = await RunNodeAsync([
             "tools/bifrost-bridge.mjs",
@@ -38,30 +58,6 @@ public sealed class BridgeCliTests
             "--dry-run", "true",
         ]);
 
-        Assert.True(result.ExitCode == 0, $"stdout:{Environment.NewLine}{result.Stdout}{Environment.NewLine}stderr:{Environment.NewLine}{result.Stderr}");
-        using var payload = JsonDocument.Parse(result.Stdout);
-        Assert.Equal("github-pr-comment", payload.RootElement.GetProperty("action").GetString());
-        Assert.True(payload.RootElement.GetProperty("dryRun").GetBoolean());
-    }
-
-    [Fact]
-    public async Task GitHub_bridge_recovery_hatch_is_rejected_inside_dispatched_turn()
-    {
-        var result = await RunNodeAsync([
-            "tools/bifrost-bridge.mjs",
-            "github-pr-comment",
-            "--repo-root", RepoRoot,
-            "--identity", "nibu",
-            "--pr", "1",
-            "--content", "test comment",
-            "--target-repository-full-name", "GameCult/Bifrost",
-            "--allow-ungated-github", "true",
-            "--dry-run", "true",
-        ], new Dictionary<string, string?>
-        {
-            ["BIFROST_LOCK_RECOVERY_HATCHES"] = "true",
-        });
-
         Assert.NotEqual(0, result.ExitCode);
         Assert.Contains("cannot use --allow-ungated-github", result.Stderr, StringComparison.OrdinalIgnoreCase);
     }
@@ -70,6 +66,7 @@ public sealed class BridgeCliTests
     public async Task GitHub_pr_comment_returns_concrete_github_receipt()
     {
         var fakeToolsDir = Path.Combine(Path.GetTempPath(), $"bifrost-gh-{Guid.NewGuid():N}");
+        var receiptStorePath = Path.Combine(Path.GetTempPath(), $"bifrost-crossing-receipts-{Guid.NewGuid():N}.cc");
         Directory.CreateDirectory(fakeToolsDir);
         var fakeGhPath = Path.Combine(fakeToolsDir, "fake-gh.js");
         await File.WriteAllTextAsync(fakeGhPath, """
@@ -97,8 +94,8 @@ console.log(JSON.stringify({
             "--epiphany-lane-id", "hands-publication",
             "--epiphany-agent-identity", "huginn",
             "--heimdall-capability-ref", "heimdall-capability-abc",
-            "--allow-ungated-github", "true",
-        ]);
+            "--receipt-store", receiptStorePath,
+        ], TypedCommandEnv());
 
         Assert.True(result.ExitCode == 0, $"stdout:{Environment.NewLine}{result.Stdout}{Environment.NewLine}stderr:{Environment.NewLine}{result.Stderr}");
         using var payload = JsonDocument.Parse(result.Stdout);
@@ -114,6 +111,57 @@ console.log(JSON.stringify({
         Assert.Equal("hands-publication", provenance.GetProperty("epiphanyLaneId").GetString());
         Assert.Equal("huginn", provenance.GetProperty("epiphanyAgentIdentity").GetString());
         Assert.Equal("heimdall-capability-abc", provenance.GetProperty("heimdallCapabilityRef").GetString());
+
+        var crossingReceiptId = payload.RootElement.GetProperty("crossingReceiptId").GetString();
+        Assert.Equal("crossing_test-cultmesh-command", crossingReceiptId);
+
+        using var receipts = await ReadCrossingReceiptsAsync(receiptStorePath);
+        var receipt = Assert.Single(receipts.RootElement.EnumerateArray());
+        Assert.Equal("bifrost.crossing_receipt.v1", receipt.GetProperty("schemaVersion").GetString());
+        Assert.Equal("github.pr_comment", receipt.GetProperty("crossingKind").GetString());
+        Assert.Equal("completed", receipt.GetProperty("status").GetString());
+        Assert.True(receipt.GetProperty("ok").GetBoolean());
+        Assert.Equal("repo-work-public-proof-huginn", receipt.GetProperty("source").GetProperty("id").GetString());
+        Assert.Equal("bifrost_publication_gate", receipt.GetProperty("authority").GetProperty("authorityRef").GetString());
+        Assert.Equal("heimdall-capability-abc", receipt.GetProperty("authority").GetProperty("heimdallCapabilityRef").GetString());
+        Assert.Equal("https://github.com/GameCult/Bifrost/pull/1#issuecomment-123456", receipt.GetProperty("externalReceipt").GetProperty("url").GetString());
+    }
+
+    [Fact]
+    public async Task GitHub_pr_comment_writes_failed_crossing_receipt_on_actuator_failure()
+    {
+        var fakeToolsDir = Path.Combine(Path.GetTempPath(), $"bifrost-gh-{Guid.NewGuid():N}");
+        var receiptStorePath = Path.Combine(Path.GetTempPath(), $"bifrost-crossing-receipts-{Guid.NewGuid():N}.cc");
+        Directory.CreateDirectory(fakeToolsDir);
+        var fakeGhPath = Path.Combine(fakeToolsDir, "fake-gh.js");
+        await File.WriteAllTextAsync(fakeGhPath, """
+console.error("synthetic gh failure");
+process.exit(42);
+""", Encoding.UTF8);
+
+        var result = await RunNodeAsync([
+            "tools/bifrost-bridge.mjs",
+            "github-pr-comment",
+            "--repo-root", RepoRoot,
+            "--identity", "nibu",
+            "--pr", "1",
+            "--content", "test comment",
+            "--target-repository-full-name", "GameCult/Bifrost",
+            "--gh-executable", "node",
+            "--gh-exec-args", fakeGhPath,
+            "--source-kind", "epiphany_repo_work",
+            "--source-id", "repo-work-public-proof-huginn",
+            "--authority-ref", "bifrost_publication_gate",
+            "--receipt-store", receiptStorePath,
+        ], TypedCommandEnv());
+
+        Assert.NotEqual(0, result.ExitCode);
+        using var receipts = await ReadCrossingReceiptsAsync(receiptStorePath);
+        var receipt = Assert.Single(receipts.RootElement.EnumerateArray());
+        Assert.Equal("github.pr_comment", receipt.GetProperty("crossingKind").GetString());
+        Assert.Equal("failed", receipt.GetProperty("status").GetString());
+        Assert.False(receipt.GetProperty("ok").GetBoolean());
+        Assert.Contains("synthetic gh failure", receipt.GetProperty("error").GetProperty("message").GetString(), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -128,11 +176,28 @@ console.log(JSON.stringify({
         ]);
 
         Assert.NotEqual(0, result.ExitCode);
-        Assert.Contains("BIFROST_BRIDGE_BASE_URL and BIFROST_BRIDGE_TOKEN", result.Stderr, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("CultMesh command id", result.Stderr, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public async Task Discord_bridge_command_allows_explicit_operator_recovery_dry_run()
+    public async Task Discord_bridge_command_allows_bifrost_receipt_gate_dry_run()
+    {
+        var result = await RunNodeAsync([
+            "tools/bifrost-bridge.mjs",
+            "discord-post",
+            "--channel-id", "1501196543150264332",
+            "--content", "test message",
+            "--dry-run", "true",
+        ], TypedCommandEnv());
+
+        Assert.True(result.ExitCode == 0, $"stdout:{Environment.NewLine}{result.Stdout}{Environment.NewLine}stderr:{Environment.NewLine}{result.Stderr}");
+        using var payload = JsonDocument.Parse(result.Stdout);
+        Assert.Equal("discord-post", payload.RootElement.GetProperty("action").GetString());
+        Assert.True(payload.RootElement.GetProperty("dryRun").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Discord_bridge_recovery_hatch_is_rejected()
     {
         var result = await RunNodeAsync([
             "tools/bifrost-bridge.mjs",
@@ -143,29 +208,55 @@ console.log(JSON.stringify({
             "--dry-run", "true",
         ]);
 
-        Assert.True(result.ExitCode == 0, $"stdout:{Environment.NewLine}{result.Stdout}{Environment.NewLine}stderr:{Environment.NewLine}{result.Stderr}");
-        using var payload = JsonDocument.Parse(result.Stdout);
-        Assert.Equal("discord-post", payload.RootElement.GetProperty("action").GetString());
-        Assert.True(payload.RootElement.GetProperty("dryRun").GetBoolean());
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("cannot use --allow-unreceipted-activity", result.Stderr, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public async Task Discord_bridge_recovery_hatch_is_rejected_inside_dispatched_turn()
+    public async Task Discord_cultmesh_command_receipt_references_canonical_crossing_receipt()
     {
-        var result = await RunNodeAsync([
-            "tools/bifrost-bridge.mjs",
-            "discord-post",
+        var storePath = Path.Combine(Path.GetTempPath(), $"bifrost-provider-store-{Guid.NewGuid():N}.cc");
+        var receiptStorePath = Path.Combine(Path.GetTempPath(), $"bifrost-crossing-receipts-{Guid.NewGuid():N}.cc");
+        var commandId = $"discord-command-{Guid.NewGuid():N}";
+
+        var written = await RunNodeAsync([
+            "tools/cultmesh-bridge-commands.mjs",
+            "write-smoke",
+            "--store", storePath,
+            "--command-id", commandId,
             "--channel-id", "1501196543150264332",
             "--content", "test message",
-            "--allow-unreceipted-activity", "true",
-            "--dry-run", "true",
-        ], new Dictionary<string, string?>
-        {
-            ["BIFROST_LOCK_RECOVERY_HATCHES"] = "true",
-        });
+        ]);
+        Assert.Equal(0, written.ExitCode);
 
-        Assert.NotEqual(0, result.ExitCode);
-        Assert.Contains("cannot use --allow-unreceipted-activity", result.Stderr, StringComparison.OrdinalIgnoreCase);
+        var processed = await RunNodeAsync([
+            "tools/cultmesh-bridge-commands.mjs",
+            "process",
+            "--store", storePath,
+            "--receipt-store", receiptStorePath,
+            "--command-id", commandId,
+        ]);
+        Assert.Equal(0, processed.ExitCode);
+        using var processedPayload = JsonDocument.Parse(processed.Stdout);
+        Assert.False(processedPayload.RootElement.GetProperty("ok").GetBoolean());
+
+        var surfaceReceiptResult = await RunNodeAsync([
+            "tools/cultmesh-bridge-commands.mjs",
+            "receipt",
+            "--store", storePath,
+            "--command-id", commandId,
+        ]);
+        Assert.Equal(0, surfaceReceiptResult.ExitCode);
+        using var surfaceReceiptPayload = JsonDocument.Parse(surfaceReceiptResult.Stdout);
+        var surfaceReceipt = surfaceReceiptPayload.RootElement.GetProperty("receipt");
+        Assert.Equal("failed", surfaceReceipt.GetProperty("status").GetString());
+        Assert.Equal($"crossing_{commandId}", surfaceReceipt.GetProperty("canonicalReceiptId").GetString());
+
+        using var receipts = await ReadCrossingReceiptsAsync(receiptStorePath);
+        var receipt = Assert.Single(receipts.RootElement.EnumerateArray());
+        Assert.Equal("discord.post", receipt.GetProperty("crossingKind").GetString());
+        Assert.Equal("failed", receipt.GetProperty("status").GetString());
+        Assert.Equal($"crossing_{commandId}", receipt.GetProperty("receiptId").GetString());
     }
 
     [Fact]
@@ -180,7 +271,7 @@ console.log(JSON.stringify({
         ]);
 
         Assert.NotEqual(0, result.ExitCode);
-        Assert.Contains("BIFROST_BRIDGE_BASE_URL and BIFROST_BRIDGE_TOKEN", result.Stderr, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("CultMesh command id", result.Stderr, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -197,11 +288,11 @@ console.log(JSON.stringify({
         ]);
 
         Assert.NotEqual(0, result.ExitCode);
-        Assert.Contains("BIFROST_BRIDGE_BASE_URL and BIFROST_BRIDGE_TOKEN", result.Stderr, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("CultMesh command id", result.Stderr, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public async Task Other_bridge_request_allows_explicit_operator_recovery_dry_run()
+    public async Task Other_bridge_request_allows_bifrost_receipt_gate_dry_run()
     {
         var result = await RunNodeAsync([
             "tools/bifrost-bridge.mjs",
@@ -211,9 +302,8 @@ console.log(JSON.stringify({
             "--target-locator", "future://surface/thread/1",
             "--content", "test message",
             "--heimdall-capability-ref", "heimdall:future-surface:capability:epiphany-persona",
-            "--allow-unreceipted-activity", "true",
             "--dry-run", "true",
-        ]);
+        ], TypedCommandEnv());
 
         Assert.True(result.ExitCode == 0, $"stdout:{Environment.NewLine}{result.Stdout}{Environment.NewLine}stderr:{Environment.NewLine}{result.Stderr}");
         using var payload = JsonDocument.Parse(result.Stdout);
@@ -227,7 +317,7 @@ console.log(JSON.stringify({
     }
 
     [Fact]
-    public async Task Other_bridge_request_recovery_hatch_is_rejected_inside_dispatched_turn()
+    public async Task Other_bridge_request_recovery_hatch_is_rejected()
     {
         var result = await RunNodeAsync([
             "tools/bifrost-bridge.mjs",
@@ -238,10 +328,7 @@ console.log(JSON.stringify({
             "--content", "test message",
             "--allow-unreceipted-activity", "true",
             "--dry-run", "true",
-        ], new Dictionary<string, string?>
-        {
-            ["BIFROST_LOCK_RECOVERY_HATCHES"] = "true",
-        });
+        ]);
 
         Assert.NotEqual(0, result.ExitCode);
         Assert.Contains("cannot use --allow-unreceipted-activity", result.Stderr, StringComparison.OrdinalIgnoreCase);
@@ -259,11 +346,11 @@ console.log(JSON.stringify({
         ]);
 
         Assert.NotEqual(0, result.ExitCode);
-        Assert.Contains("BIFROST_BRIDGE_BASE_URL and BIFROST_BRIDGE_TOKEN", result.Stderr, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("CultMesh command id", result.Stderr, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public async Task Agent_transport_mutation_fails_closed_without_bifrost_receipt_gate()
+    public async Task Agent_transport_mutation_rejects_removed_http_bridge_config()
     {
         var storePath = Path.Combine(Path.GetTempPath(), $"bifrost-agent-transport-{Guid.NewGuid():N}.cc");
         var result = await RunNodeAsync([
@@ -275,10 +362,10 @@ console.log(JSON.stringify({
             "--request", "Do the thing.",
             "--store", storePath,
             "--allow-unmirrored", "true",
-        ]);
+        ], RemovedHttpBridgeEnv());
 
         Assert.NotEqual(0, result.ExitCode);
-        Assert.Contains("BIFROST_BRIDGE_BASE_URL and BIFROST_BRIDGE_TOKEN", result.Stderr, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("were removed", result.Stderr, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -293,15 +380,42 @@ console.log(JSON.stringify({
             "--title", "Discord inheritance guard",
             "--request", "Do not post fixture noise.",
             "--store", storePath,
-            "--allow-unreceipted-activity", "true",
-        ]);
+        ], TypedCommandEnv());
 
         Assert.NotEqual(0, result.ExitCode);
         Assert.Contains("require a Discord mirror", result.Stderr, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public async Task Agent_transport_mutation_allows_explicit_operator_recovery()
+    public async Task Agent_transport_mutation_allows_bifrost_receipt_gate()
+    {
+        var storePath = Path.Combine(Path.GetTempPath(), $"bifrost-agent-transport-{Guid.NewGuid():N}.cc");
+        var receiptStorePath = Path.Combine(Path.GetTempPath(), $"bifrost-crossing-receipts-{Guid.NewGuid():N}.cc");
+        var result = await RunNodeAsync([
+            "tools/agent-transport.mjs",
+            "enqueue",
+            "--repo", "Bifrost",
+            "--agent", "nibu",
+            "--title", "Receipt gate recovery",
+            "--request", "Do the thing.",
+            "--store", storePath,
+            "--receipt-store", receiptStorePath,
+            "--allow-unmirrored", "true",
+        ], TypedCommandEnv());
+
+        Assert.True(result.ExitCode == 0, $"stdout:{Environment.NewLine}{result.Stdout}{Environment.NewLine}stderr:{Environment.NewLine}{result.Stderr}");
+        using var payload = JsonDocument.Parse(result.Stdout);
+        Assert.Equal("queued", payload.RootElement.GetProperty("status").GetString());
+
+        using var receipts = await ReadCrossingReceiptsAsync(receiptStorePath);
+        var receipt = Assert.Single(receipts.RootElement.EnumerateArray());
+        Assert.Equal("agent_transport.request", receipt.GetProperty("crossingKind").GetString());
+        Assert.Equal("completed", receipt.GetProperty("status").GetString());
+        Assert.Equal(payload.RootElement.GetProperty("id").GetString(), receipt.GetProperty("source").GetProperty("requestId").GetString());
+    }
+
+    [Fact]
+    public async Task Agent_transport_recovery_hatch_is_rejected()
     {
         var storePath = Path.Combine(Path.GetTempPath(), $"bifrost-agent-transport-{Guid.NewGuid():N}.cc");
         var result = await RunNodeAsync([
@@ -316,36 +430,12 @@ console.log(JSON.stringify({
             "--allow-unreceipted-activity", "true",
         ]);
 
-        Assert.True(result.ExitCode == 0, $"stdout:{Environment.NewLine}{result.Stdout}{Environment.NewLine}stderr:{Environment.NewLine}{result.Stderr}");
-        using var payload = JsonDocument.Parse(result.Stdout);
-        Assert.Equal("queued", payload.RootElement.GetProperty("status").GetString());
-    }
-
-    [Fact]
-    public async Task Agent_transport_recovery_hatch_is_rejected_inside_dispatched_turn()
-    {
-        var storePath = Path.Combine(Path.GetTempPath(), $"bifrost-agent-transport-{Guid.NewGuid():N}.cc");
-        var result = await RunNodeAsync([
-            "tools/agent-transport.mjs",
-            "enqueue",
-            "--repo", "Bifrost",
-            "--agent", "nibu",
-            "--title", "Receipt gate recovery",
-            "--request", "Do the thing.",
-            "--store", storePath,
-            "--allow-unmirrored", "true",
-            "--allow-unreceipted-activity", "true",
-        ], new Dictionary<string, string?>
-        {
-            ["BIFROST_LOCK_RECOVERY_HATCHES"] = "true",
-        });
-
         Assert.NotEqual(0, result.ExitCode);
         Assert.Contains("cannot use --allow-unreceipted-activity", result.Stderr, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public async Task Agent_transport_apply_snapshot_fails_closed_without_bifrost_receipt_gate()
+    public async Task Agent_transport_apply_snapshot_rejects_removed_http_bridge_config()
     {
         var sourceStorePath = Path.Combine(Path.GetTempPath(), $"bifrost-agent-transport-source-{Guid.NewGuid():N}.cc");
         var targetStorePath = Path.Combine(Path.GetTempPath(), $"bifrost-agent-transport-target-{Guid.NewGuid():N}.cc");
@@ -360,8 +450,7 @@ console.log(JSON.stringify({
             "--request", "Do the thing.",
             "--store", sourceStorePath,
             "--allow-unmirrored", "true",
-            "--allow-unreceipted-activity", "true",
-        ]);
+        ], TypedCommandEnv());
 
         await RunNodeAsync([
             "tools/agent-transport.mjs",
@@ -375,14 +464,14 @@ console.log(JSON.stringify({
             "apply-snapshot",
             "--store", targetStorePath,
             "--in", snapshotPath,
-        ]);
+        ], RemovedHttpBridgeEnv());
 
         Assert.NotEqual(0, result.ExitCode);
-        Assert.Contains("BIFROST_BRIDGE_BASE_URL and BIFROST_BRIDGE_TOKEN", result.Stderr, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("were removed", result.Stderr, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public async Task Agent_transport_apply_snapshot_allows_explicit_operator_recovery()
+    public async Task Agent_transport_apply_snapshot_allows_bifrost_receipt_gate()
     {
         var sourceStorePath = Path.Combine(Path.GetTempPath(), $"bifrost-agent-transport-source-{Guid.NewGuid():N}.cc");
         var targetStorePath = Path.Combine(Path.GetTempPath(), $"bifrost-agent-transport-target-{Guid.NewGuid():N}.cc");
@@ -397,8 +486,7 @@ console.log(JSON.stringify({
             "--request", "Do the thing.",
             "--store", sourceStorePath,
             "--allow-unmirrored", "true",
-            "--allow-unreceipted-activity", "true",
-        ]);
+        ], TypedCommandEnv());
 
         await RunNodeAsync([
             "tools/agent-transport.mjs",
@@ -412,8 +500,7 @@ console.log(JSON.stringify({
             "apply-snapshot",
             "--store", targetStorePath,
             "--in", snapshotPath,
-            "--allow-unreceipted-activity", "true",
-        ]);
+        ], TypedCommandEnv());
 
         Assert.Equal(0, result.ExitCode);
 
@@ -431,7 +518,7 @@ console.log(JSON.stringify({
     }
 
     [Fact]
-    public async Task Governance_mutation_fails_closed_without_bifrost_receipt_gate()
+    public async Task Governance_mutation_rejects_removed_http_bridge_config()
     {
         var storePath = Path.Combine(Path.GetTempPath(), $"bifrost-governance-{Guid.NewGuid():N}.cc");
         var result = await RunNodeAsync([
@@ -443,16 +530,17 @@ console.log(JSON.stringify({
             "--summary", "A topic body.",
             "--store", storePath,
             "--allow-unmirrored", "true",
-        ]);
+        ], RemovedHttpBridgeEnv());
 
         Assert.NotEqual(0, result.ExitCode);
-        Assert.Contains("BIFROST_BRIDGE_BASE_URL and BIFROST_BRIDGE_TOKEN", result.Stderr, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("were removed", result.Stderr, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public async Task Governance_mutation_allows_explicit_operator_recovery()
+    public async Task Governance_mutation_allows_bifrost_receipt_gate()
     {
         var storePath = Path.Combine(Path.GetTempPath(), $"bifrost-governance-{Guid.NewGuid():N}.cc");
+        var receiptStorePath = Path.Combine(Path.GetTempPath(), $"bifrost-crossing-receipts-{Guid.NewGuid():N}.cc");
         var result = await RunNodeAsync([
             "tools/governance-threads.mjs",
             "open",
@@ -461,17 +549,23 @@ console.log(JSON.stringify({
             "--title", "Governance receipt recovery",
             "--summary", "A topic body.",
             "--store", storePath,
+            "--receipt-store", receiptStorePath,
             "--allow-unmirrored", "true",
-            "--allow-unreceipted-activity", "true",
-        ]);
+        ], TypedCommandEnv());
 
         Assert.Equal(0, result.ExitCode);
         using var payload = JsonDocument.Parse(result.Stdout);
         Assert.Equal("open", payload.RootElement.GetProperty("status").GetString());
+
+        using var receipts = await ReadCrossingReceiptsAsync(receiptStorePath);
+        var receipt = Assert.Single(receipts.RootElement.EnumerateArray());
+        Assert.Equal("governance.topic", receipt.GetProperty("crossingKind").GetString());
+        Assert.Equal("completed", receipt.GetProperty("status").GetString());
+        Assert.Equal(payload.RootElement.GetProperty("id").GetString(), receipt.GetProperty("source").GetProperty("topicId").GetString());
     }
 
     [Fact]
-    public async Task Governance_recovery_hatch_is_rejected_inside_dispatched_turn()
+    public async Task Governance_recovery_hatch_is_rejected()
     {
         var storePath = Path.Combine(Path.GetTempPath(), $"bifrost-governance-{Guid.NewGuid():N}.cc");
         var result = await RunNodeAsync([
@@ -484,17 +578,14 @@ console.log(JSON.stringify({
             "--store", storePath,
             "--allow-unmirrored", "true",
             "--allow-unreceipted-activity", "true",
-        ], new Dictionary<string, string?>
-        {
-            ["BIFROST_LOCK_RECOVERY_HATCHES"] = "true",
-        });
+        ]);
 
         Assert.NotEqual(0, result.ExitCode);
         Assert.Contains("cannot use --allow-unreceipted-activity", result.Stderr, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public async Task Dispatch_worker_fails_closed_without_bifrost_receipt_gate()
+    public async Task Dispatch_worker_rejects_removed_http_bridge_config()
     {
         var tempDir = Path.Combine(Path.GetTempPath(), $"bifrost-dispatch-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempDir);
@@ -525,8 +616,8 @@ console.log(JSON.stringify({
   "claimedAt": "2026-06-17T00:00:00Z",
   "closedAt": ""
 }
-""", Encoding.UTF8);
-        await File.WriteAllTextAsync(promptPath, "Hello", Encoding.UTF8);
+""", new UTF8Encoding(false));
+        await File.WriteAllTextAsync(promptPath, "Hello", new UTF8Encoding(false));
 
         var result = await RunNodeAsync([
             "tools/dispatch-agent-requests.mjs",
@@ -536,10 +627,10 @@ console.log(JSON.stringify({
             "--prompt-file", promptPath,
             "--log", logPath,
             "--launch-mode", "codex-exec",
-        ]);
+        ], RemovedHttpBridgeEnv());
 
         Assert.NotEqual(0, result.ExitCode);
-        Assert.Contains("requires BIFROST_BRIDGE_BASE_URL and BIFROST_BRIDGE_TOKEN", result.Stderr, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("were removed", result.Stderr, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -629,8 +720,7 @@ writeFileSync(process.env.DISPATCH_ENV_DUMP, JSON.stringify({
                 "--title", "Dispatch env seed",
                 "--request", "Seed the live request lane.",
                 "--allow-unmirrored", "true",
-                "--allow-unreceipted-activity", "true",
-            ]);
+            ], TypedCommandEnv());
 
             var result = await RunNodeAsync([
                 "tools/dispatch-agent-requests.mjs",
@@ -642,13 +732,12 @@ writeFileSync(process.env.DISPATCH_ENV_DUMP, JSON.stringify({
                 "--launch-mode", "codex-exec",
                 "--codex-executable", "node",
                 "--codex-exec-args", fakeCodexPath,
-            ], new Dictionary<string, string?>
+            ], TypedCommandEnv(new Dictionary<string, string?>
             {
-                ["BIFROST_ALLOW_UNRECEIPTED_ACTIVITY"] = "true",
                 ["GH_TOKEN"] = "parent-gh-token",
                 ["GITHUB_TOKEN"] = "parent-github-token",
                 ["DISPATCH_ENV_DUMP"] = dumpPath,
-            });
+            }));
 
             Assert.Equal(0, result.ExitCode);
             Assert.True(File.Exists(dumpPath), $"Dispatch env dump was not created. stdout:{Environment.NewLine}{result.Stdout}{Environment.NewLine}stderr:{Environment.NewLine}{result.Stderr}");
@@ -771,8 +860,7 @@ rl.on("line", (line) => {
                 "--title", "Dispatch app-server seed",
                 "--request", "Seed the live request lane.",
                 "--allow-unmirrored", "true",
-                "--allow-unreceipted-activity", "true",
-            ]);
+            ], TypedCommandEnv());
 
             var result = await RunNodeAsync([
                 "tools/dispatch-agent-requests.mjs",
@@ -785,11 +873,10 @@ rl.on("line", (line) => {
                 "--codex-executable", "node",
                 "--codex-exec-args", fakeServerPath,
                 "--no-discord", "true",
-            ], new Dictionary<string, string?>
+            ], TypedCommandEnv(new Dictionary<string, string?>
             {
-                ["BIFROST_ALLOW_UNRECEIPTED_ACTIVITY"] = "true",
                 ["DISPATCH_APP_SERVER_DUMP"] = dumpPath,
-            });
+            }));
 
             Assert.Equal(0, result.ExitCode);
             Assert.True(File.Exists(dumpPath), "Fake app-server did not record dispatch policy.");
@@ -887,7 +974,7 @@ console.log("https://github.com/GameCult/Bifrost/pull/999");
 """, Encoding.UTF8);
 
             var environment = BuildDispatchedGitGateEnv();
-            environment["BIFROST_ALLOW_UNGATED_GITHUB"] = "true";
+            environment["BIFROST_CULTMESH_COMMAND_ID"] = "test-cultmesh-command";
             environment["BIFROST_REAL_GH"] = ResolveExecutable("node");
             environment["BIFROST_REAL_GH_ARGS"] = fakeGhPath;
 
@@ -1057,6 +1144,56 @@ exit /b 0
 
     private static string RepoRoot =>
         Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+
+    private static Dictionary<string, string?> TypedCommandEnv(
+        IReadOnlyDictionary<string, string?>? extras = null)
+    {
+        var environment = new Dictionary<string, string?>
+        {
+            ["BIFROST_CULTMESH_COMMAND_ID"] = "test-cultmesh-command",
+        };
+
+        if (extras is null)
+        {
+            return environment;
+        }
+
+        foreach (var pair in extras)
+        {
+            environment[pair.Key] = pair.Value;
+        }
+
+        return environment;
+    }
+
+    private static Dictionary<string, string?> RemovedHttpBridgeEnv()
+        => new()
+        {
+            ["BIFROST_BRIDGE_BASE_URL"] = "http://127.0.0.1:1/",
+            ["BIFROST_BRIDGE_TOKEN"] = "removed-test-token",
+        };
+
+    private static async Task<JsonDocument> ReadCrossingReceiptsAsync(string storePath)
+    {
+        var result = await RunNodeAsync([
+            "-e",
+            """
+import('./tools/bifrost-crossing-documents.mjs')
+  .then(async module => {
+    const store = await module.openCrossingReceiptStore(process.argv[1]);
+    console.log(JSON.stringify(store.getAll()));
+  })
+  .catch(error => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  });
+""",
+            storePath,
+        ]);
+
+        Assert.True(result.ExitCode == 0, $"stdout:{Environment.NewLine}{result.Stdout}{Environment.NewLine}stderr:{Environment.NewLine}{result.Stderr}");
+        return JsonDocument.Parse(result.Stdout);
+    }
 
     private static async Task<ProcessResult> RunNodeAsync(string[] args, IReadOnlyDictionary<string, string?>? environmentOverrides = null)
     {

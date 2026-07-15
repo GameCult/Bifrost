@@ -6,6 +6,11 @@ import { existsSync, readFileSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  commandIdFromOptions,
+  crossingProvenanceFromOptions,
+  writeCrossingReceipt,
+} from "./bifrost-crossing-documents.mjs";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
@@ -164,29 +169,23 @@ function isMutatingCommand(command) {
 }
 
 function ensureTransportReceiptGate(options) {
-  if (wantsUnreceiptedActivity(options) && process.env.BIFROST_LOCK_RECOVERY_HATCHES === "true") {
+  if (wantsUnreceiptedActivity(options)) {
     throw new Error(
-      "Dispatched Bifrost work cannot use --allow-unreceipted-activity or BIFROST_ALLOW_UNRECEIPTED_ACTIVITY. " +
-      "Request-lane mutations from a dispatched turn must keep Bifrost receipts.",
+      "Bifrost request-lane mutations cannot use --allow-unreceipted-activity or BIFROST_ALLOW_UNRECEIPTED_ACTIVITY. " +
+      "Use the typed Bifrost CultCache/CultMesh request store instead of mutating off-book.",
     );
   }
 
-  if (hasBifrostBridgeConfig() || allowsUnreceiptedActivity(options)) {
-    return;
+  if (hasRemovedHttpBridgeConfig()) {
+    throw new Error(
+      "BIFROST_BRIDGE_BASE_URL / BIFROST_BRIDGE_TOKEN were removed. " +
+      "Bifrost request-lane receipts are written to the typed CultCache/CultMesh store.",
+    );
   }
-
-  throw new Error(
-    "Bifrost agent transport mutations require BIFROST_BRIDGE_BASE_URL and BIFROST_BRIDGE_TOKEN so Bifrost can keep request-lane receipts. " +
-    "Set both values, or use --allow-unreceipted-activity true only for explicit operator recovery.",
-  );
 }
 
-function hasBifrostBridgeConfig() {
-  return Boolean(optionalString(process.env.BIFROST_BRIDGE_BASE_URL) && optionalString(process.env.BIFROST_BRIDGE_TOKEN));
-}
-
-function allowsUnreceiptedActivity(options) {
-  return wantsUnreceiptedActivity(options);
+function hasRemovedHttpBridgeConfig() {
+  return Boolean(optionalString(process.env.BIFROST_BRIDGE_BASE_URL) || optionalString(process.env.BIFROST_BRIDGE_TOKEN));
 }
 
 function wantsUnreceiptedActivity(options) {
@@ -236,7 +235,7 @@ async function enqueue(cache, options) {
     status: request.status,
     actorName: request.createdByAgent ?? "system",
     note: "Update request queued.",
-  });
+  }, options);
   printJson(request);
 }
 
@@ -293,7 +292,7 @@ function allowsUnmirrored(options) {
 }
 
 function bridgeRecoveryArgs(options) {
-  return allowsUnreceiptedActivity(options) ? ["--allow-unreceipted-activity", "true"] : [];
+  return [];
 }
 
 function renderRequestMirrorFallback(request) {
@@ -371,7 +370,7 @@ async function claim(cache, options) {
     status: claimed.status,
     actorName: claimed.claimedByAgent ?? claimed.targetAgentIdentity ?? "codex",
     note: `Request claimed for ${claimed.targetRepoName}.`,
-  });
+  }, options);
   printJson(claimed);
 }
 
@@ -401,7 +400,7 @@ async function closeRequest(cache, options) {
     status: closed.status,
     actorName: current.claimedByAgent ?? current.targetAgentIdentity ?? "system",
     note: closed.closeNote || `Request closed as ${closed.status}.`,
-  });
+  }, options);
   printJson(closed);
 }
 
@@ -431,7 +430,7 @@ async function releaseRequest(cache, options) {
     status: released.status,
     actorName: current.claimedByAgent ?? current.targetAgentIdentity ?? "system",
     note: released.closeNote || "Claim released back to the queue.",
-  });
+  }, options);
   printJson(released);
 }
 
@@ -474,7 +473,7 @@ async function applySnapshot(cache, options) {
 
   try {
     for (const { request, receipt } of receipts) {
-      await recordTransportReceiptOrThrow(request, receipt);
+      await recordTransportReceiptOrThrow(request, receipt, options);
     }
   } catch (error) {
     await restoreRequests(cache, beforeRequests, afterRequests);
@@ -582,36 +581,53 @@ function stableJson(value) {
   return JSON.stringify(value);
 }
 
-async function recordTransportReceiptOrThrow(request, receipt) {
-  const baseUrl = optionalString(process.env.BIFROST_BRIDGE_BASE_URL);
-  const token = optionalString(process.env.BIFROST_BRIDGE_TOKEN);
-  if (!baseUrl || !token) {
-    return;
-  }
-
-  const response = await fetch(new URL("/transport/receipts", ensureTrailingSlash(baseUrl)), {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Bifrost-Bridge-Token": token,
-    },
-    body: JSON.stringify({
-      requestId: request.id,
-      title: request.title,
-      targetRepoName: request.targetRepoName,
-      targetRepositoryFullName: request.targetRepositoryFullName ?? "",
-      targetAgentIdentity: request.targetAgentIdentity ?? "",
-      activityKind: receipt.activityKind,
-      status: receipt.status,
-      actorName: receipt.actorName,
-      note: receipt.note,
-    }),
+async function recordTransportReceiptOrThrow(request, receipt, options = {}) {
+  const commandId = commandIdFromOptions(options) || `agent-transport:${request.id}:${receipt.activityKind}`;
+  const provenance = crossingProvenanceFromOptions({
+    ...options,
+    "cultmesh-command-id": commandId,
+    "source-kind": request.sourceKind || "bifrost.agent-transport.update-request",
+    "source-id": request.id,
+    "request-id": request.id,
+    "authority-ref": "bifrost_agent_transport",
+    identity: receipt.actorName,
   });
-
-  const text = await response.text();
-  if (response.status !== 202) {
-    throw new Error(`Bifrost transport receipt failed with ${response.status}: ${text}`);
-  }
+  const now = new Date().toISOString();
+  await writeCrossingReceipt({
+    receiptId: `crossing_${slugifyReceiptPart(commandId)}_${slugifyReceiptPart(receipt.activityKind)}`,
+    commandId,
+    crossingKind: "agent_transport.request",
+    status: request.status === "cancelled" ? "cancelled" : "completed",
+    ok: true,
+    requestedAt: request.createdAt || now,
+    startedAt: request.updatedAt || now,
+    completedAt: now,
+    actor: {
+      kind: "agent",
+      name: receipt.actorName || "system",
+      bifrostIdentity: receipt.actorName || "system",
+    },
+    source: provenance.source,
+    authority: provenance.authority,
+    epiphany: provenance.epiphany,
+    target: {
+      surface: "agent-transport",
+      locator: request.id,
+      repositoryFullName: request.targetRepositoryFullName || request.targetRepoName,
+      requestId: request.id,
+      status: request.status,
+    },
+    externalReceipt: {
+      id: request.id,
+      transport: "cultcache",
+      url: "",
+    },
+    surfaceReceipt: {
+      activityKind: receipt.activityKind,
+      note: receipt.note || "",
+      requestStatus: receipt.status,
+    },
+  }, options);
 }
 
 function filteredRequests(cache, options) {
@@ -781,6 +797,15 @@ function equalsIgnoreCase(left, right) {
     && left.toLowerCase() === right.toLowerCase();
 }
 
+function slugifyReceiptPart(value) {
+  return String(value)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._:-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 120) || "receipt";
+}
+
 function resolveOptionPath(path) {
   return resolve(process.cwd(), path);
 }
@@ -861,8 +886,6 @@ Mirror options for enqueue:
   --mirror-content-file <path>        Read custom mirror text from a file
   --mirror-dry-run true               Exercise mirror plumbing without posting to Discord
   --allow-unmirrored true             Fixture/debug escape hatch; production writes should not use this
-  --allow-unreceipted-activity true   Operator-recovery hatch; lets a mutation proceed without hosted Bifrost receipts
-
 Examples:
   node tools/agent-transport.mjs enqueue --repo AetheriaLore --agent nibu --title "Wavecrafters" --request-file packet.md --priority 80
   node tools/agent-transport.mjs claim --repo AetheriaLore --agent nibu --claimed-by nibu

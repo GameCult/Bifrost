@@ -20,7 +20,8 @@ This repository now includes a viable alpha foundation slice of the ASP.NET Core
 - GitHub App webhook ingestion for issue, pull request, and review sync
 - Heimdall-signed external patron support intake for Patreon and PayPal support facts
 - Eve Motion Verse surface and command endpoint for governance participation, with Razor motion forms demoted to a transitional browser lowering
-- local bridge tooling for agent-owned GitHub draft PRs and PR comments, Discord posts and DMs, Reddit self-posts, and receipt-only future-surface requests
+- local bridge tooling for agent-owned GitHub draft PRs and PR comments, Discord posts and DMs, Reddit self-posts, and fail-closed future-surface request probes
+- canonical `bifrost.crossing_receipt.v1` history in `.bifrost/bridge-receipts.cc` for GitHub, Discord, Reddit, governance, and agent-transport crossings
 - local bridge tooling for Reddit self-posts in `r/GameCultOrg`, including Persona flair labels through the Bifrost Reddit app
 - CultCache-backed governance topic threads for feature requests, discussion comments, Persona approvals, and dispatch promotion
 - CultCache/CultNet-backed agent intake tooling for repo Persona update requests
@@ -74,23 +75,15 @@ For the full staged roadmap, including contribution points, revenue share, patro
 - set `GitHubOAuth:ClientId` and `GitHubOAuth:ClientSecret` before using sign-in
 - POST `/auth/bifrost/register` with `identity`, optional `displayName`, and optional `returnUrl` to create a Bifrost-native account without OAuth; this signs in as `Authenticated` but does not grant active member access
 - set `Bootstrap:AdminGitHubLogins` with at least one GitHub login for the first active admin path
-- set `Bridge:LocalBridgeToken` to allow the transitional local bridge actuator to register and receipt governed actions through `/bridge/actions/*`
-- set `BIFROST_BRIDGE_BASE_URL` and `BIFROST_BRIDGE_TOKEN` when `tools/bifrost-bridge.mjs` should round-trip every action through the app ledger before mutating GitHub, Discord, or Reddit, or before recording a receipt-only future-surface request
-- the same bridge URL/token pair lets `tools/dispatch-agent-requests.mjs` record `/dispatch/runs/*` receipts for launched Codex work, so Bifrost keeps a live run trail even when a turn fails
-- those hosted runtime receipt lanes are local-bridge-owned writes, not ordinary member-session writes: `/dispatch/runs/*`, `/transport/receipts`, and `/governance/receipts` now require the configured bridge token and do not inherit browser-user identity into agent activity rows
-- those hosted runtime receipts also validate linkage instead of accepting free-floating text: dispatch runs require an existing request-lane receipt for the same request id, governance promotion receipts require a known promoted dispatch request, and request-lane rows cannot silently drift to a different repo or agent identity midstream
-- GitHub bridge actions that claim Bifrost-owned provenance now validate that provenance too: a `bifrost_agent_transport_request` source must point at a known request-lane request for the same repo, and governance-backed bridge actions must point at a known Bifrost topic instead of a decorative source string
-- governance-backed GitHub publication is also no longer allowed to jump the queue: a Bifrost governance topic must have been approved or promoted before it can justify a GitHub bridge action
-- non-GitHub bridge activity is no longer allowed to drift off-book either: `discord-post`, `discord-dm`, `reddit-post`, and `other-request` now require `BIFROST_BRIDGE_BASE_URL` and `BIFROST_BRIDGE_TOKEN` by default, with `--allow-unreceipted-activity true` reserved for explicit local recovery and refused inside dispatched work
-- Persona and agent `discord-post`, `reddit-post`, and `other-request` bridge actions also require a Bifrost identity plus Heimdall-backed capability/account reference in the hosted ledger; pass `--identity`, `--heimdall-capability-ref`, and the Epiphany provenance flags or set the matching environment variables. Future-surface `other-request` actions must also carry `--surface-name`, and Bifrost rejects Heimdall references that do not match that named surface. The bridge token is an actuator credential, not identity or provider authority.
+- HTTP bridge ledger configuration (`BIFROST_BRIDGE_BASE_URL` / `BIFROST_BRIDGE_TOKEN`) is removed from live CLI transport. Request-lane, governance, dispatch, and bridge receipts converge on Bifrost-owned `bifrost.crossing_receipt.v1` documents in `.bifrost/bridge-receipts.cc`.
+- external bridge actions must carry typed CultMesh command provenance such as `BIFROST_CULTMESH_COMMAND_ID`; unreceipted and HTTP-ledger hatches fail closed.
+- Persona and agent public crossings still require Bifrost identity, Heimdall capability/account reference, and Epiphany provenance, but those facts travel with typed command/receipt documents rather than a local HTTP bridge token.
 - Bifrost-dispatched Codex turns also inject Bifrost-owned GitHub gates through environment config: `git` and `gh` wrappers are prepended in `PATH`, a `pre-push` hook backs up raw Git pushes, raw `git push` stays blocked, and direct `gh` usage is limited to explicit read-only commands unless `tools/bifrost-bridge.mjs` authorizes the bridge-owned GitHub write path
 - dispatched Codex turns now default to `workspace-write` instead of full machine access, and the app-server sandbox policy disables network access unless the operator explicitly chooses a broader sandbox
-- `tools/agent-transport.mjs` also uses that bridge configuration to record `/transport/receipts` entries for queue, claim, release, and close events on the request lane
-- `tools/agent-transport.mjs apply-snapshot` is also treated as a mutating import path now: it fails closed without the bridge receipt config and derives request-lane receipts from the imported state delta
-- `tools/governance-threads.mjs` uses that same bridge configuration to record `/governance/receipts` entries for topic opens, comments, approvals, and promotions
-- those agent activity scripts now fail closed without the bridge URL/token pair; `--allow-unreceipted-activity true` or `BIFROST_ALLOW_UNRECEIPTED_ACTIVITY=true` is the explicit operator-recovery hatch
-- GitHub bridge mutations now fail closed without those values; `--allow-ungated-github true` is reserved for explicit operator recovery
-- dispatched Codex turns now lock those recovery hatches too: local-only `--allow-ungated-github` and `--allow-unreceipted-activity` escapes are refused inside dispatched work so a worker cannot silently downgrade itself out of Bifrost receipts
+- `tools/agent-transport.mjs` records queue, claim, release, close, and snapshot activity in the typed request-lane store.
+- `tools/governance-threads.mjs` records topic opens, comments, approvals, and promotions in the typed governance store.
+- GitHub bridge mutations now fail closed without typed CultMesh command provenance; ungated and HTTP-ledger hatches are removed.
+- dispatched Codex turns inherit the same invariant: a worker cannot downgrade itself out of Bifrost gate or receipt policy
 - dispatched Codex turns also now scrub ambient GitHub auth state from the child environment: `GH_TOKEN` / `GITHUB_TOKEN` are cleared, `gh` gets an isolated config directory, `git` gets an isolated global config plus non-interactive credential settings, and terminal prompting is disabled before the worker starts
 - set `BIFROST_REDDIT_CLIENT_ID`, `BIFROST_REDDIT_REFRESH_TOKEN`, and optionally `BIFROST_REDDIT_CLIENT_SECRET` before posting Reddit organizing threads
 - set `Heimdall:PatronSupportIntakeSecret` before enabling Heimdall patron support intake in production
@@ -99,10 +92,13 @@ For the full staged roadmap, including contribution points, revenue share, patro
 - test with `DOTNET_ROLL_FORWARD=Major dotnet test Bifrost.slnx` if the machine only has the .NET 10 runtime installed
 - dry-run a Reddit organizing thread with `node tools/bifrost-bridge.mjs reddit-post --title "Thread title" --persona-name Bifrost --content "Thread body" --dry-run true`
 - print the Eve provider advertisement with `node tools/provider-advertisement.mjs print`
-- export the Eve provider advertisement witness with `node tools/provider-advertisement.mjs export --out .bifrost/provider-advertisement.cc`
+- export the Eve provider store with `node tools/provider-advertisement.mjs export --out .bifrost/provider-store.cc`
 - inspect the interactive Motion Verse surface at `/eve/governance/surface` while signed in as an active member
 - container smoke test with `docker compose -f compose.local.yaml up --build`
-- container health checks live at `http://127.0.0.1:5080/healthz` and `http://127.0.0.1:5080/readyz`
+- container smoke tests may hit `/healthz` and `/readyz` as product probes.
+  Provider advertisements, Docker health, and deploy gates must come from
+  Bifrost's typed CultMesh/Idunn operator state; `BIFROST_HEALTH_URL` and
+  `BIFROST_READY_URL` are not accepted by the provider exporter.
 
 ## Read First
 

@@ -4,6 +4,8 @@ namespace Bifrost.Web.Features.Motions;
 
 public sealed class MotionEveSurfaceService
 {
+    private const string MotionCommandTarget = "cultmesh://asgard.starfire.bifrost/commands/motion";
+
     public EveSurfaceDocument BuildSurface(MotionGovernanceState state)
     {
         var motionNodes = state.Motions.Count > 0
@@ -23,7 +25,9 @@ public sealed class MotionEveSurfaceService
                     ["subtitle"] = "Motions, weighted votes, thresholds, and receipts",
                     ["actor"] = state.ActorName,
                     ["effectiveVotingWeight"] = state.EffectiveVotingWeight,
-                    ["canonicalCommandTarget"] = "/eve/governance/commands"
+                    ["canonicalCommandTarget"] = MotionCommandTarget,
+                    ["commandTransport"] = "cultmesh-command-document",
+                    ["commandSchema"] = "bifrost.motion_command.v0"
                 },
                 [
                     new EveNode(
@@ -33,8 +37,8 @@ public sealed class MotionEveSurfaceService
                         {
                             ["title"] = "Open Motion",
                             ["command"] = "motion.create",
-                            ["target"] = "/eve/governance/commands",
-                            ["method"] = "POST"
+                            ["target"] = MotionCommandTarget,
+                            ["transport"] = "cultmesh-command-document"
                         },
                         [
                             SelectNode("scope", "Scope", EnumNames<MotionScope>()),
@@ -121,7 +125,11 @@ public sealed class MotionEveSurfaceService
                 new EveNode(
                     $"motion-commands-{motion.Id}",
                     "commands",
-                    new Dictionary<string, object?> { ["target"] = "/eve/governance/commands" },
+                    new Dictionary<string, object?>
+                    {
+                        ["target"] = MotionCommandTarget,
+                        ["transport"] = "cultmesh-command-document"
+                    },
                     commandNodes)
             ]);
     }
@@ -139,8 +147,8 @@ public sealed class MotionEveSurfaceService
             {
                 ["label"] = label,
                 ["command"] = command,
-                ["target"] = "/eve/governance/commands",
-                ["method"] = "POST",
+                ["target"] = MotionCommandTarget,
+                ["transport"] = "cultmesh-command-document",
                 ["payload"] = payload,
                 ["tone"] = tone
             });
@@ -193,15 +201,3 @@ public sealed record EveNode(
     IReadOnlyList<EveNode>? Children = null);
 
 public sealed record EveOption(string Value, string Label);
-
-public sealed record MotionEveCommandRequest(
-    string Command,
-    Guid? MotionId,
-    MotionScope? Scope,
-    Guid? ProjectId,
-    MotionCategory? Category,
-    string? Title,
-    string? Summary,
-    DateTimeOffset? ClosesAtUtc,
-    VoteChoice? Choice,
-    string? Comment);

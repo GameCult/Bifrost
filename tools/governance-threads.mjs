@@ -6,6 +6,11 @@ import { existsSync, readFileSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  commandIdFromOptions,
+  crossingProvenanceFromOptions,
+  writeCrossingReceipt,
+} from "./bifrost-crossing-documents.mjs";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
@@ -209,7 +214,7 @@ async function openTopic(cache, options) {
       actorKind: "agent",
       actorName: topic.createdByActor ?? "system",
       note: "Governance topic opened.",
-    });
+    }, options);
   } catch (error) {
     await cache.delete(topicDefinition, topic.id);
     throw error;
@@ -249,7 +254,7 @@ async function addComment(cache, options) {
       actorKind: comment.authorKind,
       actorName: comment.authorId,
       note: `Governance topic ${comment.stance} comment recorded.`,
-    });
+    }, options);
   } catch (error) {
     await cache.delete(commentDefinition, comment.id);
     throw error;
@@ -304,7 +309,7 @@ async function approveTopic(cache, options) {
       actorKind: "face",
       actorName: approvedBy,
       note: "Governance topic approved.",
-    });
+    }, options);
   } catch (error) {
     await cache.put(topicDefinition, topic.id, topic);
     if (comment) {
@@ -389,7 +394,7 @@ async function promoteTopic(cache, options) {
       actorKind: "system",
       actorName: topic.approvedByAgent ?? topic.createdByActor ?? "bifrost",
       note: `Governance topic promoted to update request ${request.id}.`,
-    });
+    }, options);
   } catch (error) {
     await cache.put(topicDefinition, topic.id, topic);
     await cache.delete(commentDefinition, receipt.id);
@@ -470,7 +475,7 @@ function allowsUnmirrored(options) {
 }
 
 function bridgeRecoveryArgs(options) {
-  return allowsUnreceiptedActivity(options) ? ["--allow-unreceipted-activity", "true"] : [];
+  return [];
 }
 
 function renderGovernanceMirrorContent(topic, eventLabel, content) {
@@ -523,37 +528,55 @@ function truncateMarkdown(value, maxLength) {
   return value.length > maxLength ? `${value.slice(0, maxLength - 3)}...` : value;
 }
 
-async function recordGovernanceReceiptOrThrow(topic, receipt) {
-  const baseUrl = optionalString(process.env.BIFROST_BRIDGE_BASE_URL);
-  const token = optionalString(process.env.BIFROST_BRIDGE_TOKEN);
-  if (!baseUrl || !token) {
-    return;
-  }
-
-  const response = await fetch(new URL("/governance/receipts", ensureTrailingSlash(baseUrl)), {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Bifrost-Bridge-Token": token,
-    },
-    body: JSON.stringify({
-      topicId: topic.id,
-      commentId: receipt.commentId,
-      dispatchRequestId: receipt.dispatchRequestId,
-      title: topic.title,
-      jurisdictionRepoName: topic.jurisdictionRepoName,
-      jurisdictionAgentIdentity: topic.jurisdictionAgentIdentity ?? "",
-      activityKind: receipt.activityKind,
-      actorKind: receipt.actorKind,
-      actorName: receipt.actorName,
-      note: receipt.note,
-    }),
+async function recordGovernanceReceiptOrThrow(topic, receipt, options = {}) {
+  const commandId = commandIdFromOptions(options) || `governance:${topic.id}:${receipt.activityKind}`;
+  const provenance = crossingProvenanceFromOptions({
+    ...options,
+    "cultmesh-command-id": commandId,
+    "source-kind": "bifrost.governance.topic",
+    "source-id": topic.id,
+    "topic-id": topic.id,
+    "authority-ref": `bifrost_governance_${receipt.activityKind}`,
+    identity: receipt.actorName,
   });
-
-  const text = await response.text();
-  if (response.status !== 202) {
-    throw new Error(`Bifrost governance receipt failed with ${response.status}: ${text}`);
-  }
+  const now = new Date().toISOString();
+  await writeCrossingReceipt({
+    receiptId: `crossing_${slugifyReceiptPart(commandId)}_${slugifyReceiptPart(receipt.activityKind)}`,
+    commandId,
+    crossingKind: "governance.topic",
+    status: topic.status === "cancelled" ? "cancelled" : "completed",
+    ok: true,
+    requestedAt: topic.createdAt || now,
+    startedAt: topic.updatedAt || now,
+    completedAt: now,
+    actor: {
+      kind: receipt.actorKind || "system",
+      name: receipt.actorName || "bifrost",
+      bifrostIdentity: receipt.actorName || "bifrost",
+    },
+    source: provenance.source,
+    authority: provenance.authority,
+    epiphany: provenance.epiphany,
+    target: {
+      surface: "governance",
+      locator: topic.id,
+      repositoryFullName: topic.jurisdictionRepoName,
+      topicId: topic.id,
+      dispatchRequestId: receipt.dispatchRequestId || "",
+      status: topic.status,
+    },
+    externalReceipt: {
+      id: receipt.commentId || receipt.dispatchRequestId || topic.id,
+      transport: "cultcache",
+      url: "",
+    },
+    surfaceReceipt: {
+      activityKind: receipt.activityKind,
+      note: receipt.note || "",
+      commentId: receipt.commentId || "",
+      dispatchRequestId: receipt.dispatchRequestId || "",
+    },
+  }, options);
 }
 
 function isMutatingCommand(command) {
@@ -561,29 +584,23 @@ function isMutatingCommand(command) {
 }
 
 function ensureGovernanceReceiptGate(options) {
-  if (wantsUnreceiptedActivity(options) && process.env.BIFROST_LOCK_RECOVERY_HATCHES === "true") {
+  if (wantsUnreceiptedActivity(options)) {
     throw new Error(
-      "Dispatched Bifrost work cannot use --allow-unreceipted-activity or BIFROST_ALLOW_UNRECEIPTED_ACTIVITY. " +
-      "Governance mutations from a dispatched turn must keep Bifrost receipts.",
+      "Bifrost governance mutations cannot use --allow-unreceipted-activity or BIFROST_ALLOW_UNRECEIPTED_ACTIVITY. " +
+      "Use the typed Bifrost CultCache/CultMesh governance store instead of mutating off-book.",
     );
   }
 
-  if (hasBifrostBridgeConfig() || allowsUnreceiptedActivity(options)) {
-    return;
+  if (hasRemovedHttpBridgeConfig()) {
+    throw new Error(
+      "BIFROST_BRIDGE_BASE_URL / BIFROST_BRIDGE_TOKEN were removed. " +
+      "Bifrost governance receipts are written to the typed CultCache/CultMesh store.",
+    );
   }
-
-  throw new Error(
-    "Bifrost governance mutations require BIFROST_BRIDGE_BASE_URL and BIFROST_BRIDGE_TOKEN so Bifrost can keep governance receipts. " +
-    "Set both values, or use --allow-unreceipted-activity true only for explicit operator recovery.",
-  );
 }
 
-function hasBifrostBridgeConfig() {
-  return Boolean(optionalString(process.env.BIFROST_BRIDGE_BASE_URL) && optionalString(process.env.BIFROST_BRIDGE_TOKEN));
-}
-
-function allowsUnreceiptedActivity(options) {
-  return wantsUnreceiptedActivity(options);
+function hasRemovedHttpBridgeConfig() {
+  return Boolean(optionalString(process.env.BIFROST_BRIDGE_BASE_URL) || optionalString(process.env.BIFROST_BRIDGE_TOKEN));
 }
 
 function wantsUnreceiptedActivity(options) {
@@ -843,6 +860,15 @@ function equalsIgnoreCase(left, right) {
     && left.toLowerCase() === right.toLowerCase();
 }
 
+function slugifyReceiptPart(value) {
+  return String(value)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._:-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 120) || "receipt";
+}
+
 function runNodeJson(args, cwd) {
   const result = spawnSync(process.execPath, args, {
     cwd,
@@ -925,7 +951,6 @@ Mirror options:
   --mirror-content-file <path>        Read mirror text from a file
   --mirror-dry-run true               Exercise mirror plumbing without posting to Discord
   --allow-unmirrored true             Fixture/debug escape hatch; production writes should not use this
-  --allow-unreceipted-activity true   Operator-recovery hatch; lets a mutation proceed without hosted Bifrost receipts
 `);
 }
 
