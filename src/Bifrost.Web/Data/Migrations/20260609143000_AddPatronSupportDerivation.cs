@@ -1,3 +1,4 @@
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
@@ -5,6 +6,7 @@ using Microsoft.EntityFrameworkCore.Migrations;
 namespace Bifrost.Web.Data.Migrations
 {
     /// <inheritdoc />
+    [DbContext(typeof(BifrostDbContext))]
     [Migration("20260609143000_AddPatronSupportDerivation")]
     public partial class AddPatronSupportDerivation : Migration
     {
