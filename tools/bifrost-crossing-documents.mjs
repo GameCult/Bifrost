@@ -267,13 +267,12 @@ function loadCultCacheRuntime() {
   if (cachedRuntime) {
     return cachedRuntime;
   }
-  const packagePath = resolveFirstExisting("CultCache TypeScript runtime", [
-    resolve(cultLibRoot, "packages", "cultcache-ts", "package.json"),
-    resolve(projectsRoot, "CultCacheTS", "package.json"),
-    resolve(projectsRoot, "CultCacheTS", "node_modules", "cultcache-ts", "package.json"),
+  const entryPoint = resolveFirstExisting("CultCache TypeScript runtime", [
+    resolve(cultLibRoot, "packages", "cultcache-ts", "dist", "index.js"),
+    resolve(projectsRoot, "CultCacheTS", "dist", "index.js"),
   ]);
-  const requireCultCache = createRequire(packagePath);
-  cachedRuntime = requireCultCache("cultcache-ts");
+  const requireCultCache = createRequire(entryPoint);
+  cachedRuntime = requireCultCache(entryPoint);
   return cachedRuntime;
 }
 

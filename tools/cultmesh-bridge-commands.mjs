@@ -293,18 +293,24 @@ function genericDocument(defineDocumentType, type, schemaId, name) {
 
 function loadCultMeshRuntime() {
   const candidates = [
-    resolve(cultLibRoot, "packages", "cultmesh-ts", "package.json"),
-    resolve(projectsRoot, "CultMeshTS", "package.json"),
+    {
+      mesh: resolve(cultLibRoot, "packages", "cultmesh-ts", "dist", "index.js"),
+      cache: resolve(cultLibRoot, "packages", "cultcache-ts", "dist", "index.js"),
+    },
+    {
+      mesh: resolve(projectsRoot, "CultMeshTS", "dist", "index.js"),
+      cache: resolve(projectsRoot, "CultCacheTS", "dist", "index.js"),
+    },
   ];
 
-  for (const packageJson of candidates) {
-    if (!existsSync(packageJson)) {
+  for (const candidate of candidates) {
+    if (!existsSync(candidate.mesh) || !existsSync(candidate.cache)) {
       continue;
     }
     try {
-      const requireCult = createRequire(packageJson);
-      const { CultMesh } = requireCult("cultmesh-ts");
-      const { defineDocumentType } = requireCult("cultcache-ts");
+      const requireCult = createRequire(candidate.mesh);
+      const { CultMesh } = requireCult(candidate.mesh);
+      const { defineDocumentType } = requireCult(candidate.cache);
       if (CultMesh && defineDocumentType) {
         return { CultMesh, defineDocumentType };
       }
