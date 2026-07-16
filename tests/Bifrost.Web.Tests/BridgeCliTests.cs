@@ -7,6 +7,145 @@ namespace Bifrost.Web.Tests;
 public sealed class BridgeCliTests
 {
     [Fact]
+    public async Task Authorize_release_requires_typed_command_provenance()
+    {
+        var result = await RunNodeAsync([
+            "tools/bifrost-bridge.mjs", "authorize-release",
+            "--repository", "GameCult/Epiphany",
+            "--ref", "refs/heads/main",
+            "--commit-sha", new string('a', 40),
+            "--policy-decision-id", "policy-1",
+        ]);
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("BIFROST_CULTMESH_COMMAND_ID", result.Stderr, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Authorize_release_rejects_remote_ref_mismatch()
+    {
+        var fakeGit = await WriteFakeGitAsync(new string('b', 40), "refs/heads/main");
+        var result = await RunNodeAsync([
+            "tools/bifrost-bridge.mjs", "authorize-release",
+            "--repository", "GameCult/Epiphany",
+            "--ref", "refs/heads/main",
+            "--commit-sha", new string('a', 40),
+            "--policy-decision-id", "policy-1",
+            "--authority-ref", "release-policy",
+            "--identity", "bifrost",
+            "--source-kind", "epiphany-release",
+            "--source-id", "release-1",
+            "--epiphany-run-id", "run-1",
+            "--epiphany-lane-id", "soul",
+            "--epiphany-agent-identity", "epiphany",
+            "--git-executable", "node",
+            "--git-exec-args", fakeGit,
+        ], TypedCommandEnv());
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("does not exactly match", result.Stderr, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Authorize_then_revoke_release_preserves_decision_and_receipt_provenance()
+    {
+        var sha = new string('a', 40);
+        var fakeGit = await WriteFakeGitAsync(sha, "refs/heads/main");
+        var store = Path.Combine(Path.GetTempPath(), $"bifrost-release-authority-{Guid.NewGuid():N}.cc");
+        var receiptStore = Path.Combine(Path.GetTempPath(), $"bifrost-release-receipts-{Guid.NewGuid():N}.cc");
+        var authorized = await RunNodeAsync([
+            "tools/bifrost-bridge.mjs", "authorize-release",
+            "--repository", "GameCult/Epiphany",
+            "--ref", "refs/heads/main",
+            "--commit-sha", sha,
+            "--policy-decision-id", "policy-epiphany-main",
+            "--authority-ref", "bifrost-release-policy",
+            "--identity", "bifrost",
+            "--source-kind", "epiphany-release",
+            "--source-id", "epiphany-main-release",
+            "--epiphany-run-id", "run-epiphany-main",
+            "--epiphany-lane-id", "soul-release",
+            "--epiphany-agent-identity", "epiphany",
+            "--release-authority-store", store,
+            "--receipt-store", receiptStore,
+            "--git-executable", "node",
+            "--git-exec-args", fakeGit,
+        ], TypedCommandEnv());
+
+        Assert.True(authorized.ExitCode == 0, $"stdout:{authorized.Stdout}\nstderr:{authorized.Stderr}");
+        using (var payload = JsonDocument.Parse(authorized.Stdout))
+        {
+            var authority = payload.RootElement.GetProperty("authority");
+            Assert.Equal("bifrost.repository_release_authority.v1", authority.GetProperty("schemaVersion").GetString());
+            Assert.Equal($"release:GameCult/Epiphany:refs/heads/main:{sha}", authority.GetProperty("authorityId").GetString());
+            Assert.Equal("GameCult/Epiphany", authority.GetProperty("repositoryFullName").GetString());
+            Assert.Equal("authorize", authority.GetProperty("decision").GetString());
+            Assert.Equal("authorized", authority.GetProperty("status").GetString());
+            Assert.Equal("policy-epiphany-main", authority.GetProperty("policyDecisionId").GetString());
+            Assert.Equal("crossing_test-cultmesh-command", authority.GetProperty("crossingReceiptId").GetString());
+            Assert.Equal($"https://github.com/GameCult/Epiphany/commit/{sha}", authority.GetProperty("externalReceiptUrl").GetString());
+        }
+
+        using (var receipts = await ReadCrossingReceiptsAsync(receiptStore))
+        {
+            var receipt = Assert.Single(receipts.RootElement.EnumerateArray());
+            Assert.Equal("completed", receipt.GetProperty("status").GetString());
+            Assert.True(receipt.GetProperty("ok").GetBoolean());
+            Assert.Equal("github.repository_release_verification", receipt.GetProperty("crossingKind").GetString());
+            Assert.Equal(sha, receipt.GetProperty("externalReceipt").GetProperty("id").GetString());
+            Assert.Equal("refs/heads/main", receipt.GetProperty("externalReceipt").GetProperty("upstreamRef").GetString());
+        }
+
+        var competingSha = new string('b', 40);
+        var competingGit = await WriteFakeGitAsync(competingSha, "refs/heads/main");
+        var competing = await RunNodeAsync([
+            "tools/bifrost-bridge.mjs", "authorize-release",
+            "--repository", "GameCult/Epiphany",
+            "--ref", "refs/heads/main",
+            "--commit-sha", competingSha,
+            "--policy-decision-id", "policy-epiphany-main-2",
+            "--authority-ref", "bifrost-release-policy",
+            "--identity", "bifrost",
+            "--source-kind", "epiphany-release",
+            "--source-id", "epiphany-main-release-2",
+            "--epiphany-run-id", "run-epiphany-main-2",
+            "--epiphany-lane-id", "soul-release",
+            "--epiphany-agent-identity", "epiphany",
+            "--release-authority-store", store,
+            "--receipt-store", receiptStore,
+            "--git-executable", "node",
+            "--git-exec-args", competingGit,
+        ], TypedCommandEnv());
+
+        Assert.NotEqual(0, competing.ExitCode);
+        Assert.Contains("revoke it before authorizing another commit", competing.Stderr, StringComparison.OrdinalIgnoreCase);
+
+        var revoked = await RunNodeAsync([
+            "tools/bifrost-bridge.mjs", "revoke-release",
+            "--repository", "GameCult/Epiphany",
+            "--ref", "refs/heads/main",
+            "--commit-sha", sha,
+            "--reason", "release withdrawn",
+            "--release-authority-store", store,
+        ], TypedCommandEnv());
+
+        Assert.True(revoked.ExitCode == 0, $"stdout:{revoked.Stdout}\nstderr:{revoked.Stderr}");
+        using var revokedPayload = JsonDocument.Parse(revoked.Stdout);
+        var revokedAuthority = revokedPayload.RootElement.GetProperty("authority");
+        Assert.Equal("revoked", revokedAuthority.GetProperty("status").GetString());
+        Assert.Equal("release withdrawn", revokedAuthority.GetProperty("revocationReason").GetString());
+        Assert.Equal("policy-epiphany-main", revokedAuthority.GetProperty("policyDecisionId").GetString());
+        Assert.Equal("crossing_test-cultmesh-command", revokedAuthority.GetProperty("crossingReceiptId").GetString());
+    }
+
+    private static async Task<string> WriteFakeGitAsync(string sha, string gitRef)
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"bifrost-fake-git-{Guid.NewGuid():N}.mjs");
+        await File.WriteAllTextAsync(path, $"process.stdout.write('{sha}\\t{gitRef}\\n');\n", Encoding.UTF8);
+        return path;
+    }
+
+    [Fact]
     public async Task GitHub_bridge_command_fails_closed_without_bifrost_gate()
     {
         var result = await RunNodeAsync([

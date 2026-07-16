@@ -8,6 +8,15 @@ import {
   beginCrossingReceipt,
   crossingProvenanceFromOptions,
 } from "./bifrost-crossing-documents.mjs";
+import {
+  buildAuthorizedRelease,
+  canonicalCommitSha,
+  canonicalRef,
+  canonicalRepository,
+  openRepositoryReleaseAuthorityStore,
+  releaseAuthorityId,
+  revokeAuthorizedRelease,
+} from "./bifrost-repository-release-authority.mjs";
 
 const PERSONA_WEBHOOK_NAME = "Bifrost Persona Pipe";
 const PERSONA_WEBHOOK_CACHE_PATH = resolve(".bifrost/discord-webhook-cache.json");
@@ -45,9 +54,99 @@ async function main() {
     case "other-request":
       await requestOtherBridgeAction(options);
       return;
+    case "authorize-release":
+      await authorizeRepositoryRelease(options);
+      return;
+    case "revoke-release":
+      await revokeRepositoryRelease(options);
+      return;
     default:
       throw new Error(`Unknown command "${command}". Run "node tools/bifrost-bridge.mjs help".`);
   }
+}
+
+async function authorizeRepositoryRelease(options) {
+  ensureGitHubBridgeGate(options);
+  const commandId = optionalString(options["cultmesh-command-id"]) ?? optionalString(process.env.BIFROST_CULTMESH_COMMAND_ID);
+  if (!commandId) throw new Error("authorize-release requires BIFROST_CULTMESH_COMMAND_ID or --cultmesh-command-id.");
+  const repository = canonicalRepository(requireOption(options, "repository"));
+  const ref = canonicalRef(requireOption(options, "ref"));
+  const commitSha = canonicalCommitSha(requireOption(options, "commit-sha"));
+  const policyDecisionId = requireOption(options, "policy-decision-id");
+  const authorityReference = requireOption(options, "authority-ref");
+  const actorIdentity = requireOption(options, "identity");
+  const sourceKind = requireOption(options, "source-kind");
+  const sourceId = requireOption(options, "source-id");
+  const epiphanyRunId = requireOption(options, "epiphany-run-id");
+  const epiphanyLaneId = requireOption(options, "epiphany-lane-id");
+  const epiphanyAgentIdentity = requireOption(options, "epiphany-agent-identity");
+  const remoteUrl = options["remote-url"] ?? `https://github.com/${repository}.git`;
+  const gitCommand = optionalString(options["git-executable"]) ?? resolveGitCommand();
+  const gitPrefixArgs = optionalString(options["git-exec-args"])?.split("\u001f").filter(Boolean) ?? [];
+  const remote = run(gitCommand, [...gitPrefixArgs, "ls-remote", "--refs", remoteUrl, ref], repoRoot).stdout.trim().split(/\r?\n/).filter(Boolean);
+  if (remote.length !== 1) throw new Error(`Remote ref ${repository}:${ref} did not resolve exactly once.`);
+  const [remoteSha, remoteRef] = remote[0].trim().split(/\s+/);
+  if (canonicalCommitSha(remoteSha) !== commitSha || remoteRef !== ref) {
+    throw new Error(`Remote ref ${repository}:${ref} does not exactly match requested commit ${commitSha}.`);
+  }
+  const storePath = resolve(options["release-authority-store"] ?? process.env.BIFROST_REPOSITORY_RELEASE_AUTHORITY_STORE ?? ".bifrost/repository-release-authority.cc");
+  const store = await openRepositoryReleaseAuthorityStore(storePath);
+  const authorityId = releaseAuthorityId(repository, ref, commitSha);
+  const existing = store.get(authorityId);
+  if (existing) {
+    if (existing.commandId === commandId && existing.status === "authorized") {
+      printJson({ ok: true, action: "authorize-release", authority: existing, idempotent: true });
+      return;
+    }
+    throw new Error(`Release authority ${authorityId} already exists; immutable authority records cannot be replaced.`);
+  }
+  const competing = store.getAll().find((authority) =>
+    authority.repositoryFullName === repository &&
+    authority.upstreamRef === ref &&
+    authority.status === "authorized"
+  );
+  if (competing) {
+    throw new Error(
+      `Release authority ${competing.authorityId} already authorizes ${repository}:${ref}; revoke it before authorizing another commit.`,
+    );
+  }
+  const externalReceiptUrl = `https://github.com/${repository}/commit/${commitSha}`;
+  const crossing = await beginCrossingReceipt({ ...options, "receipt-id": undefined }, {
+    commandId,
+    crossingKind: "github.repository_release_verification",
+    actor: { kind: "service", name: actorIdentity, bifrostIdentity: actorIdentity },
+    source: { kind: sourceKind, id: sourceId },
+    authority: { authorityRef: authorityReference, policyDecisionId },
+    epiphany: { runId: epiphanyRunId, laneId: epiphanyLaneId, agentIdentity: epiphanyAgentIdentity },
+    target: { surface: "GitHub", repositoryFullName: repository, upstreamRef: ref, commitSha },
+  });
+  await crossing.start();
+  await crossing.complete({ externalReceipt: { url: externalReceiptUrl, id: commitSha, repositoryFullName: repository, upstreamRef: ref, commitSha } });
+  const authority = await store.put(buildAuthorizedRelease({
+    repositoryFullName: repository, upstreamRef: ref, commitSha, commandId,
+    crossingReceiptId: crossing.receiptId, policyDecisionId, authorityReference,
+    actorIdentity, sourceKind, sourceId, epiphanyRunId, epiphanyLaneId,
+    epiphanyAgentIdentity, externalReceiptUrl, externalReceiptId: commitSha,
+    authorizedAt: new Date().toISOString(), expiresAt: optionalString(options["expires-at"]) ?? "",
+  }));
+  printJson({ ok: true, action: "authorize-release", authority });
+}
+
+async function revokeRepositoryRelease(options) {
+  ensureGitHubBridgeGate(options);
+  const commandId = optionalString(options["cultmesh-command-id"]) ?? optionalString(process.env.BIFROST_CULTMESH_COMMAND_ID);
+  if (!commandId) throw new Error("revoke-release requires BIFROST_CULTMESH_COMMAND_ID or --cultmesh-command-id.");
+  const repository = canonicalRepository(requireOption(options, "repository"));
+  const ref = canonicalRef(requireOption(options, "ref"));
+  const commitSha = canonicalCommitSha(requireOption(options, "commit-sha"));
+  const reason = requireOption(options, "reason");
+  const storePath = resolve(options["release-authority-store"] ?? process.env.BIFROST_REPOSITORY_RELEASE_AUTHORITY_STORE ?? ".bifrost/repository-release-authority.cc");
+  const store = await openRepositoryReleaseAuthorityStore(storePath);
+  const authorityId = releaseAuthorityId(repository, ref, commitSha);
+  const current = store.get(authorityId);
+  if (!current) throw new Error(`Release authority ${authorityId} does not exist.`);
+  const authority = await store.put(revokeAuthorizedRelease(current, { commandId, reason, revokedAt: new Date().toISOString() }));
+  printJson({ ok: true, action: "revoke-release", authority });
 }
 
 function loadBifrostLocalEnv() {
@@ -1360,6 +1459,8 @@ Commands:
   discord-dm        Send a Discord DM through Bifrost's bridge-owned bot token
   reddit-post       Create a self-post in r/GameCultOrg through the Bifrost Reddit app
   other-request     Record a Bifrost-gated request for a future outside-world surface
+  authorize-release Authorize one exact remote GitHub ref and commit for downstream deployment
+  revoke-release    Revoke the current authorization for one GitHub repository ref
 
 Examples:
   node tools/bifrost-bridge.mjs github-draft-pr --repo-root E:/Projects/AetheriaLore --identity nibu --title "Nibu: Glitchcraft" --path Aetheria/Articles/Nibu/glitchcraft.md --content-file article.md
