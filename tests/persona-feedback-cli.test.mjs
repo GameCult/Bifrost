@@ -15,8 +15,9 @@ const {defineDocumentType}=cr("cultcache-ts"), {CultMesh}=mr("cultmesh-ts"), def
 const nr=createRequire(resolve(cult,"packages","cultnet-ts","package.json")),{decode,encode}=nr("@msgpack/msgpack");
 
 test("Bifrost admits bound feedback as pressure only and exports CultNet",async()=>{
-  const dir=await mkdtemp(resolve(tmpdir(),"bifrost-feedback-")), store=resolve(dir,"provider.cc"), observationStore=resolve(dir,"observations.cc"), deliveryStore=resolve(dir,"delivery.cc"), unusedDeliveryDefault=resolve(dir,"unused-delivery.cc"), out=resolve(dir,"feedback.msgpack"), key=resolve(dir,"identity.seed"), anchor=resolve(dir,"anchor.msgpack");
+  const dir=await mkdtemp(resolve(tmpdir(),"bifrost-feedback-")), store=resolve(dir,"provider.cc"), observationStore=resolve(dir,"observations.cc"), deliveryStore=resolve(dir,"delivery.cc"), unusedDeliveryDefault=resolve(dir,"unused-delivery.cc"), out=resolve(dir,"feedback.msgpack"), key=resolve(dir,"identity.seed"), anchor=resolve(dir,"anchor.msgpack"),providerAnchor=resolve(dir,"provider-health-anchor.msgpack");
   cliNoStore("enroll-identity","--private-key",key,"--trust-anchor-out",anchor);
+  cliNoStore("export-provider-health-anchor","--private-key",key,"--trust-anchor-out",providerAnchor);
   cli("bind-target",store,"--guild-id","g","--channel-id","c","--persona-id","epiphany","--repo","GameCult/Epiphany","--runtime-id","epiphany-yggdrasil","--producer-runtime-id","voidbot-yggdrasil","--source-visibility","organization","--data-classification","organization_feedback","--delivery-store",deliveryStore);
   await putEvent(observationStore,event("one","human-one"));
   const sourceBefore=await readEvent(observationStore,"one");
@@ -38,6 +39,8 @@ test("Bifrost admits bound feedback as pressure only and exports CultNet",async(
   const payload=encode([signed.schemaVersion,signed.admissionId,packetTuple(signed.packet),signed.packetSha256,signed.sourceObserverId,signed.sourceObserverRuntimeId,signed.provider,signed.bifrostAdmissionReceiptId,signed.authority,signed.providerIdentityId]);
   const purpose=Buffer.from("bifrost.persona-feedback.delivery.v0"),domain=Buffer.from("epiphany.host-incarnation.signature.v0\0"),message=Buffer.concat([domain,u64(purpose.length),purpose,u64(payload.length),payload]);
   assert.equal(trust.length,6); assert.equal(trust[0],"epiphany.host_identity_trust_anchor.v0"); assert.equal(trust[1],signed.providerIdentityId);
+  const providerTrust=decode(await readFile(providerAnchor));assert.equal(providerTrust.length,6);assert.equal(providerTrust[0],"gamecult.provider_health_identity.trust_anchor.v1");assert.equal(providerTrust[1],createHash("sha256").update(Buffer.from("gamecult.provider-health.identity.v1\0")).update(providerTrust[2]).digest("hex"));assert.notEqual(providerTrust[1],trust[1]);assert.deepEqual(providerTrust[2],trust[2]);
+  const overwrite=spawnSync(process.execPath,[resolve(root,"tools","persona-feedback.mjs"),"export-provider-health-anchor","--private-key",key,"--trust-anchor-out",providerAnchor],{cwd:root,encoding:"utf8"});assert.notEqual(overwrite.status,0);assert.match(overwrite.stderr,/already exists|EEXIST/);
   const publicKey=createPublicKey({key:Buffer.concat([Buffer.from("302a300506032b6570032100","hex"),Buffer.from(trust[2])]),format:"der",type:"spki"});
   assert.equal(verify(null,message,publicKey,Buffer.from(signed.providerSignature)),true);
   assert.equal(first.receipt.grantsWorkAuthority,false);
