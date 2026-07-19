@@ -64,6 +64,7 @@ export async function loadEpiphanyOperatorTrustAnchor(path,{decode}={}){const ru
 
 export function verifySealedReceipt({receipt,admission,trustedIdentity,encode}){
   parseOperatorAdmission(admission,{allowLegacy:true});parseOperatorResultReceipt(receipt,{allowLegacy:true});const anchor=parseTrustAnchor(trustedIdentity);
+  if(receipt.result.schemaVersion==="epiphany.operator_command.status_result.v2"&&admission.packet.command.kind!=="status")throw new Error("Epiphany Status-v2 result is not bound to a Status command.");
   if(receipt.providerIdentityId!==anchor.identityId)throw new Error("Epiphany sealed result used an untrusted host identity.");
   if(receipt.commandId!==admission.packet.commandId||receipt.packetSha256!==admission.packetSha256||receipt.targetRuntimeId!==admission.packet.targetRuntimeId)throw new Error("Epiphany sealed result receipt is not bound to the admitted command.");
   if(receipt.result.commandId!==receipt.commandId||receipt.result.packetSha256!==receipt.packetSha256||receipt.result.targetRuntimeId!==receipt.targetRuntimeId||receipt.result.completedAt!==receipt.completedAt)throw new Error("Epiphany sealed result receipt substituted its embedded application result.");
