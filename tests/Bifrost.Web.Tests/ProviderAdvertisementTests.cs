@@ -22,7 +22,7 @@ public sealed class ProviderAdvertisementTests
         AssertEndpoint(root, "crossing-receipts", "bifrost.crossing_receipt.v1", "bridge");
         AssertEndpoint(root, "patron-support-intake", "bifrost.patron_support_event.v0", "patronage");
         AssertEndpoint(root, "github-webhooks", "bifrost.work_item.v0", "github");
-        AssertEndpoint(root, "epiphany-operator-requests", "voidbot.discord.epiphany_operator_request.v0", "operator");
+        AssertEndpoint(root, "epiphany-operator-requests", "voidbot.discord.epiphany_operator_request.v1", "operator");
         AssertEndpoint(root, "epiphany-operator-results", "epiphany.operator_command.sealed_result.v1", "epiphany");
         Assert.Equal("asgard.yggdrasil.bifrost", root.GetProperty("locatedService").GetString());
         AssertSchemaPurpose(root, "bifrost.crossing_receipt.v1", "canonical Bifrost-owned public crossing receipt");

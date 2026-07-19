@@ -5,7 +5,7 @@
 - Owner: Bifrost alone authenticates a Discord operator request, resolves the
   persisted Discord-to-Bifrost actor link, and signs an expiring Epiphany
   admission. Epiphany alone decides and applies the named command.
-- Inputs: one strict `voidbot.discord.epiphany_operator_request.v0`, the exact
+- Inputs: one strict `voidbot.discord.epiphany_operator_request.v1`, the exact
   configured Discord owner, a persisted Bifrost actor link, the deployment's
   operator signing identity, and the configured Epiphany runtime/host trust
   anchor.

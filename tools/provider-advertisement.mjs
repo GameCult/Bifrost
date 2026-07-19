@@ -164,7 +164,7 @@ const canonicalService = `${rootVerse}.bifrost`;
 const locatedService = `${rootVerse}.${currentMachine}.bifrost`;
 const motionSurfaceCultMeshUri = `cultmesh://${locatedService}/eve/governance/surface`;
 const motionCommandCultMeshUri = `cultmesh://${locatedService}/commands/motion`;
-const epiphanyOperatorRequestSchemaId = "voidbot.discord.epiphany_operator_request.v0";
+const epiphanyOperatorRequestSchemaId = "voidbot.discord.epiphany_operator_request.v1";
 const epiphanyOperatorAdmissionSchemaId = "bifrost.operator_command.delivery.v1";
 const epiphanyOperatorResultSchemaId = "epiphany.operator_command.result.v1";
 const epiphanyOperatorSealedResultSchemaId = "epiphany.operator_command.sealed_result.v1";
@@ -506,7 +506,7 @@ function buildAdvertisement(options) {
         "does not touch secrets in this advertisement",
       ]),
       boundary("epiphany-operator", "Bifrost admission; Epiphany execution", [
-        "admit exact owner-only status, sleep, wake, and directive requests",
+        "admit exact owner-only status, sleep, wake, directive, reviews, and review requests",
         "require the exact configured Discord owner and persisted Bifrost actor-link mapping; Heimdall reference is provenance until signed claims are live",
         "sign Rust-compatible expiring operator admissions with a dedicated Ed25519 identity",
         "relay only Epiphany-origin results bound to the admitted command",

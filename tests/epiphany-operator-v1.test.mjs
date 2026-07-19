@@ -23,7 +23,7 @@ const review = {
 function request(command) {
   return {
     schemaName: "voidbot.discord.epiphany_operator_request",
-    schemaVersion: "voidbot.discord.epiphany_operator_request.v0",
+    schemaVersion: "voidbot.discord.epiphany_operator_request.v1",
     requestId: "request-1",
     commandId: "command-1",
     nonce: "nonce-1",

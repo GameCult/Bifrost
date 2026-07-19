@@ -1,5 +1,5 @@
 export const operatorRequestType="voidbot.discord.epiphany_operator_request";
-export const operatorRequestSchema="voidbot.discord.epiphany_operator_request.v0";
+export const operatorRequestSchema="voidbot.discord.epiphany_operator_request.v1";
 export const operatorAdmissionType="bifrost.operator_command.delivery";
 export const operatorAdmissionSchema="bifrost.operator_command.delivery.v1";
 export const legacyOperatorAdmissionSchema="bifrost.operator_command.delivery.v0";
