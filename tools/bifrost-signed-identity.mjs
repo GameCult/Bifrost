@@ -1,0 +1,14 @@
+import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, sign as ed25519Sign, verify as ed25519Verify } from "node:crypto";
+import { chmod, mkdir, open, readFile, stat } from "node:fs/promises";
+import { dirname } from "node:path";
+
+const ID_DOMAIN=Buffer.from("epiphany.host-incarnation.identity.v0\0","utf8");
+const SIGNATURE_DOMAIN=Buffer.from("epiphany.host-incarnation.signature.v0\0","utf8");
+
+export async function enrollSignedIdentity(path,label="Bifrost identity") { await mkdir(dirname(path),{recursive:true}); const {privateKey}=generateKeyPairSync("ed25519"),seed=Buffer.from(privateKey.export({format:"jwk"}).d,"base64url"),handle=await open(path,"wx",0o600); try{await handle.writeFile(seed);await handle.sync();}finally{await handle.close();} await chmod(path,0o600); return loadSignedIdentity(path,label); }
+export async function loadSignedIdentity(path,label="Bifrost identity") { const info=await stat(path); if(!info.isFile())throw new Error(`${label} must be a regular file.`); if(process.platform!=="win32"&&(info.mode&0o077)!==0)throw new Error(`${label} private key must have mode 0600.`); if(process.platform!=="win32"&&typeof process.geteuid==="function"&&info.uid!==process.geteuid())throw new Error(`${label} private key must be owned by the service user.`); const seed=await readFile(path);if(seed.length!==32)throw new Error(`${label} seed must be exactly 32 bytes.`); const key=createPrivateKey({key:Buffer.concat([Buffer.from("302e020100300506032b657004220420","hex"),seed]),format:"der",type:"pkcs8"}),publicKey=createPublicKey(key).export({format:"der",type:"spki"}).subarray(-32),identityId=createHash("sha256").update(ID_DOMAIN).update(publicKey).digest("hex"); return {identityId,publicKey,key}; }
+export function signPurpose(identity,purpose,payload){return ed25519Sign(null,domainMessage(purpose,payload),identity.key);}
+export function verifyPurpose(publicKey,purpose,payload,signature){const key=createPublicKey({key:Buffer.concat([Buffer.from("302a300506032b6570032100","hex"),Buffer.from(publicKey)]),format:"der",type:"spki"});return ed25519Verify(null,domainMessage(purpose,payload),key,signature);}
+export function trustAnchor(identity,createdAt){return {schemaVersion:"epiphany.host_identity_trust_anchor.v0",identityId:identity.identityId,publicKey:new Uint8Array(identity.publicKey),assurance:"os_service_file_bound",identityCreatedAt:createdAt,sourceIdentityRecordSha256:`sha256-${createHash("sha256").update(identity.publicKey).digest("hex")}`};}
+function domainMessage(purpose,payload){const p=Buffer.from(purpose,"utf8");return Buffer.concat([SIGNATURE_DOMAIN,u64(p.length),p,u64(payload.length),payload]);}
+function u64(value){const b=Buffer.alloc(8);b.writeBigUInt64BE(BigInt(value));return b;}

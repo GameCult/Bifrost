@@ -55,6 +55,8 @@ Required witness path for the hosted service:
 
 Bifrost publishes under these CultMesh namespaces:
 
+The operator bridge additionally advertises `commands/epiphany-operator` and `receipts/epiphany-operator`. The command endpoint consumes strict VoidBot inbox documents and emits dedicated Bifrost-signed admissions; the receipt endpoint exposes only Epiphany-origin, command-bound results. The transport adapter is intentionally unresolved until a live authenticated CultNet RUDP request/reply implementation is installed on Yggdrasil.
+
 - `gamecult.bifrost.service` for service registration, health, build/version,
   schema catalog, and command capability discovery.
 - `gamecult.bifrost.governance` for motions, topics, comments, votes,
