@@ -23,7 +23,8 @@ public sealed class ProviderAdvertisementTests
         AssertEndpoint(root, "patron-support-intake", "bifrost.patron_support_event.v0", "patronage");
         AssertEndpoint(root, "github-webhooks", "bifrost.work_item.v0", "github");
         AssertEndpoint(root, "epiphany-operator-requests", "voidbot.discord.epiphany_operator_request.v0", "operator");
-        AssertEndpoint(root, "epiphany-operator-results", "epiphany.operator_command.sealed_result.v0", "epiphany");
+        AssertEndpoint(root, "epiphany-operator-results", "epiphany.operator_command.sealed_result.v1", "epiphany");
+        Assert.Equal("asgard.yggdrasil.bifrost", root.GetProperty("locatedService").GetString());
         AssertSchemaPurpose(root, "bifrost.crossing_receipt.v1", "canonical Bifrost-owned public crossing receipt");
         AssertSchemaPurpose(root, "bifrost.patron_support_event.v0", "current hosted Heimdall-signed patron support fact consumed by Bifrost");
         AssertWitness(root, ".bifrost/bridge-receipts.cc", "bifrost.crossing_receipt.v1", "current");
@@ -182,6 +183,8 @@ public sealed class ProviderAdvertisementTests
         process.StartInfo.Environment["BIFROST_SKIP_LOCAL_ENV"] = "true";
         process.StartInfo.Environment["BIFROST_REDDIT_CLIENT_ID"] = string.Empty;
         process.StartInfo.Environment["BIFROST_REDDIT_REFRESH_TOKEN"] = string.Empty;
+        process.StartInfo.Environment["BIFROST_ROOT_VERSE"] = "asgard";
+        process.StartInfo.Environment["BIFROST_MACHINE_ID"] = "yggdrasil";
 
         process.Start();
         var stdout = await process.StandardOutput.ReadToEndAsync();

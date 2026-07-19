@@ -93,6 +93,9 @@ For the full staged roadmap, including contribution points, revenue share, patro
 - dry-run a Reddit organizing thread with `node tools/bifrost-bridge.mjs reddit-post --title "Thread title" --persona-name Bifrost --content "Thread body" --dry-run true`
 - print the Eve provider advertisement with `node tools/provider-advertisement.mjs print`
 - export the Eve provider store with `node tools/provider-advertisement.mjs export --out .bifrost/provider-store.cc`
+- inspect the typed six-command Epiphany operator authority map in
+  `docs/epiphany-operator-boundary.md`; provider advertisement commands require
+  explicit `BIFROST_ROOT_VERSE` and `BIFROST_MACHINE_ID` deployment identity
 - inspect the interactive Motion Verse surface at `/eve/governance/surface` while signed in as an active member
 - container smoke test with `docker compose -f compose.local.yaml up --build`
 - container smoke tests may hit `/healthz` and `/readyz` as product probes.

@@ -6,6 +6,7 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
   operatorAdmissionType,
+  legacyOperatorResultReceiptSchema,
   operatorResultReceiptType,
   parseOperatorAdmission,
   parseOperatorResultReceipt,
@@ -13,7 +14,8 @@ import {
 } from "./epiphany-operator-command-documents.mjs";
 import { verifyPurpose } from "./bifrost-signed-identity.mjs";
 
-export const EPIPHANY_RESULT_SIGNING_PURPOSE="epiphany.operator-command.sealed-result.v0";
+export const EPIPHANY_RESULT_SIGNING_PURPOSE="epiphany.operator-command.sealed-result.v1";
+export const LEGACY_EPIPHANY_RESULT_SIGNING_PURPOSE="epiphany.operator-command.sealed-result.v0";
 const RUDP_CONNECTION_ID=0xe91f0001;
 
 export class EpiphanyOperatorCultNetRudpTransport {
@@ -41,7 +43,7 @@ export class EpiphanyOperatorCultNetRudpTransport {
   }
 
   async #executeOne(admission){
-    parseOperatorAdmission(admission);
+    parseOperatorAdmission(admission,{allowLegacy:true});
     const socket=this.socketFactory("udp4");
     await bindSocket(socket);
     const connection=this.connectionFactory({runtimeId:this.runtimeId,socket,mode:"client",remoteHost:this.endpoint.host,remotePort:this.endpoint.port,connectionId:RUDP_CONNECTION_ID,resendDelayMs:50,resendPollMs:10});
@@ -61,7 +63,7 @@ export class EpiphanyOperatorCultNetRudpTransport {
 export async function loadEpiphanyOperatorTrustAnchor(path,{decode}={}){const runtime=decode?{decode}:loadCultNetRuntime().msgpack,value=runtime.decode(await readFile(path));if(!Array.isArray(value)||value.length!==6)throw new Error("Epiphany operator trust anchor must be the raw compact 6-field MessagePack crossing artifact.");return parseTrustAnchor({schemaVersion:value[0],identityId:value[1],publicKey:value[2],assurance:value[3],identityCreatedAt:value[4],sourceIdentityRecordSha256:value[5]});}
 
 export function verifySealedReceipt({receipt,admission,trustedIdentity,encode}){
-  parseOperatorAdmission(admission);parseOperatorResultReceipt(receipt);const anchor=parseTrustAnchor(trustedIdentity);
+  parseOperatorAdmission(admission,{allowLegacy:true});parseOperatorResultReceipt(receipt,{allowLegacy:true});const anchor=parseTrustAnchor(trustedIdentity);
   if(receipt.providerIdentityId!==anchor.identityId)throw new Error("Epiphany sealed result used an untrusted host identity.");
   if(receipt.commandId!==admission.packet.commandId||receipt.packetSha256!==admission.packetSha256||receipt.targetRuntimeId!==admission.packet.targetRuntimeId)throw new Error("Epiphany sealed result receipt is not bound to the admitted command.");
   if(receipt.result.commandId!==receipt.commandId||receipt.result.packetSha256!==receipt.packetSha256||receipt.result.targetRuntimeId!==receipt.targetRuntimeId||receipt.result.completedAt!==receipt.completedAt)throw new Error("Epiphany sealed result receipt substituted its embedded application result.");
@@ -73,7 +75,8 @@ export function verifySealedReceipt({receipt,admission,trustedIdentity,encode}){
   if(completed<issued)throw new Error("Epiphany sealed result predates the admitted command.");
   const digest=`sha256-${createHash("sha256").update(encode(receipt.result)).digest("hex")}`;
   if(digest!==receipt.resultPayloadSha256)throw new Error("Epiphany sealed result payload digest is invalid.");
-  if(!verifyPurpose(anchor.publicKey,EPIPHANY_RESULT_SIGNING_PURPOSE,encode(resultReceiptTuple(receipt)),receipt.executorSignature))throw new Error("Epiphany sealed result signature is invalid.");
+  const purpose=receipt.schemaVersion===legacyOperatorResultReceiptSchema?LEGACY_EPIPHANY_RESULT_SIGNING_PURPOSE:EPIPHANY_RESULT_SIGNING_PURPOSE;
+  if(!verifyPurpose(anchor.publicKey,purpose,encode(resultReceiptTuple(receipt)),receipt.executorSignature))throw new Error("Epiphany sealed result signature is invalid.");
   return receipt;
 }
 

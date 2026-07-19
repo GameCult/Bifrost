@@ -9,7 +9,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { enrollOperatorIdentity } from "../tools/epiphany-operator-commands.mjs";
 import { resultReceiptTuple } from "../tools/epiphany-operator-command-documents.mjs";
-import { EPIPHANY_RESULT_SIGNING_PURPOSE,EpiphanyOperatorCultNetRudpTransport,verifySealedReceipt } from "../tools/epiphany-operator-cultnet-rudp.mjs";
+import { LEGACY_EPIPHANY_RESULT_SIGNING_PURPOSE as EPIPHANY_RESULT_SIGNING_PURPOSE,EpiphanyOperatorCultNetRudpTransport,verifySealedReceipt } from "../tools/epiphany-operator-cultnet-rudp.mjs";
 import { signPurpose,trustAnchor } from "../tools/bifrost-signed-identity.mjs";
 
 const requireCult=createRequire(resolve("E:/Projects/CultLib/packages/cultnet-ts/package.json"));

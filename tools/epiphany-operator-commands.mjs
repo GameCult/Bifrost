@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { admissionTuple,operatorAdmissionSchema,parseOperatorAdmission,parseOperatorRequest,parseOperatorResult,parseOperatorResultReceipt,packetTuple } from "./epiphany-operator-command-documents.mjs";
 import { enrollSignedIdentity,loadSignedIdentity,signPurpose,trustAnchor } from "./bifrost-signed-identity.mjs";
 
-export const OPERATOR_SIGNING_PURPOSE="bifrost.operator-command.delivery.v0";
+export const OPERATOR_SIGNING_PURPOSE="bifrost.operator-command.delivery.v1";
 export const defaultOperatorIdentityPath=()=>process.env.BIFROST_EPIPHANY_OPERATOR_PRIVATE_KEY??(process.platform==="win32"?resolve(".bifrost","private","epiphany-operator-ed25519.seed"):"/var/lib/gamecult/bifrost/epiphany-operator/operator-ed25519.seed");
 
 export class OperatorCommandPermanentRefusal extends Error { constructor(code,message){super(message);this.name="OperatorCommandPermanentRefusal";this.code=code;this.retryable=false;} }
@@ -17,9 +17,9 @@ export async function admitOperatorRequest({request,ownerDiscordId,actorLink,ide
   if(existingAdmission){
     await compareAdmission(ledger,request,existingAdmission);
     if(existingCompletion){
-      parseOperatorResultReceipt(existingCompletion);
+      parseOperatorResultReceipt(existingCompletion,{allowLegacy:true});
       if(existingCompletion.commandId!==existingAdmission.packet.commandId||existingCompletion.packetSha256!==existingAdmission.packetSha256||existingCompletion.targetRuntimeId!==existingAdmission.packet.targetRuntimeId)refuse("command-id-collision","operator completion is not bound to this exact durable admission");
-      transport.verifyReceipt(existingAdmission,existingCompletion);
+      parseOperatorAdmission(existingAdmission,{allowLegacy:true});transport.verifyReceipt(existingAdmission,existingCompletion);
       return {admission:existingAdmission,result:existingCompletion.result,receipt:existingCompletion,resultProviderIdentityId:existingCompletion.providerIdentityId,recovered:true};
     }
     return executeAdmission({request,admission:existingAdmission,transport,ledger,recovered:true});

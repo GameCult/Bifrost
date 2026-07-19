@@ -158,19 +158,18 @@ const surfaceSchemaId = "gamecult.eve.surface_state.v1";
 const interfaceBindingDocumentType = "gamecult.eve.interface_binding";
 const interfaceBindingSchemaId = "gamecult.eve.interface_binding.v1";
 const verseId = "bifrost.local";
-const rootVerse = "asgard";
-const currentMachine = "starfire";
+const rootVerse = requiredDeploymentIdentity("BIFROST_ROOT_VERSE");
+const currentMachine = requiredDeploymentIdentity("BIFROST_MACHINE_ID");
 const canonicalService = `${rootVerse}.bifrost`;
 const locatedService = `${rootVerse}.${currentMachine}.bifrost`;
-const plannedLocatedService = `${rootVerse}.yggdrasil.bifrost`;
 const motionSurfaceCultMeshUri = `cultmesh://${locatedService}/eve/governance/surface`;
 const motionCommandCultMeshUri = `cultmesh://${locatedService}/commands/motion`;
 const epiphanyOperatorRequestSchemaId = "voidbot.discord.epiphany_operator_request.v0";
-const epiphanyOperatorAdmissionSchemaId = "bifrost.operator_command.delivery.v0";
-const epiphanyOperatorResultSchemaId = "epiphany.operator_command.result.v0";
-const epiphanyOperatorSealedResultSchemaId = "epiphany.operator_command.sealed_result.v0";
+const epiphanyOperatorAdmissionSchemaId = "bifrost.operator_command.delivery.v1";
+const epiphanyOperatorResultSchemaId = "epiphany.operator_command.result.v1";
+const epiphanyOperatorSealedResultSchemaId = "epiphany.operator_command.sealed_result.v1";
 const epiphanyOperatorTerminalSchemaId = "bifrost.operator_command.terminal.v0";
-const epiphanyOperatorDiscordDeliverySchemaId = "bifrost.discord.epiphany_operator_delivery.v0";
+const epiphanyOperatorDiscordDeliverySchemaId = "bifrost.discord.epiphany_operator_delivery.v1";
 
 const advertisementDefinition = defineDocumentType({
   type: documentType,
@@ -323,7 +322,6 @@ function buildAdvertisement(options) {
     rootVerse,
     canonicalService,
     locatedService,
-    plannedLocatedService,
     cultMeshAddress: locatedService,
     endpoints: [
       endpoint("operator-tui", `${locatedService}/eve/tui`, "gamecult.eve.surface.v1", ["tui", "nightwing-tui"]),
@@ -349,7 +347,7 @@ function buildAdvertisement(options) {
       presentationOwner: "Eve/CultUI",
       discoveryOwner: "Odin through CultMesh",
       stateOwner: "Bifrost typed state with CultCache .cc witnesses or export paths",
-      runtimeMigration: `currently ${locatedService}; planned move target ${plannedLocatedService}`,
+      runtimeMigration: `deployment identity ${locatedService}`,
     },
     namespaces: [
       namespace("gamecult.bifrost.service", "service registration, build/version, schema catalog, and command discovery"),
@@ -971,7 +969,6 @@ function buildInterfaceBinding(surface, stats) {
       cultMeshAddress: `${locatedService}/eve/tui`,
       canonicalService,
       locatedService,
-      plannedLocatedService,
       endpoints: [
         endpoint("operator-tui", `${locatedService}/eve/tui`, "gamecult.eve.surface.v1", ["tui", "nightwing-tui"]),
         endpoint("operator-gui", `${locatedService}/eve/gui`, "gamecult.eve.surface.v1", ["gui", "browser", "eve-native"]),
@@ -1186,7 +1183,6 @@ function parseAdvertisement(input, { requireCurrentContract = true } = {}) {
     rootVerse: optionalString(input.rootVerse, rootVerse),
     canonicalService: optionalString(input.canonicalService, canonicalService),
     locatedService: optionalString(input.locatedService, locatedService),
-    plannedLocatedService: typeof input.plannedLocatedService === "string" ? input.plannedLocatedService.trim() : "",
     cultMeshAddress: optionalString(input.cultMeshAddress, locatedService),
     endpoints: Array.isArray(input.endpoints) ? requireObjectArray(input.endpoints, "endpoints") : [],
     routes: Array.isArray(input.routes) ? requireObjectArray(input.routes, "routes") : [],
@@ -1303,6 +1299,14 @@ function requireStringArray(value, field) {
 
 function resolveOptionPath(path) {
   return resolve(process.cwd(), path);
+}
+
+function requiredDeploymentIdentity(name) {
+  const value = process.env[name];
+  if (typeof value !== "string" || !/^[a-z0-9][a-z0-9-]*$/.test(value)) {
+    throw new Error(`${name} must explicitly name this deployment using lowercase letters, digits, or hyphens.`);
+  }
+  return value;
 }
 
 function printJson(value) {
