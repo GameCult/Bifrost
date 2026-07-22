@@ -8,6 +8,7 @@ const root=resolve(import.meta.dirname,".."),projects=resolve(root,".."),cult=re
 const require=createRequire(resolve(cult,"packages","cultnet-ts","package.json"));
 const {encodeCultNetMessageForWire,encodeRudpPacket}=require("cultnet-ts"),{encode}=require("@msgpack/msgpack");
 const protocol="cultnet.transport.rudp.v0",schema="idunn.signed_daemon_health.v1",sourceRuntimeId="bifrost-persona-feedback";
+export const signedHealthSourceRole="daemon-health-publisher";
 const states=new Set(["active","warming","degraded","failed"]),reasons=new Set(["ready","starting","readiness-degraded","unavailable"]);
 
 export function createPersonaFeedbackHealthPublisher(identity,publisherIncarnationId=randomUUID()){
@@ -43,7 +44,7 @@ export async function publishPersonaFeedbackHealth(input){
   try{
     await new Promise((ok,fail)=>{socket.once("error",fail);socket.bind(0,endpoint.host.includes(":")?"::":"0.0.0.0",()=>{socket.off("error",fail);ok();});});
     await send(socket,endpoint,packet("connect",1,new Uint8Array(),"control"));await delay(300);
-    const incarnation=signed.record[7],sequence=signed.record[8],storedAt=new Date(signed.observedAtUnixMillis).toISOString(),signedMessage=rawPut(`bifrost-feedback-signed-health:${incarnation}:${sequence}`,"idunn.signed_daemon_health",input.daemonId,storedAt,signed.payload,"signed-daemon-health-publisher");
+    const incarnation=signed.record[7],sequence=signed.record[8],storedAt=new Date(signed.observedAtUnixMillis).toISOString(),signedMessage=rawPut(`bifrost-feedback-signed-health:${incarnation}:${sequence}`,"idunn.signed_daemon_health",input.daemonId,storedAt,signed.payload,signedHealthSourceRole);
     await send(socket,endpoint,packet("data",2,encode(encodeCultNetMessageForWire(signedMessage,"cultnet.schema.v0")),"schema"));
     if(input.publishUnsignedDiagnostic===true){
       const diagnosticPayload=encode([input.daemonId,input.state,input.detail,storedAt,input.healthContract,"diagnostic-only",protocol]),diagnosticMessage=rawPut(`bifrost-feedback-unsigned-diagnostic:${incarnation}:${sequence}`,"idunn.daemon_health",input.daemonId,storedAt,diagnosticPayload,"unsigned-health-diagnostic");

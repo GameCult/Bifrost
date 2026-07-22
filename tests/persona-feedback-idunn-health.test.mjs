@@ -6,12 +6,13 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { enrollBifrostFeedbackIdentity, providerHealthIdentity, signFeedbackAdmission } from "../tools/bifrost-feedback-identity.mjs";
-import { createPersonaFeedbackHealthPublisher, createSignedPersonaFeedbackHealth } from "../tools/persona-feedback-idunn-health.mjs";
+import { createPersonaFeedbackHealthPublisher, createSignedPersonaFeedbackHealth, signedHealthSourceRole } from "../tools/persona-feedback-idunn-health.mjs";
 
 const root=resolve(import.meta.dirname,".."),cult=resolve(root,"..","CultLib"),require=createRequire(resolve(cult,"packages","cultnet-ts","package.json")),{encode,decode}=require("@msgpack/msgpack");
 const idDomain=Buffer.from("gamecult.provider-health.identity.v1\0"),signatureDomain=Buffer.from("gamecult.provider-health.signature.v1\0"),purpose=Buffer.from("idunn.signed_daemon_health.v1");
 
 test("Persona-feedback emits the exact canonical signed daemon-health tuple",async()=>{
+  assert.equal(signedHealthSourceRole,"daemon-health-publisher");
   const identity=await identityFixture(),incarnation="019f523f-f650-7001-be75-b4428985652b",signed=createSignedPersonaFeedbackHealth({daemonId:"yggdrasil-bifrost-persona-feedback",healthContract:"bifrost.cultnet-rudp-persona-feedback-health",state:"active",detail:"ready",identity,publisherIncarnationId:incarnation,publisherSequence:7,observedAtUnixMillis:1773950400123}),record=decode(signed.payload,{useBigInt64:true});
   assert.equal(record.length,17);assert.deepEqual(record.slice(0,10),["idunn.signed_daemon_health.v1","yggdrasil-bifrost-persona-feedback","bifrost.cultnet-rudp-persona-feedback-health","bifrost-persona-feedback","active","ready",signed.providerIdentityId,incarnation,7,1773950400123n]);assert.deepEqual(record.slice(10,14),[null,null,null,null]);assert.ok(record[15] instanceof Uint8Array);assert.equal(record[14],"ed25519");assert.equal(record[15].length,64);assert.equal(record[16],false);
   const canonical=[...record];canonical[15]=new Uint8Array();assert.equal(verifyProvider(identity,encode(canonical,{useBigInt64:true}),record[15]),true);
