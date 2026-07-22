@@ -25,8 +25,11 @@ export function createSignedPersonaFeedbackHealth(input){
   if(!isUuid(input.publisherIncarnationId))throw new Error("Bifrost Persona-feedback publisher incarnation must be a UUID.");
   if(!Number.isSafeInteger(input.publisherSequence)||input.publisherSequence<=0)throw new Error("Bifrost Persona-feedback publisher sequence must be a positive safe integer.");
   const observed=Number(input.observedAtUnixMillis??Date.now());if(!Number.isSafeInteger(observed)||observed<=0)throw new Error("Bifrost Persona-feedback observation time must be positive Unix milliseconds.");
-  const provider=providerHealthIdentity(input.identity),record=[schema,input.daemonId,input.healthContract,sourceRuntimeId,input.state,input.detail,provider.identityId,input.publisherIncarnationId,input.publisherSequence,observed,null,null,null,null,"ed25519",new Uint8Array(),false];
-  const proof=signProviderHealth(input.identity,encode(record));if(proof.identityId!==provider.identityId)throw new Error("Provider-health signer identity derivation disagrees with the packet.");record[15]=new Uint8Array(proof.signature);
+  // Rust's canonical positional contract represents Vec<u8> as a MessagePack
+  // integer array. Uint8Array lowers to bin8 and is therefore a different
+  // signed payload even though both decode to bytes in JavaScript.
+  const provider=providerHealthIdentity(input.identity),record=[schema,input.daemonId,input.healthContract,sourceRuntimeId,input.state,input.detail,provider.identityId,input.publisherIncarnationId,input.publisherSequence,observed,null,null,null,null,"ed25519",[],false];
+  const proof=signProviderHealth(input.identity,encode(record));if(proof.identityId!==provider.identityId)throw new Error("Provider-health signer identity derivation disagrees with the packet.");record[15]=Array.from(proof.signature);
   return {record,payload:encode(record),providerIdentityId:provider.identityId,observedAtUnixMillis:observed};
 }
 
