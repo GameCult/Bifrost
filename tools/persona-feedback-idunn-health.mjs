@@ -35,6 +35,12 @@ export function createSignedPersonaFeedbackHealth(input){
   return {record,payload:canonicalHealthEncode(record),providerIdentityId:provider.identityId,observedAtUnixMillis:observed};
 }
 
+export function createSignedHealthRawPut(daemonId,signed){
+  requireText(daemonId,"daemon id");
+  const incarnation=signed.record[7],sequence=signed.record[8],storedAt=new Date(signed.observedAtUnixMillis).toISOString();
+  return rawPut(`bifrost-feedback-signed-health:${incarnation}:${sequence}`,"idunn.signed_daemon_health",daemonId,storedAt,signed.payload,signedHealthSourceRole);
+}
+
 function canonicalHealthEncode(value){return encode(value,{useBigInt64:true});}
 
 export async function publishPersonaFeedbackHealth(input){
@@ -44,7 +50,7 @@ export async function publishPersonaFeedbackHealth(input){
   try{
     await new Promise((ok,fail)=>{socket.once("error",fail);socket.bind(0,endpoint.host.includes(":")?"::":"0.0.0.0",()=>{socket.off("error",fail);ok();});});
     await send(socket,endpoint,packet("connect",1,new Uint8Array(),"control"));await delay(300);
-    const incarnation=signed.record[7],sequence=signed.record[8],storedAt=new Date(signed.observedAtUnixMillis).toISOString(),signedMessage=rawPut(`bifrost-feedback-signed-health:${incarnation}:${sequence}`,"idunn.signed_daemon_health",input.daemonId,storedAt,signed.payload,signedHealthSourceRole);
+    const incarnation=signed.record[7],sequence=signed.record[8],storedAt=new Date(signed.observedAtUnixMillis).toISOString(),signedMessage=createSignedHealthRawPut(input.daemonId,signed);
     await send(socket,endpoint,packet("data",2,encode(encodeCultNetMessageForWire(signedMessage,"cultnet.schema.v0")),"schema"));
     if(input.publishUnsignedDiagnostic===true){
       const diagnosticPayload=encode([input.daemonId,input.state,input.detail,storedAt,input.healthContract,"diagnostic-only",protocol]),diagnosticMessage=rawPut(`bifrost-feedback-unsigned-diagnostic:${incarnation}:${sequence}`,"idunn.daemon_health",input.daemonId,storedAt,diagnosticPayload,"unsigned-health-diagnostic");
