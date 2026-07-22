@@ -28,10 +28,14 @@ export function createSignedPersonaFeedbackHealth(input){
   // Rust's canonical positional contract represents Vec<u8> as a MessagePack
   // integer array. Uint8Array lowers to bin8 and is therefore a different
   // signed payload even though both decode to bytes in JavaScript.
-  const provider=providerHealthIdentity(input.identity),record=[schema,input.daemonId,input.healthContract,sourceRuntimeId,input.state,input.detail,provider.identityId,input.publisherIncarnationId,input.publisherSequence,observed,null,null,null,null,"ed25519",[],false];
-  const proof=signProviderHealth(input.identity,encode(record));if(proof.identityId!==provider.identityId)throw new Error("Provider-health signer identity derivation disagrees with the packet.");record[15]=Array.from(proof.signature);
-  return {record,payload:encode(record),providerIdentityId:provider.identityId,observedAtUnixMillis:observed};
+  // Safe JavaScript numbers above u32 lower as float64. Rust's u64 lowers as
+  // uint64, so retain the timestamp as BigInt on this signed wire surface.
+  const provider=providerHealthIdentity(input.identity),record=[schema,input.daemonId,input.healthContract,sourceRuntimeId,input.state,input.detail,provider.identityId,input.publisherIncarnationId,input.publisherSequence,BigInt(observed),null,null,null,null,"ed25519",[],false];
+  const proof=signProviderHealth(input.identity,canonicalHealthEncode(record));if(proof.identityId!==provider.identityId)throw new Error("Provider-health signer identity derivation disagrees with the packet.");record[15]=Array.from(proof.signature);
+  return {record,payload:canonicalHealthEncode(record),providerIdentityId:provider.identityId,observedAtUnixMillis:observed};
 }
+
+function canonicalHealthEncode(value){return encode(value,{useBigInt64:true});}
 
 export async function publishPersonaFeedbackHealth(input){
   if(!input.endpoint)throw new Error("Bifrost Persona-feedback Idunn health endpoint is required.");
