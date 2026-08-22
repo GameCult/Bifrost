@@ -164,12 +164,6 @@ const canonicalService = `${rootVerse}.bifrost`;
 const locatedService = `${rootVerse}.${currentMachine}.bifrost`;
 const motionSurfaceCultMeshUri = `cultmesh://${locatedService}/eve/governance/surface`;
 const motionCommandCultMeshUri = `cultmesh://${locatedService}/commands/motion`;
-const epiphanyOperatorRequestSchemaId = "voidbot.discord.epiphany_operator_request.v1";
-const epiphanyOperatorAdmissionSchemaId = "bifrost.operator_command.delivery.v1";
-const epiphanyOperatorResultSchemaId = "epiphany.operator_command.result.v1";
-const epiphanyOperatorSealedResultSchemaId = "epiphany.operator_command.sealed_result.v1";
-const epiphanyOperatorTerminalSchemaId = "bifrost.operator_command.terminal.v0";
-const epiphanyOperatorDiscordDeliverySchemaId = "bifrost.discord.epiphany_operator_delivery.v1";
 
 const advertisementDefinition = defineDocumentType({
   type: documentType,
@@ -334,9 +328,6 @@ function buildAdvertisement(options) {
       endpoint("github-webhooks", `${locatedService}/github/webhooks`, "bifrost.work_item.v0", ["github", "work-sync", "review-sync"]),
       endpoint("motion-surface", motionSurfaceCultMeshUri, "gamecult.eve.surface.v1", ["cultmesh", "governance", "motion"]),
       endpoint("motion-commands", motionCommandCultMeshUri, "bifrost.motion_command.v0", ["command", "cultmesh", "governance", "motion"]),
-      endpoint("epiphany-operator-requests", `${locatedService}/commands/epiphany-operator`, epiphanyOperatorRequestSchemaId, ["command", "discord", "operator", "cultmesh"]),
-      endpoint("epiphany-operator-results", `${locatedService}/receipts/epiphany-operator`, epiphanyOperatorSealedResultSchemaId, ["receipt", "epiphany", "operator", "cultnet", "rudp"]),
-      endpoint("epiphany-operator-discord-deliveries", `${locatedService}/deliveries/discord/epiphany-operator`, epiphanyOperatorDiscordDeliverySchemaId, ["delivery", "discord", "operator", "cultcache"]),
     ],
     routes: [
       route("cultmesh-store", ".bifrost/provider-store.cc", "local-cultmesh", true),
@@ -376,12 +367,6 @@ function buildAdvertisement(options) {
       schema(discordPostReceiptSchemaId, discordPostReceiptDocumentType, "CultMesh receipt for Bifrost-owned Discord persona/bot posts"),
       schema("bifrost.patron_support_event.v0", "bifrost.patron-support-event", "current hosted Heimdall-signed patron support fact consumed by Bifrost"),
       schema("bifrost.member_capability_snapshot.v0", "bifrost.member-capability-snapshot", "planned Heimdall-consumed membership capability witness"),
-      schema(epiphanyOperatorRequestSchemaId, "voidbot.discord.epiphany_operator_request", "strict owner-authored Discord operator request inbox"),
-      schema(epiphanyOperatorAdmissionSchemaId, "bifrost.operator_command.delivery", "Bifrost-signed expiring Epiphany operator admission"),
-      schema(epiphanyOperatorResultSchemaId, "epiphany.operator_command.result", "Epiphany-origin command result returned across the authenticated transport boundary"),
-      schema(epiphanyOperatorSealedResultSchemaId, "epiphany.operator_command.sealed_result", "Epiphany host-signed receipt binding the exact application result to command, packet, runtime, and payload digest"),
-      schema(epiphanyOperatorTerminalSchemaId, "bifrost.operator_command.terminal", "Bifrost-owned immutable terminal refusal for a non-retryable operator request"),
-      schema(epiphanyOperatorDiscordDeliverySchemaId, "bifrost.discord.epiphany_operator_delivery", "Bifrost-owned immutable Discord result delivery bound to the original request and sealed Epiphany result or terminal refusal"),
     ],
     witnesses: [
       witness(".bifrost/provider-store.cc", `${schemaId}; ${surfaceSchemaId}; ${interfaceBindingSchemaId}; ${discordPostCommandSchemaId}; ${discordPostReceiptSchemaId}`, "current", "typed provider advertisement, operator surface, Eve interface binding, and Bifrost Discord command request/receipt store"),
@@ -393,9 +378,6 @@ function buildAdvertisement(options) {
       witness(".bifrost/member-capabilities.cc", "bifrost.member_capability_snapshot.v0", "planned-export", "membership and account capability snapshots consumed by Bifrost"),
       witness(".bifrost/bridge-receipts.cc", crossingReceiptSchemaId, "current", "canonical governed public crossing receipt history"),
       witness(".bifrost/eve-surfaces.cc", "gamecult.eve.surface.v1", "planned-export", "future product Eve/CultUI surfaces not yet in the provider store"),
-      witness(".bifrost/epiphany-operator-requests.cc", epiphanyOperatorRequestSchemaId, "configured", "dedicated VoidBot-writable Bifrost operator request inbox; never an Epiphany store"),
-      witness(".bifrost/epiphany-operator-ledger.cc", `${epiphanyOperatorAdmissionSchemaId}; ${epiphanyOperatorSealedResultSchemaId}; ${epiphanyOperatorTerminalSchemaId}`, "configured", "Bifrost-owned immutable admission, host-sealed application-result, and terminal-refusal ledger"),
-      witness(".bifrost/epiphany-operator-discord-deliveries.cc", epiphanyOperatorDiscordDeliverySchemaId, "configured", "Bifrost-writable and VoidBot-readable immutable operator result delivery outbox"),
     ],
     surfaces: [
       surface("bifrost", "Bifrost Operator Dashboard", "gamecult.bifrost.surface.operator", "gamecult.eve.surface_state.v1", ".bifrost/provider-store.cc", "eve", [
@@ -504,17 +486,6 @@ function buildAdvertisement(options) {
         "does not treat local protocol JSON as work authority",
         "surface-specific receipts cannot decide crossing completion",
         "does not touch secrets in this advertisement",
-      ]),
-      boundary("epiphany-operator", "Bifrost admission; Epiphany execution", [
-        "admit exact owner-only status, sleep, wake, directive, reviews, and review requests",
-        "require the exact configured Discord owner and persisted Bifrost actor-link mapping; Heimdall reference is provenance until signed claims are live",
-        "sign Rust-compatible expiring operator admissions with a dedicated Ed25519 identity",
-        "relay only Epiphany-origin results bound to the admitted command",
-      ], [
-        "does not accept arbitrary argv or shell commands",
-        "does not mount or mutate Epiphany stores",
-        "does not synthesize successful Epiphany results",
-        "ordinary Persona feedback remains feedback_only",
       ]),
     ],
     styleCapabilities: [
