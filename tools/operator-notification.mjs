@@ -60,7 +60,7 @@ async function publishIdunnAlarm(options) {
     contentHash: requestSchemaId,
     global: false,
     name: "requestId",
-    schema: { parse: parseObjectDocument("Operator DM request") },
+    schema: parseObjectDocument("Operator DM request"),
   });
   const node = await CultMesh.createNode(storePath, {
     documents: [
@@ -72,7 +72,7 @@ async function publishIdunnAlarm(options) {
         schemaVersion: "voidbot.swarm_state_snapshot.v1",
         contentHash: "voidbot.swarm_state_snapshot.v1",
         global: false,
-        schema: { parse: parseObjectDocument("VoidBot swarm snapshot") },
+        schema: parseObjectDocument("VoidBot swarm snapshot"),
       }),
       defineDocumentType({
         type: "gamecult.eve.provider_advertisement",
@@ -82,7 +82,7 @@ async function publishIdunnAlarm(options) {
         contentHash: "gamecult.eve.provider_advertisement.v1",
         global: false,
         name: "providerId",
-        schema: { parse: parseObjectDocument("Eve provider advertisement") },
+        schema: parseObjectDocument("Eve provider advertisement"),
       }),
       defineDocumentType({
         type: "gamecult.eve.surface_state",
@@ -92,7 +92,7 @@ async function publishIdunnAlarm(options) {
         contentHash: "gamecult.eve.surface_state.v1",
         global: false,
         name: "providerId",
-        schema: { parse: parseObjectDocument("Eve surface state") },
+        schema: parseObjectDocument("Eve surface state"),
       }),
       defineDocumentType({
         type: "gamecult.eve.interface_binding",
@@ -102,7 +102,7 @@ async function publishIdunnAlarm(options) {
         contentHash: "gamecult.eve.interface_binding.v1",
         global: false,
         name: "bindingId",
-        schema: { parse: parseObjectDocument("Eve interface binding") },
+        schema: parseObjectDocument("Eve interface binding"),
       }),
     ],
   });
