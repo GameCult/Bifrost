@@ -46,15 +46,15 @@ async function publishIdunnAlarm(options) {
     reason: readOptionOrEnv(options, "reason", "IDUNN_ALARM_REASON", "Idunn raised an operator alarm."),
     raisedAt: readOptionOrEnv(options, "raised-at", "IDUNN_ALARM_RAISED_AT", new Date().toISOString()),
   };
+  // DISCORD_OWNER_ID is the established GameCult name for this, used by VoidBot's
+  // config schema. Read it first rather than minting another spelling.
   const recipientId =
     optionalString(options["recipient-id"]) ??
-    optionalString(process.env.IDUNN_OPERATOR_DISCORD_ID) ??
-    optionalString(process.env.BIFROST_OPERATOR_DISCORD_ID) ??
-    optionalString(process.env.OWNER_DISCORD_ID);
+    optionalString(process.env.DISCORD_OWNER_ID) ??
+    optionalString(process.env.IDUNN_OPERATOR_DISCORD_ID);
   if (!recipientId) {
     throw new Error(
-      "Set --recipient-id, IDUNN_OPERATOR_DISCORD_ID, BIFROST_OPERATOR_DISCORD_ID, or OWNER_DISCORD_ID " +
-        "so Bifrost knows which operator to reach.",
+      "Set --recipient-id, DISCORD_OWNER_ID, or IDUNN_OPERATOR_DISCORD_ID so Bifrost knows which operator to reach.",
     );
   }
 
@@ -241,8 +241,8 @@ Commands:
   publish-idunn-alarm   Publish an Idunn alarm as a discord-dm gate command
 
 Options:
-  --recipient-id <id>   Operator Discord user id (or IDUNN_OPERATOR_DISCORD_ID /
-                        BIFROST_OPERATOR_DISCORD_ID / OWNER_DISCORD_ID)
+  --recipient-id <id>   Operator Discord user id (or DISCORD_OWNER_ID /
+                        IDUNN_OPERATOR_DISCORD_ID)
   --store <path>        Gate provider store (default: .bifrost/provider-store.cc)
   --wait-seconds <n>    Wait for the delivery receipt instead of returning at publish
   --dry-run             Build the command and definitions without writing
