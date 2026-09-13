@@ -1302,42 +1302,6 @@ function rejectRemovedHttpBridgeConfig(options) {
   }
 }
 
-async function postBridgeJson(baseUrl, token, path, payload, allowedStatuses) {
-  const url = new URL(path, ensureTrailingSlash(baseUrl));
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Bifrost-Bridge-Token": token,
-    },
-    body: payload === undefined ? undefined : JSON.stringify(payload),
-  });
-
-  const text = await response.text();
-  let body = null;
-  if (text) {
-    try {
-      body = JSON.parse(text);
-    } catch {
-      body = null;
-    }
-  }
-
-  if (!allowedStatuses.has(response.status)) {
-    throw new Error(`Bifrost bridge call to ${path} failed with ${response.status}: ${text}`);
-  }
-
-  return {
-    status: response.status,
-    text,
-    body,
-  };
-}
-
-function ensureTrailingSlash(value) {
-  return value.endsWith("/") ? value : `${value}/`;
-}
-
 function detectGitHubRepositoryFullName(options, repoRoot) {
   const result = runGitHubCli(
     options,

@@ -917,10 +917,6 @@ function resolveOptionPath(path) {
   return resolve(process.cwd(), path);
 }
 
-function ensureTrailingSlash(value) {
-  return value.endsWith("/") ? value : `${value}/`;
-}
-
 function printJson(value) {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 }

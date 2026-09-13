@@ -810,10 +810,6 @@ function resolveOptionPath(path) {
   return resolve(process.cwd(), path);
 }
 
-function ensureTrailingSlash(value) {
-  return value.endsWith("/") ? value : `${value}/`;
-}
-
 function runNodeJson(args, cwd) {
   const result = spawnSync(process.execPath, args, {
     cwd,
