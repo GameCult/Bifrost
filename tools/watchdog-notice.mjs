@@ -27,9 +27,15 @@ const cult = resolve(process.env.VOIDBOT_CULTLIB_ROOT || resolve(root, "..", "Cu
 const INCIDENT_SCHEMA = "idunn.operator_incident.v1";
 const JOURNAL_TYPE = "bifrost.watchdog_notice_execution";
 const JOURNAL_SCHEMA = "bifrost.watchdog_notice_execution.v1";
-const MAX_ATTEMPTS = 5;
-// The override exists so a test can reach the timeout branch without a 60 s wait.
+// A failed notice is retried forever: 1, 2, 4, ... minutes after its last
+// attempt, capped at 60 (ruling notice-retry-policy). From FAILING_ATTEMPTS
+// failures on, the exit status is the delivery-failure signal; retries go on.
+const MAX_DELAY_MINUTES = 60;
+const FAILING_ATTEMPTS = 3;
+// The overrides exist so a test can reach the timeout branch without a 60 s wait
+// and can drive the backoff without sleeping.
 const BRIDGE_TIMEOUT_MS = Number(process.env.WATCHDOG_NOTICE_BRIDGE_TIMEOUT_MS) || 60_000;
+const clockMs = () => Number(process.env.WATCHDOG_NOTICE_NOW_MS) || Date.now();
 const STATUSES = ["running", "completed", "failed", "unknown"];
 const NAME = /^[a-z][a-z-]{0,63}$/;
 // Idunn's require_id (GameCult/Idunn src/control_plane.rs:9122-9131 at 7f7528b):
@@ -82,7 +88,7 @@ async function processIncidents(options) {
     const outcome = await sendNotice({ bridgeCli, recipientId, receiptStore, key, nonce, record, content });
     await journal.put({ ...base, messageId: outcome.messageId ?? "", status: outcome.status, lastError: outcome.error ?? "", updatedAt: now() });
   };
-  const retryable = (entry) => !entry || (entry.status === "failed" && entry.attempts < MAX_ATTEMPTS);
+  const retryable = (entry) => !entry || (entry.status === "failed" && !(clockMs() < nextEligibleMs(entry)));
   const entryFor = (record, notice) => journal.cache.get(journal.definition, `${record.incidentKey}#${notice}`);
 
   for (const record of records) {
@@ -94,9 +100,9 @@ async function processIncidents(options) {
 
   const entries = journal.cache.getAll(journal.definition);
   const unknown = entries.filter((entry) => entry.status === "unknown").length;
-  const exhausted = entries.filter(isExhausted).length;
-  process.stdout.write(`${JSON.stringify({ skipped, refused, unknown, exhausted })}\n`);
-  return unknown + exhausted + refused > 0 ? 1 : 0;
+  const failing = entries.filter(isFailing).length;
+  process.stdout.write(`${JSON.stringify({ skipped, refused, unknown, failing })}\n`);
+  return unknown + failing + refused > 0 ? 1 : 0;
 }
 
 async function status(options) {
@@ -104,14 +110,20 @@ async function status(options) {
   const journal = await openJournal(runtime, requireOption(options, "journal-store"));
   const entries = journal.cache.getAll(journal.definition);
   const rows = entries
-    .map(({ incidentKey, notice, status, attempts, updatedAt, lastError }) => ({ incidentKey, notice, status, attempts, updatedAt, lastError }))
+    .map((entry) => ({
+      incidentKey: entry.incidentKey, notice: entry.notice, status: entry.status, attempts: entry.attempts,
+      updatedAt: entry.updatedAt, lastError: entry.lastError,
+      nextEligibleAt: entry.status === "failed" ? new Date(nextEligibleMs(entry)).toISOString() : null,
+    }))
     .sort((a, b) => (a.incidentKey + a.notice).localeCompare(b.incidentKey + b.notice));
   process.stdout.write(`${JSON.stringify(rows, null, 2)}\n`);
-  return entries.some((entry) => entry.status === "unknown" || isExhausted(entry)) ? 1 : 0;
+  return entries.some((entry) => entry.status === "unknown" || isFailing(entry)) ? 1 : 0;
 }
 
-const isExhausted = (entry) => entry.status === "failed" && entry.attempts >= MAX_ATTEMPTS;
-const now = () => new Date().toISOString();
+const isFailing = (entry) => entry.status === "failed" && entry.attempts >= FAILING_ATTEMPTS;
+// Measured from the failed entry's last attempt in the journal.
+const nextEligibleMs = (entry) => Date.parse(entry.updatedAt) + Math.min(2 ** (entry.attempts - 1), MAX_DELAY_MINUTES) * 60_000;
+const now = () => new Date(clockMs()).toISOString();
 
 // Reads P unlocked. An absent file is "nothing to do" (records: null). A
 // record of another schema is counted as skipped; a record of this schema
@@ -240,7 +252,8 @@ function parseEntry(value) {
     && (value.notice === "opened" || value.notice === "closed")
     && STATUSES.includes(value.status)
     && Number.isSafeInteger(value.attempts) && value.attempts >= 0
-    && ["nonce", "messageId", "lastError", "updatedAt"].every((field) => typeof value[field] === "string");
+    && ["nonce", "messageId", "lastError", "updatedAt"].every((field) => typeof value[field] === "string")
+    && Number.isFinite(Date.parse(value.updatedAt));
   if (!ok) throw fail("journal-entry-invalid");
   return value;
 }

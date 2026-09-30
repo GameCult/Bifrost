@@ -77,6 +77,11 @@ async function world(prefix, { incidents = FIXTURE, mode = "ok" } = {}) {
   return w;
 }
 
+// The reader's clock is WATCHDOG_NOTICE_NOW_MS; a test drives the backoff by
+// naming the minute (from T0) each run happens at.
+const T0 = 1_800_000_000_000;
+const at = (minutes) => ({ WATCHDOG_NOTICE_NOW_MS: String(T0 + Math.round(minutes * 60_000)) });
+
 function run(w, { env = {}, bridge = w.bridge } = {}) {
   return spawnSync(process.execPath, [TOOL, "process", "--incident-store", w.incidents, "--journal-store", w.journal, "--receipt-store", w.receipts, "--bridge-cli", bridge], {
     encoding: "utf8",
@@ -144,13 +149,14 @@ test("closure is posted once and only after a completed opening", async () => {
 
   // An opening that never completes blocks its closure, now and later.
   const failing = await world("wn-closure-failed-", { mode: "fail" });
-  for (let run = 0; run < 5; run += 1) failing.run();
-  await failing.setMode("ok");
-  failing.run();
-  failing.run();
+  for (const minute of [0, 1, 3, 7, 15]) failing.run({ env: at(minute) });
   assert.equal((await failing.posts()).filter((post) => notice(post) === "closed").length, 0);
   const rows = (await failing.status()).rows;
   assert.deepEqual(rows.map((row) => `${row.notice}:${row.status}:${row.attempts}`), ["opened:failed:5", "opened:failed:5"]);
+  await failing.setMode("ok");
+  assert.equal(failing.run({ env: at(31) }).status, 0);
+  assert.equal(failing.run({ env: at(32) }).status, 0);
+  assert.deepEqual((await failing.posts()).filter((post) => notice(post) === "closed").map((post) => opt(post, "source-id")), [CLOSED_KEY], "the closure follows the completed opening, once");
 
   const crashed = await world("wn-closure-unknown-", { mode: "crash" });
   assert.equal(crashed.run().status, null, "the reader died mid-send");
@@ -176,24 +182,73 @@ test("a running entry becomes unknown and is never re-posted", async () => {
   assert.equal((await w.posts()).length, posts.length);
 });
 
-test("only a bridge exit 75 is retried, with the same nonce, up to five attempts", async () => {
+const backoffMinutes = [0, 1, 3, 7, 15, 31, 63, 123, 183];
+
+test("a failed notice is retried after its backoff and never exhausted", async () => {
   const w = await world("wn-retry-", { mode: "fail" });
-  const exits = [];
-  for (let run = 0; run < 5; run += 1) exits.push(w.run().status);
-  assert.deepEqual(exits, [0, 0, 0, 0, 1], "non-zero once attempts are exhausted");
-  assert.deepEqual((await w.status()).rows.map((row) => row.lastError), ["bridge-not-sent", "bridge-not-sent"]);
+  // Run at every expected spawn minute and one minute before it: only the former may spawn.
+  const probes = [...new Set(backoffMinutes.flatMap((minute) => [minute - 1, minute]).filter((minute) => minute >= 0))].sort((a, b) => a - b);
+  const spawned = [];
+  for (const minute of probes) {
+    const before = (await w.posts()).filter((post) => opt(post, "source-id") === OPEN_KEY).length;
+    w.run({ env: at(minute) });
+    const after = (await w.posts()).filter((post) => opt(post, "source-id") === OPEN_KEY).length;
+    if (after > before) spawned.push(minute);
+  }
+  assert.deepEqual(spawned, backoffMinutes, "attempts at 1, 2, 4, 8, 16, 32 then every 60 minutes after the last attempt");
   const open = (await w.posts()).filter((post) => opt(post, "source-id") === OPEN_KEY);
-  assert.equal(open.length, 5);
-  assert.equal(new Set(open.map((post) => opt(post, "nonce"))).size, 1);
-  const before = (await w.posts()).length;
-  const again = w.run();
-  assert.notEqual(again.status, 0);
-  assert.equal((await w.posts()).length, before, "no spawn after the fifth attempt");
+  assert.equal(new Set(open.map((post) => opt(post, "nonce"))).size, 1, "every attempt carries the same nonce");
+  const rows = (await w.status()).rows;
+  assert.deepEqual(rows.map((row) => `${row.status}:${row.attempts}:${row.lastError}`), ["failed:9:bridge-not-sent", "failed:9:bridge-not-sent"], "never a terminal state");
+  const final = w.run({ env: at(183) });
   const status = await w.status();
+  assert.notEqual(final.status, 0);
   assert.notEqual(status.status, 0);
-  for (const text of [again.stdout, again.stderr, status.stdout, await readFile(w.journal, "latin1")]) {
+  for (const text of [final.stdout, final.stderr, status.stdout, await readFile(w.journal, "latin1")]) {
     assert.ok(!text.includes("RECIPIENTCANARY"), "bridge output and recipient never reach the reader's output or journal");
   }
+});
+
+test("a failed notice is not retried before its delay", async () => {
+  const w = await world("wn-delay-", { mode: "fail" });
+  const count = async () => (await w.posts()).length;
+  w.run({ env: at(0) });
+  assert.equal(await count(), 2, "both openings tried once");
+  w.run({ env: at(0.99) });
+  w.run({ env: at(0) });
+  assert.equal(await count(), 2, "a run inside the delay spawns nothing");
+  const row = (await w.status()).rows[0];
+  assert.equal(row.attempts, 1);
+  assert.equal(row.nextEligibleAt, new Date(T0 + 60_000).toISOString(), "status names when the entry is next eligible");
+  w.run({ env: at(1) });
+  assert.equal(await count(), 4, "eligible once the delay has passed");
+  assert.equal((await w.status()).rows[0].nextEligibleAt, new Date(T0 + 3 * 60_000).toISOString());
+});
+
+test("the unit signals from the third failed attempt while still retrying", async () => {
+  const w = await world("wn-signal-", { mode: "fail" });
+  const exits = [];
+  for (const minute of [0, 1, 3]) exits.push(w.run({ env: at(minute) }).status);
+  assert.deepEqual(exits, [0, 0, 1], "zero after attempts 1 and 2, non-zero from 3");
+  assert.equal((await w.status()).status, 1);
+  const before = (await w.posts()).length;
+  assert.equal(w.run({ env: at(7) }).status, 1);
+  assert.equal((await w.posts()).length, before + 2, "attempt 4 still spawns");
+  assert.ok((await w.status()).rows.every((row) => row.status === "failed" && row.attempts === 4));
+});
+
+test("a notice that finally sends after many failures posts once", async () => {
+  const w = await world("wn-finally-", { mode: "fail" });
+  for (const minute of [0, 1, 3, 7, 15]) w.run({ env: at(minute) });
+  await w.setMode("ok");
+  assert.equal(w.run({ env: at(31) }).status, 0);
+  const open = (await w.posts()).filter((post) => opt(post, "source-id") === OPEN_KEY);
+  assert.equal(open.length, 6, "five failures and one success");
+  assert.equal(new Set(open.map((post) => opt(post, "nonce"))).size, 1, "the success carries the same nonce");
+  const before = (await w.posts()).length;
+  for (const minute of [32, 100, 1000]) assert.equal(w.run({ env: at(minute) }).status, 0);
+  assert.equal((await w.posts()).length, before, "completed is never posted again");
+  assert.deepEqual((await w.status()).rows.map((row) => `${row.status}:${row.attempts}`), ["completed:6", "completed:6", "completed:6"]);
 });
 
 test("the reader never writes or locks the incident store", async () => {
@@ -217,7 +272,7 @@ test("notice content carries no sensitive text", async () => {
   });
   const result = w.run();
   assert.notEqual(result.status, 0, "refused records fail the run");
-  assert.deepEqual(JSON.parse(result.stdout), { skipped: 1, refused: 2, unknown: 0, exhausted: 0 });
+  assert.deepEqual(JSON.parse(result.stdout), { skipped: 1, refused: 2, unknown: 0, failing: 0 });
   const posts = await w.posts();
   assert.deepEqual(posts.map((post) => opt(post, "source-id")), [CLOSED_KEY, CLOSED_KEY]);
   for (const post of posts) assert.match(post.content, /^Idunn incident (opened: continuity-exhausted on `closed-target` at \d{4}-[\d-]+T[\d:.]+Z|closed \(recovered\): continuity-exhausted on `closed-target`, opened [\dTZ:.-]+, closed [\dTZ:.-]+)$/);
@@ -390,7 +445,7 @@ test("a 5xx or 429 on the message POST is retried with the same nonce", async ()
     const env = { NODE_OPTIONS: stub.options, BIFROST_DISCORD_BOT_TOKEN: "test-token-not-real" };
     const messages = async () => (await fetches(stub.log)).filter((entry) => entry.url.endsWith("/messages"));
     for (let tick = 1; tick <= 2; tick += 1) {
-      const result = w.run({ bridge: BRIDGE, env: { ...env, STUB_BEHAVIOR: `message-${status}` } });
+      const result = w.run({ bridge: BRIDGE, env: { ...env, ...at(tick === 1 ? 0 : 1), STUB_BEHAVIOR: `message-${status}` } });
       assert.equal(result.status, 0, result.stderr);
       assert.deepEqual((await w.status()).rows.map((row) => `${row.status}:${row.attempts}`), [`failed:${tick}`, `failed:${tick}`]);
     }
@@ -399,7 +454,7 @@ test("a 5xx or 429 on the message POST is retried with the same nonce", async ()
     const nonces = Map.groupBy(sent, (entry) => entry.body.content);
     assert.equal(nonces.size, 2);
     for (const group of nonces.values()) assert.equal(new Set(group.map((entry) => entry.body.nonce)).size, 1, "a retry reuses its nonce");
-    assert.equal(w.run({ bridge: BRIDGE, env }).status, 0);
+    assert.equal(w.run({ bridge: BRIDGE, env: { ...env, ...at(3) } }).status, 0);
     assert.deepEqual((await w.status()).rows.map((row) => row.status), ["completed", "completed", "completed"]);
   }
 });
@@ -416,7 +471,7 @@ test("every subject Idunn accepts is delivered, inside backticks", async () => {
   });
   const stub = await fetchStub(w.dir);
   const result = w.run({ bridge: BRIDGE, env: { NODE_OPTIONS: stub.options, BIFROST_DISCORD_BOT_TOKEN: "test-token-not-real" } });
-  assert.deepEqual(JSON.parse(result.stdout), { skipped: 0, refused: bad.length, unknown: 0, exhausted: 0 });
+  assert.deepEqual(JSON.parse(result.stdout), { skipped: 0, refused: bad.length, unknown: 0, failing: 0 });
   const contents = (await fetches(stub.log)).filter((entry) => entry.url.endsWith("/messages")).map((entry) => entry.body.content).sort();
   const at = (index) => new Date(1_700_000_200_000 + index).toISOString();
   assert.deepEqual(contents, good.map((subject, index) => OPENED_TEXT(subject, at(index))).sort());
@@ -436,7 +491,7 @@ test("an out-of-range time refuses the record without aborting the run", async (
   });
   const result = w.run();
   assert.equal(result.stderr, "", "no unexpected-error");
-  assert.deepEqual(JSON.parse(result.stdout), { skipped: 0, refused: 2, unknown: 0, exhausted: 0 });
+  assert.deepEqual(JSON.parse(result.stdout), { skipped: 0, refused: 2, unknown: 0, failing: 0 });
   assert.notEqual(result.status, 0, "refused records fail the run");
   assert.deepEqual((await w.posts()).map((post) => opt(post, "source-id")).sort(), ["continuity-exhausted:edge:8640000000000000", OPEN_KEY]);
   assert.ok((await w.status()).rows.every((row) => row.status === "completed"));
@@ -455,6 +510,6 @@ test("the reader posts through the real bridge with its nonce", async () => {
   }
   assert.ok(existsSync(w.receipts), "the bridge wrote its crossing receipts to the reader's receipt store");
   assert.deepEqual((await w.status()).rows.map((row) => row.status), ["completed", "completed", "completed"]);
-  assert.equal((await w.status()).status, 0, "status exits zero when nothing is unknown or exhausted");
+  assert.equal((await w.status()).status, 0, "status exits zero when nothing is unknown or failing");
 });
 
