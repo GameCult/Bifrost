@@ -131,7 +131,6 @@ async function deleteCommand(options) {
 }
 
 async function processOneCommand(node, command, options) {
-  const verb = resolveBridgeVerb(command);
   const running = {
     ...command,
     status: "running",
@@ -142,13 +141,16 @@ async function processOneCommand(node, command, options) {
   const payload = command.payload && typeof command.payload === "object" ? command.payload : {};
   const tempDir = resolve(repoRoot, ".bifrost", "cultmesh-command-payloads", command.commandId);
   const contentPath = resolve(tempDir, "content.md");
-  await mkdir(tempDir, { recursive: true });
-  await writeFile(contentPath, requireString(payload.content, "payload.content"), "utf8");
 
   try {
+    if ((optionalString(command.command) ?? "discord-post") !== "discord-post") {
+      throw new Error("Unsupported Bifrost bridge command; only discord-post is supported.");
+    }
+    await mkdir(tempDir, { recursive: true });
+    await writeFile(contentPath, requireString(payload.content, "payload.content"), "utf8");
     const args = [
       "tools/bifrost-bridge.mjs",
-      verb,
+      "discord-post",
       "--channel-id",
       requireString(payload.channelId, "payload.channelId"),
       "--content-file",
@@ -162,11 +164,9 @@ async function processOneCommand(node, command, options) {
       "--identity",
       optionalString(command.actor?.id) ?? optionalString(payload.identityId) ?? optionalString(payload.personaName) ?? "bifrost",
     ];
-    if (verb === "discord-post") {
-      pushOption(args, "--persona-name", payload.personaName);
-      pushOption(args, "--persona-avatar-url", payload.personaAvatarUrl);
-      pushOption(args, "--reply-to-message-id", payload.replyToMessageId);
-    }
+    pushOption(args, "--persona-name", payload.personaName);
+    pushOption(args, "--persona-avatar-url", payload.personaAvatarUrl);
+    pushOption(args, "--reply-to-message-id", payload.replyToMessageId);
     pushOption(args, "--receipt-store", options["receipt-store"]);
 
     const result = spawnSync(process.execPath, args, {
@@ -181,11 +181,11 @@ async function processOneCommand(node, command, options) {
     if (result.status !== 0 || result.error) {
       throw new Error(renderSpawnFailure(result));
     }
-    const posted = parseJson(result.stdout, `bifrost bridge ${verb} receipt`);
+    const posted = parseJson(result.stdout, "bifrost bridge discord-post receipt");
     const receipt = buildReceipt(command, {
       status: "completed",
       ok: true,
-      action: verb,
+      action: "discord-post",
       channelId: posted.channelId,
       messageId: posted.messageId,
       transport: posted.transport,
@@ -205,7 +205,7 @@ async function processOneCommand(node, command, options) {
     const receipt = buildReceipt(command, {
       status: "failed",
       ok: false,
-      action: verb,
+      action: "discord-post",
       canonicalReceiptId: `crossing_${command.commandId}`,
       error: error instanceof Error ? error.message : String(error),
     });
@@ -221,18 +221,6 @@ async function processOneCommand(node, command, options) {
   } finally {
     await rm(tempDir, { recursive: true, force: true }).catch(() => {});
   }
-}
-
-const supportedBridgeVerbs = new Set(["discord-post"]);
-
-function resolveBridgeVerb(command) {
-  const verb = optionalString(command.command) ?? "discord-post";
-  if (!supportedBridgeVerbs.has(verb)) {
-    throw new Error(
-      `Unsupported Bifrost bridge command "${verb}". Supported: ${[...supportedBridgeVerbs].join(", ")}.`,
-    );
-  }
-  return verb;
 }
 
 function buildReceipt(command, result) {
@@ -266,7 +254,7 @@ function listCommandRecords(node) {
   }
   return node.cache.getAll(commandDefinition())
     .map(unwrapRecord)
-    .filter((entry) => entry && entry.commandId && supportedBridgeVerbs.has(entry.command ?? "discord-post"));
+    .filter((entry) => entry && entry.commandId);
 }
 
 async function openCommandNode(storePath) {
