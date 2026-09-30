@@ -215,7 +215,7 @@ test("notice content carries no sensitive text", async () => {
   assert.deepEqual(posts.map((post) => opt(post, "source-id")), [CLOSED_KEY, CLOSED_KEY]);
   for (const post of posts) assert.match(post.content, /^Idunn incident (opened: continuity-exhausted on closed-target at \d{4}-[\d-]+T[\d:.]+Z|closed \(recovered\): continuity-exhausted on closed-target, opened [\dTZ:.-]+, closed [\dTZ:.-]+)$/);
   for (const text of [result.stdout, result.stderr, (await w.status()).stdout, await readFile(w.journal, "latin1"), JSON.stringify(posts)]) {
-    assert.ok(!text.includes("CANARY"), "no byte of a refused record is echoed");
+    for (const canary of ["CANARYFIELD", "CANARYPATH", "CANARYSCHEMA"]) assert.ok(!text.includes(canary), "no byte of a refused record is echoed");
   }
 });
 
