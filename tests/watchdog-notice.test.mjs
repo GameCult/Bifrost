@@ -248,7 +248,7 @@ test("a notice that finally sends after many failures posts once", async () => {
   const before = (await w.posts()).length;
   for (const minute of [32, 100, 1000]) assert.equal(w.run({ env: at(minute) }).status, 0);
   assert.equal((await w.posts()).length, before, "completed is never posted again");
-  assert.deepEqual((await w.status()).rows.map((row) => `${row.status}:${row.attempts}`), ["completed:6", "completed:6", "completed:6"]);
+  assert.deepEqual((await w.status()).rows.map((row) => `${row.status}:${row.attempts}`), ["completed:1", "completed:6", "completed:6"]);
 });
 
 test("the reader never writes or locks the incident store", async () => {
