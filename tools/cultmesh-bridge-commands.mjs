@@ -149,9 +149,8 @@ async function processOneCommand(node, command, options) {
     const args = [
       "tools/bifrost-bridge.mjs",
       verb,
-      ...(verb === "discord-dm"
-        ? ["--recipient-id", requireString(payload.recipientId, "payload.recipientId")]
-        : ["--channel-id", requireString(payload.channelId, "payload.channelId")]),
+      "--channel-id",
+      requireString(payload.channelId, "payload.channelId"),
       "--content-file",
       contentPath,
       "--cultmesh-command-id",
@@ -224,7 +223,7 @@ async function processOneCommand(node, command, options) {
   }
 }
 
-const supportedBridgeVerbs = new Set(["discord-post", "discord-dm"]);
+const supportedBridgeVerbs = new Set(["discord-post"]);
 
 function resolveBridgeVerb(command) {
   const verb = optionalString(command.command) ?? "discord-post";
