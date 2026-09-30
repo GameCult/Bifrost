@@ -21,10 +21,10 @@ const TOOL = resolve(import.meta.dirname, "..", "tools", "watchdog-notice.mjs");
 const BRIDGE = resolve(import.meta.dirname, "..", "tools", "bifrost-bridge.mjs");
 const RECIPIENT = "424242RECIPIENTCANARY";
 
-const OPENED_TEXT = (subject, at) => `Idunn incident opened: continuity-exhausted on ${subject} at ${at}`;
+const OPENED_TEXT = (subject, at) => `Idunn incident opened: continuity-exhausted on \`${subject}\` at ${at}`;
 const T_OPEN = "2023-11-14T22:13:20.000Z";
 const T_CLOSE = "2023-11-14T22:15:00.000Z";
-const CLOSED_TEXT = `Idunn incident closed (recovered): continuity-exhausted on closed-target, opened ${T_OPEN}, closed ${T_CLOSE}`;
+const CLOSED_TEXT = `Idunn incident closed (recovered): continuity-exhausted on \`closed-target\`, opened ${T_OPEN}, closed ${T_CLOSE}`;
 
 // CultLib is the sibling ../CultLib, like the other tests.
 const cult = resolve(import.meta.dirname, "..", "..", "CultLib");
@@ -32,8 +32,9 @@ const cache = createRequire(resolve(cult, "packages", "cultcache-ts", "package.j
 const msgpack = createRequire(resolve(cult, "packages", "cultnet-ts", "package.json"))("@msgpack/msgpack");
 
 // A bridge double that logs each call (with the content it was handed) and
-// behaves as the `mode` file says: ok, fail, or crash (kills its parent, the
-// reader, after logging, as a power cut between send and journal would).
+// behaves as the `mode` file says: ok; fail (exit 75, known not sent); die
+// (exit 1 after "sending"); signal (killed after "sending"); or crash (kills its
+// parent, the reader, after logging, as a power cut between send and journal would).
 const FAKE_BRIDGE = `
 import { appendFileSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -46,7 +47,8 @@ const n = (() => { try { return readFileSync(calls, "utf8").trim().split("\\n").
 appendFileSync(calls, JSON.stringify({ args, content: readFileSync(opt("content-file"), "utf8") }) + "\\n");
 const mode = readFileSync(resolve(here, "mode"), "utf8").trim();
 if (mode === "crash") { process.kill(process.ppid, "SIGKILL"); process.exit(0); }
-if (mode === "fail") { process.stderr.write("boom " + opt("recipient-id")); process.stdout.write("boom " + opt("recipient-id")); process.exit(1); }
+if (mode === "fail" || mode === "die") { process.stderr.write("boom " + opt("recipient-id")); process.stdout.write("boom " + opt("recipient-id")); process.exit(mode === "fail" ? 75 : 1); }
+if (mode === "signal") process.kill(process.pid, "SIGKILL");
 process.stdout.write(JSON.stringify({ action: "discord-dm", ok: true, messageId: "m" + (n + 1) }));
 `;
 
@@ -170,11 +172,12 @@ test("a running entry becomes unknown and is never re-posted", async () => {
   assert.equal((await w.posts()).length, posts.length);
 });
 
-test("a failed send is retried with the same nonce up to five attempts", async () => {
+test("only a known-unsent bridge exit is retried, with the same nonce, up to five attempts", async () => {
   const w = await world("wn-retry-", { mode: "fail" });
   const exits = [];
   for (let run = 0; run < 5; run += 1) exits.push(w.run().status);
   assert.deepEqual(exits, [0, 0, 0, 0, 1], "non-zero once attempts are exhausted");
+  assert.deepEqual((await w.status()).rows.map((row) => row.lastError), ["bridge-not-sent", "bridge-not-sent"]);
   const open = (await w.posts()).filter((post) => opt(post, "source-id") === OPEN_KEY);
   assert.equal(open.length, 5);
   assert.equal(new Set(open.map((post) => opt(post, "nonce"))).size, 1);
@@ -204,7 +207,7 @@ test("notice content carries no sensitive text", async () => {
   await variantStore(w.incidents, (tuples) => {
     const [closed, open] = tuples;
     const longer = [...open, "extra-CANARYFIELD"];
-    const pathSubject = ["idunn.operator_incident.v1", `continuity-exhausted:/etc/CANARYPATH:${open[4]}`, "continuity-exhausted", "/etc/CANARYPATH", open[4], null, null];
+    const pathSubject = ["idunn.operator_incident.v1", `continuity-exhausted:/etc/CANARYPATH x:${open[4]}`, "continuity-exhausted", "/etc/CANARYPATH x", open[4], null, null];
     const otherSchema = ["idunn.operator_incident.v0", "CANARYSCHEMA", "continuity-exhausted", "x", 1, null, null];
     return [closed, longer, pathSubject, otherSchema];
   });
@@ -213,7 +216,7 @@ test("notice content carries no sensitive text", async () => {
   assert.deepEqual(JSON.parse(result.stdout), { skipped: 1, refused: 2, unknown: 0, exhausted: 0 });
   const posts = await w.posts();
   assert.deepEqual(posts.map((post) => opt(post, "source-id")), [CLOSED_KEY, CLOSED_KEY]);
-  for (const post of posts) assert.match(post.content, /^Idunn incident (opened: continuity-exhausted on closed-target at \d{4}-[\d-]+T[\d:.]+Z|closed \(recovered\): continuity-exhausted on closed-target, opened [\dTZ:.-]+, closed [\dTZ:.-]+)$/);
+  for (const post of posts) assert.match(post.content, /^Idunn incident (opened: continuity-exhausted on `closed-target` at \d{4}-[\d-]+T[\d:.]+Z|closed \(recovered\): continuity-exhausted on `closed-target`, opened [\dTZ:.-]+, closed [\dTZ:.-]+)$/);
   for (const text of [result.stdout, result.stderr, (await w.status()).stdout, await readFile(w.journal, "latin1"), JSON.stringify(posts)]) {
     for (const canary of ["CANARYFIELD", "CANARYPATH", "CANARYSCHEMA"]) assert.ok(!text.includes(canary), "no byte of a refused record is echoed");
   }
@@ -238,21 +241,39 @@ test("an absent incident store is a clean no-op", async () => {
   assert.deepEqual(await w.posts(), []);
 });
 
-test("terminal entries are pruned only after Idunn retires the incident", async () => {
-  const w = await world("wn-prune-");
+test("an emptied or restored incident store never re-sends", async () => {
+  const w = await world("wn-restore-");
   assert.equal(w.run().status, 0);
   const keys = async () => (await w.status()).rows.map((row) => `${row.incidentKey}#${row.notice}`).sort();
   const all = [`${CLOSED_KEY}#closed`, `${CLOSED_KEY}#opened`, `${OPEN_KEY}#opened`];
   assert.deepEqual(await keys(), all);
-  assert.equal(w.run().status, 0);
-  assert.deepEqual(await keys(), all, "entries stay while Idunn still lists the incident");
   await variantStore(w.incidents, (tuples) => [tuples[1]]);
-  assert.equal(w.run().status, 0);
-  assert.deepEqual(await keys(), [`${OPEN_KEY}#opened`]);
+  w.run();
   await variantStore(w.incidents, () => []);
+  w.run();
+  await writeFile(w.incidents, "");
+  w.run();
+  assert.deepEqual(await keys(), all, "absence from Idunn's store deletes nothing");
+  await copyFile(FIXTURE, w.incidents);
   assert.equal(w.run().status, 0);
-  assert.deepEqual(await keys(), []);
-  assert.equal((await w.posts()).length, 3, "retirement never reposts");
+  assert.equal((await w.posts()).length, 3, "exactly one post per notice across all views of the store");
+});
+
+test("a bridge that dies after sending is unknown and never re-posted", async () => {
+  for (const mode of ["die", "signal"]) {
+    const w = await world(`wn-${mode}-`, { mode });
+    const first = w.run();
+    assert.notEqual(first.status, 0);
+    assert.equal(JSON.parse(first.stdout).unknown, 2);
+    await w.setMode("ok");
+    assert.notEqual(w.run().status, 0);
+    assert.notEqual(w.run().status, 0);
+    const posts = await w.posts();
+    assert.equal(posts.length, 2, "one opening post per incident, no retry, no closure");
+    assert.ok(posts.every((post) => notice(post) === "opened"));
+    assert.deepEqual((await w.status()).rows.map((row) => `${row.notice}:${row.status}:${row.attempts}:${row.lastError}`), ["opened:unknown:1:bridge-exit-unknown", "opened:unknown:1:bridge-exit-unknown"]);
+    assert.ok(!(await readFile(w.journal, "latin1")).includes("RECIPIENTCANARY"));
+  }
 });
 
 test("errors name a code and never echo a path or an input", async () => {
@@ -275,8 +296,12 @@ async function fetchStub(dir) {
 import { appendFileSync } from "node:fs";
 globalThis.fetch = async (url, init) => {
   appendFileSync(${JSON.stringify(log)}, JSON.stringify({ url: String(url), body: JSON.parse(init.body) }) + "\\n");
-  const body = String(url).endsWith("/users/@me/channels") ? { id: "dm-channel" } : { id: "message-1" };
-  return new Response(JSON.stringify(body), { status: 200 });
+  const channels = String(url).endsWith("/users/@me/channels");
+  const behavior = process.env.STUB_BEHAVIOR;
+  if (channels && behavior === "dm-channel-500") return new Response("{}", { status: 500 });
+  if (!channels && behavior === "message-400") return new Response("{}", { status: 400 });
+  if (!channels && behavior === "message-network-error") throw new TypeError("fetch failed");
+  return new Response(JSON.stringify(channels ? { id: "dm-channel" } : { id: "message-1" }), { status: 200 });
 };
 `);
   return { log, options: `--import=${pathToFileURL(stub).href}` };
@@ -304,6 +329,68 @@ test("discord-dm carries nonce and enforce_nonce when asked", async () => {
   const tooLong = dm("--nonce", "x".repeat(26));
   assert.notEqual(tooLong.status, 0);
   assert.equal((await fetches(stub.log)).length, before, "an over-long nonce posts nothing");
+});
+
+test("discord-dm exits 75 only before delivery", async () => {
+  const dir = await mkdtemp(resolve(tmpdir(), "wn-exit75-"));
+  const stub = await fetchStub(dir);
+  const dm = (behavior, { token = "test-token-not-real", recipient = "1" } = {}) => {
+    const env = { ...process.env, NODE_OPTIONS: stub.options, BIFROST_DISCORD_BOT_TOKEN: token, DISCORD_BOT_TOKEN: token };
+    if (behavior) env.STUB_BEHAVIOR = behavior;
+    if (!token) { delete env.BIFROST_DISCORD_BOT_TOKEN; delete env.DISCORD_BOT_TOKEN; }
+    const args = ["discord-dm", ...(recipient ? ["--recipient-id", recipient] : []), "--content", "hi", "--cultmesh-command-id", "cmd", "--receipt-store", resolve(dir, "r.cc")];
+    return spawnSync(process.execPath, [BRIDGE, ...args], { encoding: "utf8", env });
+  };
+  const messagePosts = async () => (await fetches(stub.log)).filter((entry) => entry.url.endsWith("/messages")).length;
+
+  assert.equal(dm(undefined, { token: "" }).status, 75, "missing token");
+  assert.equal(dm(undefined, { recipient: "" }).status, 75, "missing argument");
+  assert.equal(dm("dm-channel-500").status, 75, "DM channel failure");
+  assert.equal(await messagePosts(), 0, "nothing was posted by any of those");
+  assert.equal(dm("message-400").status, 75, "definite non-2xx on the message POST");
+  assert.equal(await messagePosts(), 1);
+  const lost = dm("message-network-error");
+  assert.equal(lost.status, 1, "a network error after the message POST was sent is not known-unsent");
+  assert.equal(await messagePosts(), 2);
+  assert.equal(dm().status, 0);
+});
+
+test("every subject Idunn accepts is delivered, inside backticks", async () => {
+  const good = ["gamecult/odin", "odin:store", "_odin", "a".repeat(256), "Odin.v2-x"];
+  const bad = ["a".repeat(257), "has space", "back`tick", "new\nline", "", "ün"];
+  const w = await world("wn-subject-", { incidents: null });
+  await variantStore(w.incidents, (tuples) => {
+    return [...good, ...bad].map((subject, index) => {
+      const opened = 1_700_000_200_000 + index;
+      return ["idunn.operator_incident.v1", `continuity-exhausted:${subject}:${opened}`, "continuity-exhausted", subject, opened, null, null];
+    });
+  });
+  const stub = await fetchStub(w.dir);
+  const result = w.run({ bridge: BRIDGE, env: { NODE_OPTIONS: stub.options, BIFROST_DISCORD_BOT_TOKEN: "test-token-not-real" } });
+  assert.deepEqual(JSON.parse(result.stdout), { skipped: 0, refused: bad.length, unknown: 0, exhausted: 0 });
+  const contents = (await fetches(stub.log)).filter((entry) => entry.url.endsWith("/messages")).map((entry) => entry.body.content).sort();
+  const at = (index) => new Date(1_700_000_200_000 + index).toISOString();
+  assert.deepEqual(contents, good.map((subject, index) => OPENED_TEXT(subject, at(index))).sort());
+  for (const content of contents) assert.match(content, /on `[A-Za-z0-9_.:/-]{1,256}` at /);
+});
+
+test("an out-of-range time refuses the record without aborting the run", async () => {
+  const w = await world("wn-time-", { incidents: null });
+  await variantStore(w.incidents, (tuples) => {
+    const [closed, open] = tuples;
+    const hugeClose = [...closed];
+    hugeClose[5] = 8.7e15;
+    hugeClose[1] = closed[1];
+    const hugeOpen = ["idunn.operator_incident.v1", "continuity-exhausted:huge-open:8700000000000000", "continuity-exhausted", "huge-open", 8.7e15, null, null];
+    const edge = ["idunn.operator_incident.v1", "continuity-exhausted:edge:8640000000000000", "continuity-exhausted", "edge", 8.64e15, null, null];
+    return [hugeClose, hugeOpen, edge, open];
+  });
+  const result = w.run();
+  assert.equal(result.stderr, "", "no unexpected-error");
+  assert.deepEqual(JSON.parse(result.stdout), { skipped: 0, refused: 2, unknown: 0, exhausted: 0 });
+  assert.notEqual(result.status, 0, "refused records fail the run");
+  assert.deepEqual((await w.posts()).map((post) => opt(post, "source-id")).sort(), ["continuity-exhausted:edge:8640000000000000", OPEN_KEY]);
+  assert.ok((await w.status()).rows.every((row) => row.status === "completed"));
 });
 
 test("the reader posts through the real bridge with its nonce", async () => {

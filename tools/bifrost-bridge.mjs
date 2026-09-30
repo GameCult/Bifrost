@@ -470,7 +470,25 @@ async function postDiscordMessage(options) {
   });
 }
 
+// discord-dm exits NOT_SENT_EXIT only when it knows no message was delivered:
+// anything before the message POST, or a definite non-2xx answer to it. A
+// failure after the POST was sent (network error, receipt completion, output)
+// keeps exit 1, so the caller treats the outcome as unknown.
+const NOT_SENT_EXIT = 75;
+class NotSentError extends Error {}
+class DiscordRejection extends Error {}
+
 async function sendDiscordDm(options) {
+  const state = { postStarted: false };
+  try {
+    await deliverDiscordDm(options, state);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw state.postStarted && !(error instanceof DiscordRejection) ? error : new NotSentError(message);
+  }
+}
+
+async function deliverDiscordDm(options, state) {
   ensureBridgeReceiptGate(options);
   const token = process.env.BIFROST_DISCORD_BOT_TOKEN ?? process.env.DISCORD_BOT_TOKEN;
   const recipientId = requireOption(options, "recipient-id");
@@ -510,6 +528,7 @@ async function sendDiscordDm(options) {
       throw new Error("Set BIFROST_DISCORD_BOT_TOKEN or DISCORD_BOT_TOKEN before sending a Discord DM.");
     }
     channelId = await openDiscordDmChannel(token, recipientId);
+    state.postStarted = true;
     result = await postDiscordBotMessage(token, channelId, content, undefined, nonce);
     await bridgeAction?.complete({
       receiptUrl: `https://discord.com/channels/@me/${channelId}/${result.id}`,
@@ -783,7 +802,7 @@ async function postDiscordBotMessage(token, channelId, content, replyToMessageId
 
   const text = await response.text();
   if (!response.ok) {
-    throw new Error(`Discord post failed with ${response.status}: ${text}`);
+    throw new DiscordRejection(`Discord post failed with ${response.status}: ${text}`);
   }
 
   const message = JSON.parse(text);
@@ -1450,5 +1469,5 @@ Provenance note:
 
 main().catch((error) => {
   process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-  process.exitCode = 1;
+  process.exitCode = error instanceof NotSentError ? NOT_SENT_EXIT : 1;
 });

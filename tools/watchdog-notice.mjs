@@ -31,7 +31,13 @@ const MAX_ATTEMPTS = 5;
 const BRIDGE_TIMEOUT_MS = 60_000;
 const STATUSES = ["running", "completed", "failed", "unknown"];
 const NAME = /^[a-z][a-z-]{0,63}$/;
-const SUBJECT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+// Idunn's require_id (GameCult/Idunn src/control_plane.rs:9122-9131 at 7f7528b):
+// 1-256 bytes of [A-Za-z0-9-_.:/]. The notice puts the subject in inline code.
+const SUBJECT = /^[A-Za-z0-9_.:/-]{1,256}$/;
+const MAX_DATE_MS = 8.64e15;
+// bifrost-bridge.mjs discord-dm exits 75 (EX_TEMPFAIL) only when it knows the
+// message was not sent. Every other non-success leaves the outcome unknown.
+const BRIDGE_NOT_SENT = 75;
 
 class NoticeError extends Error {}
 const fail = (code) => new NoticeError(code);
@@ -68,13 +74,11 @@ async function processIncidents(options) {
     const previous = journal.cache.get(journal.definition, key);
     const attempts = (previous?.attempts ?? 0) + 1;
     const nonce = createHash("sha256").update(key).digest("hex").slice(0, 25);
+    const content = noticeText(record, notice);
     const base = { schemaVersion: JOURNAL_SCHEMA, incidentKey: record.incidentKey, notice, attempts, nonce };
     await journal.put({ ...base, status: "running", messageId: "", lastError: "", updatedAt: now() });
-    const outcome = await sendNotice({ bridgeCli, recipientId, receiptStore, key, nonce, record, notice });
-    const entry = outcome.messageId
-      ? { ...base, status: "completed", messageId: outcome.messageId, lastError: "" }
-      : { ...base, status: "failed", messageId: "", lastError: outcome.error };
-    await journal.put({ ...entry, updatedAt: now() });
+    const outcome = await sendNotice({ bridgeCli, recipientId, receiptStore, key, nonce, record, content });
+    await journal.put({ ...base, messageId: outcome.messageId ?? "", status: outcome.status, lastError: outcome.error ?? "", updatedAt: now() });
   };
   const retryable = (entry) => !entry || (entry.status === "failed" && entry.attempts < MAX_ATTEMPTS);
   const entryFor = (record, notice) => journal.cache.get(journal.definition, `${record.incidentKey}#${notice}`);
@@ -83,13 +87,6 @@ async function processIncidents(options) {
     if (retryable(entryFor(record, "opened"))) await deliver(record, "opened");
     if (record.closedAt !== null && entryFor(record, "opened")?.status === "completed" && retryable(entryFor(record, "closed"))) {
       await deliver(record, "closed");
-    }
-  }
-
-  const present = new Set(records.map((record) => record.incidentKey));
-  for (const entry of journal.cache.getAll(journal.definition)) {
-    if (isTerminal(entry) && !present.has(entry.incidentKey)) {
-      await journal.cache.delete(journal.definition, `${entry.incidentKey}#${entry.notice}`);
     }
   }
 
@@ -112,7 +109,6 @@ async function status(options) {
 }
 
 const isExhausted = (entry) => entry.status === "failed" && entry.attempts >= MAX_ATTEMPTS;
-const isTerminal = (entry) => entry.status === "completed" || entry.status === "unknown" || isExhausted(entry);
 const now = () => new Date().toISOString();
 
 // Reads P unlocked. An absent file is "nothing to do" (records: null). A
@@ -160,12 +156,12 @@ function parseIncident(tuple) {
   const [, incidentKey, condition, subject, openedAt, closedAt, closeReason] = tuple;
   if (typeof condition !== "string" || !NAME.test(condition)) return null;
   if (typeof subject !== "string" || !SUBJECT.test(subject)) return null;
-  if (!Number.isSafeInteger(openedAt) || openedAt <= 0) return null;
+  if (!Number.isSafeInteger(openedAt) || openedAt <= 0 || openedAt > MAX_DATE_MS) return null;
   if (incidentKey !== `${condition}:${subject}:${openedAt}`) return null;
   if (closedAt === null) {
     if (closeReason !== null) return null;
   } else {
-    if (!Number.isSafeInteger(closedAt) || closedAt < openedAt) return null;
+    if (!Number.isSafeInteger(closedAt) || closedAt < openedAt || closedAt > MAX_DATE_MS) return null;
     if (typeof closeReason !== "string" || !NAME.test(closeReason)) return null;
   }
   return { incidentKey, condition, subject, openedAt, closedAt, closeReason };
@@ -173,18 +169,19 @@ function parseIncident(tuple) {
 
 function noticeText(record, notice) {
   const opened = new Date(record.openedAt).toISOString();
-  if (notice === "opened") return `Idunn incident opened: ${record.condition} on ${record.subject} at ${opened}`;
+  if (notice === "opened") return `Idunn incident opened: ${record.condition} on \`${record.subject}\` at ${opened}`;
   const closed = new Date(record.closedAt).toISOString();
-  return `Idunn incident closed (${record.closeReason}): ${record.condition} on ${record.subject}, opened ${opened}, closed ${closed}`;
+  return `Idunn incident closed (${record.closeReason}): ${record.condition} on \`${record.subject}\`, opened ${opened}, closed ${closed}`;
 }
 
-// The one send primitive. The outcome carries a message id, or a fixed error
-// code; bridge stdout and stderr are never copied into the journal.
-async function sendNotice({ bridgeCli, recipientId, receiptStore, key, nonce, record, notice }) {
+// The one send primitive. The outcome is completed with a message id; failed
+// only when the bridge reports exit 75 (known not sent); otherwise unknown. The
+// error is a fixed code: bridge stdout and stderr never reach the journal.
+async function sendNotice({ bridgeCli, recipientId, receiptStore, key, nonce, record, content }) {
   const dir = await mkdtemp(resolve(tmpdir(), "watchdog-notice-"));
   try {
     const contentFile = resolve(dir, "content.txt");
-    await writeFile(contentFile, noticeText(record, notice), "utf8");
+    await writeFile(contentFile, content, "utf8");
     const result = spawnSync(process.execPath, [
       bridgeCli, "discord-dm",
       "--recipient-id", recipientId,
@@ -195,17 +192,17 @@ async function sendNotice({ bridgeCli, recipientId, receiptStore, key, nonce, re
       "--source-kind", "idunn-operator-incident",
       "--source-id", record.incidentKey,
     ], { encoding: "utf8", env: process.env, windowsHide: true, timeout: BRIDGE_TIMEOUT_MS, stdio: ["ignore", "pipe", "ignore"] });
-    if (result.error) return { error: "bridge-spawn-failed" };
-    if (result.status !== 0) return { error: "bridge-exit-nonzero" };
+    if (result.status === BRIDGE_NOT_SENT) return { status: "failed", error: "bridge-not-sent" };
+    if (result.error || result.status !== 0) return { status: "unknown", error: "bridge-exit-unknown" };
     try {
       const value = JSON.parse(result.stdout);
       if (value.action === "discord-dm" && value.ok === true && typeof value.messageId === "string" && value.messageId) {
-        return { messageId: value.messageId };
+        return { status: "completed", messageId: value.messageId };
       }
     } catch {
       // falls through to the fixed code
     }
-    return { error: "bridge-output-invalid" };
+    return { status: "unknown", error: "bridge-output-invalid" };
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

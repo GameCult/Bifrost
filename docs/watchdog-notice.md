@@ -31,9 +31,18 @@ node tools/watchdog-notice.mjs status --journal-store J
 - J is Bifrost's journal, `bifrost.watchdog_notice_execution.v1`, keyed
   `<incident_key>#opened` or `<incident_key>#closed`. A `running` entry found at
   start becomes `unknown` and is never sent again. A `failed` entry is retried on
-  later runs with the same nonce, up to five attempts. Terminal entries are
-  deleted once Idunn no longer lists the incident.
+  later runs with the same nonce, up to five attempts. The journal is never
+  pruned: what Bifrost has sent is Bifrost's memory, whatever P holds.
+- The bridge (`bifrost-bridge.mjs discord-dm`) exits 75 only when it knows no
+  message was sent: argument or token errors, a failure opening the DM channel,
+  or a non-2xx answer to the message POST. The reader records `failed` for
+  exit 75 only. Any other non-success without a message id (another exit code,
+  a signal, the spawn timeout, unreadable output) is `unknown`: never sent again,
+  counted by the exit status.
 - The exit status is non-zero while any entry is `unknown` or out of attempts, or
   while P holds a record of this schema that breaks its contract. systemd shows
   that; `status` lists the entries.
-- Notice text is built from `condition`, `subject` and ISO UTC times only.
+- Notice text is built from `condition`, `subject` and ISO UTC times only. The
+  subject follows Idunn's `require_id` (1-256 bytes of `[A-Za-z0-9-_.:/]`) and
+  is placed in inline code. A time outside the ECMAScript Date range refuses the
+  record.
