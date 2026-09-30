@@ -16,7 +16,7 @@ function runtime(){const cr=createRequire(resolve(cult,"packages","cultcache-ts"
 const rustFixture=existsSync(resolve(epiphany,"epiphany-core","src","bin","epiphany-persona-discord-crossing-fixture.rs"))&&spawnSync("cargo",["--version"]).status===0;
 test("Bifrost consumes a Rust-authored request store through its read-only crossing directory",{skip:rustFixture?false:"needs cargo and Epiphany's epiphany-persona-discord-crossing-fixture fixture (removed in Epiphany 387afe49)"},async()=>{
   const root=await mkdtemp(resolve(tmpdir(),"rust-bifrost-crossing-")),requestDir=resolve(root,"request"),receiptDir=resolve(root,"receipt"),requestStore=resolve(requestDir,"requests.cc"),anchor=resolve(root,"mouth-anchor.msgpack"),identity=resolve(root,"mouth.cc"),deliveryKey=resolve(root,"delivery.seed"),bridge=resolve(root,"bridge.mjs");
-  const cargo=spawnSync("cargo",["run","--quiet","--manifest-path",resolve(epiphany,"epiphany-core","Cargo.toml"),"--bin","epiphany-persona-discord-crossing-fixture","--","--request-store",requestStore,"--identity-store",identity,"--request-anchor",anchor],{cwd:epiphany,encoding:"utf8",timeout:180000,windowsHide:true,env:{...process.env,CARGO_TARGET_DIR:"C:\\Users\\Meta\\.cargo-target-codex"}});
+  const cargo=spawnSync("cargo",["run","--quiet","--manifest-path",resolve(epiphany,"epiphany-core","Cargo.toml"),"--bin","epiphany-persona-discord-crossing-fixture","--","--request-store",requestStore,"--identity-store",identity,"--request-anchor",anchor],{cwd:epiphany,encoding:"utf8",timeout:180000,windowsHide:true});
   assert.equal(cargo.status,0,cargo.stderr||cargo.stdout);
   await chmod(requestStore,0o444);
   await enrollDomainIdentity(deliveryKey,"delivery",receiptIdentityDomain);
