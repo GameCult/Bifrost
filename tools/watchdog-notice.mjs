@@ -36,13 +36,6 @@ const SUBJECT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 class NoticeError extends Error {}
 const fail = (code) => new NoticeError(code);
 
-try {
-  process.exitCode = await main(process.argv.slice(2));
-} catch (error) {
-  process.stderr.write(`watchdog-notice: ${error instanceof NoticeError ? error.message : "unexpected-error"}\n`);
-  process.exitCode = 1;
-}
-
 async function main(args) {
   const [verb, ...rest] = args;
   const options = parseArgs(rest);
@@ -281,4 +274,11 @@ function parseArgs(args) {
 function requireOption(options, name) {
   if (!options[name]) throw fail(`missing-option-${name}`);
   return options[name];
+}
+
+try {
+  process.exitCode = await main(process.argv.slice(2));
+} catch (error) {
+  process.stderr.write(`watchdog-notice: ${error instanceof NoticeError ? error.message : "unexpected-error"}\n`);
+  process.exitCode = 1;
 }
