@@ -475,6 +475,10 @@ async function sendDiscordDm(options) {
   const token = process.env.BIFROST_DISCORD_BOT_TOKEN ?? process.env.DISCORD_BOT_TOKEN;
   const recipientId = requireOption(options, "recipient-id");
   const content = await readOptionText(options, "content", "content-file");
+  const nonce = optionalString(options.nonce);
+  if (options.nonce !== undefined && (!nonce || nonce.length > 25)) {
+    throw new Error("--nonce must be 1 to 25 characters.");
+  }
   const dryRun = options["dry-run"] === "true";
 
   if (dryRun) {
@@ -506,7 +510,7 @@ async function sendDiscordDm(options) {
       throw new Error("Set BIFROST_DISCORD_BOT_TOKEN or DISCORD_BOT_TOKEN before sending a Discord DM.");
     }
     channelId = await openDiscordDmChannel(token, recipientId);
-    result = await postDiscordBotMessage(token, channelId, content, undefined);
+    result = await postDiscordBotMessage(token, channelId, content, undefined, nonce);
     await bridgeAction?.complete({
       receiptUrl: `https://discord.com/channels/@me/${channelId}/${result.id}`,
       externalReceiptId: result.id,
@@ -755,7 +759,7 @@ async function openDiscordDmChannel(token, recipientId) {
   return channel.id;
 }
 
-async function postDiscordBotMessage(token, channelId, content, replyToMessageId) {
+async function postDiscordBotMessage(token, channelId, content, replyToMessageId, nonce) {
   const response = await fetch(`https://discord.com/api/v10/channels/${channelId}/messages`, {
     method: "POST",
     headers: {
@@ -773,6 +777,7 @@ async function postDiscordBotMessage(token, channelId, content, replyToMessageId
       allowed_mentions: {
         parse: [],
       },
+      ...(nonce ? { nonce, enforce_nonce: true } : {}),
     }),
   });
 
