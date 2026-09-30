@@ -1,6 +1,7 @@
 import test from "node:test";
+import {existsSync} from "node:fs";
 import assert from "node:assert/strict";
-import {spawn} from "node:child_process";
+import {spawn,spawnSync} from "node:child_process";
 import {createHash} from "node:crypto";
 import {createRequire} from "node:module";
 import {mkdtemp,readFile,writeFile} from "node:fs/promises";
@@ -12,7 +13,8 @@ import {startPersonaDiscordDeliveryRudpServer} from "../tools/persona-discord-ru
 
 const epiphany=resolve(import.meta.dirname,"..","..","Epiphany");
 
-test("Rust Persona mouth and Node Bifrost exchange one signed request and terminal receipt over CultNet RUDP",async()=>{
+const rustFixture=existsSync(resolve(epiphany,"epiphany-core","src","bin","epiphany-persona-discord-rudp-client-fixture.rs"))&&spawnSync("cargo",["--version"]).status===0;
+test("Rust Persona mouth and Node Bifrost exchange one signed request and terminal receipt over CultNet RUDP",{skip:rustFixture?false:"needs cargo and Epiphany's epiphany-persona-discord-rudp-client-fixture fixture (removed in Epiphany 387afe49)"},async()=>{
   const root=await mkdtemp(resolve(tmpdir(),"persona-rudp-cross-language-")),runtime=loadRuntime(),deliveryIdentity=await enrollDomainIdentity(resolve(root,"delivery.seed"),"delivery identity",receiptIdentityDomain),receiptAnchor=resolve(root,"receipt-anchor.msgpack"),requestAnchor=resolve(root,"request-anchor.msgpack"),requestStore=resolve(root,"requests.cc"),receiptStore=resolve(root,"receipts.cc"),identityStore=resolve(root,"mouth.cc");
   await writeFile(receiptAnchor,runtime.msgpack.encode(["gamecult.service_trust_anchor.v1","bifrost-persona-discord-delivery:bifrost-discord-yggdrasil:v0","bifrost-persona-discord-delivery","bifrost-discord-yggdrasil",deliveryIdentity.identityId,new Uint8Array(deliveryIdentity.publicKey),"ed25519",receiptSigningPurpose,"bifrost.persona_discord_delivery_receipt.v0","root",Date.now(),null,false]));
   let admitted;

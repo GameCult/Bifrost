@@ -33,7 +33,7 @@ const {
   CultCache,
   SingleFileMessagePackBackingStore,
   defineDocumentType,
-} = cultCacheRequire("cultcache-ts");
+} = cultCacheRequire("@gamecult/cultcache-ts");
 
 function resolveFirstExisting(label, candidates) {
   for (const candidate of candidates) {

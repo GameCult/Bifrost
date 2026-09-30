@@ -37,7 +37,7 @@ const {
   CultCache,
   SingleFileMessagePackBackingStore,
   defineDocumentType,
-} = cultCacheRequire("cultcache-ts");
+} = cultCacheRequire("@gamecult/cultcache-ts");
 const {
   CultNetDocumentRegistry,
   defineCultNetDocumentBinding,
