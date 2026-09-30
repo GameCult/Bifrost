@@ -12,7 +12,7 @@ import { conversationFromDiscordMessage, discordGatewayReady } from "../tools/bi
 const root=resolve(import.meta.dirname,".."), cult=resolve(root,"..","CultLib");
 const cr=createRequire(resolve(cult,"packages","cultcache-ts","package.json"));
 const mr=createRequire(resolve(cult,"packages","cultmesh-ts","package.json"));
-const {defineDocumentType}=cr("cultcache-ts"), {CultMesh}=mr("cultmesh-ts"), defs=buildFeedbackDefinitions(defineDocumentType);
+const {defineDocumentType}=cr("@gamecult/cultcache-ts"), {CultMesh}=mr("cultmesh-ts"), defs=buildFeedbackDefinitions(defineDocumentType);
 const nr=createRequire(resolve(cult,"packages","cultnet-ts","package.json")),{decode,encode}=nr("@msgpack/msgpack");
 
 test("Bifrost admits bound feedback as pressure only and exports CultNet",async()=>{
@@ -52,14 +52,14 @@ test("Bifrost admits bound feedback as pressure only and exports CultNet",async(
   assert.equal(replay.receiptId,"two");
   const exported=cli("export",store,"--out",out);
   assert.ok(exported.documentCount>=4); assert.ok((await stat(out)).size>0);
-  const deliveryCache=cr("cultcache-ts").CultCache.builder().withDocumentType(defs.delivery).withGenericStore(new (cr("cultcache-ts").SingleFileMessagePackBackingStore)(deliveryStore)).build();await deliveryCache.pullAllBackingStores();assert.equal(deliveryCache.getAll(defs.delivery).length,2);
+  const deliveryCache=cr("@gamecult/cultcache-ts").CultCache.builder().withDocumentType(defs.delivery).withGenericStore(new (cr("@gamecult/cultcache-ts").SingleFileMessagePackBackingStore)(deliveryStore)).build();await deliveryCache.pullAllBackingStores();assert.equal(deliveryCache.getAll(defs.delivery).length,2);
   const beforeStatus=await Promise.all([store,observationStore,deliveryStore,key].map(path=>readFile(path)));
   const readiness=cli("status",store,"--observation-store",observationStore,"--private-key",key);
   assert.equal(readiness.schemaVersion,"bifrost.persona_feedback.readiness.v0");assert.equal(readiness.status,"ready");assert.equal(readiness.bindingCount,1);assert.equal(readiness.pendingFailedCount,0);assert.equal(readiness.privateStateExposed,false);
   const staged=cli("status",store,"--observation-store",observationStore,"--private-key",key,"--epiphany-persona-mouth-trust-anchor",resolve(dir,"missing-mouth-anchor.msgpack"),"--epiphany-runtime-id","epiphany-yggdrasil","--epiphany-persona-permit-trust-anchor",resolve(dir,"missing-permit-anchor.msgpack"),"--epiphany-persona-permit-rudp","rudp://127.0.0.1:9","--persona-delivery-private-key",resolve(dir,"missing-delivery.seed"),"--persona-permit-request-private-key",resolve(dir,"missing-permit-request.seed"));
   assert.equal(staged.ingressReady,true);assert.deepEqual(staged.ingressReasons,[]);assert.equal(staged.personaDelivery.ready,false);assert.equal(staged.status,"degraded");
   const afterStatus=await Promise.all([store,observationStore,deliveryStore,key].map(path=>readFile(path)));assert.deepEqual(afterStatus,beforeStatus);
-  const Store=cr("cultcache-ts").SingleFileMessagePackBackingStore;
+  const Store=cr("@gamecult/cultcache-ts").SingleFileMessagePackBackingStore;
   assert.deepEqual([...new Set((await new Store(observationStore).pullAll()).map(entry=>entry.type))],["bifrost.discord.persona_conversation_event"]);
   assert.equal((await new Store(store).pullAll()).some(entry=>entry.type==="bifrost.discord.persona_conversation_event"),false);
   assert.deepEqual([...new Set((await new Store(deliveryStore).pullAll()).map(entry=>entry.type))],["bifrost.persona_feedback.delivery"]);
