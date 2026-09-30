@@ -471,9 +471,12 @@ async function postDiscordMessage(options) {
 }
 
 // discord-dm exits NOT_SENT_EXIT only when it knows no message was delivered:
-// anything before the message POST, or a definite non-2xx answer to it. A
-// failure after the POST was sent (network error, receipt completion, output)
-// keeps exit 1, so the caller treats the outcome as unknown.
+// anything before the message POST, or a non-2xx answer to it. A 5xx or 429
+// is not proof of non-delivery (Discord may have created the message before
+// answering): the caller retries with the same nonce and relies on
+// enforce_nonce inside Discord's window. A failure after the POST was sent
+// (network error, receipt completion, output) keeps exit 1, so the caller
+// treats the outcome as unknown.
 const NOT_SENT_EXIT = 75;
 class NotSentError extends Error {}
 class DiscordRejection extends Error {}

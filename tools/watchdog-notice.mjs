@@ -28,15 +28,17 @@ const INCIDENT_SCHEMA = "idunn.operator_incident.v1";
 const JOURNAL_TYPE = "bifrost.watchdog_notice_execution";
 const JOURNAL_SCHEMA = "bifrost.watchdog_notice_execution.v1";
 const MAX_ATTEMPTS = 5;
-const BRIDGE_TIMEOUT_MS = 60_000;
+// The override exists so a test can reach the timeout branch without a 60 s wait.
+const BRIDGE_TIMEOUT_MS = Number(process.env.WATCHDOG_NOTICE_BRIDGE_TIMEOUT_MS) || 60_000;
 const STATUSES = ["running", "completed", "failed", "unknown"];
 const NAME = /^[a-z][a-z-]{0,63}$/;
 // Idunn's require_id (GameCult/Idunn src/control_plane.rs:9122-9131 at 7f7528b):
 // 1-256 bytes of [A-Za-z0-9-_.:/]. The notice puts the subject in inline code.
 const SUBJECT = /^[A-Za-z0-9_.:/-]{1,256}$/;
 const MAX_DATE_MS = 8.64e15;
-// bifrost-bridge.mjs discord-dm exits 75 (EX_TEMPFAIL) only when it knows the
-// message was not sent. Every other non-success leaves the outcome unknown.
+// bifrost-bridge.mjs discord-dm exits 75 (EX_TEMPFAIL) for failures before
+// the message POST and for any non-2xx answer to it: retried with the same nonce.
+// Every other non-success leaves the outcome unknown.
 const BRIDGE_NOT_SENT = 75;
 
 class NoticeError extends Error {}
@@ -175,7 +177,7 @@ function noticeText(record, notice) {
 }
 
 // The one send primitive. The outcome is completed with a message id; failed
-// only when the bridge reports exit 75 (known not sent); otherwise unknown. The
+// only when the bridge reports exit 75 (retryable, same nonce); otherwise unknown. The
 // error is a fixed code: bridge stdout and stderr never reach the journal.
 async function sendNotice({ bridgeCli, recipientId, receiptStore, key, nonce, record, content }) {
   const dir = await mkdtemp(resolve(tmpdir(), "watchdog-notice-"));

@@ -32,8 +32,9 @@ const cache = createRequire(resolve(cult, "packages", "cultcache-ts", "package.j
 const msgpack = createRequire(resolve(cult, "packages", "cultnet-ts", "package.json"))("@msgpack/msgpack");
 
 // A bridge double that logs each call (with the content it was handed) and
-// behaves as the `mode` file says: ok; fail (exit 75, known not sent); die
-// (exit 1 after "sending"); signal (killed after "sending"); or crash (kills its
+// behaves as the `mode` file says: ok; fail (exit 75, retryable); die
+// (exit 1 after "sending"); signal (killed after "sending"); hang (never answers after
+// "sending"); flood (answers with more stdout than spawnSync buffers); or crash (kills its
 // parent, the reader, after logging, as a power cut between send and journal would).
 const FAKE_BRIDGE = `
 import { appendFileSync, readFileSync } from "node:fs";
@@ -49,6 +50,9 @@ const mode = readFileSync(resolve(here, "mode"), "utf8").trim();
 if (mode === "crash") { process.kill(process.ppid, "SIGKILL"); process.exit(0); }
 if (mode === "fail" || mode === "die") { process.stderr.write("boom " + opt("recipient-id")); process.stdout.write("boom " + opt("recipient-id")); process.exit(mode === "fail" ? 75 : 1); }
 if (mode === "signal") process.kill(process.pid, "SIGKILL");
+if (mode === "hang") setTimeout(() => {}, 30000);
+else if (mode === "flood") process.stdout.write("x".repeat(2 * 1024 * 1024));
+else
 process.stdout.write(JSON.stringify({ action: "discord-dm", ok: true, messageId: "m" + (n + 1) }));
 `;
 
@@ -172,7 +176,7 @@ test("a running entry becomes unknown and is never re-posted", async () => {
   assert.equal((await w.posts()).length, posts.length);
 });
 
-test("only a known-unsent bridge exit is retried, with the same nonce, up to five attempts", async () => {
+test("only a bridge exit 75 is retried, with the same nonce, up to five attempts", async () => {
   const w = await world("wn-retry-", { mode: "fail" });
   const exits = [];
   for (let run = 0; run < 5; run += 1) exits.push(w.run().status);
@@ -265,6 +269,7 @@ test("a bridge that dies after sending is unknown and never re-posted", async ()
     const first = w.run();
     assert.notEqual(first.status, 0);
     assert.equal(JSON.parse(first.stdout).unknown, 2);
+    assert.notEqual((await w.status()).status, 0, "status exits non-zero while an entry is unknown");
     await w.setMode("ok");
     assert.notEqual(w.run().status, 0);
     assert.notEqual(w.run().status, 0);
@@ -273,6 +278,22 @@ test("a bridge that dies after sending is unknown and never re-posted", async ()
     assert.ok(posts.every((post) => notice(post) === "opened"));
     assert.deepEqual((await w.status()).rows.map((row) => `${row.notice}:${row.status}:${row.attempts}:${row.lastError}`), ["opened:unknown:1:bridge-exit-unknown", "opened:unknown:1:bridge-exit-unknown"]);
     assert.ok(!(await readFile(w.journal, "latin1")).includes("RECIPIENTCANARY"));
+  }
+});
+
+test("a spawn timeout and a spawn error are unknown, never failed, never re-posted", async () => {
+  for (const mode of ["hang", "flood"]) {
+    const w = await world(`wn-${mode}-`, { mode });
+    const first = w.run({ env: { WATCHDOG_NOTICE_BRIDGE_TIMEOUT_MS: "1500" } });
+    assert.notEqual(first.status, 0, mode);
+    assert.equal(JSON.parse(first.stdout).unknown, 2, mode);
+    await w.setMode("ok");
+    assert.notEqual(w.run().status, 0);
+    assert.notEqual(w.run().status, 0);
+    const posts = await w.posts();
+    assert.equal(posts.length, 2, `${mode}: one opening post per incident, no retry, no closure`);
+    assert.ok(posts.every((post) => notice(post) === "opened"));
+    assert.deepEqual((await w.status()).rows.map((row) => `${row.notice}:${row.status}:${row.attempts}:${row.lastError}`), ["opened:unknown:1:bridge-exit-unknown", "opened:unknown:1:bridge-exit-unknown"], mode);
   }
 });
 
@@ -299,7 +320,8 @@ globalThis.fetch = async (url, init) => {
   const channels = String(url).endsWith("/users/@me/channels");
   const behavior = process.env.STUB_BEHAVIOR;
   if (channels && behavior === "dm-channel-500") return new Response("{}", { status: 500 });
-  if (!channels && behavior === "message-400") return new Response("{}", { status: 400 });
+  const rejected = /^message-(\\d{3})$/.exec(behavior ?? "");
+  if (!channels && rejected) return new Response("{}", { status: Number(rejected[1]) });
   if (!channels && behavior === "message-network-error") throw new TypeError("fetch failed");
   return new Response(JSON.stringify(channels ? { id: "dm-channel" } : { id: "message-1" }), { status: 200 });
 };
@@ -319,6 +341,7 @@ test("discord-dm carries nonce and enforce_nonce when asked", async () => {
   let posted = (await fetches(stub.log)).filter((entry) => entry.url.endsWith("/channels/dm-channel/messages"));
   assert.equal(posted.at(-1).body.nonce, "abc123");
   assert.equal(posted.at(-1).body.enforce_nonce, true);
+  assert.deepEqual(posted.at(-1).body.allowed_mentions, { parse: [] }, "no mention is ever parsed");
 
   const without = dm();
   assert.equal(without.status, 0, without.stderr);
@@ -347,12 +370,38 @@ test("discord-dm exits 75 only before delivery", async () => {
   assert.equal(dm(undefined, { recipient: "" }).status, 75, "missing argument");
   assert.equal(dm("dm-channel-500").status, 75, "DM channel failure");
   assert.equal(await messagePosts(), 0, "nothing was posted by any of those");
-  assert.equal(dm("message-400").status, 75, "definite non-2xx on the message POST");
+  assert.equal(dm("message-400").status, 75, "a 4xx answer to the message POST");
   assert.equal(await messagePosts(), 1);
+  for (const status of [500, 502, 503, 429]) {
+    const before = await messagePosts();
+    assert.equal(dm(`message-${status}`).status, 75, `a ${status} answer is retryable, not unknown`);
+    assert.equal(await messagePosts(), before + 1);
+  }
   const lost = dm("message-network-error");
-  assert.equal(lost.status, 1, "a network error after the message POST was sent is not known-unsent");
-  assert.equal(await messagePosts(), 2);
+  assert.equal(lost.status, 1, "a network error after the message POST was sent is not exit 75");
+  assert.equal(await messagePosts(), 6);
   assert.equal(dm().status, 0);
+});
+
+test("a 5xx or 429 on the message POST is retried with the same nonce", async () => {
+  for (const status of [502, 429]) {
+    const w = await world(`wn-${status}-`);
+    const stub = await fetchStub(w.dir);
+    const env = { NODE_OPTIONS: stub.options, BIFROST_DISCORD_BOT_TOKEN: "test-token-not-real" };
+    const messages = async () => (await fetches(stub.log)).filter((entry) => entry.url.endsWith("/messages"));
+    for (let tick = 1; tick <= 2; tick += 1) {
+      const result = w.run({ bridge: BRIDGE, env: { ...env, STUB_BEHAVIOR: `message-${status}` } });
+      assert.equal(result.status, 0, result.stderr);
+      assert.deepEqual((await w.status()).rows.map((row) => `${row.status}:${row.attempts}`), [`failed:${tick}`, `failed:${tick}`]);
+    }
+    const sent = await messages();
+    assert.equal(sent.length, 4, "two openings, each tried twice");
+    const nonces = Map.groupBy(sent, (entry) => entry.body.content);
+    assert.equal(nonces.size, 2);
+    for (const group of nonces.values()) assert.equal(new Set(group.map((entry) => entry.body.nonce)).size, 1, "a retry reuses its nonce");
+    assert.equal(w.run({ bridge: BRIDGE, env }).status, 0);
+    assert.deepEqual((await w.status()).rows.map((row) => row.status), ["completed", "completed", "completed"]);
+  }
 });
 
 test("every subject Idunn accepts is delivered, inside backticks", async () => {
@@ -406,5 +455,6 @@ test("the reader posts through the real bridge with its nonce", async () => {
   }
   assert.ok(existsSync(w.receipts), "the bridge wrote its crossing receipts to the reader's receipt store");
   assert.deepEqual((await w.status()).rows.map((row) => row.status), ["completed", "completed", "completed"]);
+  assert.equal((await w.status()).status, 0, "status exits zero when nothing is unknown or exhausted");
 });
 

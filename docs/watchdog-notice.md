@@ -33,10 +33,14 @@ node tools/watchdog-notice.mjs status --journal-store J
   start becomes `unknown` and is never sent again. A `failed` entry is retried on
   later runs with the same nonce, up to five attempts. The journal is never
   pruned: what Bifrost has sent is Bifrost's memory, whatever P holds.
-- The bridge (`bifrost-bridge.mjs discord-dm`) exits 75 only when it knows no
-  message was sent: argument or token errors, a failure opening the DM channel,
-  or a non-2xx answer to the message POST. The reader records `failed` for
-  exit 75 only. Any other non-success without a message id (another exit code,
+- The bridge (`bifrost-bridge.mjs discord-dm`) exits 75 for argument or token
+  errors, a failure opening the DM channel, or any non-2xx answer to the message
+  POST. A non-2xx is retried, not proven unsent: the retry carries the same nonce
+  and relies on Discord's `enforce_nonce` inside its window, so a 5xx that Discord
+  answered after creating the message can be delivered twice if the retry falls
+  outside that window. A 5xx stays retryable because parking it as `unknown`
+  would lose the notice on every routine Discord outage. The reader records
+  `failed` for exit 75 only. Any other non-success without a message id (another exit code,
   a signal, the spawn timeout, unreadable output) is `unknown`: never sent again,
   counted by the exit status.
 - The exit status is non-zero while any entry is `unknown` or out of attempts, or
