@@ -470,11 +470,36 @@ async function postDiscordMessage(options) {
   });
 }
 
+// discord-dm exits NOT_SENT_EXIT only when it knows no message was delivered:
+// anything before the message POST, or a non-2xx answer to it. A 5xx or 429
+// is not proof of non-delivery (Discord may have created the message before
+// answering): the caller retries with the same nonce and relies on
+// enforce_nonce inside Discord's window. A failure after the POST was sent
+// (network error, receipt completion, output) keeps exit 1, so the caller
+// treats the outcome as unknown.
+const NOT_SENT_EXIT = 75;
+class NotSentError extends Error {}
+class DiscordRejection extends Error {}
+
 async function sendDiscordDm(options) {
+  const state = { postStarted: false };
+  try {
+    await deliverDiscordDm(options, state);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw state.postStarted && !(error instanceof DiscordRejection) ? error : new NotSentError(message);
+  }
+}
+
+async function deliverDiscordDm(options, state) {
   ensureBridgeReceiptGate(options);
   const token = process.env.BIFROST_DISCORD_BOT_TOKEN ?? process.env.DISCORD_BOT_TOKEN;
   const recipientId = requireOption(options, "recipient-id");
   const content = await readOptionText(options, "content", "content-file");
+  const nonce = optionalString(options.nonce);
+  if (options.nonce !== undefined && (!nonce || nonce.length > 25)) {
+    throw new Error("--nonce must be 1 to 25 characters.");
+  }
   const dryRun = options["dry-run"] === "true";
 
   if (dryRun) {
@@ -506,7 +531,8 @@ async function sendDiscordDm(options) {
       throw new Error("Set BIFROST_DISCORD_BOT_TOKEN or DISCORD_BOT_TOKEN before sending a Discord DM.");
     }
     channelId = await openDiscordDmChannel(token, recipientId);
-    result = await postDiscordBotMessage(token, channelId, content, undefined);
+    state.postStarted = true;
+    result = await postDiscordBotMessage(token, channelId, content, undefined, nonce);
     await bridgeAction?.complete({
       receiptUrl: `https://discord.com/channels/@me/${channelId}/${result.id}`,
       externalReceiptId: result.id,
@@ -755,7 +781,7 @@ async function openDiscordDmChannel(token, recipientId) {
   return channel.id;
 }
 
-async function postDiscordBotMessage(token, channelId, content, replyToMessageId) {
+async function postDiscordBotMessage(token, channelId, content, replyToMessageId, nonce) {
   const response = await fetch(`https://discord.com/api/v10/channels/${channelId}/messages`, {
     method: "POST",
     headers: {
@@ -773,12 +799,13 @@ async function postDiscordBotMessage(token, channelId, content, replyToMessageId
       allowed_mentions: {
         parse: [],
       },
+      ...(nonce ? { nonce, enforce_nonce: true } : {}),
     }),
   });
 
   const text = await response.text();
   if (!response.ok) {
-    throw new Error(`Discord post failed with ${response.status}: ${text}`);
+    throw new DiscordRejection(`Discord post failed with ${response.status}: ${text}`);
   }
 
   const message = JSON.parse(text);
@@ -1445,5 +1472,5 @@ Provenance note:
 
 main().catch((error) => {
   process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-  process.exitCode = 1;
+  process.exitCode = error instanceof NotSentError ? NOT_SENT_EXIT : 1;
 });
