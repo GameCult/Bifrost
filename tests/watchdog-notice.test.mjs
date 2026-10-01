@@ -197,6 +197,14 @@ test("an entry stamped ahead of the clock is eligible now, not deferred by the s
   assert.equal((await w.posts()).length, 6);
 });
 
+test("the reader takes time from Date.now() alone, never from the environment", async () => {
+  const w = await world("wn-noseam-", { mode: "fail" });
+  w.run({ env: { ...at(0), WATCHDOG_NOTICE_NOW_MS: "-5" } });
+  w.run({ env: { ...at(0), WATCHDOG_NOTICE_NOW_MS: "8000000000000000" } });
+  assert.equal((await w.posts()).length, 2, "no environment variable moves the clock");
+  assert.equal((await w.status({ WATCHDOG_NOTICE_NOW_MS: "8000000000000000", ...at(0) })).rows[0].nextEligibleAt, new Date(T0 + 60_000).toISOString());
+});
+
 const backoffMinutes = [0, 1, 3, 7, 15, 31, 63, 123, 183];
 
 test("a failed notice is retried after its backoff and never exhausted", async () => {
