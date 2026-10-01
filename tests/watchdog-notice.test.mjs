@@ -240,12 +240,12 @@ test("a failed notice is not retried before its delay", async () => {
   w.run({ env: at(0.99) });
   w.run({ env: at(0) });
   assert.equal(await count(), 2, "a run inside the delay spawns nothing");
-  const row = (await w.status()).rows[0];
+  const row = (await w.status(at(0))).rows[0];
   assert.equal(row.attempts, 1);
   assert.equal(row.nextEligibleAt, new Date(T0 + 60_000).toISOString(), "status names when the entry is next eligible");
   w.run({ env: at(1) });
   assert.equal(await count(), 4, "eligible once the delay has passed");
-  assert.equal((await w.status()).rows[0].nextEligibleAt, new Date(T0 + 3 * 60_000).toISOString());
+  assert.equal((await w.status(at(1))).rows[0].nextEligibleAt, new Date(T0 + 3 * 60_000).toISOString());
 });
 
 test("the unit signals from the third failed attempt while still retrying", async () => {
