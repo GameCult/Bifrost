@@ -32,10 +32,8 @@ const JOURNAL_SCHEMA = "bifrost.watchdog_notice_execution.v1";
 // failures on, the exit status is the delivery-failure signal; retries go on.
 const MAX_DELAY_MINUTES = 60;
 const FAILING_ATTEMPTS = 3;
-// The overrides exist so a test can reach the timeout branch without a 60 s wait
-// and can drive the backoff without sleeping.
+// The override exists so a test can reach the timeout branch without a 60 s wait.
 const BRIDGE_TIMEOUT_MS = Number(process.env.WATCHDOG_NOTICE_BRIDGE_TIMEOUT_MS) || 60_000;
-const clockMs = () => Number(process.env.WATCHDOG_NOTICE_NOW_MS) || Date.now();
 const STATUSES = ["running", "completed", "failed", "unknown"];
 const NAME = /^[a-z][a-z-]{0,63}$/;
 // Idunn's require_id (GameCult/Idunn src/control_plane.rs:9122-9131 at 7f7528b):
@@ -88,7 +86,7 @@ async function processIncidents(options) {
     const outcome = await sendNotice({ bridgeCli, recipientId, receiptStore, key, nonce, record, content });
     await journal.put({ ...base, messageId: outcome.messageId ?? "", status: outcome.status, lastError: outcome.error ?? "", updatedAt: now() });
   };
-  const retryable = (entry) => !entry || (entry.status === "failed" && !(clockMs() < nextEligibleMs(entry)));
+  const retryable = (entry) => !entry || (entry.status === "failed" && Date.now() >= nextEligibleMs(entry));
   const entryFor = (record, notice) => journal.cache.get(journal.definition, `${record.incidentKey}#${notice}`);
 
   for (const record of records) {
@@ -121,9 +119,14 @@ async function status(options) {
 }
 
 const isFailing = (entry) => entry.status === "failed" && entry.attempts >= FAILING_ATTEMPTS;
-// Measured from the failed entry's last attempt in the journal.
-const nextEligibleMs = (entry) => Date.parse(entry.updatedAt) + Math.min(2 ** (entry.attempts - 1), MAX_DELAY_MINUTES) * 60_000;
-const now = () => new Date(clockMs()).toISOString();
+// Measured from the failed entry's last attempt in the journal. A stamp ahead of
+// the clock is skew (a host clock stepped forward, then corrected), not a delay
+// to wait out: that entry is eligible now, and its next attempt rewrites the stamp.
+const nextEligibleMs = (entry) => {
+  const stamp = Date.parse(entry.updatedAt);
+  return stamp > Date.now() ? Date.now() : stamp + Math.min(2 ** (entry.attempts - 1), MAX_DELAY_MINUTES) * 60_000;
+};
+const now = () => new Date(Date.now()).toISOString();
 
 // Reads P unlocked. An absent file is "nothing to do" (records: null). A
 // record of another schema is counted as skipped; a record of this schema

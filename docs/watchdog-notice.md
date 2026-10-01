@@ -27,7 +27,7 @@ node tools/watchdog-notice.mjs status --journal-store J
 A notice whose send failed (bridge exit 75) is never dropped. It is eligible
 again once `min(2^(attempts-1), 60)` minutes have passed since its last attempt
 in the journal: 1, 2, 4, 8, 16, 32, then every 60 minutes. A run that finds it
-inside its delay skips it without spawning the bridge. Every attempt carries the
+inside its delay skips it without spawning the bridge. An entry stamped ahead of the clock (a host clock stepped forward, then corrected) is eligible now, and its next attempt rewrites the stamp. Every attempt carries the
 same nonce, so a Discord outage of any length costs a late notice, not a lost
 one, and a retry that succeeds is the one post.
 

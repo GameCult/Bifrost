@@ -72,25 +72,27 @@ async function world(prefix, { incidents = FIXTURE, mode = "ok" } = {}) {
   if (incidents) await copyFile(incidents, w.incidents);
   w.setMode = (value) => writeFile(resolve(dir, "mode"), value);
   w.run = (extra = {}) => run(w, extra);
-  w.status = () => runStatus(w);
+  w.status = (env) => runStatus(w, env);
   w.posts = async () => (existsSync(w.calls) ? (await readFile(w.calls, "utf8")).trim().split("\n").map((line) => JSON.parse(line)) : []);
   return w;
 }
 
-// The reader's clock is WATCHDOG_NOTICE_NOW_MS; a test drives the backoff by
-// naming the minute (from T0) each run happens at.
+// The reader reads Date.now(). A test drives the backoff the way it stubs fetch:
+// a preload (fake-clock.mjs, passed to the reader as --import) fixes Date.now
+// to the minute (from T0) the run happens at. The reader has no clock seam.
 const T0 = 1_800_000_000_000;
-const at = (minutes) => ({ WATCHDOG_NOTICE_NOW_MS: String(T0 + Math.round(minutes * 60_000)) });
+const CLOCK = resolve(import.meta.dirname, "fake-clock.mjs");
+const at = (minutes) => ({ FAKE_NOW_MS: String(T0 + Math.round(minutes * 60_000)) });
 
 function run(w, { env = {}, bridge = w.bridge } = {}) {
-  return spawnSync(process.execPath, [TOOL, "process", "--incident-store", w.incidents, "--journal-store", w.journal, "--receipt-store", w.receipts, "--bridge-cli", bridge], {
+  return spawnSync(process.execPath, ["--import", CLOCK, TOOL, "process", "--incident-store", w.incidents, "--journal-store", w.journal, "--receipt-store", w.receipts, "--bridge-cli", bridge], {
     encoding: "utf8",
     env: { ...process.env, DISCORD_OWNER_ID: RECIPIENT, ...env },
   });
 }
 
-function runStatus(w) {
-  const result = spawnSync(process.execPath, [TOOL, "status", "--journal-store", w.journal], { encoding: "utf8", env: process.env });
+function runStatus(w, env = {}) {
+  const result = spawnSync(process.execPath, ["--import", CLOCK, TOOL, "status", "--journal-store", w.journal], { encoding: "utf8", env: { ...process.env, ...env } });
   return { ...result, rows: result.status === null || !result.stdout ? [] : JSON.parse(result.stdout) };
 }
 
@@ -178,8 +180,21 @@ test("a running entry becomes unknown and is never re-posted", async () => {
   assert.equal(posts.filter((post) => opt(post, "cultmesh-command-id") === `${CLOSED_KEY}#opened`).length, 1, "the interrupted notice is not sent again");
   const rows = (await w.status()).rows;
   assert.equal(rows.find((row) => row.incidentKey === CLOSED_KEY && row.notice === "opened").status, "unknown");
-  assert.notEqual(w.run().status, 0, "still failing on the next run");
+  assert.notEqual(w.run({ env: at(100_000) }).status, 0, "still failing, and not re-posted, long past any backoff");
   assert.equal((await w.posts()).length, posts.length);
+});
+
+test("an entry stamped ahead of the clock is eligible now, not deferred by the skew", async () => {
+  const w = await world("wn-skew-", { mode: "fail" });
+  w.run({ env: at(1000) });
+  assert.equal((await w.posts()).length, 2, "both openings tried once, stamped at minute 1000");
+  w.run({ env: at(0) });
+  assert.equal((await w.posts()).length, 4, "the clock is behind the stamp: retried at once");
+  assert.equal((await w.status(at(0))).rows[0].nextEligibleAt, new Date(T0 + 2 * 60_000).toISOString(), "the retry rewrote the stamp from the corrected clock");
+  w.run({ env: at(1.5) });
+  assert.equal((await w.posts()).length, 4, "the cadence holds from the rewritten stamp");
+  w.run({ env: at(2) });
+  assert.equal((await w.posts()).length, 6);
 });
 
 const backoffMinutes = [0, 1, 3, 7, 15, 31, 63, 123, 183];
@@ -326,8 +341,8 @@ test("a bridge that dies after sending is unknown and never re-posted", async ()
     assert.equal(JSON.parse(first.stdout).unknown, 2);
     assert.notEqual((await w.status()).status, 0, "status exits non-zero while an entry is unknown");
     await w.setMode("ok");
-    assert.notEqual(w.run().status, 0);
-    assert.notEqual(w.run().status, 0);
+    assert.notEqual(w.run({ env: at(1000) }).status, 0, "far past any backoff");
+    assert.notEqual(w.run({ env: at(100_000) }).status, 0);
     const posts = await w.posts();
     assert.equal(posts.length, 2, "one opening post per incident, no retry, no closure");
     assert.ok(posts.every((post) => notice(post) === "opened"));
@@ -343,8 +358,8 @@ test("a spawn timeout and a spawn error are unknown, never failed, never re-post
     assert.notEqual(first.status, 0, mode);
     assert.equal(JSON.parse(first.stdout).unknown, 2, mode);
     await w.setMode("ok");
-    assert.notEqual(w.run().status, 0);
-    assert.notEqual(w.run().status, 0);
+    assert.notEqual(w.run({ env: at(1000) }).status, 0, "far past any backoff");
+    assert.notEqual(w.run({ env: at(100_000) }).status, 0);
     const posts = await w.posts();
     assert.equal(posts.length, 2, `${mode}: one opening post per incident, no retry, no closure`);
     assert.ok(posts.every((post) => notice(post) === "opened"));
