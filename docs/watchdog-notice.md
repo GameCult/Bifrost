@@ -22,6 +22,15 @@ node tools/watchdog-notice.mjs status --journal-store J
 - `BIFROST_DISCORD_BOT_TOKEN` in the environment, read only by
   `bifrost-bridge.mjs`, which the reader spawns.
 
+## Retry
+
+A notice whose send failed (bridge exit 75) is never dropped. It is eligible
+again once `min(2^(attempts-1), 60)` minutes have passed since its last attempt
+in the journal: 1, 2, 4, 8, 16, 32, then every 60 minutes. A run that finds it
+inside its delay skips it without spawning the bridge. An entry stamped ahead of the clock (a host clock stepped forward, then corrected) is eligible now, and its next attempt rewrites the stamp. Every attempt carries the
+same nonce, so a Discord outage of any length costs a late notice, not a lost
+one, and a retry that succeeds is the one post.
+
 ## Behaviour
 
 - P is Idunn's `idunn.operator_incident.v1` store. The reader reads it without a
@@ -31,7 +40,7 @@ node tools/watchdog-notice.mjs status --journal-store J
 - J is Bifrost's journal, `bifrost.watchdog_notice_execution.v1`, keyed
   `<incident_key>#opened` or `<incident_key>#closed`. A `running` entry found at
   start becomes `unknown` and is never sent again. A `failed` entry is retried on
-  later runs with the same nonce, up to five attempts. The journal is never
+  later runs with the same nonce, never given up on (see Retry). The journal is never
   pruned: what Bifrost has sent is Bifrost's memory, whatever P holds.
 - The bridge (`bifrost-bridge.mjs discord-dm`) exits 75 for argument or token
   errors, a failure opening the DM channel, or any non-2xx answer to the message
@@ -43,9 +52,11 @@ node tools/watchdog-notice.mjs status --journal-store J
   `failed` for exit 75 only. Any other non-success without a message id (another exit code,
   a signal, the spawn timeout, unreadable output) is `unknown`: never sent again,
   counted by the exit status.
-- The exit status is non-zero while any entry is `unknown` or out of attempts, or
-  while P holds a record of this schema that breaks its contract. systemd shows
-  that; `status` lists the entries.
+- The exit status is non-zero while any entry is `unknown` or has failed three or
+  more times, or while P holds a record of this schema that breaks its contract.
+  systemd shows that; `status` lists the entries, with `attempts` and, for a
+  `failed` entry, `nextEligibleAt`. The non-zero status is the signal only: the
+  entry keeps being retried.
 - Notice text is built from `condition`, `subject` and ISO UTC times only. The
   subject follows Idunn's `require_id` (1-256 bytes of `[A-Za-z0-9-_.:/]`) and
   is placed in inline code. A time outside the ECMAScript Date range refuses the
