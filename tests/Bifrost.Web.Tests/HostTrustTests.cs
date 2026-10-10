@@ -115,6 +115,7 @@ public sealed class HostTrustTests : IClassFixture<TestWebApplicationFactory>
             NullLoggerFactory.Instance,
             options);
         var context = new DefaultHttpContext();
+        context.Request.Scheme = "http";
         context.Connection.RemoteIpAddress = IPAddress.Parse(peer);
         context.Request.Headers["X-Forwarded-For"] = forwardedFor;
         if (forwardedProto is not null)
