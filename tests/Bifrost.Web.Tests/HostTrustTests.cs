@@ -2,6 +2,7 @@ using System.Net;
 using Bifrost.Web.Configuration;
 using Bifrost.Web.Features.Shared;
 using Bifrost.Web.Tests.Support;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
