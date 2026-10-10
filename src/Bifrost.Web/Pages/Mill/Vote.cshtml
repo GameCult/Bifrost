@@ -1,0 +1,56 @@
+@page "/mill/{collection}/{key}"
+@model Bifrost.Web.Pages.Mill.VoteModel
+@{
+    ViewData["Title"] = Model.Subject.Title;
+    var stance = Model.Subject.YourStance;
+}
+
+<section class="panel">
+    <a class="back-link" href="@Model.MillPageLink">Back to the Concept Mill</a>
+    <h1>@Model.Subject.Title</h1>
+
+    <dl class="mill-counts">
+        <dt>Everyone</dt>
+        <dd>@Model.Subject.Tally.Up up, @Model.Subject.Tally.Down down</dd>
+        <dt>Members</dt>
+        <dd>@Model.Subject.Tally.Members.Up up, @Model.Subject.Tally.Members.Down down</dd>
+    </dl>
+
+    <p>
+        @if (stance is null)
+        {
+            <text>You have not voted on this concept.</text>
+        }
+        else
+        {
+            <text>Your vote: @(stance == Bifrost.Web.Domain.ConceptStance.Up ? "up" : "down").</text>
+        }
+    </p>
+
+    <div class="mill-actions">
+        <form method="post" asp-page-handler="Up" hx-boost="false">
+            <button class="button" type="submit">Up</button>
+        </form>
+        <form method="post" asp-page-handler="Down" hx-boost="false">
+            <button class="button" type="submit">Down</button>
+        </form>
+        @if (stance is not null)
+        {
+            <form method="post" asp-page-handler="Retract" hx-boost="false">
+                <button class="button ghost" type="submit">Retract</button>
+            </form>
+        }
+    </div>
+
+    @if (Model.SignedIn)
+    {
+        <p class="muted">Your vote is kept against your Bifrost account. No cookie is set.</p>
+    }
+    else
+    {
+        <p class="muted">
+            Voting saves one small cookie on this device. Its only purpose is to keep your one vote yours so you can
+            change or retract it; it lasts a year and carries nothing else.
+        </p>
+    }
+</section>
