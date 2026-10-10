@@ -54,6 +54,22 @@ public sealed class HostTrustTests : IClassFixture<TestWebApplicationFactory>
     }
 
     [Fact]
+    public async Task A_loopback_forwarded_entry_does_not_chain_to_earlier_entries()
+    {
+        var context = await RunForwardedHeaders("127.0.0.1", "6.6.6.6, 127.0.0.1", null);
+
+        Assert.Equal(IPAddress.Loopback, context.Connection.RemoteIpAddress);
+    }
+
+    [Fact]
+    public async Task Only_the_exact_loopback_addresses_are_trusted_not_the_loopback_range()
+    {
+        var context = await RunForwardedHeaders("127.0.0.2", "203.0.113.7", null);
+
+        Assert.Equal(IPAddress.Parse("127.0.0.2"), context.Connection.RemoteIpAddress);
+    }
+
+    [Fact]
     public void Payload_protected_under_one_content_root_unprotects_under_another()
     {
         var root = Path.Combine(Path.GetTempPath(), "bifrost-dp-" + Guid.NewGuid().ToString("N"));
