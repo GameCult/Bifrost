@@ -340,7 +340,7 @@ public sealed class ConceptSubjectRegistryTests
         public async Task<CastResult> Cast(string key, ConceptStance stance)
         {
             await using var db = NewDb();
-            var voter = VoterIdentity.For(CurrentBifrostActor.Anonymous, "device-" + key + stance)!;
+            var voter = VoterIdentity.For(CurrentBifrostActor.Anonymous, "device-" + stance)!;
             return await Appraisals(db).CastAsync(Collection, key, voter, stance, IPAddress.Parse("203.0.113.7"), default);
         }
 
