@@ -367,14 +367,14 @@ namespace Bifrost.Web.Data.Migrations
                         .HasMaxLength(240)
                         .HasColumnType("character varying(240)");
 
+                    b.Property<string>("TargetSurface")
+                        .IsRequired()
+                        .HasColumnType("text");
+
                     b.Property<string>("TargetSurfaceName")
                         .IsRequired()
                         .HasMaxLength(120)
                         .HasColumnType("character varying(120)");
-
-                    b.Property<string>("TargetSurface")
-                        .IsRequired()
-                        .HasColumnType("text");
 
                     b.Property<string>("Title")
                         .IsRequired()
@@ -410,6 +410,88 @@ namespace Bifrost.Web.Data.Migrations
                     b.HasIndex("TargetSurface", "TargetSurfaceName", "Status");
 
                     b.ToTable("BridgeActions");
+                });
+
+            modelBuilder.Entity("Bifrost.Web.Domain.ConceptAppraisal", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("CastAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("NetworkTag")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("Stance")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<Guid>("SubjectId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid?>("UserAccountId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("VoterClass")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<string>("VoterKey")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserAccountId");
+
+                    b.HasIndex("NetworkTag", "CastAtUtc");
+
+                    b.HasIndex("SubjectId", "VoterKey")
+                        .IsUnique();
+
+                    b.ToTable("ConceptAppraisals");
+                });
+
+            modelBuilder.Entity("Bifrost.Web.Domain.ConceptSubject", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Collection")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)");
+
+                    b.Property<string>("Key")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)");
+
+                    b.Property<DateTimeOffset>("RegisteredAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("RetiredAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(240)
+                        .HasColumnType("character varying(240)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Collection", "Key")
+                        .IsUnique();
+
+                    b.ToTable("ConceptSubjects");
                 });
 
             modelBuilder.Entity("Bifrost.Web.Domain.DecayRun", b =>
@@ -889,6 +971,9 @@ namespace Bifrost.Web.Data.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<Guid?>("ProjectId")
+                        .HasColumnType("uuid");
+
                     b.Property<string>("Provider")
                         .IsRequired()
                         .HasColumnType("text");
@@ -908,9 +993,6 @@ namespace Bifrost.Web.Data.Migrations
                         .HasMaxLength(240)
                         .HasColumnType("character varying(240)");
 
-                    b.Property<Guid?>("ProjectId")
-                        .HasColumnType("uuid");
-
                     b.Property<DateTimeOffset>("RecordedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
@@ -922,11 +1004,11 @@ namespace Bifrost.Web.Data.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("ProjectId");
+
                     b.HasIndex("Provider", "ProviderEventId")
                         .IsUnique()
                         .HasFilter("\"ProviderEventId\" <> ''");
-
-                    b.HasIndex("ProjectId");
 
                     b.HasIndex("UserAccountId", "Kind", "IsCurrentRecurringSupport");
 
@@ -1613,6 +1695,22 @@ namespace Bifrost.Web.Data.Migrations
                     b.Navigation("Motion");
 
                     b.Navigation("WorkItem");
+                });
+
+            modelBuilder.Entity("Bifrost.Web.Domain.ConceptAppraisal", b =>
+                {
+                    b.HasOne("Bifrost.Web.Domain.ConceptSubject", "Subject")
+                        .WithMany()
+                        .HasForeignKey("SubjectId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Bifrost.Web.Domain.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("UserAccountId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.Navigation("Subject");
                 });
 
             modelBuilder.Entity("Bifrost.Web.Domain.GitHubIssueLink", b =>

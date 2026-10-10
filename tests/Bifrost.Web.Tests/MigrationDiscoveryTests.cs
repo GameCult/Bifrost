@@ -20,6 +20,7 @@ public sealed class MigrationDiscoveryTests
         "20260622165000_AddBifrostNativeIdentity",
         "20260622202000_AddBridgeActionTargetSurfaceName",
         "20260705190000_AddPatronSupportProjectAttribution",
+        "20261010043937_AddConceptVotes",
     ];
 
     // Database.GetMigrations() reads assembly metadata only; no connection is opened.
@@ -49,7 +50,7 @@ public sealed class MigrationDiscoveryTests
     }
 
     [Fact]
-    public void All_twelve_migrations_are_listed_in_order()
+    public void All_thirteen_migrations_are_listed_in_order()
     {
         Assert.Equal(ExpectedMigrations, Discovered());
     }

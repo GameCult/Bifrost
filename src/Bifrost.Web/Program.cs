@@ -6,6 +6,7 @@ using Bifrost.Web.Configuration;
 using Bifrost.Web.Data;
 using Bifrost.Web.Domain;
 using Bifrost.Web.Features.Bridge;
+using Bifrost.Web.Features.ConceptVotes;
 using Bifrost.Web.Features.GitHub;
 using Bifrost.Web.Features.Heimdall;
 using Bifrost.Web.Features.Membership;
@@ -53,6 +54,10 @@ builder.Services
     .AddOptions<BridgeOptions>()
     .BindConfiguration(BridgeOptions.SectionName);
 
+builder.Services
+    .AddOptions<ConceptVoteOptions>()
+    .BindConfiguration(ConceptVoteOptions.SectionName);
+
 builder.Services.AddRazorPages(options =>
 {
     options.Conventions.AuthorizePage("/Membership/Status");
@@ -97,6 +102,7 @@ builder.Services.AddScoped<MotionEveSurfaceService>();
 builder.Services.AddScoped<PatronageService>();
 builder.Services.AddScoped<StripeWebhookService>();
 builder.Services.AddScoped<HeimdallPatronSupportIntakeService>();
+builder.Services.AddScoped<ConceptAppraisalService>();
 builder.Services.AddScoped<ReadinessService>();
 builder.Services.AddScoped<ApplicationBootstrapper>();
 builder.Services.AddSingleton<StartupConfigurationValidator>();

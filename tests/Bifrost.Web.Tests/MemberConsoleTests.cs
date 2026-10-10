@@ -1,4 +1,9 @@
 using System.Net;
+using Bifrost.Web.Configuration;
+using Bifrost.Web.Features.ConceptVotes;
+using Bifrost.Web.Features.Shared;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using Bifrost.Web.Data;
 using Bifrost.Web.Domain;
 using Bifrost.Web.Tests.Support;
@@ -142,5 +147,52 @@ public sealed class MemberConsoleTests : IClassFixture<TestWebApplicationFactory
         Assert.Contains("Bridge receipts", html);
         Assert.Contains("Draft motion implementation PR", html);
         Assert.Contains("nibu", html);
+    }
+
+    [Fact]
+    public async Task Member_console_activity_shows_a_purge_without_its_network_tag()
+    {
+        using (var warmupClient = _factory.CreateClient())
+        {
+            _ = await warmupClient.GetAsync("/App");
+        }
+
+        string tag;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var dbContext = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
+            var admin = await dbContext.UserAccounts
+                .Include(x => x.Membership)
+                .SingleAsync(x => x.NormalizedGitHubLogin == "TEST-ADMIN");
+            var now = DateTimeOffset.UtcNow;
+            dbContext.ConceptSubjects.Add(new ConceptSubject
+            {
+                Collection = "aetheria-concept-mill",
+                Key = "ship-a",
+                Title = "ship-a",
+                RegisteredAtUtc = now
+            });
+            await dbContext.SaveChangesAsync();
+
+            var service = scope.ServiceProvider.GetRequiredService<ConceptAppraisalService>();
+            var options = scope.ServiceProvider.GetRequiredService<IOptions<ConceptVoteOptions>>().Value;
+            var client = System.Net.IPAddress.Parse("203.0.113.7");
+            tag = NetworkPrefix.Tag(client, options.IPv4PrefixLength, options.IPv6PrefixLength, options.NetworkTagSecret);
+            var voter = VoterIdentity.For(CurrentBifrostActor.Anonymous, "member-view-device")!;
+            await service.CastAsync("aetheria-concept-mill", "ship-a", voter, ConceptStance.Up, client, default);
+
+            var removed = await service.PurgeAsync(
+                new CurrentBifrostActor(true, admin), tag, now.AddHours(-1), now.AddHours(1), default);
+            Assert.Equal(1, removed);
+        }
+
+        using var memberClient = _factory.CreateClient();
+        using var response = await memberClient.GetAsync("/App");
+        var html = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("Purge", html);
+        Assert.Contains("count", html);
+        Assert.DoesNotContain(tag, html);
     }
 }
