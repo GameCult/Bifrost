@@ -79,6 +79,7 @@ builder.Services.AddRazorPages(options =>
 {
     options.Conventions.AuthorizePage("/Membership/Status");
     options.Conventions.AuthorizeFolder("/App", ActiveMemberRequirement.PolicyName);
+    options.Conventions.AllowAnonymousToFolder("/Mill");
 });
 builder.Services.ConfigureHttpJsonOptions(options =>
 {
@@ -117,6 +118,7 @@ builder.Services.AddScoped<PatronageService>();
 builder.Services.AddScoped<StripeWebhookService>();
 builder.Services.AddScoped<HeimdallPatronSupportIntakeService>();
 builder.Services.AddScoped<ConceptAppraisalService>();
+builder.Services.AddScoped<VoterKeyResolver>();
 builder.Services.AddScoped<ConceptSubjectRegistry>();
 builder.Services.AddScoped<ReadinessService>();
 builder.Services.AddScoped<ApplicationBootstrapper>();
