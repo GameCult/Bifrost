@@ -583,7 +583,6 @@ public sealed partial class ConceptVotePageTests : IClassFixture<TestWebApplicat
             {
                 request.Headers.TryAddWithoutValidation("Sec-Fetch-Site", fetchSite);
             }
-
             return Send(request);
         }
         }
