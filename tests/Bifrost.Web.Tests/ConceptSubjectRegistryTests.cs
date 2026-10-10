@@ -179,6 +179,7 @@ public sealed class ConceptSubjectRegistryTests
         var refusal = Assert.Throws<ManifestRefusedException>(() => ConceptSubjectRegistry.ParseManifest(json));
 
         Assert.Equal((field, code), (refusal.Field, refusal.Code));
+        Assert.Equal($"{field}: {code}", refusal.Message);
         Assert.Empty(await world.Fresh(db => db.ConceptSubjects.ToListAsync()));
     }
 
