@@ -24,4 +24,8 @@ public sealed class ConceptVoteOptions
     // https://host[:non-default-port], lower case, no path; empty allows none. StartupConfigurationValidator
     // refuses anything else outside Development and Testing, because "*" would allow every origin.
     public string[] AllowedOrigins { get; init; } = [];
+
+    // The Mill page the vote page links back to; the concept's key is appended as the anchor. Production is the
+    // Aetheria site's page, so a deploy overrides nothing unless the page moves (ConceptVotes__MillPageUrl).
+    public string MillPageUrl { get; init; } = "https://aetheria.gamecult.org/Game-Design/Concept-Mill";
 }
