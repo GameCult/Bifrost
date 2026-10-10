@@ -345,7 +345,7 @@ public sealed class ConceptSubjectRegistryTests
 
         Assert.Equal(ConceptSubjectRegistry.MaxManifestBytes, fits.Length);
         Assert.Single(ConceptSubjectRegistry.ParseManifest(fits));
-        var refusal = Assert.Throws<ManifestRefusedException>(() => ConceptSubjectRegistry.ParseManifest([.. fits, (byte)' ']));
+        var refusal = Assert.Throws<ManifestRefusedException>(() => ConceptSubjectRegistry.ParseManifest(fits.Append((byte)' ').ToArray()));
         Assert.Equal(("manifest", "TooLarge"), (refusal.Field, refusal.Code));
     }
 
