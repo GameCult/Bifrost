@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Text;
 using System.Text.Json;
 using Bifrost.Web.Data;
 using Bifrost.Web.Domain;
@@ -13,7 +15,8 @@ public enum SubjectChange
     Unchanged,
     Revive,
     Absent,
-    Retire
+    Retire,
+    Retired
 }
 
 public sealed record ManifestShip(string Key, string Title);
@@ -39,14 +42,27 @@ public sealed class ConceptSubjectRegistry(
 {
     public const int MaxTitleLength = 240;
 
+    // Defaulted bounds (a Mill manifest is tens of ships): the whole file is refused above either.
+    public const int MaxManifestBytes = 1024 * 1024;
+
+    public const int MaxShips = 1000;
+
+    private static readonly UTF8Encoding StrictUtf8 = new(false, true);
+
     // The Mill manifest is JSON from outside the Verse. Only ships[].id and ships[].name are read.
-    public static IReadOnlyList<ManifestShip> ParseManifest(string json)
+    // This is the one input boundary: every malformed input leaves as a ManifestRefusedException.
+    public static IReadOnlyList<ManifestShip> ParseManifest(ReadOnlyMemory<byte> utf8)
     {
-        using var document = ParseDocument(json);
+        using var document = ParseDocument(utf8);
         var ships = ShipsOf(document.RootElement);
         if (ships.ValueKind != JsonValueKind.Array)
         {
             throw new ManifestRefusedException("ships", "Missing");
+        }
+
+        if (ships.GetArrayLength() > MaxShips)
+        {
+            throw new ManifestRefusedException("ships", "TooMany");
         }
 
         var result = new List<ManifestShip>();
@@ -66,7 +82,7 @@ public sealed class ConceptSubjectRegistry(
                 throw new ManifestRefusedException($"{at}.id", "Duplicate");
             }
 
-            if (string.IsNullOrWhiteSpace(title) || title.Any(char.IsControl))
+            if (!IsValidTitle(title))
             {
                 throw new ManifestRefusedException($"{at}.name", "InvalidTitle");
             }
@@ -92,15 +108,91 @@ public sealed class ConceptSubjectRegistry(
         return root.TryGetProperty("ships", out var ships) ? ships : default;
     }
 
-    private static JsonDocument ParseDocument(string json)
+    // A displayed title: no control, format (bidi, zero-width, BOM), line or paragraph separator
+    // character, no leading or trailing whitespace, and at least one letter or digit. This is the
+    // character-class rule of the mind schema's Title type, kept here as the one copy in Bifrost.
+    private static bool IsValidTitle(string title)
     {
+        if (title.Length == 0 || title != title.Trim())
+        {
+            return false;
+        }
+
+        var hasLetterOrDigit = false;
+        foreach (var rune in title.EnumerateRunes())
+        {
+            if (Rune.GetUnicodeCategory(rune) is UnicodeCategory.Control or UnicodeCategory.Format
+                or UnicodeCategory.LineSeparator or UnicodeCategory.ParagraphSeparator)
+            {
+                return false;
+            }
+
+            hasLetterOrDigit |= Rune.IsLetterOrDigit(rune);
+        }
+
+        return hasLetterOrDigit;
+    }
+
+    private static JsonDocument ParseDocument(ReadOnlyMemory<byte> utf8)
+    {
+        if (utf8.Length > MaxManifestBytes)
+        {
+            throw new ManifestRefusedException("manifest", "TooLarge");
+        }
+
         try
         {
-            return JsonDocument.Parse(json);
+            StrictUtf8.GetCharCount(utf8.Span);
+        }
+        catch (DecoderFallbackException)
+        {
+            throw new ManifestRefusedException("manifest", "NotUtf8");
+        }
+
+        try
+        {
+            RejectDuplicateProperties(utf8.Span);
+            return JsonDocument.Parse(utf8);
         }
         catch (JsonException)
         {
             throw new ManifestRefusedException("manifest", "NotJson");
+        }
+        catch (InvalidOperationException)
+        {
+            // A property name holding a lone surrogate escape: not text.
+            throw new ManifestRefusedException("manifest", "BadText");
+        }
+    }
+
+    // System.Text.Json (net8.0) keeps the last of two equal property names; a manifest that says
+    // one thing twice is refused instead.
+    private static void RejectDuplicateProperties(ReadOnlySpan<byte> utf8)
+    {
+        var reader = new Utf8JsonReader(utf8);
+        var scopes = new Stack<HashSet<string>?>();
+        while (reader.Read())
+        {
+            switch (reader.TokenType)
+            {
+                case JsonTokenType.StartObject:
+                    scopes.Push(new HashSet<string>(StringComparer.Ordinal));
+                    break;
+                case JsonTokenType.StartArray:
+                    scopes.Push(null);
+                    break;
+                case JsonTokenType.EndObject:
+                case JsonTokenType.EndArray:
+                    scopes.Pop();
+                    break;
+                case JsonTokenType.PropertyName:
+                    if (!scopes.Peek()!.Add(reader.GetString()!))
+                    {
+                        throw new ManifestRefusedException("manifest", "DuplicateProperty");
+                    }
+
+                    break;
+            }
         }
     }
 
@@ -154,7 +246,17 @@ public sealed class ConceptSubjectRegistry(
                 subject.Title));
         }
 
-        // Whatever is still named is not a registered, live key missing from the manifest.
+        // A named key that an earlier run already retired is done: a rerun converges.
+        foreach (var key in named.OrderBy(x => x, StringComparer.Ordinal).ToList())
+        {
+            if (registered.TryGetValue(key, out var done) && done.RetiredAtUtc is not null && !inManifest.Contains(key))
+            {
+                entries.Add(new SubjectPlanEntry(SubjectChange.Retired, key, done.Title));
+                named.Remove(key);
+            }
+        }
+
+        // Whatever is still named is not a registered key missing from the manifest.
         if (named.Count > 0)
         {
             throw new ManifestRefusedException("retire", "NotAbsent");
@@ -176,7 +278,7 @@ public sealed class ConceptSubjectRegistry(
 
         foreach (var entry in plan.Entries)
         {
-            if (entry.Change is SubjectChange.Unchanged or SubjectChange.Absent)
+            if (entry.Change is SubjectChange.Unchanged or SubjectChange.Absent or SubjectChange.Retired)
             {
                 continue;
             }
@@ -232,8 +334,19 @@ public sealed class ConceptSubjectRegistry(
             throw new ManifestRefusedException($"{at}.{name}", "Missing");
         }
 
-        return value.ValueKind == JsonValueKind.String
-            ? value.GetString()!
-            : throw new ManifestRefusedException($"{at}.{name}", "NotString");
+        if (value.ValueKind != JsonValueKind.String)
+        {
+            throw new ManifestRefusedException($"{at}.{name}", "NotString");
+        }
+
+        try
+        {
+            return value.GetString()!;
+        }
+        catch (InvalidOperationException)
+        {
+            // A lone surrogate escape: not text.
+            throw new ManifestRefusedException($"{at}.{name}", "BadText");
+        }
     }
 }

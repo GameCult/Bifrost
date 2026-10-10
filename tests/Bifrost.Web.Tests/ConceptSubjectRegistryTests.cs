@@ -1,4 +1,8 @@
+using System.Diagnostics;
 using System.Net;
+using System.Text;
+using System.Text.Encodings.Web;
+using System.Text.Json;
 using Bifrost.Web.Configuration;
 using Bifrost.Web.Data;
 using Bifrost.Web.Domain;
@@ -17,8 +21,11 @@ public sealed class ConceptSubjectRegistryTests
 
     private static string FixturePath => Path.Combine(AppContext.BaseDirectory, "Fixtures", "mill-three-ships.json");
 
+    private static IReadOnlyList<ManifestShip> Parse(string json) =>
+        ConceptSubjectRegistry.ParseManifest(Encoding.UTF8.GetBytes(json));
+
     private static IReadOnlyList<ManifestShip> Fixture() =>
-        ConceptSubjectRegistry.ParseManifest(File.ReadAllText(FixturePath));
+        ConceptSubjectRegistry.ParseManifest(File.ReadAllBytes(FixturePath));
 
     [Fact]
     public async Task Rerun_of_the_same_manifest_is_a_no_op()
@@ -129,14 +136,56 @@ public sealed class ConceptSubjectRegistryTests
     }
 
     [Fact]
-    public async Task Naming_an_already_retired_key_is_refused()
+    public async Task Rerunning_the_same_retire_list_converges_and_writes_nothing()
     {
         using var world = new World();
         await world.Apply(Fixture());
-        var smaller = Fixture().Where(s => s.Key != "kestrel").ToList();
+        var smaller = Fixture().Where(s => s.Key == "bison").ToList();
+
+        var first = await world.Apply(smaller, ["kestrel", "ibis-mk2"]);
+        Assert.Equal([SubjectChange.Unchanged, SubjectChange.Retire, SubjectChange.Retire], first.Entries.Select(e => e.Change));
+        var before = await world.Fresh(db => db.ConceptSubjects.AsNoTracking().OrderBy(x => x.Key).ToListAsync());
+        var audits = await world.Fresh(db => db.AuditEvents.CountAsync());
+        world.Clock.Advance(TimeSpan.FromHours(1));
+
+        var second = await world.Apply(smaller, ["kestrel", "ibis-mk2"]);
+
+        Assert.Equal(
+            [("bison", SubjectChange.Unchanged), ("ibis-mk2", SubjectChange.Retired), ("kestrel", SubjectChange.Retired)],
+            second.Entries.OrderBy(e => e.Key, StringComparer.Ordinal).Select(e => (e.Key, e.Change)));
+        Assert.Equal(audits, await world.Fresh(db => db.AuditEvents.CountAsync()));
+        var after = await world.Fresh(db => db.ConceptSubjects.AsNoTracking().OrderBy(x => x.Key).ToListAsync());
+        Assert.Equal(before.Select(x => (x.Id, x.Title, x.RetiredAtUtc)), after.Select(x => (x.Id, x.Title, x.RetiredAtUtc)));
+    }
+
+    [Fact]
+    public async Task Rerunning_a_retire_list_after_a_partial_apply_retires_the_rest()
+    {
+        using var world = new World();
+        await world.Apply(Fixture());
+        var smaller = Fixture().Where(s => s.Key == "bison").ToList();
         await world.Apply(smaller, ["kestrel"]);
 
-        await Assert.ThrowsAsync<ManifestRefusedException>(() => world.Apply(smaller, ["kestrel"]));
+        var plan = await world.Apply(smaller, ["kestrel", "ibis-mk2"]);
+
+        Assert.Equal(SubjectChange.Retired, plan.Entries.Single(e => e.Key == "kestrel").Change);
+        Assert.Equal(SubjectChange.Retire, plan.Entries.Single(e => e.Key == "ibis-mk2").Change);
+        var rows = await world.Fresh(db => db.ConceptSubjects.AsNoTracking().ToListAsync());
+        Assert.Equal(["ibis-mk2", "kestrel"], rows.Where(r => r.RetiredAtUtc is not null).Select(r => r.Key).Order());
+        Assert.Equal(2, await world.Fresh(db => db.AuditEvents.CountAsync(x => x.Action == "Retire")));
+    }
+
+    [Fact]
+    public async Task Naming_a_retired_key_that_the_manifest_lists_again_is_still_refused()
+    {
+        using var world = new World();
+        await world.Apply(Fixture());
+        await world.Apply(Fixture().Where(s => s.Key != "kestrel").ToList(), ["kestrel"]);
+
+        var refusal = await Assert.ThrowsAsync<ManifestRefusedException>(() => world.Apply(Fixture(), ["kestrel"]));
+
+        Assert.Equal(("retire", "NotAbsent"), (refusal.Field, refusal.Code));
+        Assert.NotNull((await world.Fresh(db => db.ConceptSubjects.AsNoTracking().SingleAsync(x => x.Key == "kestrel"))).RetiredAtUtc);
     }
 
     [Fact]
@@ -176,7 +225,7 @@ public sealed class ConceptSubjectRegistryTests
     public async Task Malformed_manifest_is_refused_whole(string json, string field, string code)
     {
         using var world = new World();
-        var refusal = Assert.Throws<ManifestRefusedException>(() => ConceptSubjectRegistry.ParseManifest(json));
+        var refusal = Assert.Throws<ManifestRefusedException>(() => Parse(json));
 
         Assert.Equal((field, code), (refusal.Field, refusal.Code));
         Assert.Equal($"{field}: {code}", refusal.Message);
@@ -188,10 +237,127 @@ public sealed class ConceptSubjectRegistryTests
     {
         var fits = new string('t', ConceptSubjectRegistry.MaxTitleLength);
 
-        Assert.Equal(fits, ConceptSubjectRegistry.ParseManifest($$"""{"ships":[{"id":"a","name":"{{fits}}"}]}""").Single().Title);
+        Assert.Equal(fits, Parse($$"""{"ships":[{"id":"a","name":"{{fits}}"}]}""").Single().Title);
         var refusal = Assert.Throws<ManifestRefusedException>(() =>
-            ConceptSubjectRegistry.ParseManifest($$"""{"ships":[{"id":"a","name":"{{fits}}x"}]}"""));
+            Parse($$"""{"ships":[{"id":"a","name":"{{fits}}x"}]}"""));
         Assert.Equal(("ships[0].name", "TooLong"), (refusal.Field, refusal.Code));
+    }
+
+    private static readonly JsonSerializerOptions Raw = new() { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
+
+    [Theory]
+    [InlineData("‮evil")]
+    [InlineData("a‪b")]
+    [InlineData("a⁦b")]
+    [InlineData("a⁩b")]
+    [InlineData("a؜b")]
+    [InlineData("a‎b")]
+    [InlineData("a‏b")]
+    [InlineData("a b")]
+    [InlineData("a b")]
+    [InlineData("a​b")]
+    [InlineData("a‌b")]
+    [InlineData("a‍b")]
+    [InlineData("a⁠b")]
+    [InlineData("a﻿b")]
+    [InlineData("a\u0085b")]
+    [InlineData("a\tb")]
+    [InlineData(" Ibis")]
+    [InlineData("Ibis ")]
+    [InlineData(" Ibis")]
+    [InlineData("Ibis ")]
+    [InlineData("　Ibis")]
+    [InlineData("!!!")]
+    public void A_title_with_a_format_character_edge_whitespace_or_no_letter_is_refused(string title)
+    {
+        var json = """{"ships":[{"id":"a","name":""" + JsonSerializer.Serialize(title, Raw) + "}]}";
+
+        var refusal = Assert.Throws<ManifestRefusedException>(() => Parse(json));
+
+        Assert.Equal(("ships[0].name", "InvalidTitle"), (refusal.Field, refusal.Code));
+    }
+
+    [Theory]
+    [InlineData("Ibis Mk II")]
+    [InlineData("Ünïcode Ship")]
+    [InlineData("Ship ★ 7")]
+    [InlineData("7")]
+    [InlineData("Kestrel-2: the \"Bold\"")]
+    public void An_ordinary_title_is_accepted(string title)
+    {
+        var json = """{"ships":[{"id":"a","name":""" + JsonSerializer.Serialize(title, Raw) + "}]}";
+
+        Assert.Equal(title, Parse(json).Single().Title);
+    }
+
+    [Theory]
+    [InlineData("""{"ships":[{"id":"a","name":"x\ud800y"}]}""", "ships[0].name", "BadText")]
+    [InlineData("""{"ships":[{"id":"a\udc00","name":"x"}]}""", "ships[0].id", "BadText")]
+    [InlineData("""{"ships":[{"id":"a","name":"x","na\ud800me":"y"}]}""", "manifest", "BadText")]
+    public void A_lone_surrogate_is_refused_not_thrown(string json, string field, string code)
+    {
+        var refusal = Assert.Throws<ManifestRefusedException>(() => Parse(json));
+
+        Assert.Equal((field, code), (refusal.Field, refusal.Code));
+    }
+
+    [Fact]
+    public void Malformed_utf8_anywhere_in_the_file_is_refused()
+    {
+        byte[] inName = [.. "{\"ships\":[{\"id\":\"a\",\"name\":\"X"u8, 0xC3, 0x28, .. "\"}]}"u8];
+        byte[] inUnreadValue = [.. "{\"ships\":[],\"x\":\"X"u8, 0xFF, .. "\"}"u8];
+
+        foreach (var bytes in new[] { inName, inUnreadValue })
+        {
+            var refusal = Assert.Throws<ManifestRefusedException>(() => ConceptSubjectRegistry.ParseManifest(bytes));
+
+            Assert.Equal(("manifest", "NotUtf8"), (refusal.Field, refusal.Code));
+        }
+    }
+
+    [Theory]
+    [InlineData("""{"ships":[{"id":"a","id":"b","name":"A"}]}""")]
+    [InlineData("""{"ships":[{"id":"a","name":"A","name":"B"}]}""")]
+    [InlineData("""{"ships":[],"ships":[]}""")]
+    [InlineData("""{"ships":[{"id":"a","name":"A"}],"votes":{"x":1,"x":2}}""")]
+    [InlineData("""{"ships":[{"id":"a","name":"A","meta":{"k":[{"z":1,"z":1}]}}]}""")]
+    [InlineData("""{"ships":[{"id":"a","name":"A","id":"b"}]}""")]
+    public void A_duplicate_json_property_is_refused_wherever_it_sits(string json)
+    {
+        var refusal = Assert.Throws<ManifestRefusedException>(() => Parse(json));
+
+        Assert.Equal(("manifest", "DuplicateProperty"), (refusal.Field, refusal.Code));
+    }
+
+    [Fact]
+    public void The_same_property_name_in_sibling_and_nested_objects_is_not_a_duplicate()
+    {
+        var ships = Parse("""{"id":"top","ships":[{"id":"a","name":"A","meta":{"id":"x","name":"y"}},{"id":"b","name":"B"}]}""");
+
+        Assert.Equal(["a", "b"], ships.Select(s => s.Key));
+    }
+
+    [Fact]
+    public void A_manifest_of_exactly_the_byte_bound_is_accepted_and_one_more_byte_is_refused()
+    {
+        const string head = """{"ships":[{"id":"a","name":"A"}]}""";
+        var fits = Encoding.UTF8.GetBytes(head + new string(' ', ConceptSubjectRegistry.MaxManifestBytes - head.Length));
+
+        Assert.Equal(ConceptSubjectRegistry.MaxManifestBytes, fits.Length);
+        Assert.Single(ConceptSubjectRegistry.ParseManifest(fits));
+        var refusal = Assert.Throws<ManifestRefusedException>(() => ConceptSubjectRegistry.ParseManifest([.. fits, (byte)' ']));
+        Assert.Equal(("manifest", "TooLarge"), (refusal.Field, refusal.Code));
+    }
+
+    [Fact]
+    public void A_manifest_of_exactly_the_ship_bound_is_accepted_and_one_more_ship_is_refused()
+    {
+        static string Fleet(int count) =>
+            """{"ships":[""" + string.Join(",", Enumerable.Range(0, count).Select(i => $$"""{"id":"s{{i}}","name":"S{{i}}"}""")) + "]}";
+
+        Assert.Equal(ConceptSubjectRegistry.MaxShips, Parse(Fleet(ConceptSubjectRegistry.MaxShips)).Count);
+        var refusal = Assert.Throws<ManifestRefusedException>(() => Parse(Fleet(ConceptSubjectRegistry.MaxShips + 1)));
+        Assert.Equal(("ships", "TooMany"), (refusal.Field, refusal.Code));
     }
 
     [Fact]
@@ -211,7 +377,7 @@ public sealed class ConceptSubjectRegistryTests
         using var world = new World();
         var json = """{"ships":[{"id":"good","name":"Good"},{"id":"ship-a\n","name":"Bad"}]}""";
 
-        Assert.Throws<ManifestRefusedException>(() => ConceptSubjectRegistry.ParseManifest(json));
+        Assert.Throws<ManifestRefusedException>(() => Parse(json));
         Assert.Empty(await world.Fresh(db => db.ConceptSubjects.ToListAsync()));
     }
 
@@ -221,7 +387,7 @@ public sealed class ConceptSubjectRegistryTests
         const string canary = "CANARY-secret/value";
         var json = $$"""{"ships":[{"id":"{{canary}}","name":"A"}]}""";
 
-        var refusal = Assert.Throws<ManifestRefusedException>(() => ConceptSubjectRegistry.ParseManifest(json));
+        var refusal = Assert.Throws<ManifestRefusedException>(() => Parse(json));
         Assert.DoesNotContain("CANARY", refusal.Message);
         using var world = new World();
         var collection = await Assert.ThrowsAsync<ManifestRefusedException>(() => world.Registry(world.NewDb()).PlanAsync(canary, [], None, default));
@@ -327,6 +493,111 @@ public sealed class ConceptSubjectRegistryTests
         Assert.StartsWith("usage:", output.ToString());
         Assert.Empty(await world.Fresh(db => db.ConceptSubjects.ToListAsync()));
         Assert.Equal(ConceptCommand.Usage, await ConceptCommand.RunAsync([], world.Services(), new StringWriter()));
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("CANARY\0path.json")]
+    public async Task Host_command_refuses_an_empty_or_nul_path(string path)
+    {
+        using var world = new World();
+
+        var output = new StringWriter();
+        Assert.Equal(ConceptCommand.Refused, await ConceptCommand.RunAsync(["plan", Collection, path], world.Services(), output));
+
+        Assert.Equal("refused manifest Unreadable", output.ToString().Trim());
+    }
+
+    [Fact]
+    public async Task Host_command_refuses_a_directory_and_an_oversized_file()
+    {
+        using var world = new World();
+        var big = Path.Combine(world.Dir, "big.json");
+        await File.WriteAllBytesAsync(big, new byte[ConceptSubjectRegistry.MaxManifestBytes + 1]);
+
+        var dir = new StringWriter();
+        Assert.Equal(ConceptCommand.Refused, await ConceptCommand.RunAsync(["plan", Collection, world.Dir], world.Services(), dir));
+        Assert.Equal("refused manifest Unreadable", dir.ToString().Trim());
+        var large = new StringWriter();
+        Assert.Equal(ConceptCommand.Refused, await ConceptCommand.RunAsync(["plan", Collection, big], world.Services(), large));
+        Assert.Equal("refused manifest TooLarge", large.ToString().Trim());
+    }
+
+    [Fact]
+    public async Task Host_command_refuses_a_manifest_that_is_not_utf8_text()
+    {
+        using var world = new World();
+        var path = Path.Combine(world.Dir, "latin1.json");
+        await File.WriteAllBytesAsync(path, [.. "{\"ships\":[{\"id\":\"a\",\"name\":\"CANARY-"u8, 0xE9, .. "\"}]}"u8]);
+
+        var output = new StringWriter();
+        Assert.Equal(ConceptCommand.Refused, await ConceptCommand.RunAsync(["plan", Collection, path], world.Services(), output));
+
+        Assert.Equal("refused manifest NotUtf8", output.ToString().Trim());
+    }
+
+    [Fact]
+    public async Task Built_command_exits_with_its_documented_codes_and_echoes_no_input()
+    {
+        using var world = new World();
+        var big = Path.Combine(world.Dir, "CANARYBIG.json");
+        await File.WriteAllBytesAsync(big, new byte[ConceptSubjectRegistry.MaxManifestBytes + 1]);
+        var bidi = Path.Combine(world.Dir, "CANARYBIDI.json");
+        await File.WriteAllTextAsync(bidi, """{"ships":[{"id":"a","name":"CANARYTITLE‮"}]}""");
+        var dup = Path.Combine(world.Dir, "CANARYDUP.json");
+        await File.WriteAllTextAsync(dup, """{"ships":[{"id":"CANARYID","id":"b","name":"A"}]}""");
+        var surrogate = Path.Combine(world.Dir, "CANARYSURR.json");
+        await File.WriteAllTextAsync(surrogate, """{"ships":[{"id":"a","name":"CANARYNAME\ud800"}]}""");
+        var latin1 = Path.Combine(world.Dir, "CANARYLATIN.json");
+        await File.WriteAllBytesAsync(latin1, [.. "{\"ships\":[{\"id\":\"a\",\"name\":\"CANARYBYTES"u8, 0xE9, .. "\"}]}"u8]);
+
+        var cases = new (string[] Args, int Code)[]
+        {
+            (["plan", Collection, ""], ConceptCommand.Refused),
+            (["plan", Collection, Path.Combine(world.Dir, "CANARYMISSING.json")], ConceptCommand.Refused),
+            (["plan", Collection, world.Dir], ConceptCommand.Refused),
+            (["plan", Collection, big], ConceptCommand.Refused),
+            (["plan", Collection, bidi], ConceptCommand.Refused),
+            (["apply", Collection, dup], ConceptCommand.Refused),
+            (["apply", Collection, surrogate], ConceptCommand.Refused),
+            (["plan", Collection, latin1], ConceptCommand.Refused),
+            (["plan", "CANARYCOLLECTION", bidi], ConceptCommand.Refused),
+            (["frob", "CANARYARG", "x"], ConceptCommand.Usage),
+            (["plan"], ConceptCommand.Usage),
+        };
+        foreach (var (args, code) in cases)
+        {
+            var result = await RunBuiltCommandAsync(args);
+
+            Assert.True(code == result.ExitCode, $"case {args[0]}/{args.Length}: exit {result.ExitCode}, stdout {result.StdOut}, stderr {result.StdErr}");
+            Assert.DoesNotContain("CANARY", result.StdOut + result.StdErr);
+            Assert.DoesNotContain("Unhandled exception", result.StdOut + result.StdErr);
+        }
+    }
+
+    private static async Task<(int ExitCode, string StdOut, string StdErr)> RunBuiltCommandAsync(string[] args)
+    {
+        var dll = Path.Combine(AppContext.BaseDirectory, "Bifrost.Web.dll");
+        Assert.True(File.Exists(Path.ChangeExtension(dll, ".runtimeconfig.json")), "Bifrost.Web.runtimeconfig.json is not beside the test assembly");
+        var start = new ProcessStartInfo("dotnet")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false
+        };
+        foreach (var part in new[] { dll, "concepts" }.Concat(args))
+        {
+            start.ArgumentList.Add(part);
+        }
+
+        // Every case refuses before the database is touched; the password is a canary for leaks.
+        start.Environment["ConnectionStrings__Bifrost"] = "Host=127.0.0.1;Port=1;Database=x;Username=u;Password=CANARYPW";
+        using var process = Process.Start(start)!;
+        var stdout = process.StandardOutput.ReadToEndAsync();
+        var stderr = process.StandardError.ReadToEndAsync();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+        await process.WaitForExitAsync(timeout.Token);
+        return (process.ExitCode, await stdout, await stderr);
     }
 
     private sealed class World : IDisposable

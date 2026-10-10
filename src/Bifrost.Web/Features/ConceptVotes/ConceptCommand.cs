@@ -44,13 +44,25 @@ public static class ConceptCommand
         }
     }
 
-    private static async Task<string> ReadManifestAsync(string path)
+    // Reads at most one byte past the bound, so a wrong file is never read whole.
+    private static async Task<byte[]> ReadManifestAsync(string path)
     {
         try
         {
-            return await File.ReadAllTextAsync(path);
+            await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1, true);
+            var buffer = new byte[ConceptSubjectRegistry.MaxManifestBytes + 1];
+            var length = 0;
+            int read;
+            while (length < buffer.Length && (read = await stream.ReadAsync(buffer.AsMemory(length))) > 0)
+            {
+                length += read;
+            }
+
+            return buffer[..length];
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        // An empty or NUL path is an ArgumentException; a path the platform cannot name is NotSupported.
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException
+                                       or NotSupportedException or System.Security.SecurityException)
         {
             throw new ManifestRefusedException("manifest", "Unreadable");
         }
