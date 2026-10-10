@@ -17,9 +17,11 @@ using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.OAuth;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.HttpLogging;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
+using System.Net;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -110,13 +112,27 @@ builder.Services.AddHttpClient<StripeCheckoutService>(client =>
     client.BaseAddress = new Uri("https://api.stripe.com/");
 });
 
+var dataProtectionBuilder = builder.Services
+    .AddDataProtection()
+    .SetApplicationName("Bifrost");
 var dataProtectionKeysPath = builder.Configuration["DataProtection:KeysPath"];
 if (!string.IsNullOrWhiteSpace(dataProtectionKeysPath))
 {
-    builder.Services
-        .AddDataProtection()
-        .PersistKeysToFileSystem(new DirectoryInfo(dataProtectionKeysPath));
+    dataProtectionBuilder.PersistKeysToFileSystem(new DirectoryInfo(dataProtectionKeysPath));
 }
+
+// nginx on this host is the only proxy, and it connects from loopback. Trusting exactly
+// those addresses keeps a direct client from choosing its own address with X-Forwarded-For.
+builder.Services.Configure<ForwardedHeadersOptions>(options =>
+{
+    options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+    options.KnownNetworks.Clear();
+    options.KnownProxies.Clear();
+    options.KnownProxies.Add(IPAddress.Loopback);
+    options.KnownProxies.Add(IPAddress.IPv6Loopback);
+    options.KnownProxies.Add(IPAddress.Loopback.MapToIPv6());
+    options.ForwardLimit = 1;
+});
 
 var configuredGitHubOAuthOptions = builder.Configuration
     .GetSection(GitHubOAuthOptions.SectionName)
@@ -193,6 +209,8 @@ await using (var scope = app.Services.CreateAsyncScope())
         .GetRequiredService<ApplicationBootstrapper>()
         .RunAsync(CancellationToken.None);
 }
+
+app.UseForwardedHeaders();
 
 if (!app.Environment.IsDevelopment())
 {

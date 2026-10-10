@@ -14,7 +14,7 @@ using System.Net;
 
 namespace Bifrost.Web.Tests.Support;
 
-public sealed class TestWebApplicationFactory : WebApplicationFactory<Program>
+public class TestWebApplicationFactory : WebApplicationFactory<Program>
 {
     private readonly InMemoryDatabaseRoot _databaseRoot = new();
     private readonly string _databaseName = $"bifrost-tests-{Guid.NewGuid():N}";
