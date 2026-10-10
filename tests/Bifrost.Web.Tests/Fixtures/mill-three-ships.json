@@ -1,0 +1,9 @@
+{
+  "sections": [],
+  "votes": {},
+  "ships": [
+    { "id": "bison", "name": "Bison", "code": "AU", "role": "Swarm escort" },
+    { "id": "ibis-mk2", "name": "Ibis Mk II", "code": "AU" },
+    { "id": "kestrel", "name": "Kestrel" }
+  ]
+}

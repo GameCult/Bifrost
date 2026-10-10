@@ -1,5 +1,4 @@
 using System.Net;
-using System.Text.RegularExpressions;
 using Bifrost.Web.Configuration;
 using Bifrost.Web.Data;
 using Bifrost.Web.Domain;
@@ -39,8 +38,6 @@ public sealed class ConceptAppraisalService(
     IOptions<ConceptVoteOptions> options)
 {
     private const string UniqueViolation = "23505";
-
-    private static readonly Regex Slug = new("^[a-z0-9-]{1,80}$", RegexOptions.CultureInvariant);
 
     public async Task<CastResult> CastAsync(
         string collection,
@@ -260,7 +257,7 @@ public sealed class ConceptAppraisalService(
     }
 
     private Task<ConceptSubject?> FindSubjectAsync(string collection, string key, CancellationToken cancellationToken) =>
-        Slug.IsMatch(collection) && Slug.IsMatch(key)
+        ConceptKey.IsValid(collection) && ConceptKey.IsValid(key)
             ? dbContext.ConceptSubjects
                 .SingleOrDefaultAsync(x => x.Collection == collection && x.Key == key, cancellationToken)
             : Task.FromResult<ConceptSubject?>(null);
