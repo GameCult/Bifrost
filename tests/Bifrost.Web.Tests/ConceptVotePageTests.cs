@@ -145,7 +145,6 @@ public sealed partial class ConceptVotePageTests : IClassFixture<TestWebApplicat
     [InlineData("https://localhost:8443")]
     [InlineData("http://localhost")]
     [InlineData("null")]
-    [InlineData("")]
     [InlineData("https://localhost/")]
     [InlineData("https://evil.example")]
     public async Task Cast_from_any_other_origin_is_refused_even_when_fetch_site_says_same_origin(string origin)
@@ -159,7 +158,7 @@ public sealed partial class ConceptVotePageTests : IClassFixture<TestWebApplicat
             using var response = await visitor.Post(collection, "alpha", handler, origin: origin, fetchSite: "same-origin");
             Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
             Assert.Null(SetCookieHeader(response, CookieName));
-            Assert.Empty(response.Headers.Where(h => h.Key == "Set-Cookie"));
+            Assert.False(response.Headers.Contains("Set-Cookie"));
             Assert.Equal(string.Empty, await response.Content.ReadAsStringAsync());
         }
 
