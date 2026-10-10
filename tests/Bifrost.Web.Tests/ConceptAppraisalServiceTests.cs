@@ -39,8 +39,27 @@ public sealed class ConceptAppraisalServiceTests
 
         Assert.Null(VoterIdentity.For(CurrentBifrostActor.Anonymous, null));
         Assert.Null(VoterIdentity.For(CurrentBifrostActor.Anonymous, "has:colon"));
+        Assert.Null(VoterIdentity.For(CurrentBifrostActor.Anonymous, string.Empty));
         Assert.Equal(CastResult.NoVoter, await f.Cast("ship-a", null, ConceptStance.Up));
         Assert.Empty(f.Db.ConceptAppraisals);
+    }
+
+    [Theory]
+    [InlineData("abc\n")]
+    [InlineData("abc\r\n")]
+    [InlineData("abc ")]
+    [InlineData("abc\t")]
+    [InlineData("abc\0")]
+    public async Task A_device_id_with_trailing_whitespace_or_control_char_cannot_cast_beside_its_bare_form(string forged)
+    {
+        await using var f = new Fixture();
+        await f.AddSubject("ship-a");
+
+        Assert.Equal(CastResult.Recorded, await f.Cast("ship-a", f.Anonymous("abc"), ConceptStance.Up));
+
+        Assert.Null(VoterIdentity.For(CurrentBifrostActor.Anonymous, forged));
+        Assert.Equal(CastResult.NoVoter, await f.Cast("ship-a", VoterIdentity.For(CurrentBifrostActor.Anonymous, forged), ConceptStance.Down));
+        Assert.Single(f.Db.ConceptAppraisals);
     }
 
     [Fact]

@@ -8,7 +8,7 @@ public sealed record VoterIdentity(string Key, VoterClass Class, Guid? UserAccou
 {
     public const int MaxKeyLength = 120;
 
-    private static readonly Regex DeviceIdShape = new("^[A-Za-z0-9_-]{1,100}$", RegexOptions.CultureInvariant);
+    private static readonly Regex DeviceIdShape = new(@"^[A-Za-z0-9_-]{1,100}\z", RegexOptions.CultureInvariant);
 
     // The one place a voter key and class are decided. Never reads vote weight.
     public static VoterIdentity? For(CurrentBifrostActor actor, string? deviceId)
