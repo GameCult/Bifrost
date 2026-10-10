@@ -72,30 +72,57 @@ public sealed class HostTrustTests : IClassFixture<TestWebApplicationFactory>
     [Fact]
     public void Payload_protected_under_one_content_root_unprotects_under_another()
     {
-        var root = Path.Combine(Path.GetTempPath(), "bifrost-dp-" + Guid.NewGuid().ToString("N"));
+        var root = NewRoot();
         var keys = Path.Combine(root, "keys");
-        var releaseA = Directory.CreateDirectory(Path.Combine(root, "release-a")).FullName;
-        var releaseB = Directory.CreateDirectory(Path.Combine(root, "release-b")).FullName;
         try
         {
-            using var hostA = WithContentRoot(releaseA, keys);
-            using var hostB = WithContentRoot(releaseB, keys);
+            using var hostA = WithContentRoot(MakeRelease(root, "release-a"), keys);
+            using var hostB = WithContentRoot(MakeRelease(root, "release-b"), keys);
 
-            var protectedPayload = hostA.Services
-                .GetRequiredService<IDataProtectionProvider>()
-                .CreateProtector("P")
-                .Protect("payload");
-            var opened = hostB.Services
-                .GetRequiredService<IDataProtectionProvider>()
-                .CreateProtector("P")
-                .Unprotect(protectedPayload);
+            var sealedPayload = Protect(hostA, "payload");
 
-            Assert.Equal("payload", opened);
+            Assert.Equal("payload", Unprotect(hostB, sealedPayload));
+            Assert.NotEmpty(Directory.GetFiles(keys, "key-*.xml"));
         }
         finally
         {
             Directory.Delete(root, recursive: true);
         }
+    }
+
+    [Fact]
+    public void A_different_keys_path_does_not_unprotect_the_payload()
+    {
+        var root = NewRoot();
+        try
+        {
+            using var hostA = WithContentRoot(MakeRelease(root, "release-a"), Path.Combine(root, "keys-a"));
+            using var hostB = WithContentRoot(MakeRelease(root, "release-b"), Path.Combine(root, "keys-b"));
+
+            var sealedPayload = Protect(hostA, "payload");
+
+            Assert.ThrowsAny<System.Security.Cryptography.CryptographicException>(
+                () => Unprotect(hostB, sealedPayload));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void The_container_image_does_not_set_the_forwarded_headers_switch()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "Dockerfile")))
+        {
+            directory = directory.Parent;
+        }
+
+        Assert.NotNull(directory);
+        Assert.DoesNotContain(
+            "ASPNETCORE_FORWARDEDHEADERS_ENABLED",
+            File.ReadAllText(Path.Combine(directory!.FullName, "Dockerfile")));
     }
 
     [Fact]
@@ -108,12 +135,13 @@ public sealed class HostTrustTests : IClassFixture<TestWebApplicationFactory>
     }
 
     [Fact]
-    public void Startup_refusal_names_the_key_and_never_echoes_its_value()
+    public void Startup_refusal_names_the_key_and_never_echoes_configured_values()
     {
-        var canary = "canary-secret-path-4f1e";
+        var canary = "canary-secret-4f1e";
         var refusal = Assert.Throws<InvalidOperationException>(
-            () => Validate(keysPath: canary, connectionString: null));
+            () => Validate(keysPath: null, connectionString: canary));
 
+        Assert.Contains("DataProtection:KeysPath", refusal.Message);
         Assert.DoesNotContain(canary, refusal.Message);
     }
 
@@ -143,6 +171,18 @@ public sealed class HostTrustTests : IClassFixture<TestWebApplicationFactory>
         return context;
     }
 
+    private static string NewRoot() =>
+        Path.Combine(Path.GetTempPath(), "bifrost-dp-" + Guid.NewGuid().ToString("N"));
+
+    private static string MakeRelease(string root, string name) =>
+        Directory.CreateDirectory(Path.Combine(root, name)).FullName;
+
+    private static string Protect(TestWebApplicationFactory host, string value) =>
+        host.Services.GetRequiredService<IDataProtectionProvider>().CreateProtector("P").Protect(value);
+
+    private static string Unprotect(TestWebApplicationFactory host, string value) =>
+        host.Services.GetRequiredService<IDataProtectionProvider>().CreateProtector("P").Unprotect(value);
+
     private TestWebApplicationFactory WithContentRoot(string contentRoot, string keysPath) =>
         new KeyRingFactory(contentRoot, keysPath);
 
@@ -152,11 +192,7 @@ public sealed class HostTrustTests : IClassFixture<TestWebApplicationFactory>
         {
             base.ConfigureWebHost(builder);
             builder.UseContentRoot(contentRoot);
-            builder.ConfigureAppConfiguration((_, configuration) =>
-                configuration.AddInMemoryCollection(new Dictionary<string, string?>
-                {
-                    ["DataProtection:KeysPath"] = keysPath
-                }));
+            builder.UseSetting("DataProtection:KeysPath", keysPath);
         }
     }
 
