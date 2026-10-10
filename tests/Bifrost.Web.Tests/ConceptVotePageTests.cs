@@ -118,21 +118,144 @@ public sealed partial class ConceptVotePageTests : IClassFixture<TestWebApplicat
         Assert.Null(SetCookieHeader(page, CookieName));
     }
 
+    private const string SiteOrigin = "https://localhost";
+
     [Fact]
-    public async Task Cast_without_antiforgery_token_is_refused()
+    public async Task Cast_from_the_sites_own_origin_is_accepted_and_writes_one_row()
     {
         var collection = NewCollection();
         await AddSubject(collection, "alpha");
         var visitor = NewVisitor(anonymous: true);
 
-        using var noToken = await visitor.Post(collection, "alpha", "Up", token: Token.Omitted);
-        using var noCookie = await visitor.Post(collection, "alpha", "Up", token: Token.WithoutAntiforgeryCookie);
-        using var garbage = await visitor.Post(collection, "alpha", "Up", token: Token.Garbage);
+        using var byOrigin = await visitor.Post(collection, "alpha", "Up", origin: SiteOrigin);
+        Assert.Equal(HttpStatusCode.Redirect, byOrigin.StatusCode);
+        Assert.Single(await Rows(collection, "alpha"));
 
-        Assert.Equal(HttpStatusCode.BadRequest, noToken.StatusCode);
-        Assert.Equal(HttpStatusCode.BadRequest, noCookie.StatusCode);
-        Assert.Equal(HttpStatusCode.BadRequest, garbage.StatusCode);
-        Assert.Null(SetCookieHeader(noToken, CookieName));
+        using var byFetchSite = await visitor.Post(collection, "alpha", "Down", origin: null, fetchSite: "same-origin");
+        Assert.Equal(HttpStatusCode.Redirect, byFetchSite.StatusCode);
+        Assert.Equal(ConceptStance.Down, Assert.Single(await Rows(collection, "alpha")).Stance);
+    }
+
+    [Theory]
+    [InlineData("https://localhost.evil.example")]
+    [InlineData("https://evil-localhost")]
+    [InlineData("https://sub.localhost")]
+    [InlineData("https://LOCALHOST")]
+    [InlineData("HTTPS://localhost")]
+    [InlineData("https://localhost:8443")]
+    [InlineData("http://localhost")]
+    [InlineData("null")]
+    [InlineData("")]
+    [InlineData("https://localhost/")]
+    [InlineData("https://evil.example")]
+    public async Task Cast_from_any_other_origin_is_refused_even_when_fetch_site_says_same_origin(string origin)
+    {
+        var collection = NewCollection();
+        await AddSubject(collection, "alpha");
+        var visitor = NewVisitor(anonymous: true);
+
+        foreach (var handler in new[] { "Up", "Down", "Retract" })
+        {
+            using var response = await visitor.Post(collection, "alpha", handler, origin: origin, fetchSite: "same-origin");
+            Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+            Assert.Null(SetCookieHeader(response, CookieName));
+            Assert.Empty(response.Headers.Where(h => h.Key == "Set-Cookie"));
+            Assert.Equal(string.Empty, await response.Content.ReadAsStringAsync());
+        }
+
+        Assert.Empty(await Rows(collection, "alpha"));
+    }
+
+    [Theory]
+    [InlineData("same-origin", true)]
+    [InlineData("same-site", false)]
+    [InlineData("cross-site", false)]
+    [InlineData("none", false)]
+    [InlineData("Same-Origin", false)]
+    [InlineData("same-origin, cross-site", false)]
+    [InlineData(null, false)]
+    public async Task Cast_without_an_origin_header_needs_fetch_site_same_origin(string? fetchSite, bool accepted)
+    {
+        var collection = NewCollection();
+        await AddSubject(collection, "alpha");
+        var visitor = NewVisitor(anonymous: true);
+
+        using var response = await visitor.Post(collection, "alpha", "Up", origin: null, fetchSite: fetchSite);
+
+        Assert.Equal(accepted ? HttpStatusCode.Redirect : HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal(accepted ? 1 : 0, (await Rows(collection, "alpha")).Count);
+    }
+
+    [Fact]
+    public async Task Refusal_never_echoes_the_origin_or_fetch_site_values()
+    {
+        const string canary = "https://CANARY-origin-5e1c.example";
+        var logs = new CapturingLoggerProvider();
+        var factory = _factory.WithWebHostBuilder(b => b.ConfigureServices(s => s.AddLogging(l => l.AddProvider(logs))));
+        var collection = NewCollection();
+        await AddSubject(collection, "alpha");
+        var visitor = NewVisitor(anonymous: true, factory);
+
+        using var byOrigin = await visitor.Post(collection, "alpha", "Up", origin: canary);
+        using var byFetchSite = await visitor.Post(collection, "alpha", "Up", origin: null, fetchSite: "CANARY-site-5e1c");
+
+        foreach (var response in new[] { byOrigin, byFetchSite })
+        {
+            Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+            var seen = await response.Content.ReadAsStringAsync()
+                + string.Join("\n", response.Headers.Select(h => h.Key + ":" + string.Join(",", h.Value)));
+            Assert.DoesNotContain("CANARY", seen, StringComparison.OrdinalIgnoreCase);
+        }
+
+        Assert.DoesNotContain(logs.Lines, line => line.Contains("CANARY", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task A_page_view_sets_no_cookie_at_all_and_a_cast_sets_only_the_device_cookie()
+    {
+        var collection = NewCollection();
+        await AddSubject(collection, "alpha");
+        var visitor = NewVisitor(anonymous: true);
+
+        using (var view = await visitor.Get(collection, "alpha"))
+        {
+            Assert.Equal(HttpStatusCode.OK, view.StatusCode);
+            Assert.False(view.Headers.Contains("Set-Cookie"));
+            var html = await view.Content.ReadAsStringAsync();
+            Assert.DoesNotContain("__RequestVerificationToken", html, StringComparison.Ordinal);
+        }
+
+        using var cast = await visitor.Post(collection, "alpha", "Up");
+        var cookies = cast.Headers.GetValues("Set-Cookie").ToArray();
+        Assert.Single(cookies);
+        Assert.StartsWith(CookieName + "=", cookies[0], StringComparison.Ordinal);
+
+        using var later = await visitor.Get(collection, "alpha");
+        Assert.False(later.Headers.Contains("Set-Cookie"));
+    }
+
+    [Fact]
+    public async Task A_request_that_selects_no_handler_is_a_client_error_and_never_a_500()
+    {
+        var collection = NewCollection();
+        await AddSubject(collection, "alpha");
+        var visitor = NewVisitor(anonymous: true);
+
+        using var noHandler = await visitor.Post(collection, "alpha", handler: null);
+        using var bogus = await visitor.Post(collection, "alpha", "CANARYQ9");
+        using var put = await visitor.Post(collection, "alpha", "Up", method: HttpMethod.Put);
+        using var delete = await visitor.Post(collection, "alpha", null, method: HttpMethod.Delete);
+        using var getBogus = await visitor.Send(new HttpRequestMessage(HttpMethod.Get, $"/mill/{collection}/alpha?handler=CANARYQ9"));
+        using var getUp = await visitor.Send(new HttpRequestMessage(HttpMethod.Get, $"/mill/{collection}/alpha?handler=Up"));
+
+        foreach (var response in new[] { noHandler, bogus, put, delete, getBogus, getUp })
+        {
+            var status = (int)response.StatusCode;
+            Assert.InRange(status, 400, 499);
+            Assert.DoesNotContain("CANARYQ9", await response.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+            Assert.False(response.Headers.Contains("Set-Cookie"));
+        }
+
         Assert.Empty(await Rows(collection, "alpha"));
     }
 
@@ -228,7 +351,7 @@ public sealed partial class ConceptVotePageTests : IClassFixture<TestWebApplicat
             Assert.Equal(HttpStatusCode.NotFound, get.StatusCode);
             foreach (var handler in new[] { "Up", "Down", "Retract" })
             {
-                using var post = await visitor.Post(c, k, handler, tokenFrom: (collection, "alpha"));
+                using var post = await visitor.Post(c, k, handler);
                 Assert.Equal(HttpStatusCode.NotFound, post.StatusCode);
                 Assert.Null(SetCookieHeader(post, CookieName));
             }
@@ -371,9 +494,6 @@ public sealed partial class ConceptVotePageTests : IClassFixture<TestWebApplicat
     [GeneratedRegex("<dd>(.*?)</dd>", RegexOptions.Singleline)]
     private static partial Regex DefinitionCell();
 
-    [GeneratedRegex("name=\"__RequestVerificationToken\"[^>]*value=\"([^\"]+)\"")]
-    private static partial Regex RequestToken();
-
     private async Task AddSubject(string collection, string key)
     {
         using var scope = _factory.Services.CreateScope();
@@ -432,14 +552,6 @@ public sealed partial class ConceptVotePageTests : IClassFixture<TestWebApplicat
             .ToListAsync();
     }
 
-    public enum Token
-    {
-        Valid,
-        Omitted,
-        WithoutAntiforgeryCookie,
-        Garbage
-    }
-
     private sealed class Visitor(HttpClient client, bool anonymous)
     {
         public Dictionary<string, string> Jar { get; } = new(StringComparer.Ordinal);
@@ -447,54 +559,36 @@ public sealed partial class ConceptVotePageTests : IClassFixture<TestWebApplicat
         public Task<HttpResponseMessage> Get(string collection, string key) =>
             Send(new HttpRequestMessage(HttpMethod.Get, $"/mill/{collection}/{key}"));
 
-        // Reads a token from the page of tokenFrom (default: the page being posted to), then posts the handler.
-        public async Task<HttpResponseMessage> Post(
+        // A cookieless POST as a browser form would send it: Origin the site's own by default, null to omit it.
+        public Task<HttpResponseMessage> Post(
             string collection,
             string key,
-            string handler,
-            Token token = Token.Valid,
-            (string Collection, string Key)? tokenFrom = null)
+            string? handler,
+            string? origin = SiteOrigin,
+            string? fetchSite = null,
+            HttpMethod? method = null)
         {
-            var from = tokenFrom ?? (collection, key);
-            string value;
-            using (var page = await Get(from.Collection, from.Key))
+            var request = new HttpRequestMessage(
+                method ?? HttpMethod.Post,
+                $"/mill/{collection}/{key}" + (handler is null ? string.Empty : "?handler=" + handler))
             {
-                var match = RequestToken().Match(await page.Content.ReadAsStringAsync());
-                Assert.True(match.Success);
-                value = match.Groups[1].Value;
-            }
-
-            var antiforgery = Jar
-                .Where(x => x.Key.StartsWith(".AspNetCore.Antiforgery", StringComparison.Ordinal))
-                .ToList();
-            if (token is Token.WithoutAntiforgeryCookie)
-            {
-                foreach (var cookie in antiforgery)
-                {
-                    Jar.Remove(cookie.Key);
-                }
-            }
-
-            var form = new List<KeyValuePair<string, string>>();
-            if (token is not Token.Omitted)
-            {
-                form.Add(new("__RequestVerificationToken", token is Token.Garbage ? "garbage" : value));
-            }
-
-            var request = new HttpRequestMessage(HttpMethod.Post, $"/mill/{collection}/{key}?handler={handler}")
-            {
-                Content = new FormUrlEncodedContent(form)
+                Content = new FormUrlEncodedContent([])
             };
-            var response = await Send(request);
-            foreach (var cookie in antiforgery)
+            if (origin is not null)
             {
-                Jar.TryAdd(cookie.Key, cookie.Value);
+                request.Headers.TryAddWithoutValidation("Origin", origin);
             }
 
-            return response;
+            if (fetchSite is not null)
+            {
+                request.Headers.TryAddWithoutValidation("Sec-Fetch-Site", fetchSite);
+            }
+
+            return Send(request);
+        }
         }
 
-        private async Task<HttpResponseMessage> Send(HttpRequestMessage request)
+        public async Task<HttpResponseMessage> Send(HttpRequestMessage request)
         {
             if (anonymous)
             {

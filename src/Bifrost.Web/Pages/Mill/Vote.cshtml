@@ -28,15 +28,15 @@
     </p>
 
     <div class="mill-actions">
-        <form method="post" asp-page-handler="Up" hx-boost="false">
+        <form method="post" asp-page-handler="Up" asp-antiforgery="false" hx-boost="false">
             <button class="button" type="submit">Up</button>
         </form>
-        <form method="post" asp-page-handler="Down" hx-boost="false">
+        <form method="post" asp-page-handler="Down" asp-antiforgery="false" hx-boost="false">
             <button class="button" type="submit">Down</button>
         </form>
         @if (stance is not null)
         {
-            <form method="post" asp-page-handler="Retract" hx-boost="false">
+            <form method="post" asp-page-handler="Retract" asp-antiforgery="false" hx-boost="false">
                 <button class="button ghost" type="submit">Retract</button>
             </form>
         }

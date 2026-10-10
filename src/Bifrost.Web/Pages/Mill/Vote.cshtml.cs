@@ -3,6 +3,7 @@ using Bifrost.Web.Domain;
 using Bifrost.Web.Features.ConceptVotes;
 using Bifrost.Web.Features.Shared;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.Filters;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.Extensions.Options;
 
@@ -10,17 +11,40 @@ namespace Bifrost.Web.Pages.Mill;
 
 // The anonymous vote page. Counts and the visitor's own stance come from ConceptAppraisalService on every GET; the
 // voter key is decided by VoterIdentity.For from the actor and the device id VoterKeyResolver reads.
+[IgnoreAntiforgeryToken]
 public sealed class VoteModel(
     ICurrentBifrostActorAccessor actorAccessor,
     ConceptAppraisalService appraisals,
     VoterKeyResolver deviceCookie,
-    IOptions<ConceptVoteOptions> options) : PageModel
+    IOptions<ConceptVoteOptions> options,
+    IOptions<BifrostHostOptions> host) : PageModel
 {
     public ConceptSubjectView Subject { get; private set; } = null!;
 
     public bool SignedIn { get; private set; }
 
     public string MillPageLink => options.Value.MillPageUrl + "#" + Uri.EscapeDataString(Subject.Key);
+
+    // The single gate before any handler runs. A request that selects no handler (a POST with no or an unknown handler,
+    // any other method) is a client error, never a view over a null subject. A cast is accepted only from the site's own
+    // origin (CastRequestGuard); no antiforgery cookie or token exists on this flow.
+    public override void OnPageHandlerSelected(PageHandlerSelectedContext context)
+    {
+        var method = context.HttpContext.Request.Method;
+        if (context.HandlerMethod is null)
+        {
+            context.Result = new StatusCodeResult(
+                HttpMethods.IsGet(method) || HttpMethods.IsHead(method) || HttpMethods.IsPost(method)
+                    ? StatusCodes.Status400BadRequest
+                    : StatusCodes.Status405MethodNotAllowed);
+            return;
+        }
+
+        if (HttpMethods.IsPost(method) && !CastRequestGuard.Allows(context.HttpContext.Request, host.Value))
+        {
+            context.Result = new StatusCodeResult(StatusCodes.Status403Forbidden);
+        }
+    }
 
     public async Task<IActionResult> OnGetAsync(string collection, string key, CancellationToken cancellationToken)
     {
