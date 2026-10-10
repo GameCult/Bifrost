@@ -1,10 +1,12 @@
 using Bifrost.Web.Domain;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
 
 namespace Bifrost.Web.Data.Migrations
 {
+    [DbContext(typeof(BifrostDbContext))]
     [Migration("20260609160000_AddExternalPatronProviderIntake")]
     public partial class AddExternalPatronProviderIntake : Migration
     {
