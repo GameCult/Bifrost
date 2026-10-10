@@ -278,12 +278,145 @@ public sealed class ConceptAppraisalServiceTests
         var refused = await Assert.ThrowsAsync<UnauthorizedAccessException>(
             () => f.Service.PurgeAsync(f.Account(MembershipStatus.Active), tag, t0, t0.AddDays(1), default));
         Assert.DoesNotContain(tag, refused.Message);
+        Assert.Equal("Only a platform administrator can purge appraisals.", refused.Message);
         Assert.Equal(2, f.Db.ConceptAppraisals.Count());
         Assert.Single(f.Db.AuditEvents);
     }
 
+    [Fact]
+    public async Task Unique_violation_with_no_surviving_row_is_not_swallowed()
+    {
+        var dbName = $"race-{Guid.NewGuid():N}";
+        var racer = new RacingInterceptor(dbName) { InsertRival = false };
+        await using var f = new Fixture(dbName, racer);
+        await f.AddSubject("ship-a");
+        racer.Subject = f.Db.ConceptSubjects.Single();
+
+        await Assert.ThrowsAsync<DbUpdateException>(
+            () => f.Cast("ship-a", f.Anonymous("device-one"), ConceptStance.Up));
+    }
+
+    [Fact]
+    public async Task A_changed_cast_restamps_tag_and_time()
+    {
+        await using var f = new Fixture();
+        await f.AddSubject("ship-a");
+        var voter = f.Anonymous("device-one");
+        await f.Cast("ship-a", voter, ConceptStance.Up, IPAddress.Parse("198.51.100.9"));
+        var first = f.Db.ConceptAppraisals.Single().CastAtUtc;
+        f.Clock.Advance(TimeSpan.FromMinutes(5));
+
+        await f.Cast("ship-a", voter, ConceptStance.Down);
+
+        var row = f.Db.ConceptAppraisals.Single();
+        Assert.Equal(NetworkPrefix.Tag(Client, 32, 56, Fixture.Secret), row.NetworkTag);
+        Assert.Equal(first.AddMinutes(5), row.CastAtUtc);
+    }
+
+    [Fact]
+    public async Task Unknown_client_address_leaves_no_tag_and_purge_never_matches_the_empty_tag()
+    {
+        await using var f = new Fixture();
+        await f.AddSubject("ship-a");
+        await f.Service.CastAsync(Collection, "ship-a", f.Anonymous("device-one"), ConceptStance.Up, null, default);
+
+        Assert.Equal(string.Empty, f.Db.ConceptAppraisals.Single().NetworkTag);
+        var t0 = f.Clock.GetUtcNow();
+        Assert.Equal(0, await f.Service.PurgeAsync(f.Admin(), string.Empty, t0.AddDays(-1), t0.AddDays(1), default));
+        Assert.Single(f.Db.ConceptAppraisals);
+        Assert.Empty(f.Db.AuditEvents);
+    }
+
+    [Fact]
+    public async Task Purge_window_excludes_its_end_and_includes_its_start()
+    {
+        await using var f = new Fixture();
+        await f.AddSubject("ship-a");
+        var t0 = f.Clock.GetUtcNow();
+        await f.Cast("ship-a", f.Anonymous("device-one"), ConceptStance.Up);
+        var tag = NetworkPrefix.Tag(Client, 32, 56, Fixture.Secret);
+
+        Assert.Equal(0, await f.Service.PurgeAsync(f.Admin(), tag, t0.AddDays(-1), t0, default));
+        Assert.Equal(1, await f.Service.PurgeAsync(f.Admin(), tag, t0, t0.AddSeconds(1), default));
+    }
+
+    [Fact]
+    public async Task Retract_by_no_voter_or_on_unknown_subject_is_a_no_op()
+    {
+        await using var f = new Fixture();
+        await f.AddSubject("ship-a");
+        var voter = f.Anonymous("device-one");
+        await f.Cast("ship-a", voter, ConceptStance.Up);
+
+        Assert.False(await f.Service.RetractAsync(Collection, "ship-a", null, default));
+        Assert.False(await f.Service.RetractAsync(Collection, "ship-missing", voter, default));
+        Assert.False(await f.Service.RetractAsync("other-collection", "ship-a", voter, default));
+        Assert.Single(f.Db.ConceptAppraisals);
+    }
+
+    [Fact]
+    public async Task Subject_page_view_counts_only_its_own_subject_and_shows_the_voters_own_stance()
+    {
+        await using var f = new Fixture();
+        await f.AddSubject("ship-a");
+        await f.AddSubject("ship-b");
+        await f.AddSubject("ship-old", retired: true);
+        var mine = f.Anonymous("device-one");
+        await f.Cast("ship-a", mine, ConceptStance.Down);
+        await f.Cast("ship-a", VoterIdentity.For(f.Account(MembershipStatus.Active), null), ConceptStance.Up);
+        await f.Cast("ship-a", VoterIdentity.For(f.Account(MembershipStatus.Authenticated), null), ConceptStance.Up);
+        await f.Cast("ship-b", f.Anonymous("device-two"), ConceptStance.Up);
+
+        var view = await f.Service.GetSubjectAsync(Collection, "ship-a", mine, default);
+        var stranger = await f.Service.GetSubjectAsync(Collection, "ship-a", f.Anonymous("device-nine"), default);
+        var anon = await f.Service.GetSubjectAsync(Collection, "ship-a", null, default);
+
+        Assert.Equal(new ConceptTally(2, 1, new StanceCounts(1, 0)), view!.Tally);
+        Assert.Equal(ConceptStance.Down, view.YourStance);
+        Assert.Null(stranger!.YourStance);
+        Assert.Null(anon!.YourStance);
+        Assert.Null(await f.Service.GetSubjectAsync(Collection, "ship-old", mine, default));
+        Assert.Null(await f.Service.GetSubjectAsync(Collection, "ship-missing", mine, default));
+    }
+
+    [Fact]
+    public async Task Collection_and_key_must_both_be_slugs_even_when_a_row_exists()
+    {
+        await using var f = new Fixture();
+        await f.AddSubject("Ship_A");
+        f.Db.ConceptSubjects.Add(new ConceptSubject
+        {
+            Collection = "Bad_Collection",
+            Key = "ship-a",
+            Title = "t",
+            RegisteredAtUtc = f.Clock.GetUtcNow()
+        });
+        await f.Db.SaveChangesAsync();
+        var voter = f.Anonymous("device-one");
+
+        Assert.Equal(CastResult.UnknownSubject, await f.Cast("Ship_A", voter, ConceptStance.Up));
+        Assert.Equal(
+            CastResult.UnknownSubject,
+            await f.Service.CastAsync("Bad_Collection", "ship-a", voter, ConceptStance.Up, Client, default));
+        Assert.Empty(f.Db.ConceptAppraisals);
+    }
+
+    [Fact]
+    public async Task Voter_keys_have_their_documented_shape()
+    {
+        await using var f = new Fixture();
+        var account = f.Account(MembershipStatus.Authenticated);
+
+        Assert.Equal("device:abc-DEF_123", VoterIdentity.For(CurrentBifrostActor.Anonymous, "abc-DEF_123")!.Key);
+        Assert.Equal("account:" + account.UserAccount!.Id.ToString("N"), VoterIdentity.For(account, "ignored")!.Key);
+        Assert.Null(VoterIdentity.For(CurrentBifrostActor.Anonymous, new string('a', 101)));
+        Assert.NotNull(VoterIdentity.For(CurrentBifrostActor.Anonymous, new string('a', 100)));
+    }
+
     private sealed class RacingInterceptor(string dbName) : SaveChangesInterceptor
     {
+        public bool InsertRival { get; init; } = true;
+
         public ConceptSubject? Subject { get; set; }
 
         public int Fired { get; private set; }
@@ -301,6 +434,11 @@ public sealed class ConceptAppraisalServiceTests
             }
 
             Fired++;
+            if (!InsertRival)
+            {
+                throw new DbUpdateException("conflict", new PostgresException("duplicate", "ERROR", "ERROR", "23505"));
+            }
+
             var options = new DbContextOptionsBuilder<BifrostDbContext>().UseInMemoryDatabase(dbName).Options;
             await using (var other = new BifrostDbContext(options))
             {

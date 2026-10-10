@@ -50,5 +50,15 @@ public sealed class NetworkPrefixTests
             () => NetworkPrefix.Of(IPAddress.Parse("203.0.113.7"), 33, 56));
 
         Assert.DoesNotContain("203.0.113.7", ex.Message);
+        Assert.Contains("Prefix length", ex.Message);
+    }
+
+    [Fact]
+    public void Masking_is_exact_inside_a_byte_and_a_zero_length_is_the_whole_family()
+    {
+        Assert.Equal("203.0.112.0/20", NetworkPrefix.Of(IPAddress.Parse("203.0.127.200"), 20, 56));
+        Assert.Equal("2001:db8:1:f0::/60", NetworkPrefix.Of(IPAddress.Parse("2001:db8:1:ff::1"), 24, 60));
+        Assert.Equal("0.0.0.0/0", NetworkPrefix.Of(IPAddress.Parse("203.0.113.7"), 0, 56));
+        Assert.Equal("203.0.113.7/32", NetworkPrefix.Of(IPAddress.Parse("203.0.113.7"), 32, 56));
     }
 }
