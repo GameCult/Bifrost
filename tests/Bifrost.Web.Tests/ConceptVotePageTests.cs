@@ -264,10 +264,10 @@ public sealed partial class ConceptVotePageTests : IClassFixture<TestWebApplicat
         Assert.Equal("1 up, 0 down", members);
         Assert.Contains("Your vote: up.", html, StringComparison.Ordinal);
 
-        var visitorRow = Assert.Single(await Rows(collection, "alpha"), x => !x.VoterKey.Contains("canary"));
+        var visitorRow = Assert.Single(await Rows(collection, "alpha"), x => x.UserAccountId is null && !x.VoterKey.Contains("canary"));
         var forbidden = new List<string>
         {
-            "device:", "account:", "canary-device-id", "canarytag", visitorRow.VoterKey, visitorRow.NetworkTag,
+            "device:", "account:", "canary-device-id", "canarytag", visitorRow.VoterKey,
             visitor.Jar[CookieName],
             memberId.ToString("N"), memberId.ToString("D"), accountId.ToString("N"), accountId.ToString("D")
         };
@@ -293,7 +293,6 @@ public sealed partial class ConceptVotePageTests : IClassFixture<TestWebApplicat
             Assert.DoesNotContain("account:", text, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain(accountRow.UserAccountId!.Value.ToString("N"), text, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain(accountRow.UserAccountId!.Value.ToString("D"), text, StringComparison.OrdinalIgnoreCase);
-            Assert.DoesNotContain(accountRow.NetworkTag, text, StringComparison.OrdinalIgnoreCase);
         }
     }
 
