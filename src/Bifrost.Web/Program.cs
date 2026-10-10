@@ -24,6 +24,23 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using System.Net;
 
+// Host command: registers Mill concept subjects with configuration and the database only; no web app, no migrations.
+if (args.Length > 0 && args[0] == "concepts")
+{
+    var host = Host.CreateApplicationBuilder([]);
+    host.Services.AddDbContext<BifrostDbContext>(options => options.UseNpgsql(BifrostConnectionString(host.Configuration)));
+    host.Services.AddSingleton(TimeProvider.System);
+    host.Services.AddScoped<AuditTrailService>();
+    host.Services.AddScoped<ConceptSubjectRegistry>();
+    using var commandHost = host.Build();
+    Environment.ExitCode = await ConceptCommand.RunAsync(args[1..], commandHost.Services, Console.Out);
+    return;
+}
+
+static string BifrostConnectionString(IConfiguration configuration) =>
+    configuration.GetConnectionString("Bifrost")
+        ?? "Host=127.0.0.1;Database=bifrost;Username=postgres;Password=postgres";
+
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services
@@ -71,10 +88,7 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 
 builder.Services.AddDbContext<BifrostDbContext>(options =>
 {
-    var connectionString = builder.Configuration.GetConnectionString("Bifrost")
-        ?? "Host=127.0.0.1;Database=bifrost;Username=postgres;Password=postgres";
-
-    options.UseNpgsql(connectionString);
+    options.UseNpgsql(BifrostConnectionString(builder.Configuration));
 });
 
 builder.Services.AddHttpLogging(options =>
@@ -105,6 +119,7 @@ builder.Services.AddScoped<StripeWebhookService>();
 builder.Services.AddScoped<HeimdallPatronSupportIntakeService>();
 builder.Services.AddScoped<ConceptAppraisalService>();
 builder.Services.AddScoped<VoterKeyResolver>();
+builder.Services.AddScoped<ConceptSubjectRegistry>();
 builder.Services.AddScoped<ReadinessService>();
 builder.Services.AddScoped<ApplicationBootstrapper>();
 builder.Services.AddSingleton<StartupConfigurationValidator>();
