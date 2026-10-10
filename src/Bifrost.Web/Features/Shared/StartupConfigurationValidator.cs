@@ -71,6 +71,11 @@ public sealed class StartupConfigurationValidator(
             failures.Add("DataProtection:KeysPath must be configured for production.");
         }
 
+        if (string.IsNullOrWhiteSpace(configuration["ConceptVotes:NetworkTagSecret"]))
+        {
+            failures.Add("ConceptVotes:NetworkTagSecret must be configured for production.");
+        }
+
         if (failures.Count > 0)
         {
             throw new InvalidOperationException(

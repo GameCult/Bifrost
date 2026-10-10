@@ -146,9 +146,21 @@ public sealed class HostTrustTests : IClassFixture<TestWebApplicationFactory>
     }
 
     [Fact]
-    public void Development_does_not_require_keys_path()
+    public void Production_without_network_tag_secret_fails_and_never_echoes_values()
     {
-        Validate(keysPath: null, environment: Environments.Development);
+        var canary = "canary-keys-path-77aa";
+        var refusal = Assert.Throws<InvalidOperationException>(
+            () => Validate(keysPath: canary, tagSecret: " "));
+
+        Assert.Contains("ConceptVotes:NetworkTagSecret", refusal.Message);
+        Assert.DoesNotContain(canary, refusal.Message);
+        Assert.DoesNotContain("DataProtection:KeysPath", refusal.Message);
+    }
+
+    [Fact]
+    public void Development_does_not_require_keys_path_or_tag_secret()
+    {
+        Validate(keysPath: null, environment: Environments.Development, tagSecret: null);
     }
 
     private async Task<HttpContext> RunForwardedHeaders(string peer, string forwardedFor, string? forwardedProto)
@@ -199,13 +211,15 @@ public sealed class HostTrustTests : IClassFixture<TestWebApplicationFactory>
     private static void Validate(
         string? keysPath,
         string environment = "Production",
-        string? connectionString = "Host=db")
+        string? connectionString = "Host=db",
+        string? tagSecret = "tag-secret")
     {
         var values = new Dictionary<string, string?>
         {
             ["AllowedHosts"] = "bifrost.example",
             ["ConnectionStrings:Bifrost"] = connectionString,
-            ["DataProtection:KeysPath"] = keysPath
+            ["DataProtection:KeysPath"] = keysPath,
+            ["ConceptVotes:NetworkTagSecret"] = tagSecret
         };
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(values).Build();
         var hostEnvironment = new StubHostEnvironment(environment);

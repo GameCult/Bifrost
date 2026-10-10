@@ -63,6 +63,10 @@ public sealed class BifrostDbContext(DbContextOptions<BifrostDbContext> options)
 
     public DbSet<AuditEvent> AuditEvents => Set<AuditEvent>();
 
+    public DbSet<ConceptSubject> ConceptSubjects => Set<ConceptSubject>();
+
+    public DbSet<ConceptAppraisal> ConceptAppraisals => Set<ConceptAppraisal>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<UserAccount>(entity =>
@@ -521,6 +525,32 @@ public sealed class BifrostDbContext(DbContextOptions<BifrostDbContext> options)
             entity.HasOne(x => x.ActorUserAccount)
                 .WithMany(x => x.AuditEvents)
                 .HasForeignKey(x => x.ActorUserAccountId)
+                .OnDelete(DeleteBehavior.SetNull);
+        });
+
+        modelBuilder.Entity<ConceptSubject>(entity =>
+        {
+            entity.Property(x => x.Collection).HasMaxLength(80);
+            entity.Property(x => x.Key).HasMaxLength(80);
+            entity.Property(x => x.Title).HasMaxLength(240);
+            entity.HasIndex(x => new { x.Collection, x.Key }).IsUnique();
+        });
+
+        modelBuilder.Entity<ConceptAppraisal>(entity =>
+        {
+            entity.Property(x => x.VoterKey).HasMaxLength(120);
+            entity.Property(x => x.NetworkTag).HasMaxLength(64);
+            entity.Property(x => x.Stance).HasConversion<string>().HasMaxLength(16);
+            entity.Property(x => x.VoterClass).HasConversion<string>().HasMaxLength(16);
+            entity.HasIndex(x => new { x.SubjectId, x.VoterKey }).IsUnique();
+            entity.HasIndex(x => new { x.NetworkTag, x.CastAtUtc });
+            entity.HasOne(x => x.Subject)
+                .WithMany()
+                .HasForeignKey(x => x.SubjectId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<UserAccount>()
+                .WithMany()
+                .HasForeignKey(x => x.UserAccountId)
                 .OnDelete(DeleteBehavior.SetNull);
         });
     }

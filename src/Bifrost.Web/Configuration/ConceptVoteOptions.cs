@@ -1,0 +1,17 @@
+namespace Bifrost.Web.Configuration;
+
+public sealed class ConceptVoteOptions
+{
+    public const string SectionName = "ConceptVotes";
+
+    // Keys the network tag. Required outside Development and Testing (StartupConfigurationValidator).
+    public string NetworkTagSecret { get; init; } = string.Empty;
+
+    // The research note (docs/research/anonymous-vote-stuffing-prior-art.md:57-61) finds no source for a
+    // coarser IPv4 partition than the address itself, so the default is the exact address.
+    public int IPv4PrefixLength { get; init; } = 32;
+
+    // /64 is bypassed by RFC 8981 privacy rotation and households can hold a /56 or /48; /56 is the practitioner
+    // default weighed in the note, not a standard. Tune on observed abuse.
+    public int IPv6PrefixLength { get; init; } = 56;
+}
