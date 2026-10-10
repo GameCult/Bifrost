@@ -43,16 +43,7 @@ public sealed class ConceptSubjectRegistry(
     public static IReadOnlyList<ManifestShip> ParseManifest(string json)
     {
         using var document = ParseDocument(json);
-        if (document.RootElement.ValueKind != JsonValueKind.Object)
-        {
-            throw new ManifestRefusedException("ships", "Missing");
-        }
-
-        if (!document.RootElement.TryGetProperty("ships", out var ships))
-        {
-            throw new ManifestRefusedException("ships", "Missing");
-        }
-
+        var ships = ShipsOf(document.RootElement);
         if (ships.ValueKind != JsonValueKind.Array)
         {
             throw new ManifestRefusedException("ships", "Missing");
@@ -89,6 +80,16 @@ public sealed class ConceptSubjectRegistry(
         }
 
         return result;
+    }
+
+    private static JsonElement ShipsOf(JsonElement root)
+    {
+        if (root.ValueKind != JsonValueKind.Object)
+        {
+            return default;
+        }
+
+        return root.TryGetProperty("ships", out var ships) ? ships : default;
     }
 
     private static JsonDocument ParseDocument(string json)

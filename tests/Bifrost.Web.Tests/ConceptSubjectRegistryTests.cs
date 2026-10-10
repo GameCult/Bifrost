@@ -170,6 +170,8 @@ public sealed class ConceptSubjectRegistryTests
     [InlineData("""{"ships":[{"id":"a","name":"bad\ntitle"}]}""", "ships[0].name", "InvalidTitle")]
     [InlineData("""{"ships":["a"]}""", "ships[0].id", "Missing")]
     [InlineData("""{"fleet":[]}""", "ships", "Missing")]
+    [InlineData("[]", "ships", "Missing")]
+    [InlineData("""{"ships":5}""", "ships", "Missing")]
     [InlineData("not json", "manifest", "NotJson")]
     public async Task Malformed_manifest_is_refused_whole(string json, string field, string code)
     {
@@ -178,6 +180,28 @@ public sealed class ConceptSubjectRegistryTests
 
         Assert.Equal((field, code), (refusal.Field, refusal.Code));
         Assert.Empty(await world.Fresh(db => db.ConceptSubjects.ToListAsync()));
+    }
+
+    [Fact]
+    public void A_title_of_exactly_the_column_width_is_accepted_and_one_more_is_refused()
+    {
+        var fits = new string('t', ConceptSubjectRegistry.MaxTitleLength);
+
+        Assert.Equal(fits, ConceptSubjectRegistry.ParseManifest($$"""{"ships":[{"id":"a","name":"{{fits}}"}]}""").Single().Title);
+        var refusal = Assert.Throws<ManifestRefusedException>(() =>
+            ConceptSubjectRegistry.ParseManifest($$"""{"ships":[{"id":"a","name":"{{fits}}x"}]}"""));
+        Assert.Equal(("ships[0].name", "TooLong"), (refusal.Field, refusal.Code));
+    }
+
+    [Fact]
+    public async Task Absent_keys_are_planned_in_key_order()
+    {
+        using var world = new World();
+        await world.Apply(Fixture());
+
+        var plan = await world.Plan([new ManifestShip("zzz-new", "New")]);
+
+        Assert.Equal(["zzz-new", "bison", "ibis-mk2", "kestrel"], plan.Entries.Select(e => e.Key));
     }
 
     [Fact]
@@ -201,8 +225,10 @@ public sealed class ConceptSubjectRegistryTests
         using var world = new World();
         var collection = await Assert.ThrowsAsync<ManifestRefusedException>(() => world.Registry(world.NewDb()).PlanAsync(canary, [], None, default));
         Assert.DoesNotContain("CANARY", collection.Message);
+        Assert.Equal(("collection", "InvalidKey"), (collection.Field, collection.Code));
         var retire = await Assert.ThrowsAsync<ManifestRefusedException>(() => world.Registry(world.NewDb()).PlanAsync(Collection, [], [canary], default));
         Assert.DoesNotContain("CANARY", retire.Message);
+        Assert.Equal(("retire", "InvalidKey"), (retire.Field, retire.Code));
     }
 
     [Theory]
@@ -282,6 +308,7 @@ public sealed class ConceptSubjectRegistryTests
         var missing = new StringWriter();
         Assert.Equal(ConceptCommand.Refused, await ConceptCommand.RunAsync(["apply", Collection, Path.Combine(world.Dir, "CANARY-missing.json")], services, missing));
         Assert.DoesNotContain("CANARY", missing.ToString());
+        Assert.Equal("refused manifest Unreadable", missing.ToString().Trim());
         Assert.Empty(await world.Fresh(db => db.ConceptSubjects.ToListAsync()));
     }
 
