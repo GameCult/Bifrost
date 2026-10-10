@@ -1,7 +1,7 @@
 using Bifrost.Web.Configuration;
 using Microsoft.AspNetCore.Cors.Infrastructure;
 using Microsoft.Extensions.Options;
-using Microsoft.Extensions.Primitives;
+using Microsoft.Net.Http.Headers;
 
 namespace Bifrost.Web.Features.ConceptVotes;
 
@@ -29,7 +29,7 @@ public static class ConceptTallyExport
     // Replaces app.UseCors(): the one place the origin decision is made. Every response under the export route
     // (200, 404, 304, preflight, refusal) varies by Origin, appended to any Vary already present, because the CORS
     // headers differ by request Origin and a URL-keyed cache must not serve one variant to another. ASP.NET Core
-    // adds Vary: Origin itself only for policies of more than one origin; this policy has one.
+    // adds Vary: Origin itself only for policies of more than one origin; this policy has one, and a repeated token is harmless.
     public static IApplicationBuilder UseConceptTallyCors(this IApplicationBuilder app)
     {
         app.Use((context, next) =>
@@ -38,14 +38,7 @@ public static class ConceptTallyExport
             {
                 context.Response.OnStarting(() =>
                 {
-                    var vary = context.Response.Headers.Vary;
-                    var varies = vary.Any(v => v is not null
-                        && v.Split(',').Any(t => t.Trim() is "*" || t.Trim().Equals("Origin", StringComparison.OrdinalIgnoreCase)));
-                    if (!varies)
-                    {
-                        context.Response.Headers.Vary = StringValues.Concat(vary, "Origin");
-                    }
-
+                    context.Response.Headers.Append(HeaderNames.Vary, "Origin");
                     return Task.CompletedTask;
                 });
             }

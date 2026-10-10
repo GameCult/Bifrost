@@ -166,7 +166,7 @@ public sealed class ConceptTallyExportTests : IClassFixture<ConceptTallyExportTe
     }
 
     [Fact]
-    public async Task Origin_is_added_to_an_existing_vary_and_not_repeated()
+    public async Task Origin_is_added_to_an_existing_vary()
     {
         var collection = NewCollection();
         await AddSubject(collection, "alpha");
