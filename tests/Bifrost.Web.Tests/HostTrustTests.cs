@@ -185,6 +185,28 @@ public sealed class HostTrustTests : IClassFixture<TestWebApplicationFactory>
         Validate(keysPath: "/keys", ipv4Length: 0, ipv6Length: 0);
     }
 
+    [Theory]
+    [InlineData("*")]
+    [InlineData("")]
+    [InlineData("null")]
+    [InlineData("https://canary-origin-5d1c.example/")]
+    [InlineData("https://canary-origin-5d1c.example/path")]
+    [InlineData("https://Canary-Origin-5d1c.example")]
+    [InlineData("http://canary-origin-5d1c.example")]
+    [InlineData("canary-origin-5d1c.example")]
+    [InlineData("https://canary-origin-5d1c.example:443")]
+    [InlineData("https://user@canary-origin-5d1c.example")]
+    public void Production_refuses_an_allowed_origin_that_is_not_an_exact_https_origin_without_echoing_it(string origin)
+    {
+        var refusal = Assert.Throws<InvalidOperationException>(
+            () => Validate(keysPath: "/keys", allowedOrigins: ["https://good.example", origin]));
+
+        Assert.Contains("ConceptVotes:AllowedOrigins", refusal.Message);
+        Assert.DoesNotContain("canary-origin-5d1c", refusal.Message, StringComparison.OrdinalIgnoreCase);
+        Validate(keysPath: "/keys", allowedOrigins: ["https://good.example", "https://other.example:8443"]);
+        Validate(keysPath: "/keys", allowedOrigins: []);
+    }
+
     [Fact]
     public void Development_does_not_require_keys_path_or_tag_secret()
     {
@@ -244,7 +266,8 @@ public sealed class HostTrustTests : IClassFixture<TestWebApplicationFactory>
         string? connectionString = "Host=db",
         string? tagSecret = ValidTagSecret,
         int ipv4Length = 32,
-        int ipv6Length = 56)
+        int ipv6Length = 56,
+        string[]? allowedOrigins = null)
     {
         var values = new Dictionary<string, string?>
         {
@@ -271,7 +294,8 @@ public sealed class HostTrustTests : IClassFixture<TestWebApplicationFactory>
             {
                 NetworkTagSecret = tagSecret ?? string.Empty,
                 IPv4PrefixLength = ipv4Length,
-                IPv6PrefixLength = ipv6Length
+                IPv6PrefixLength = ipv6Length,
+                AllowedOrigins = allowedOrigins ?? []
             })).Validate();
     }
 

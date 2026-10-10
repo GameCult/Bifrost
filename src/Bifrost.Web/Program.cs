@@ -17,6 +17,7 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.OAuth;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Cors.Infrastructure;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.HttpLogging;
@@ -205,6 +206,17 @@ builder.Services.AddAuthorization(options =>
     });
 });
 
+// The one cross-origin surface: the public tally export, read by browsers on the configured origins only.
+// No credentials, GET only; every other route carries no CORS metadata and gets no CORS headers.
+const string ConceptTalliesCorsPolicy = "ConceptTallies";
+builder.Services.AddCors();
+builder.Services
+    .AddOptions<CorsOptions>()
+    .Configure<IOptions<ConceptVoteOptions>>((cors, conceptVotes) =>
+        cors.AddPolicy(
+            ConceptTalliesCorsPolicy,
+            policy => policy.WithOrigins(conceptVotes.Value.AllowedOrigins).WithMethods("GET")));
+
 var app = builder.Build();
 var appJsonSerializerOptions = CreateAppJsonSerializerOptions();
 
@@ -228,6 +240,7 @@ app.UseHttpLogging();
 app.UseHttpsRedirection();
 app.UseStaticFiles();
 app.UseRouting();
+app.UseCors();
 app.UseAuthentication();
 app.UseMiddleware<GitHubMembershipSynchronizationMiddleware>();
 app.UseAuthorization();
@@ -243,6 +256,23 @@ app.MapGet("/readyz", async (ReadinessService readinessService, CancellationToke
             string.Join(Environment.NewLine, report.Failures),
             statusCode: StatusCodes.Status503ServiceUnavailable);
 }).AllowAnonymous();
+
+// Counts only, per live subject: ConceptTally carries no voter key, account id or network tag.
+app.MapGet("/public/concepts/{collection}/tallies", async (
+    string collection,
+    ConceptAppraisalService appraisals,
+    HttpResponse response,
+    CancellationToken cancellationToken) =>
+{
+    var tallies = await appraisals.GetTalliesAsync(collection, cancellationToken);
+    if (tallies.Count == 0)
+    {
+        return Results.NotFound();
+    }
+
+    response.Headers.CacheControl = "public, max-age=60";
+    return Results.Json(tallies);
+}).AllowAnonymous().RequireCors(ConceptTalliesCorsPolicy);
 
 app.MapPost("/github/webhooks", async (
     HttpRequest request,

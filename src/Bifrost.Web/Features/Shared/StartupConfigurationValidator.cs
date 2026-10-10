@@ -91,10 +91,22 @@ public sealed class StartupConfigurationValidator(
             failures.Add($"ConceptVotes:IPv6PrefixLength must be between 0 and {NetworkPrefix.IPv6Bits}.");
         }
 
+        if (!conceptVotes.AllowedOrigins.All(IsExactHttpsOrigin))
+        {
+            failures.Add("ConceptVotes:AllowedOrigins entries must each be exactly https://host with no path, wildcard or trailing slash.");
+        }
+
         if (failures.Count > 0)
         {
             throw new InvalidOperationException(
                 "Bifrost startup configuration is incomplete: " + string.Join(" ", failures));
         }
     }
+
+    // The authority form is the canonical spelling, so a wildcard, path, query, user info, upper-case host or
+    // default port differs from it and is refused.
+    private static bool IsExactHttpsOrigin(string? origin) =>
+        Uri.TryCreate(origin, UriKind.Absolute, out var uri) &&
+        uri.Scheme == Uri.UriSchemeHttps &&
+        string.Equals(uri.GetLeftPart(UriPartial.Authority), origin, StringComparison.Ordinal);
 }
