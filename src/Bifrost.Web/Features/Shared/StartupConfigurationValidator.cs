@@ -103,10 +103,11 @@ public sealed class StartupConfigurationValidator(
         }
     }
 
-    // The authority form is the canonical spelling, so a wildcard, path, query, user info, upper-case host or
-    // default port differs from it and is refused.
+    // The authority form is the canonical spelling, so a wildcard, path, query, upper-case host or default port
+    // differs from it and is refused; user info is part of the authority, so it is refused on its own.
     private static bool IsExactHttpsOrigin(string? origin) =>
         Uri.TryCreate(origin, UriKind.Absolute, out var uri) &&
         uri.Scheme == Uri.UriSchemeHttps &&
+        uri.UserInfo.Length == 0 &&
         string.Equals(uri.GetLeftPart(UriPartial.Authority), origin, StringComparison.Ordinal);
 }
