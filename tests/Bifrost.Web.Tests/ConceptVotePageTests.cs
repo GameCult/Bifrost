@@ -191,7 +191,7 @@ public sealed partial class ConceptVotePageTests : IClassFixture<TestWebApplicat
     {
         const string canary = "CANARY-forged-voter-cookie-7f3a";
         var logs = new CapturingLoggerProvider();
-        var factory = _factory.WithWebHostBuilder(b => b.ConfigureLogging(l => l.AddProvider(logs)));
+        var factory = _factory.WithWebHostBuilder(b => b.ConfigureServices(s => s.AddLogging(l => l.AddProvider(logs))));
         var collection = NewCollection();
         await AddSubject(collection, "alpha");
         var visitor = NewVisitor(anonymous: true, factory);
