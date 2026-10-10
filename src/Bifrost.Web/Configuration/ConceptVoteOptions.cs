@@ -19,4 +19,9 @@ public sealed class ConceptVoteOptions
     // /64 is bypassed by RFC 8981 privacy rotation and households can hold a /56 or /48; /56 is the practitioner
     // default weighed in the note, not a standard. Tune on observed abuse.
     public int IPv6PrefixLength { get; init; } = 56;
+
+    // The origins whose pages may read the public tally export from a browser (CORS). Each entry is exactly
+    // https://host[:non-default-port], lower case, no path; empty allows none. StartupConfigurationValidator
+    // refuses anything else outside Development and Testing, because "*" would allow every origin.
+    public string[] AllowedOrigins { get; init; } = [];
 }

@@ -205,6 +205,8 @@ builder.Services.AddAuthorization(options =>
     });
 });
 
+builder.Services.AddConceptTallyCors();
+
 var app = builder.Build();
 var appJsonSerializerOptions = CreateAppJsonSerializerOptions();
 
@@ -228,6 +230,7 @@ app.UseHttpLogging();
 app.UseHttpsRedirection();
 app.UseStaticFiles();
 app.UseRouting();
+app.UseConceptTallyCors();
 app.UseAuthentication();
 app.UseMiddleware<GitHubMembershipSynchronizationMiddleware>();
 app.UseAuthorization();
@@ -243,6 +246,8 @@ app.MapGet("/readyz", async (ReadinessService readinessService, CancellationToke
             string.Join(Environment.NewLine, report.Failures),
             statusCode: StatusCodes.Status503ServiceUnavailable);
 }).AllowAnonymous();
+
+app.MapConceptTallyExport();
 
 app.MapPost("/github/webhooks", async (
     HttpRequest request,
