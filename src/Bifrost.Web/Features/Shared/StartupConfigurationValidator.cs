@@ -1,4 +1,5 @@
 using Bifrost.Web.Configuration;
+using Bifrost.Web.Features.ConceptVotes;
 using Microsoft.Extensions.Options;
 
 namespace Bifrost.Web.Features.Shared;
@@ -10,7 +11,8 @@ public sealed class StartupConfigurationValidator(
     IOptions<GitHubAppOptions> gitHubAppOptions,
     IOptions<HeimdallOptions> heimdallOptions,
     IOptions<StripeOptions> stripeOptions,
-    IOptions<BifrostHostOptions> hostOptions)
+    IOptions<BifrostHostOptions> hostOptions,
+    IOptions<ConceptVoteOptions> conceptVoteOptions)
 {
     public void Validate()
     {
@@ -71,9 +73,22 @@ public sealed class StartupConfigurationValidator(
             failures.Add("DataProtection:KeysPath must be configured for production.");
         }
 
-        if (string.IsNullOrWhiteSpace(configuration["ConceptVotes:NetworkTagSecret"]))
+        var conceptVotes = conceptVoteOptions.Value;
+        if (string.IsNullOrWhiteSpace(conceptVotes.NetworkTagSecret) ||
+            conceptVotes.NetworkTagSecret.Length < ConceptVoteOptions.MinNetworkTagSecretLength)
         {
-            failures.Add("ConceptVotes:NetworkTagSecret must be configured for production.");
+            failures.Add(
+                $"ConceptVotes:NetworkTagSecret must be configured with at least {ConceptVoteOptions.MinNetworkTagSecretLength} characters for production.");
+        }
+
+        if (!NetworkPrefix.IsValidLength(conceptVotes.IPv4PrefixLength, NetworkPrefix.IPv4Bits))
+        {
+            failures.Add($"ConceptVotes:IPv4PrefixLength must be between 0 and {NetworkPrefix.IPv4Bits}.");
+        }
+
+        if (!NetworkPrefix.IsValidLength(conceptVotes.IPv6PrefixLength, NetworkPrefix.IPv6Bits))
+        {
+            failures.Add($"ConceptVotes:IPv6PrefixLength must be between 0 and {NetworkPrefix.IPv6Bits}.");
         }
 
         if (failures.Count > 0)

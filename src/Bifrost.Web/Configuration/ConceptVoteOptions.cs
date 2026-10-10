@@ -4,7 +4,12 @@ public sealed class ConceptVoteOptions
 {
     public const string SectionName = "ConceptVotes";
 
-    // Keys the network tag. Required outside Development and Testing (StartupConfigurationValidator).
+    // HMAC-SHA256 output is 32 bytes (RFC 2104 advises a key at least as long as the hash output), so a shorter
+    // secret makes the tag brute-forceable over the IPv4 space if the table leaks.
+    public const int MinNetworkTagSecretLength = 32;
+
+    // Keys the network tag. Required outside Development and Testing, at least MinNetworkTagSecretLength
+    // characters (StartupConfigurationValidator).
     public string NetworkTagSecret { get; init; } = string.Empty;
 
     // The research note (docs/research/anonymous-vote-stuffing-prior-art.md:57-61) finds no source for a

@@ -6,6 +6,11 @@ namespace Bifrost.Web.Features.ConceptVotes;
 
 public static class NetworkPrefix
 {
+    public const int IPv4Bits = 32;
+    public const int IPv6Bits = 128;
+
+    public static bool IsValidLength(int length, int addressBits) => length >= 0 && length <= addressBits;
+
     // The only prefix computation: IPv4-mapped IPv6 folds to IPv4, then the address is masked. Returns CIDR text.
     public static string Of(IPAddress address, int ipv4Length, int ipv6Length)
     {
@@ -16,7 +21,7 @@ public static class NetworkPrefix
 
         var bytes = address.GetAddressBytes();
         var length = bytes.Length == 4 ? ipv4Length : ipv6Length;
-        if (length < 0 || length > bytes.Length * 8)
+        if (!IsValidLength(length, bytes.Length * 8))
         {
             throw new ArgumentOutOfRangeException(nameof(ipv4Length), "Prefix length is outside the address family.");
         }

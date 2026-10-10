@@ -157,6 +157,34 @@ public sealed class HostTrustTests : IClassFixture<TestWebApplicationFactory>
         Assert.DoesNotContain("DataProtection:KeysPath", refusal.Message);
     }
 
+    [Theory]
+    [InlineData("short-secret")]
+    [InlineData("0123456789012345678901234567890")]
+    public void Production_refuses_a_short_network_tag_secret_without_echoing_it(string secret)
+    {
+        var refusal = Assert.Throws<InvalidOperationException>(
+            () => Validate(keysPath: "/keys", tagSecret: secret));
+
+        Assert.Contains("ConceptVotes:NetworkTagSecret", refusal.Message);
+        Assert.DoesNotContain(secret, refusal.Message);
+        Validate(keysPath: "/keys", tagSecret: "01234567890123456789012345678901");
+    }
+
+    [Theory]
+    [InlineData(33, 56, "ConceptVotes:IPv4PrefixLength")]
+    [InlineData(-1, 56, "ConceptVotes:IPv4PrefixLength")]
+    [InlineData(32, 129, "ConceptVotes:IPv6PrefixLength")]
+    [InlineData(32, -1, "ConceptVotes:IPv6PrefixLength")]
+    public void Production_refuses_prefix_lengths_outside_the_address_family(int v4, int v6, string key)
+    {
+        var refusal = Assert.Throws<InvalidOperationException>(
+            () => Validate(keysPath: "/keys", ipv4Length: v4, ipv6Length: v6));
+
+        Assert.Contains(key, refusal.Message);
+        Validate(keysPath: "/keys", ipv4Length: 32, ipv6Length: 128);
+        Validate(keysPath: "/keys", ipv4Length: 0, ipv6Length: 0);
+    }
+
     [Fact]
     public void Development_does_not_require_keys_path_or_tag_secret()
     {
@@ -208,18 +236,21 @@ public sealed class HostTrustTests : IClassFixture<TestWebApplicationFactory>
         }
     }
 
+    private const string ValidTagSecret = "tag-secret-0123456789-0123456789-abcdef";
+
     private static void Validate(
         string? keysPath,
         string environment = "Production",
         string? connectionString = "Host=db",
-        string? tagSecret = "tag-secret")
+        string? tagSecret = ValidTagSecret,
+        int ipv4Length = 32,
+        int ipv6Length = 56)
     {
         var values = new Dictionary<string, string?>
         {
             ["AllowedHosts"] = "bifrost.example",
             ["ConnectionStrings:Bifrost"] = connectionString,
             ["DataProtection:KeysPath"] = keysPath,
-            ["ConceptVotes:NetworkTagSecret"] = tagSecret
         };
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(values).Build();
         var hostEnvironment = new StubHostEnvironment(environment);
@@ -235,6 +266,12 @@ public sealed class HostTrustTests : IClassFixture<TestWebApplicationFactory>
             {
                 PublicBaseUrl = "https://bifrost.example",
                 ExpectedHost = "bifrost.example"
+            }),
+            Options.Create(new ConceptVoteOptions
+            {
+                NetworkTagSecret = tagSecret ?? string.Empty,
+                IPv4PrefixLength = ipv4Length,
+                IPv6PrefixLength = ipv6Length
             })).Validate();
     }
 
