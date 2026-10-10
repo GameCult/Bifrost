@@ -91,8 +91,7 @@ public sealed class ConceptAppraisalServiceTests
     {
         await using var f = new Fixture();
         await f.AddSubject("ship-a");
-        var member = f.Account(MembershipStatus.Active);
-        member.UserAccount!.Membership!.TierSnapshots.Add(new TierSnapshot { Weight = 5m, IsCurrent = true });
+        var member = f.Account(MembershipStatus.Active, weight: 5m);
         Assert.Equal(5m, member.EffectiveVotingWeight);
 
         await f.Cast("ship-a", VoterIdentity.For(member, null), ConceptStance.Up);
@@ -268,7 +267,7 @@ public sealed class ConceptAppraisalServiceTests
         Assert.Equal(1, removed);
         Assert.Equal(
             ["device:device-late", "device:device-other-net"],
-            f.Db.ConceptAppraisals.Select(x => x.VoterKey).Order().ToArray());
+            f.Db.ConceptAppraisals.Select(x => x.VoterKey).ToList().Order().ToArray());
         var audit = Assert.Single(f.Db.AuditEvents);
         Assert.Equal("ConceptAppraisal", audit.EntityType);
         Assert.Equal("Purge", audit.Action);
@@ -369,7 +368,7 @@ public sealed class ConceptAppraisalServiceTests
         public VoterIdentity Anonymous(string deviceId) =>
             VoterIdentity.For(CurrentBifrostActor.Anonymous, deviceId)!;
 
-        public CurrentBifrostActor Account(MembershipStatus status)
+        public CurrentBifrostActor Account(MembershipStatus status, decimal weight = 0m, bool admin = false)
         {
             var user = new UserAccount
             {
@@ -383,8 +382,14 @@ public sealed class ConceptAppraisalServiceTests
             {
                 UserAccountId = user.Id,
                 Status = status,
+                IsPlatformAdmin = admin,
                 CreatedAtUtc = Clock.GetUtcNow()
             };
+            if (weight > 0m)
+            {
+                user.Membership.TierSnapshots.Add(new TierSnapshot { Weight = weight, IsCurrent = true });
+            }
+
             Db.UserAccounts.Add(user);
             Db.SaveChanges();
             return new CurrentBifrostActor(true, user);
@@ -392,9 +397,7 @@ public sealed class ConceptAppraisalServiceTests
 
         public CurrentBifrostActor Admin()
         {
-            var actor = Account(MembershipStatus.Active);
-            actor.UserAccount!.Membership!.IsPlatformAdmin = true;
-            return actor;
+            return Account(MembershipStatus.Active, admin: true);
         }
 
         public ValueTask DisposeAsync() => Db.DisposeAsync();
