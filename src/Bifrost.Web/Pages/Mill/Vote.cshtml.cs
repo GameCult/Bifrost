@@ -28,7 +28,7 @@ public sealed class VoteModel(
     // The single gate before any handler runs. A request that selects no handler (a POST with no or an unknown handler,
     // any other method) is a client error, never a view over a null subject. A cast is accepted only from the site's own
     // origin (CastRequestGuard); no antiforgery cookie or token exists on this flow.
-    public override void OnPageHandlerSelected(PageHandlerSelectedContext context)
+    public override async Task OnPageHandlerExecutionAsync(PageHandlerExecutingContext context, PageHandlerExecutionDelegate next)
     {
         var method = context.HttpContext.Request.Method;
         if (context.HandlerMethod is null)
@@ -43,7 +43,10 @@ public sealed class VoteModel(
         if (HttpMethods.IsPost(method) && !CastRequestGuard.Allows(context.HttpContext.Request, host.Value))
         {
             context.Result = new StatusCodeResult(StatusCodes.Status403Forbidden);
+            return;
         }
+
+        await next();
     }
 
     public async Task<IActionResult> OnGetAsync(string collection, string key, CancellationToken cancellationToken)
