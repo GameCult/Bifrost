@@ -13,7 +13,6 @@ RUN dotnet publish src/Bifrost.Web/Bifrost.Web.csproj \
 FROM mcr.microsoft.com/dotnet/aspnet:8.0-bookworm-slim AS runtime
 WORKDIR /app
 ENV ASPNETCORE_URLS=http://0.0.0.0:5080 \
-    ASPNETCORE_FORWARDEDHEADERS_ENABLED=true \
     DOTNET_RUNNING_IN_CONTAINER=true
 
 EXPOSE 5080

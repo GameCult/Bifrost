@@ -66,6 +66,11 @@ public sealed class StartupConfigurationValidator(
             failures.Add("Connection string 'Bifrost' must be configured.");
         }
 
+        if (string.IsNullOrWhiteSpace(configuration["DataProtection:KeysPath"]))
+        {
+            failures.Add("DataProtection:KeysPath must be configured for production.");
+        }
+
         if (failures.Count > 0)
         {
             throw new InvalidOperationException(
