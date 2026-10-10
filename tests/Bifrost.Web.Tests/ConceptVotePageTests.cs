@@ -165,6 +165,24 @@ public sealed partial class ConceptVotePageTests : IClassFixture<TestWebApplicat
         Assert.Empty(await Rows(collection, "alpha"));
     }
 
+    [Fact]
+    public async Task Cast_with_the_origin_header_repeated_is_refused_even_when_every_value_is_the_sites()
+    {
+        var collection = NewCollection();
+        await AddSubject(collection, "alpha");
+        var visitor = NewVisitor(anonymous: true);
+        var request = new HttpRequestMessage(HttpMethod.Post, $"/mill/{collection}/alpha?handler=Up")
+        {
+            Content = new FormUrlEncodedContent([])
+        };
+        request.Headers.TryAddWithoutValidation("Origin", [SiteOrigin, SiteOrigin]);
+
+        using var response = await visitor.Send(request);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Empty(await Rows(collection, "alpha"));
+    }
+
     [Theory]
     [InlineData("same-origin", true)]
     [InlineData("same-site", false)]
@@ -247,6 +265,12 @@ public sealed partial class ConceptVotePageTests : IClassFixture<TestWebApplicat
         using var getBogus = await visitor.Send(new HttpRequestMessage(HttpMethod.Get, $"/mill/{collection}/alpha?handler=CANARYQ9"));
         using var getUp = await visitor.Send(new HttpRequestMessage(HttpMethod.Get, $"/mill/{collection}/alpha?handler=Up"));
 
+        Assert.Equal(HttpStatusCode.BadRequest, noHandler.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, bogus.StatusCode);
+        Assert.Equal(HttpStatusCode.MethodNotAllowed, put.StatusCode);
+        Assert.Equal(HttpStatusCode.MethodNotAllowed, delete.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, getBogus.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, getUp.StatusCode);
         foreach (var response in new[] { noHandler, bogus, put, delete, getBogus, getUp })
         {
             var status = (int)response.StatusCode;
