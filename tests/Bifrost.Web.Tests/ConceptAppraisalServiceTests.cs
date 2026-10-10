@@ -63,6 +63,32 @@ public sealed class ConceptAppraisalServiceTests
     }
 
     [Fact]
+    public async Task A_changed_stance_is_saved_and_read_back_through_a_fresh_context()
+    {
+        var dbName = $"concept-{Guid.NewGuid():N}";
+        await using var first = new Fixture(dbName);
+        await first.AddSubject("ship-a");
+        Assert.Equal(CastResult.Recorded, await first.Cast("ship-a", first.Anonymous("device-one"), ConceptStance.Up));
+        var other = IPAddress.Parse("198.51.100.9");
+
+        // Production scopes one DbContext per request: the recast gets a context that has never tracked the row.
+        await using (var second = new Fixture(dbName))
+        {
+            second.Clock.Advance(TimeSpan.FromMinutes(5));
+            Assert.Equal(
+                CastResult.Changed,
+                await second.Cast("ship-a", second.Anonymous("device-one"), ConceptStance.Down, other));
+        }
+
+        await using var reader = new Fixture(dbName);
+        var row = Assert.Single(reader.Db.ConceptAppraisals);
+        Assert.Equal(ConceptStance.Down, row.Stance);
+        Assert.Equal(NetworkPrefix.Tag(other, 32, 56, Fixture.Secret), row.NetworkTag);
+        Assert.Equal(new DateTimeOffset(2026, 10, 10, 12, 5, 0, TimeSpan.Zero), row.CastAtUtc);
+        Assert.Equal(new ConceptTally(0, 1, new StanceCounts(0, 0)), (await reader.Service.GetTalliesAsync(Collection, default))["ship-a"]);
+    }
+
+    [Fact]
     public async Task Voter_class_is_stamped_at_cast()
     {
         await using var f = new Fixture();
