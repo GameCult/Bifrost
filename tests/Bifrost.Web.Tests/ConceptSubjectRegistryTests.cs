@@ -152,7 +152,7 @@ public sealed class ConceptSubjectRegistryTests
 
         Assert.Equal(
             [("bison", SubjectChange.Unchanged), ("ibis-mk2", SubjectChange.Retired), ("kestrel", SubjectChange.Retired)],
-            second.Entries.OrderBy(e => e.Key, StringComparer.Ordinal).Select(e => (e.Key, e.Change)));
+            second.Entries.Select(e => (e.Key, e.Change)));
         Assert.Equal(audits, await world.Fresh(db => db.AuditEvents.CountAsync()));
         var after = await world.Fresh(db => db.ConceptSubjects.AsNoTracking().OrderBy(x => x.Key).ToListAsync());
         Assert.Equal(before.Select(x => (x.Id, x.Title, x.RetiredAtUtc)), after.Select(x => (x.Id, x.Title, x.RetiredAtUtc)));
