@@ -158,13 +158,14 @@ public sealed class ConceptAppraisalService(
             .ToListAsync(cancellationToken);
         dbContext.ConceptAppraisals.RemoveRange(rows);
 
-        // The audit write saves the removals in the same SaveChanges. Tag, window and count only; no voter keys.
+        // The audit write saves the removals in the same SaveChanges. The member dashboard renders Detail, so it
+        // carries the window and count only: no network tag and no voter keys. The actor and window audit the purge.
         await auditTrail.RecordAsync(
             actor.UserAccount.Id,
             nameof(ConceptAppraisal),
             Guid.Empty,
             "Purge",
-            $"tag={networkTag} from={fromUtc:O} to={toUtc:O} count={rows.Count}",
+            $"from={fromUtc:O} to={toUtc:O} count={rows.Count}",
             cancellationToken);
         return rows.Count;
     }

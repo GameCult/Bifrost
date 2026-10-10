@@ -290,7 +290,10 @@ public sealed class ConceptAppraisalServiceTests
         var audit = Assert.Single(f.Db.AuditEvents);
         Assert.Equal("ConceptAppraisal", audit.EntityType);
         Assert.Equal("Purge", audit.Action);
-        Assert.Contains(tag, audit.Detail);
+        Assert.DoesNotContain(tag, audit.Detail);
+        Assert.DoesNotContain("tag", audit.Detail);
+        Assert.Equal(admin.UserAccount!.Id, audit.ActorUserAccountId);
+        Assert.Contains("from=" + t0.ToString("O"), audit.Detail);
         Assert.Contains("count=1", audit.Detail);
         Assert.DoesNotContain("device", audit.Detail);
 
