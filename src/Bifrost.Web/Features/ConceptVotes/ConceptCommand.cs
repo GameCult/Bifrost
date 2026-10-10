@@ -23,17 +23,7 @@ public static class ConceptCommand
         string[] retire = hasRetire ? args[4].Split(',', StringSplitOptions.RemoveEmptyEntries) : [];
         try
         {
-            string json;
-            try
-            {
-                json = await File.ReadAllTextAsync(args[2]);
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                throw new ManifestRefusedException("manifest", "Unreadable");
-            }
-
-            var ships = ConceptSubjectRegistry.ParseManifest(json);
+            var ships = ConceptSubjectRegistry.ParseManifest(await ReadManifestAsync(args[2]));
             await using var scope = services.CreateAsyncScope();
             var registry = scope.ServiceProvider.GetRequiredService<ConceptSubjectRegistry>();
             var plan = args[0] == "apply"
@@ -51,6 +41,18 @@ public static class ConceptCommand
         {
             await output.WriteLineAsync($"refused {ex.Field} {ex.Code}");
             return Refused;
+        }
+    }
+
+    private static async Task<string> ReadManifestAsync(string path)
+    {
+        try
+        {
+            return await File.ReadAllTextAsync(path);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            throw new ManifestRefusedException("manifest", "Unreadable");
         }
     }
 }

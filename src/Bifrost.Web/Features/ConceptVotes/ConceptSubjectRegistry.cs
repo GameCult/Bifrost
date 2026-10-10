@@ -42,56 +42,64 @@ public sealed class ConceptSubjectRegistry(
     // The Mill manifest is JSON from outside the Verse. Only ships[].id and ships[].name are read.
     public static IReadOnlyList<ManifestShip> ParseManifest(string json)
     {
-        JsonDocument document;
+        using var document = ParseDocument(json);
+        if (document.RootElement.ValueKind != JsonValueKind.Object)
+        {
+            throw new ManifestRefusedException("ships", "Missing");
+        }
+
+        if (!document.RootElement.TryGetProperty("ships", out var ships))
+        {
+            throw new ManifestRefusedException("ships", "Missing");
+        }
+
+        if (ships.ValueKind != JsonValueKind.Array)
+        {
+            throw new ManifestRefusedException("ships", "Missing");
+        }
+
+        var result = new List<ManifestShip>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var ship in ships.EnumerateArray())
+        {
+            var at = $"ships[{result.Count}]";
+            var key = ReadString(ship, "id", at);
+            var title = ReadString(ship, "name", at);
+            if (!ConceptKey.IsValid(key))
+            {
+                throw new ManifestRefusedException($"{at}.id", "InvalidKey");
+            }
+
+            if (!seen.Add(key))
+            {
+                throw new ManifestRefusedException($"{at}.id", "Duplicate");
+            }
+
+            if (string.IsNullOrWhiteSpace(title) || title.Any(char.IsControl))
+            {
+                throw new ManifestRefusedException($"{at}.name", "InvalidTitle");
+            }
+
+            if (title.Length > MaxTitleLength)
+            {
+                throw new ManifestRefusedException($"{at}.name", "TooLong");
+            }
+
+            result.Add(new ManifestShip(key, title));
+        }
+
+        return result;
+    }
+
+    private static JsonDocument ParseDocument(string json)
+    {
         try
         {
-            document = JsonDocument.Parse(json);
+            return JsonDocument.Parse(json);
         }
         catch (JsonException)
         {
             throw new ManifestRefusedException("manifest", "NotJson");
-        }
-
-        using (document)
-        {
-            if (document.RootElement.ValueKind != JsonValueKind.Object ||
-                !document.RootElement.TryGetProperty("ships", out var ships) ||
-                ships.ValueKind != JsonValueKind.Array)
-            {
-                throw new ManifestRefusedException("ships", "Missing");
-            }
-
-            var result = new List<ManifestShip>();
-            var seen = new HashSet<string>(StringComparer.Ordinal);
-            foreach (var ship in ships.EnumerateArray())
-            {
-                var at = $"ships[{result.Count}]";
-                var key = ReadString(ship, "id", at);
-                var title = ReadString(ship, "name", at);
-                if (!ConceptKey.IsValid(key))
-                {
-                    throw new ManifestRefusedException($"{at}.id", "InvalidKey");
-                }
-
-                if (!seen.Add(key))
-                {
-                    throw new ManifestRefusedException($"{at}.id", "Duplicate");
-                }
-
-                if (string.IsNullOrWhiteSpace(title) || title.Any(char.IsControl))
-                {
-                    throw new ManifestRefusedException($"{at}.name", "InvalidTitle");
-                }
-
-                if (title.Length > MaxTitleLength)
-                {
-                    throw new ManifestRefusedException($"{at}.name", "TooLong");
-                }
-
-                result.Add(new ManifestShip(key, title));
-            }
-
-            return result;
         }
     }
 
@@ -213,7 +221,12 @@ public sealed class ConceptSubjectRegistry(
 
     private static string ReadString(JsonElement ship, string name, string at)
     {
-        if (ship.ValueKind != JsonValueKind.Object || !ship.TryGetProperty(name, out var value))
+        if (ship.ValueKind != JsonValueKind.Object)
+        {
+            throw new ManifestRefusedException($"{at}.{name}", "Missing");
+        }
+
+        if (!ship.TryGetProperty(name, out var value))
         {
             throw new ManifestRefusedException($"{at}.{name}", "Missing");
         }
