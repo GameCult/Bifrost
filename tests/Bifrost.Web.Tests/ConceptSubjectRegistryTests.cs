@@ -246,27 +246,27 @@ public sealed class ConceptSubjectRegistryTests
     private static readonly JsonSerializerOptions Raw = new() { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
 
     [Theory]
-    [InlineData("‮evil")]
-    [InlineData("a‪b")]
-    [InlineData("a⁦b")]
-    [InlineData("a⁩b")]
-    [InlineData("a؜b")]
-    [InlineData("a‎b")]
-    [InlineData("a‏b")]
-    [InlineData("a b")]
-    [InlineData("a b")]
-    [InlineData("a​b")]
-    [InlineData("a‌b")]
-    [InlineData("a‍b")]
-    [InlineData("a⁠b")]
-    [InlineData("a﻿b")]
+    [InlineData("\u202Eevil")]
+    [InlineData("a\u202Ab")]
+    [InlineData("a\u2066b")]
+    [InlineData("a\u2069b")]
+    [InlineData("a\u061Cb")]
+    [InlineData("a\u200Eb")]
+    [InlineData("a\u200Fb")]
+    [InlineData("a\u2028b")]
+    [InlineData("a\u2029b")]
+    [InlineData("a\u200Bb")]
+    [InlineData("a\u200Cb")]
+    [InlineData("a\u200Db")]
+    [InlineData("a\u2060b")]
+    [InlineData("a\uFEFFb")]
     [InlineData("a\u0085b")]
     [InlineData("a\tb")]
     [InlineData(" Ibis")]
     [InlineData("Ibis ")]
-    [InlineData(" Ibis")]
-    [InlineData("Ibis ")]
-    [InlineData("　Ibis")]
+    [InlineData("\u00A0Ibis")]
+    [InlineData("Ibis\u00A0")]
+    [InlineData("\u3000Ibis")]
     [InlineData("!!!")]
     public void A_title_with_a_format_character_edge_whitespace_or_no_letter_is_refused(string title)
     {
@@ -543,7 +543,7 @@ public sealed class ConceptSubjectRegistryTests
         var big = Path.Combine(world.Dir, "CANARYBIG.json");
         await File.WriteAllBytesAsync(big, new byte[ConceptSubjectRegistry.MaxManifestBytes + 1]);
         var bidi = Path.Combine(world.Dir, "CANARYBIDI.json");
-        await File.WriteAllTextAsync(bidi, """{"ships":[{"id":"a","name":"CANARYTITLE‮"}]}""");
+        await File.WriteAllTextAsync(bidi, """{"ships":[{"id":"a","name":"CANARYTITLE\u202E"}]}""");
         var dup = Path.Combine(world.Dir, "CANARYDUP.json");
         await File.WriteAllTextAsync(dup, """{"ships":[{"id":"CANARYID","id":"b","name":"A"}]}""");
         var surrogate = Path.Combine(world.Dir, "CANARYSURR.json");
