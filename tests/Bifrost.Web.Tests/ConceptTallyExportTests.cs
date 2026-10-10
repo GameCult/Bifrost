@@ -5,6 +5,7 @@ using Bifrost.Web.Domain;
 using Bifrost.Web.Features.ConceptVotes;
 using Bifrost.Web.Features.Shared;
 using Bifrost.Web.Tests.Support;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -137,6 +138,51 @@ public sealed class ConceptTallyExportTests : IClassFixture<ConceptTallyExportTe
         Assert.False(response.Headers.Contains("Access-Control-Allow-Origin"));
         Assert.False(preflight.Headers.Contains("Access-Control-Allow-Origin"));
     }
+
+    [Fact]
+    public async Task Every_export_response_varies_by_origin()
+    {
+        var collection = NewCollection();
+        await AddSubject(collection, "alpha");
+
+        using var allowed = await Get(collection, AllowedOrigin);
+        using var lookalike = await Get(collection, "https://aetheria.gamecult.org.evil.example");
+        using var noOrigin = await Get(collection);
+        using var unknownAllowed = await Get(NewCollection(), AllowedOrigin);
+        using var unknownNoOrigin = await Get(NewCollection());
+        using var preflightAllowed = await Preflight(collection, AllowedOrigin, "GET");
+        using var preflightLookalike = await Preflight(collection, "https://evil.example", "GET");
+        using var preflightPost = await Preflight(collection, AllowedOrigin, "POST");
+
+        Assert.Equal(HttpStatusCode.OK, allowed.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, lookalike.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, noOrigin.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, unknownAllowed.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, unknownNoOrigin.StatusCode);
+        foreach (var response in new[] { allowed, lookalike, noOrigin, unknownAllowed, unknownNoOrigin, preflightAllowed, preflightLookalike, preflightPost })
+        {
+            Assert.Contains("Origin", VaryTokens(response));
+        }
+    }
+
+    [Fact]
+    public async Task Origin_is_added_to_an_existing_vary_and_not_repeated()
+    {
+        var collection = NewCollection();
+        await AddSubject(collection, "alpha");
+        using var client = _factory.CreateClient();
+        using var request = new HttpRequestMessage(HttpMethod.Get, $"/public/concepts/{collection}/tallies");
+        request.Headers.Add("X-Test-Anonymous", "true");
+        request.Headers.Add("X-Test-Vary", "Accept-Encoding");
+        request.Headers.TryAddWithoutValidation("Origin", AllowedOrigin);
+
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(["Accept-Encoding", "Origin"], VaryTokens(response).Order().ToArray());
+    }
+
+    private static string[] VaryTokens(HttpResponseMessage response) =>
+        response.Headers.Vary.ToArray();
 
     [Fact]
     public async Task Other_routes_carry_no_cors_headers()
@@ -302,11 +348,30 @@ public sealed class ConceptTallyExportTests : IClassFixture<ConceptTallyExportTe
         Assert.Equal(CastResult.Recorded, result);
     }
 
+    // Stands in for any earlier middleware that already set a Vary: a request header names the value to preset.
+    private sealed class PriorVaryFilter : IStartupFilter
+    {
+        public Action<IApplicationBuilder> Configure(Action<IApplicationBuilder> next) => app =>
+        {
+            app.Use((context, nextMiddleware) =>
+            {
+                if (context.Request.Headers.TryGetValue("X-Test-Vary", out var prior))
+                {
+                    context.Response.Headers.Vary = prior;
+                }
+
+                return nextMiddleware(context);
+            });
+            next(app);
+        };
+    }
+
     public sealed class ExportFactory : TestWebApplicationFactory
     {
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
             base.ConfigureWebHost(builder);
+            builder.ConfigureServices(services => services.AddTransient<IStartupFilter, PriorVaryFilter>());
             builder.ConfigureAppConfiguration((_, configuration) =>
                 configuration.AddInMemoryCollection(new Dictionary<string, string?>
                 {

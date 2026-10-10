@@ -230,7 +230,7 @@ app.UseHttpLogging();
 app.UseHttpsRedirection();
 app.UseStaticFiles();
 app.UseRouting();
-app.UseCors();
+app.UseConceptTallyCors();
 app.UseAuthentication();
 app.UseMiddleware<GitHubMembershipSynchronizationMiddleware>();
 app.UseAuthorization();
