@@ -18,7 +18,7 @@ public static class CastRequestGuard
         }
 
         var origin = request.Headers.Origin;
-        if (origin.Count > 0)
+        if (request.Headers.ContainsKey("Origin"))
         {
             return origin.Count == 1 && string.Equals(origin[0], site.GetLeftPart(UriPartial.Authority), StringComparison.Ordinal);
         }

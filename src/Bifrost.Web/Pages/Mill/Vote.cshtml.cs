@@ -12,6 +12,7 @@ namespace Bifrost.Web.Pages.Mill;
 // The anonymous vote page. Counts and the visitor's own stance come from ConceptAppraisalService on every GET; the
 // voter key is decided by VoterIdentity.For from the actor and the device id VoterKeyResolver reads.
 [IgnoreAntiforgeryToken]
+[ResponseCache(NoStore = true, Location = ResponseCacheLocation.None)]
 public sealed class VoteModel(
     ICurrentBifrostActorAccessor actorAccessor,
     ConceptAppraisalService appraisals,
@@ -37,6 +38,14 @@ public sealed class VoteModel(
                 HttpMethods.IsGet(method) || HttpMethods.IsHead(method) || HttpMethods.IsPost(method)
                     ? StatusCodes.Status400BadRequest
                     : StatusCodes.Status405MethodNotAllowed);
+            return;
+        }
+
+        // The handler the request names must be the handler selected: GET ?handler=Up has no OnGetUp to run.
+        var named = context.HttpContext.Request.Query["handler"].ToString();
+        if (string.IsNullOrEmpty(named) != string.IsNullOrEmpty(context.HandlerMethod.Name))
+        {
+            context.Result = new StatusCodeResult(StatusCodes.Status400BadRequest);
             return;
         }
 
