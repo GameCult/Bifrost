@@ -109,6 +109,53 @@ public sealed class HeimdallAuthService(
             new Uri(payload.AuthorizationUrl, UriKind.Absolute), HeimdallAttemptCookie.NameFor(nonce)!, Protect(attempt));
     }
 
+    /// <summary>
+    /// The attempt cookies Start must delete so the Cookie header the browser sends to /auth/heimdall stays under
+    /// the proxy's header limit: every request cookie that is no live attempt, then the live attempts that expire
+    /// first until the new attempt and the survivors fit <see cref="HeimdallAttemptCookie.MaxAggregateBytes"/>.
+    /// The new attempt is always kept.
+    /// </summary>
+    public IReadOnlyList<string> SupersededAttemptCookies(
+        IEnumerable<KeyValuePair<string, string>> requestCookies,
+        HeimdallAuthStartResult start)
+    {
+        var used = HeimdallAttemptCookie.EntrySize(start.CookieName, start.CookieValue);
+        var superseded = new List<string>();
+        var live = new List<(string Name, int Size, DateTimeOffset ExpiresAt)>();
+        foreach (var (name, value) in requestCookies)
+        {
+            if (!name.StartsWith(HeimdallAttemptCookie.Prefix, StringComparison.Ordinal) ||
+                string.Equals(name, start.CookieName, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var attempt = Unprotect(value, name[HeimdallAttemptCookie.Prefix.Length..]);
+            if (attempt is null)
+            {
+                superseded.Add(name);
+            }
+            else
+            {
+                live.Add((name, HeimdallAttemptCookie.EntrySize(name, value), attempt.ExpiresAt));
+            }
+        }
+
+        foreach (var cookie in live.OrderByDescending(x => x.ExpiresAt))
+        {
+            if (used + cookie.Size <= HeimdallAttemptCookie.MaxAggregateBytes)
+            {
+                used += cookie.Size;
+            }
+            else
+            {
+                superseded.Add(cookie.Name);
+            }
+        }
+
+        return superseded;
+    }
+
     public async Task<HeimdallCompletedSignIn> CompleteAsync(
         string callbackBaseUrl,
         string? nonce,
@@ -404,6 +451,15 @@ public static class HeimdallAttemptCookie
     public const int NonceLength = 43;
 
     public static readonly TimeSpan Lifetime = TimeSpan.FromMinutes(10);
+
+    /// <summary>
+    /// The most bytes of attempt cookies a browser may hold at once. One worst-case cookie is about 2.4 KB, and
+    /// the Cookie header must stay under nginx's 8 KB with room for the session and antiforgery cookies.
+    /// </summary>
+    public const int MaxAggregateBytes = 5120;
+
+    /// <summary>A cookie's bytes in a Cookie header: name, '=', value and the '; ' separator.</summary>
+    public static int EntrySize(string name, string value) => name.Length + 1 + value.Length + 2;
 
     public static string? NameFor(string? nonce) =>
         nonce is { Length: NonceLength } && nonce.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_')

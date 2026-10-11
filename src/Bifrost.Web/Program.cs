@@ -380,6 +380,11 @@ app.MapGet("/auth/heimdall/{provider}", async (
             requireMemberAccess,
             cancellationToken);
 
+        foreach (var superseded in heimdallAuthService.SupersededAttemptCookies(httpContext.Request.Cookies, start))
+        {
+            httpContext.Response.Cookies.Delete(superseded, HeimdallAttemptCookie.DeleteOptions());
+        }
+
         httpContext.Response.Cookies.Append(start.CookieName, start.CookieValue, HeimdallAttemptCookie.Options());
         return Results.Redirect(start.AuthorizationUrl.ToString());
     }

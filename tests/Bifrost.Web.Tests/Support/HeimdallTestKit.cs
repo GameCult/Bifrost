@@ -418,15 +418,23 @@ public sealed class HeimdallHost : TestWebApplicationFactory
         Action<Dictionary<string, object?>>? mutate = null, HeimdallKey? signer = null) =>
         (signer ?? Key).Sign(HeimdallShapes.AccessClaims(accountId, Clock.Now, capabilities, displayName, mutate));
 
-    public Task<StartedAttempt> StartAsync(bool member = false, string provider = "discord", string returnUrl = "/App/Mill") =>
+    public Task<StartedAttempt> StartAsync(
+        bool member = false, string provider = "discord", string returnUrl = "/App/Mill", string? cookieHeader = null) =>
         StartAtAsync(
-            $"/auth/heimdall/{provider}?returnUrl={Uri.EscapeDataString(returnUrl)}" + (member ? "&access=member" : string.Empty));
+            $"/auth/heimdall/{provider}?returnUrl={Uri.EscapeDataString(returnUrl)}" + (member ? "&access=member" : string.Empty),
+            cookieHeader);
 
-    public async Task<StartedAttempt> StartAtAsync(string url)
+    public async Task<StartedAttempt> StartAtAsync(string url, string? cookieHeader = null)
     {
         using var client = NewClient();
         var before = Heimdall.StartBodies.Count;
-        var response = await client.GetAsync(url);
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        if (cookieHeader is not null)
+        {
+            request.Headers.Add("Cookie", cookieHeader);
+        }
+
+        var response = await client.SendAsync(request);
         if (Heimdall.StartBodies.Count == before)
         {
             return new StartedAttempt(string.Empty, null, string.Empty, response);
