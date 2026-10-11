@@ -347,6 +347,7 @@ public sealed class HeimdallHost : TestWebApplicationFactory
     public const string AppSecret = "test-heimdall-app-secret";
 
     private readonly string _appSecret;
+    private readonly string _appSlug;
     private readonly string _baseUrl;
     private readonly string _publicBaseUrl;
     private readonly bool _discordRoles;
@@ -363,9 +364,11 @@ public sealed class HeimdallHost : TestWebApplicationFactory
         string appSecret = AppSecret,
         string baseUrl = HeimdallShapes.Issuer,
         string publicBaseUrl = "https://localhost",
-        bool discordRoles = true)
+        bool discordRoles = true,
+        string appSlug = "bifrost")
     {
         _appSecret = appSecret;
+        _appSlug = appSlug;
         _baseUrl = baseUrl;
         _publicBaseUrl = publicBaseUrl;
         _discordRoles = discordRoles;
@@ -385,6 +388,7 @@ public sealed class HeimdallHost : TestWebApplicationFactory
             {
                 ["Heimdall:BaseUrl"] = _baseUrl,
                 ["Heimdall:AppSecret"] = _appSecret,
+                ["Heimdall:AppSlug"] = _appSlug,
                 ["Heimdall:DiscordGuildId"] = "guild-1",
                 ["Host:PublicBaseUrl"] = _publicBaseUrl
             });

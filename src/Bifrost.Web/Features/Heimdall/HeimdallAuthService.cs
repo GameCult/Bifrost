@@ -418,4 +418,16 @@ public static class HeimdallAttemptCookie
         Path = "/auth/heimdall",
         MaxAge = Lifetime
     };
+
+    /// <summary>
+    /// The options a deletion carries: the attempt cookie's Path, which a cookie is matched on, and no Max-Age,
+    /// which would take precedence over the expiry Delete writes and leave the emptied cookie alive.
+    /// </summary>
+    public static CookieOptions DeleteOptions() => new()
+    {
+        HttpOnly = true,
+        Secure = true,
+        SameSite = SameSiteMode.Lax,
+        Path = "/auth/heimdall"
+    };
 }

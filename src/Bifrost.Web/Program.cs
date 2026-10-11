@@ -125,7 +125,8 @@ builder.Services.AddScoped<ApplicationBootstrapper>();
 builder.Services.AddSingleton<StartupConfigurationValidator>();
 builder.Services.AddScoped<IAuthorizationHandler, ActiveMemberAuthorizationHandler>();
 builder.Services.AddHttpClient<HeimdallAuthService>((serviceProvider, client) =>
-    HeimdallAuthService.ConfigureClient(client, serviceProvider.GetRequiredService<IOptions<HeimdallOptions>>().Value));
+    HeimdallAuthService.ConfigureClient(client, serviceProvider.GetRequiredService<IOptions<HeimdallOptions>>().Value))
+    .RedactLoggedHeaders(header => string.Equals(header, HeimdallAuthService.AppSecretHeader, StringComparison.OrdinalIgnoreCase));
 builder.Services.AddSingleton<HeimdallTokenVerifier>();
 builder.Services.AddHttpClient(HeimdallTokenVerifier.ClientName, (serviceProvider, client) =>
     HeimdallTokenVerifier.ConfigureClient(client, serviceProvider.GetRequiredService<IOptions<HeimdallOptions>>().Value));
@@ -537,7 +538,7 @@ app.MapPost("/auth/heimdall/complete", async (
             form?["code"].ToString(),
             cancellationToken);
         await httpContext.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, signIn.Principal);
-        httpContext.Response.Cookies.Delete(cookieName!, HeimdallAttemptCookie.Options());
+        httpContext.Response.Cookies.Delete(cookieName!, HeimdallAttemptCookie.DeleteOptions());
         return Results.LocalRedirect(signIn.ReturnPath.Value);
     }
     catch (HeimdallAuthException error)
@@ -545,7 +546,7 @@ app.MapPost("/auth/heimdall/complete", async (
         logger.LogWarning("Heimdall completion refused: {Reason}", error.Message);
         if (cookieName is not null)
         {
-            httpContext.Response.Cookies.Delete(cookieName, HeimdallAttemptCookie.Options());
+            httpContext.Response.Cookies.Delete(cookieName, HeimdallAttemptCookie.DeleteOptions());
         }
 
         return Results.Redirect(HeimdallAuthService.ErrorRedirect);

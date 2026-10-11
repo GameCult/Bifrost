@@ -4,10 +4,14 @@ using System.Text.Json;
 using Bifrost.Web.Domain;
 using Bifrost.Web.Features.Heimdall;
 using Bifrost.Web.Features.Membership;
+using Bifrost.Web.Features.Shared;
 using Bifrost.Web.Tests.Support;
 using Microsoft.AspNetCore.Authentication.OAuth;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace Bifrost.Web.Tests;
@@ -1138,5 +1142,110 @@ public sealed class HeimdallCompletionTests
         {
             Assert.DoesNotContain(canary, logs);
         }
+    }
+
+    [Fact]
+    public async Task The_app_secret_reaches_Heimdall_but_is_never_logged_even_at_trace()
+    {
+        const string canary = "CANARY-app-secret-7c1e";
+        using var host = new HeimdallHost(appSecret: canary);
+        host.Heimdall.RequiredAppSecret = canary;
+        using var traced = host.WithWebHostBuilder(builder => builder.ConfigureLogging(logging =>
+        {
+            logging.SetMinimumLevel(LogLevel.Trace);
+            logging.AddFilter((string? _, LogLevel _) => true);
+            logging.AddFilter("System.Net.Http", LogLevel.Trace);
+            logging.AddFilter("Microsoft", LogLevel.Trace);
+        }));
+        using var client = traced.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false,
+            HandleCookies = false,
+            BaseAddress = new Uri("https://localhost")
+        });
+
+        using var start = await client.GetAsync("/auth/heimdall/discord?access=member&returnUrl=/App");
+
+        Assert.Equal(HttpStatusCode.Redirect, start.StatusCode);
+        Assert.Equal(canary, Assert.Single(host.Heimdall.StartSecrets));
+        var logs = string.Join("
+", host.Logs.Lines);
+        Assert.Contains(HeimdallAuthService.AppSecretHeader, logs, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(canary, logs);
+    }
+
+    private static void AssertAttemptCookieExpired(HttpResponseMessage response, string nonce)
+    {
+        var name = HeimdallAttemptCookie.Prefix + nonce;
+        var header = HeimdallHost.SetCookieHeader(response, name);
+        Assert.NotNull(header);
+        Assert.StartsWith(name + "=;", header);
+        var attributes = header!.Split(';').Select(x => x.Trim().ToLowerInvariant()).ToArray();
+        Assert.Contains("path=/auth/heimdall", attributes);
+        Assert.Contains(attributes, x => x.StartsWith("expires=", StringComparison.Ordinal) && x.Contains("1970"));
+        Assert.DoesNotContain(attributes, x => x.StartsWith("max-age", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task The_attempt_cookie_is_expired_at_its_path_on_success_and_on_refusal()
+    {
+        using var host = new HeimdallHost();
+        var accountId = HeimdallShapes.NewAccountId();
+
+        var signedAttempt = await host.StartAsync();
+        var signedIn = await Genuine(host, signedAttempt, accountId);
+        Assert.True(signedIn.SignedIn);
+        AssertAttemptCookieExpired(signedIn.Response, signedAttempt.Nonce);
+
+        var unknownCode = await host.StartAsync();
+        var gone = await host.CompleteAsync(unknownCode, "unknown-code");
+        AssertRefusedRedirect(gone);
+        AssertAttemptCookieExpired(gone.Response, unknownCode.Nonce);
+
+        var tampered = await host.StartAsync();
+        var refused = await host.CompleteAsync(
+            tampered.Nonce, host.CodeFor(tampered, accountId), Corrupt(tampered.Cookie!));
+        AssertRefusedRedirect(refused);
+        AssertAttemptCookieExpired(refused.Response, tampered.Nonce);
+    }
+
+    [Fact]
+    public async Task Return_paths_are_bounded_so_the_attempt_cookie_stays_small()
+    {
+        using var host = new HeimdallHost();
+        var atBound = "/" + new string('a', LocalReturnPath.MaxLength - 1);
+        var overBound = atBound + "a";
+        var worstCase = "/" + new string('<', LocalReturnPath.MaxLength - 1);
+
+        Assert.Equal(atBound, LocalReturnPath.Parse(atBound).Value);
+        Assert.Equal(LocalReturnPath.Default, LocalReturnPath.Parse(overBound));
+
+        var kept = await host.StartAsync(returnUrl: atBound);
+        var keptSignIn = await Genuine(host, kept, HeimdallShapes.NewAccountId());
+        Assert.True(keptSignIn.SignedIn);
+        Assert.Equal(atBound, keptSignIn.Response.Headers.Location!.OriginalString);
+
+        var over = await host.StartAsync(returnUrl: overBound);
+        var overSignIn = await Genuine(host, over, HeimdallShapes.NewAccountId());
+        Assert.True(overSignIn.SignedIn);
+        Assert.Equal("/App", overSignIn.Response.Headers.Location!.OriginalString);
+
+        var heaviest = await host.StartAsync(returnUrl: worstCase);
+        var header = HeimdallHost.SetCookieHeader(heaviest.Response, HeimdallAttemptCookie.Prefix + heaviest.Nonce)!;
+        Assert.InRange(header.Split(';')[0].Length, 1, 3072);
+    }
+
+    [Fact]
+    public async Task A_blank_app_slug_is_refused_before_Heimdall_is_called()
+    {
+        using var host = new HeimdallHost(appSlug: " ");
+
+        var refused = await host.StartAsync();
+
+        Assert.Equal(ErrorRedirect, refused.Response.Headers.Location!.OriginalString);
+        Assert.Empty(host.Heimdall.StartBodies);
+        Assert.False(refused.Response.Headers.Contains("Set-Cookie"));
+        Assert.Contains("Heimdall start refused: Heimdall is not configured.", string.Join("
+", host.Logs.Lines));
     }
 }
