@@ -130,6 +130,11 @@ builder.Services.AddHttpClient<HeimdallAuthService>((serviceProvider, client) =>
     var options = serviceProvider.GetRequiredService<IOptions<HeimdallOptions>>().Value;
     client.BaseAddress = new Uri(options.BaseUrl.TrimEnd('/'));
 });
+builder.Services.AddHttpClient<HeimdallTokenVerifier>((serviceProvider, client) =>
+{
+    var options = serviceProvider.GetRequiredService<IOptions<HeimdallOptions>>().Value;
+    client.BaseAddress = new Uri(options.BaseUrl.TrimEnd('/'));
+});
 builder.Services.AddHttpClient<StripeCheckoutService>(client =>
 {
     client.BaseAddress = new Uri("https://api.stripe.com/");
@@ -388,6 +393,7 @@ app.MapGet("/auth/heimdall/{provider}", async (
             requireMemberAccess,
             cancellationToken);
 
+        httpContext.Response.Cookies.Append(HeimdallBindingCookie.Name, start.Binding, HeimdallBindingCookie.Options());
         return Results.Redirect(start.AuthorizationUrl.ToString());
     }
     catch (HeimdallAuthException error)
@@ -396,18 +402,21 @@ app.MapGet("/auth/heimdall/{provider}", async (
     }
 }).AllowAnonymous();
 
-app.MapPost("/auth/heimdall/callback", (
+app.MapPost("/auth/heimdall/callback", async (
     HeimdallBackendCallbackPayload payload,
-    HeimdallAuthService heimdallAuthService) =>
+    HeimdallAuthService heimdallAuthService,
+    ILogger<HeimdallAuthService> logger,
+    CancellationToken cancellationToken) =>
 {
     try
     {
-        heimdallAuthService.StoreBackendCallback(payload);
+        await heimdallAuthService.StoreBackendCallbackAsync(payload, cancellationToken);
         return Results.Accepted();
     }
     catch (HeimdallAuthException error)
     {
-        return Results.BadRequest(error.Message);
+        logger.LogWarning("Heimdall callback refused: {Reason}", error.Message);
+        return Results.BadRequest("Heimdall callback refused.");
     }
 }).AllowAnonymous();
 
@@ -546,8 +555,12 @@ app.MapGet("/auth/heimdall/wait", async (
 
     try
     {
-        var signIn = await heimdallAuthService.CompleteAttemptAsync(attemptId, cancellationToken);
+        var signIn = await heimdallAuthService.CompleteAttemptAsync(
+            attemptId,
+            httpContext.Request.Cookies[HeimdallBindingCookie.Name],
+            cancellationToken);
         await httpContext.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, signIn.Principal);
+        httpContext.Response.Cookies.Delete(HeimdallBindingCookie.Name, HeimdallBindingCookie.Options());
         return Results.Redirect(signIn.RedirectUri);
     }
     catch (HeimdallAuthPendingException)
