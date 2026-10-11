@@ -40,6 +40,11 @@ public sealed class StartupConfigurationValidator(
             failures.Add("ConceptVotes:MintPermits must be at least 1 and ConceptVotes:MintWindow must be positive.");
         }
 
+        if (conceptVotes.MaxTrackedKeys < 1)
+        {
+            failures.Add("ConceptVotes:MaxTrackedKeys must be at least 1.");
+        }
+
         if (hostEnvironment.IsDevelopment() || hostEnvironment.IsEnvironment("Testing"))
         {
             Refuse(failures);

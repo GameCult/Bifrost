@@ -77,7 +77,7 @@ public sealed class VoteModel(
     {
         var actor = await actorAccessor.GetAsync(cancellationToken);
         var voter = ResolveVoter(actor);
-        if (Throttled(limits.DenyCast(HttpContext.Connection.RemoteIpAddress, voter)) is { } throttled)
+        if (Throttled(limits.DenyCast(HttpContext.Connection.RemoteIpAddress, voter), CastRefusal) is { } throttled)
         {
             return throttled;
         }
@@ -100,7 +100,7 @@ public sealed class VoteModel(
         var actor = await actorAccessor.GetAsync(cancellationToken);
         var client = HttpContext.Connection.RemoteIpAddress;
         var voter = ResolveVoter(actor);
-        if (Throttled(limits.DenyCast(client, voter)) is { } throttled)
+        if (Throttled(limits.DenyCast(client, voter), CastRefusal) is { } throttled)
         {
             return throttled;
         }
@@ -112,7 +112,7 @@ public sealed class VoteModel(
 
         if (voter is null)
         {
-            if (Throttled(limits.DenyMint(client)) is { } mintThrottled)
+            if (Throttled(limits.DenyMint(client), MintRefusal) is { } mintThrottled)
             {
                 return mintThrottled;
             }
@@ -132,8 +132,14 @@ public sealed class VoteModel(
     private VoterIdentity? ResolveVoter(CurrentBifrostActor actor) =>
         VoterIdentity.For(actor, null) ?? VoterIdentity.For(actor, deviceCookie.TryRead(HttpContext));
 
-    // A denied budget is a 429 that says when to retry; it writes no row and sets no cookie.
-    private IActionResult? Throttled(TimeSpan? retryAfter)
+    // A denied budget is a 429 that says when to retry, in words a voter can read; it writes no row, sets no cookie and
+    // repeats nothing of the request. A refused new device is told it can sign in, which has a budget of its own.
+    private const string CastRefusal = "You are voting too fast. Please wait a little before voting again.";
+
+    private const string MintRefusal =
+        "Too many new voters have voted from your network recently. You can sign in to vote now, or try again later.";
+
+    private IActionResult? Throttled(TimeSpan? retryAfter, string refusal)
     {
         if (retryAfter is not { } wait)
         {
@@ -141,7 +147,12 @@ public sealed class VoteModel(
         }
 
         Response.Headers.RetryAfter = ((int)Math.Ceiling(wait.TotalSeconds)).ToString(System.Globalization.CultureInfo.InvariantCulture);
-        return new StatusCodeResult(StatusCodes.Status429TooManyRequests);
+        return new ContentResult
+        {
+            StatusCode = StatusCodes.Status429TooManyRequests,
+            ContentType = "text/plain; charset=utf-8",
+            Content = refusal
+        };
     }
 
     private async Task<bool> LoadAsync(string collection, string key, VoterIdentity? voter, CancellationToken cancellationToken)

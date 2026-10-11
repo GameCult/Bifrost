@@ -230,6 +230,18 @@ public sealed class HostTrustTests : IClassFixture<TestWebApplicationFactory>
     }
 
     [Theory]
+    [InlineData("Development")]
+    [InlineData("Testing")]
+    [InlineData("Production")]
+    public void Every_environment_refuses_a_vote_table_cap_below_one(string environment)
+    {
+        var refusal = Assert.Throws<InvalidOperationException>(
+            () => Validate(keysPath: "/keys", environment: environment, maxTrackedKeys: 0));
+
+        Assert.Contains("ConceptVotes:MaxTrackedKeys", refusal.Message);
+    }
+
+    [Theory]
     [InlineData("*")]
     [InlineData("")]
     [InlineData("null")]
@@ -315,7 +327,8 @@ public sealed class HostTrustTests : IClassFixture<TestWebApplicationFactory>
         int castPermits = 30,
         TimeSpan? castWindow = null,
         int mintPermits = 5,
-        TimeSpan? mintWindow = null)
+        TimeSpan? mintWindow = null,
+        int maxTrackedKeys = 100_000)
     {
         var values = new Dictionary<string, string?>
         {
@@ -347,7 +360,8 @@ public sealed class HostTrustTests : IClassFixture<TestWebApplicationFactory>
                 CastPermits = castPermits,
                 CastWindow = castWindow ?? TimeSpan.FromMinutes(10),
                 MintPermits = mintPermits,
-                MintWindow = mintWindow ?? TimeSpan.FromHours(1)
+                MintWindow = mintWindow ?? TimeSpan.FromHours(1),
+                MaxTrackedKeys = maxTrackedKeys
             })).Validate();
     }
 

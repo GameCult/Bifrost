@@ -12,8 +12,8 @@ namespace Bifrost.Web.Features.ConceptVotes;
 public sealed class ConceptVoteRateLimits(IOptions<ConceptVoteOptions> options, TimeProvider clock)
 {
     private readonly ConceptVoteOptions opts = options.Value;
-    private readonly FixedWindowBudget cast = new(options.Value.CastPermits, options.Value.CastWindow, clock);
-    private readonly FixedWindowBudget mint = new(options.Value.MintPermits, options.Value.MintWindow, clock);
+    private readonly FixedWindowBudget cast = new(options.Value.CastPermits, options.Value.CastWindow, options.Value.MaxTrackedKeys, clock);
+    private readonly FixedWindowBudget mint = new(options.Value.MintPermits, options.Value.MintWindow, options.Value.MaxTrackedKeys, clock);
 
     public TimeSpan? DenyCast(IPAddress? client, VoterIdentity? known) =>
         cast.TryAcquire(known?.UserAccountId is { } account ? "account:" + account.ToString("N") : NetKey(client), out var wait)

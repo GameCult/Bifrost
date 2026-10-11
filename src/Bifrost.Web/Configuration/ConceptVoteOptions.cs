@@ -28,11 +28,18 @@ public sealed class ConceptVoteOptions
 
     public TimeSpan CastWindow { get; init; } = TimeSpan.FromMinutes(10);
 
-    // Mint: a new device cookie is a new voter identity, the cheapest stuffing lever, and a household has few devices,
-    // so 5 new devices per hour per network prefix.
-    public int MintPermits { get; init; } = 5;
+    // Mint: a new device cookie is a new voter identity, the cheapest stuffing lever. Anonymous visitors share an
+    // address behind carrier, school and office NAT (the research note records it), so 30 new devices per hour per
+    // address (operator ruling concept-mill-votes:ruling:mint-budget-30-per-hour); per-device and per-prefix cast
+    // limits still bound stuffing.
+    public int MintPermits { get; init; } = 30;
 
     public TimeSpan MintWindow { get; init; } = TimeSpan.FromHours(1);
+
+    // The most partitions each budget holds at once. At the cap a partition not yet held is refused with a 429 until
+    // the oldest window ends; held partitions are never evicted, so a rotating caller cannot escape a spent budget.
+    // 100000 partitions is a few tens of MB; a real audience is far below it.
+    public int MaxTrackedKeys { get; init; } = 100_000;
 
     // The origins whose pages may read the public tally export from a browser (CORS). Each entry is exactly
     // https://host[:non-default-port], lower case, no path; empty allows none. StartupConfigurationValidator

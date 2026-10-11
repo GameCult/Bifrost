@@ -206,6 +206,10 @@ public sealed class ConceptVoteRateLimitTests : IClassFixture<ConceptVoteRateLim
         Assert.Equal(HttpStatusCode.TooManyRequests, denied.StatusCode);
         Assert.Null(SetCookie(denied));
         Assert.Equal(rowsBefore, (await Rows(collection)).Count);
+        Assert.StartsWith("text/plain", denied.Content.Headers.ContentType?.MediaType);
+        var refusal = await denied.Content.ReadAsStringAsync();
+        Assert.Contains("sign in", refusal, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("203.0.113", refusal);
 
         // An hour after the first mint the budget is whole again.
         _factory.Clock.Advance(TimeSpan.FromMinutes(50));
@@ -247,10 +251,37 @@ public sealed class ConceptVoteRateLimitTests : IClassFixture<ConceptVoteRateLim
         Assert.Null(SetCookie(denied));
         var after = Assert.Single(await Rows(collection));
         Assert.Equal(before.Stance, after.Stance);
-        var seen = await denied.Content.ReadAsStringAsync()
+        var body = await denied.Content.ReadAsStringAsync();
+        Assert.Contains("too fast", body);
+        var seen = body
             + string.Join("\n", denied.Headers.Select(h => h.Key + ":" + string.Join(",", h.Value)));
         Assert.DoesNotContain("203.0.113", seen);
         Assert.DoesNotContain(logs.Lines, line => line.Contains("203.0.113", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Defaults_allow_thirty_new_devices_an_hour_per_address()
+    {
+        var defaults = new Bifrost.Web.Configuration.ConceptVoteOptions();
+
+        Assert.Equal(30, defaults.MintPermits);
+        Assert.Equal(TimeSpan.FromHours(1), defaults.MintWindow);
+        Assert.Equal(100_000, defaults.MaxTrackedKeys);
+    }
+
+    [Fact]
+    public void Both_budgets_hold_at_most_the_configured_number_of_partitions_and_refuse_a_new_one_at_the_cap()
+    {
+        var clock = new TestClock();
+        var limits = new Bifrost.Web.Features.ConceptVotes.ConceptVoteRateLimits(
+            Microsoft.Extensions.Options.Options.Create(new Bifrost.Web.Configuration.ConceptVoteOptions { MaxTrackedKeys = 1 }),
+            clock);
+
+        Assert.Null(limits.DenyCast(IPAddress.Parse("198.51.100.1"), null));
+        Assert.NotNull(limits.DenyCast(IPAddress.Parse("198.51.100.2"), null));
+        Assert.Null(limits.DenyMint(IPAddress.Parse("198.51.100.1")));
+        Assert.NotNull(limits.DenyMint(IPAddress.Parse("198.51.100.2")));
+        Assert.Null(limits.DenyCast(IPAddress.Parse("198.51.100.1"), null));
     }
 
     [Fact]
@@ -387,10 +418,19 @@ public sealed class ConceptVoteRateLimitTests : IClassFixture<ConceptVoteRateLim
     public sealed class TestClock : TimeProvider
     {
         private DateTimeOffset _now = DateTimeOffset.UtcNow;
+        private long _ticks = 5_000_000;
+
+        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
 
         public override DateTimeOffset GetUtcNow() => _now;
 
-        public void Advance(TimeSpan by) => _now += by;
+        public override long GetTimestamp() => _ticks;
+
+        public void Advance(TimeSpan by)
+        {
+            _now += by;
+            _ticks += by.Ticks;
+        }
     }
 
     // The proxy's connection: TestServer has no socket, so the peer address is set ahead of the app pipeline.
