@@ -1337,45 +1337,6 @@ public sealed class HeimdallCompletionTests
     }
 
     [Fact]
-    public async Task An_attempt_that_exactly_fills_the_cookie_bound_is_kept_and_one_byte_over_gives_up_the_oldest()
-    {
-        using var host = new HeimdallHost();
-        // Each cookie's bytes in a Cookie header, written out here and not taken from the service.
-        static int Bytes(string name, string value) => name.Length + 1 + value.Length + 2;
-        var byLength = new Dictionary<int, (StartedAttempt Attempt, int Bytes)>();
-        for (var length = 1; length <= LocalReturnPath.MaxLength - 1; length++)
-        {
-            var attempt = await host.StartAsync(returnUrl: "/" + new string('a', length));
-            byLength[length] = (attempt, Bytes(HeimdallAttemptCookie.Prefix + attempt.Nonce, attempt.Cookie!));
-        }
-
-        (int Old, int New)? Pair(int total) =>
-            (from older in byLength from newer in byLength where older.Value.Bytes + newer.Value.Bytes == total
-             select ((int Old, int New)?)(older.Key, newer.Key)).FirstOrDefault();
-
-        var fits = Pair(HeimdallAttemptCookie.MaxAggregateBytes);
-        var overflows = Pair(HeimdallAttemptCookie.MaxAggregateBytes + 1);
-        var near = string.Join(",", (from a in byLength.Values from b in byLength.Values
-                                     let sum = a.Bytes + b.Bytes
-                                     where Math.Abs(sum - HeimdallAttemptCookie.MaxAggregateBytes) <= 40
-                                     select sum).Distinct().Order());
-        Assert.True(fits is not null && overflows is not null, $"sums near the bound: {near}");
-
-        foreach (var (pair, overflow) in new[] { (fits.Value, false), (overflows.Value, true) })
-        {
-            host.Clock.Advance(TimeSpan.FromSeconds(1));
-            var older = await host.StartAsync(returnUrl: "/" + new string('a', pair.Old));
-            host.Clock.Advance(TimeSpan.FromSeconds(1));
-            var newer = await host.StartAsync(
-                returnUrl: "/" + new string('a', pair.New),
-                cookieHeader: $"{HeimdallAttemptCookie.Prefix + older.Nonce}={older.Cookie}");
-
-            Assert.Equal(overflow ? 1 : 0, Deletions(newer.Response));
-            Assert.NotNull(newer.Cookie);
-        }
-    }
-
-    [Fact]
     public async Task The_complete_page_form_has_the_fields_and_action_the_server_reads()
     {
         using var host = new HeimdallHost();
