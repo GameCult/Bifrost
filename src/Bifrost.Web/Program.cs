@@ -379,10 +379,7 @@ app.MapGet("/auth/heimdall/{provider}", async (
             requireMemberAccess,
             cancellationToken);
 
-        httpContext.Response.Cookies.Append(
-            HeimdallAttemptCookie.NameFor(start.Nonce),
-            start.CookieValue,
-            HeimdallAttemptCookie.Options());
+        httpContext.Response.Cookies.Append(start.CookieName, start.CookieValue, HeimdallAttemptCookie.Options());
         return Results.Redirect(start.AuthorizationUrl.ToString());
     }
     catch (HeimdallAuthException error)

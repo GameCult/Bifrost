@@ -105,7 +105,8 @@ public sealed class HeimdallAuthService(
             requireMemberAccess,
             returnPath,
             timeProvider.GetUtcNow() + HeimdallAttemptCookie.Lifetime);
-        return new HeimdallAuthStartResult(new Uri(payload.AuthorizationUrl, UriKind.Absolute), nonce, Protect(attempt));
+        return new HeimdallAuthStartResult(
+            new Uri(payload.AuthorizationUrl, UriKind.Absolute), HeimdallAttemptCookie.NameFor(nonce)!, Protect(attempt));
     }
 
     public async Task<HeimdallCompletedSignIn> CompleteAsync(
@@ -347,7 +348,7 @@ public sealed class HeimdallAuthService(
 
 public class HeimdallAuthException(string message) : InvalidOperationException(message);
 
-public sealed record HeimdallAuthStartResult(Uri AuthorizationUrl, string Nonce, string CookieValue);
+public sealed record HeimdallAuthStartResult(Uri AuthorizationUrl, string CookieName, string CookieValue);
 
 public sealed record HeimdallCompletedSignIn(ClaimsPrincipal Principal, LocalReturnPath ReturnPath);
 

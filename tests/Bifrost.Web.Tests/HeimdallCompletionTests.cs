@@ -699,8 +699,7 @@ public sealed class HeimdallCompletionTests
             Assert.Equal(string.Empty, await start.Content.ReadAsStringAsync());
         }
 
-        Assert.Contains("Heimdall start refused: Unsupported Heimdall provider.", string.Join("
-", host.Logs.Lines));
+        Assert.Contains("Heimdall start refused: Unsupported Heimdall provider.", string.Join("\n", host.Logs.Lines));
         Assert.Contains("Heimdall start refused: Heimdall provider does not support Bifrost member access.", string.Join("\n", host.Logs.Lines));
     }
 
