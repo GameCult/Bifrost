@@ -550,7 +550,7 @@ app.MapPost("/auth/heimdall/complete", async (
 
         return Results.Redirect(HeimdallAuthService.ErrorRedirect);
     }
-}).AllowAnonymous().DisableAntiforgery();
+}).AllowAnonymous();
 
 app.MapPost("/auth/sign-out", async (HttpContext httpContext) =>
 {

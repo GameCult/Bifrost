@@ -679,6 +679,10 @@ public sealed class HeimdallCompletionTests
             "/auth/heimdall/complete",
             new StringContent("{\"attempt\":\"x\"}", Encoding.UTF8, "application/json"));
         results.Add(("json body", new CompletionResult(json, false), "Heimdall completion has no attempt for this browser."));
+        using var malformed = await client.PostAsync(
+            "/auth/heimdall/complete",
+            new StringContent("not a multipart body", Encoding.UTF8, "multipart/form-data"));
+        results.Add(("malformed form", new CompletionResult(malformed, false), "Heimdall completion has no attempt for this browser."));
 
         foreach (var (name, result, reason) in results)
         {
