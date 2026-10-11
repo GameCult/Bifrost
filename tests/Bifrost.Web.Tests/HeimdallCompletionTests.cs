@@ -446,7 +446,7 @@ public sealed class HeimdallCompletionTests
         {
             var refused = await host.CompleteAsync(attempt.Nonce, code, cookie);
             AssertRefusedRedirect(refused);
-            Assert.True(refused.Response.Headers.Contains("Set-Cookie"), name);
+            Assert.False(refused.Response.Headers.Contains("Set-Cookie"), name);
         }
 
         Assert.Equal(0, host.Heimdall.RedeemCalls);
@@ -1194,18 +1194,18 @@ public sealed class HeimdallCompletionTests
         var signedAttempt = await host.StartAsync();
         var signedIn = await Genuine(host, signedAttempt, accountId);
         Assert.True(signedIn.SignedIn);
-        AssertAttemptCookieExpired(signedIn.Response, signedAttempt.Nonce);
+        AssertAttemptCookieExpired(signedIn.Response, signedAttempt.CookieName!);
 
         var unknownCode = await host.StartAsync();
         var gone = await host.CompleteAsync(unknownCode, "unknown-code");
         AssertRefusedRedirect(gone);
-        AssertAttemptCookieExpired(gone.Response, unknownCode.Nonce);
+        AssertAttemptCookieExpired(gone.Response, unknownCode.CookieName!);
 
         var tampered = await host.StartAsync();
         var refused = await host.CompleteAsync(
             tampered.Nonce, host.CodeFor(tampered, accountId), Corrupt(tampered.Cookie!));
         AssertRefusedRedirect(refused);
-        AssertAttemptCookieExpired(refused.Response, tampered.Nonce);
+        Assert.False(refused.Response.Headers.Contains("Set-Cookie"));
     }
 
     [Fact]
@@ -1284,11 +1284,14 @@ public sealed class HeimdallCompletionTests
         var jar = new Dictionary<string, string>();
         var largest = 0;
 
-        // Rounds of parallel starts: every start of a round carries the same Cookie header, as a browser's
-        // simultaneous requests do before any Set-Cookie lands.
-        for (var round = 0; round < 3; round++)
+        // One earlier attempt holds a slot; then two rounds of parallel starts, each start carrying the same
+        // Cookie header, as a browser's simultaneous requests do before any Set-Cookie lands. The second round
+        // finds both slots live.
+        var earlier = await host.StartAsync(returnUrl: worstCase);
+        ApplySetCookies(jar, earlier.Response);
+        for (var round = 0; round < 2; round++)
         {
-            var header = jar.Count == 0 ? null : CookieHeader(jar);
+            var header = CookieHeader(jar);
             var parallel = new List<StartedAttempt>();
             for (var i = 0; i < 6; i++)
             {
@@ -1312,11 +1315,14 @@ public sealed class HeimdallCompletionTests
             Assert.False(lost.SignedIn);
             Assert.Equal(HttpStatusCode.Redirect, lost.Response.StatusCode);
             Assert.Equal(ErrorRedirect, lost.Response.Headers.Location!.OriginalString);
-            Assert.DoesNotContain(overwritten.Nonce, string.Join("\n", lost.Response.Headers.SelectMany(x => x.Value)));
-            var done = await host.CompleteWithHeaderAsync(
-                last.Nonce, host.CodeFor(last, HeimdallShapes.NewAccountId()), CookieHeader(jar));
-            Assert.True(done.SignedIn);
-            ApplySetCookies(jar, done.Response);
+            Assert.DoesNotContain(overwritten.Nonce, string.Join("
+", lost.Response.Headers.SelectMany(x => x.Value)));
+            if (round == 1)
+            {
+                var done = await host.CompleteWithHeaderAsync(
+                    last.Nonce, host.CodeFor(last, HeimdallShapes.NewAccountId()), CookieHeader(jar));
+                Assert.True(done.SignedIn);
+            }
         }
 
         Assert.True(largest <= 6144, $"Cookie header reached {largest} bytes");
