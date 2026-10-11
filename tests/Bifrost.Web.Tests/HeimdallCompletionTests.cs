@@ -714,9 +714,12 @@ public sealed class HeimdallCompletionTests
         results.Add(("ill-formed nonce", illFormed, "Heimdall completion has no attempt for this browser."));
 
         using var client = host.NewClient();
-        using var json = await client.PostAsync(
-            "/auth/heimdall/complete",
-            new StringContent("{\"attempt\":\"x\"}", Encoding.UTF8, "application/json"));
+        using var jsonRequest = new HttpRequestMessage(HttpMethod.Post, "/auth/heimdall/complete")
+        {
+            Content = new StringContent("{\"attempt\":\"x\"}", Encoding.UTF8, "application/json")
+        };
+        jsonRequest.Headers.Add("Cookie", $"{attempt.CookieName}={attempt.Cookie}");
+        using var json = await client.SendAsync(jsonRequest);
         results.Add(("json body", new CompletionResult(json, false), "Heimdall completion has no attempt for this browser."));
         using var malformed = await client.PostAsync(
             "/auth/heimdall/complete",
