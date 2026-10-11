@@ -378,12 +378,8 @@ app.MapGet("/auth/heimdall/{provider}", async (
             hostOptions.Value.PublicBaseUrl,
             returnPath,
             requireMemberAccess,
+            httpContext.Request.Cookies,
             cancellationToken);
-
-        foreach (var superseded in heimdallAuthService.SupersededAttemptCookies(httpContext.Request.Cookies, start))
-        {
-            httpContext.Response.Cookies.Delete(superseded, HeimdallAttemptCookie.DeleteOptions());
-        }
 
         httpContext.Response.Cookies.Append(start.CookieName, start.CookieValue, HeimdallAttemptCookie.Options());
         return Results.Redirect(start.AuthorizationUrl.ToString());
@@ -533,25 +529,25 @@ app.MapPost("/auth/heimdall/complete", async (
 {
     var form = await ReadFormOrNullAsync(httpContext.Request, cancellationToken);
     var attempt = form?["attempt"].ToString();
-    var cookieName = HeimdallAttemptCookie.NameFor(attempt);
+    var held = heimdallAuthService.FindAttemptCookie(httpContext.Request.Cookies, attempt);
     try
     {
         var signIn = await heimdallAuthService.CompleteAsync(
             hostOptions.Value.PublicBaseUrl,
             attempt,
-            cookieName is null ? null : httpContext.Request.Cookies[cookieName],
+            held?.Value,
             form?["code"].ToString(),
             cancellationToken);
         await httpContext.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, signIn.Principal);
-        httpContext.Response.Cookies.Delete(cookieName!, HeimdallAttemptCookie.DeleteOptions());
+        httpContext.Response.Cookies.Delete(held!.Value.Name, HeimdallAttemptCookie.DeleteOptions());
         return Results.LocalRedirect(signIn.ReturnPath.Value);
     }
     catch (HeimdallAuthException error)
     {
         logger.LogWarning("Heimdall completion refused: {Reason}", error.Message);
-        if (cookieName is not null)
+        if (held is not null)
         {
-            httpContext.Response.Cookies.Delete(cookieName, HeimdallAttemptCookie.DeleteOptions());
+            httpContext.Response.Cookies.Delete(held.Value.Name, HeimdallAttemptCookie.DeleteOptions());
         }
 
         return Results.Redirect(HeimdallAuthService.ErrorRedirect);

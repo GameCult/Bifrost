@@ -337,7 +337,7 @@ public sealed class CapturedLogs : ILoggerProvider
 }
 
 /// <summary>An attempt Start issued: its nonce, the cookie it set, and the returnTo it sent Heimdall.</summary>
-public sealed record StartedAttempt(string Nonce, string? Cookie, string ReturnTo, HttpResponseMessage Response);
+public sealed record StartedAttempt(string Nonce, string? CookieName, string? Cookie, string ReturnTo, HttpResponseMessage Response);
 
 public sealed record CompletionResult(HttpResponseMessage Response, bool SignedIn);
 
@@ -437,12 +437,13 @@ public sealed class HeimdallHost : TestWebApplicationFactory
         var response = await client.SendAsync(request);
         if (Heimdall.StartBodies.Count == before)
         {
-            return new StartedAttempt(string.Empty, null, string.Empty, response);
+            return new StartedAttempt(string.Empty, null, null, string.Empty, response);
         }
 
         var returnTo = JsonDocument.Parse(Heimdall.StartBodies[^1]).RootElement.GetProperty("returnTo").GetString()!;
         var nonce = QueryHelpers.ParseQuery(new Uri(returnTo).Query)["attempt"].ToString();
-        return new StartedAttempt(nonce, CookieValue(response, HeimdallAttemptCookie.Prefix + nonce), returnTo, response);
+        var slot = HeimdallAttemptCookie.SlotNames.FirstOrDefault(x => CookieValue(response, x) is { Length: > 0 });
+        return new StartedAttempt(nonce, slot, slot is null ? null : CookieValue(response, slot), returnTo, response);
     }
 
     /// <summary>Registers a completion code as Heimdall would mint it after authenticating this attempt.</summary>
@@ -455,7 +456,12 @@ public sealed class HeimdallHost : TestWebApplicationFactory
     }
 
     /// <summary>The browser's POST from the complete page: the attempt and code in a form, the attempt cookie by name.</summary>
-    public async Task<CompletionResult> CompleteAsync(string? nonce, string? code, string? cookie, string? cookieName = null)
+    public Task<CompletionResult> CompleteAsync(string? nonce, string? code, string? cookie, string? cookieName = null) =>
+        CompleteWithHeaderAsync(
+            nonce, code, cookie is null ? null : $"{cookieName ?? HeimdallAttemptCookie.SlotNames[0]}={cookie}");
+
+    /// <summary>The same POST carrying a browser's whole Cookie header (a jar), not one attempt cookie.</summary>
+    public async Task<CompletionResult> CompleteWithHeaderAsync(string? nonce, string? code, string? cookieHeader)
     {
         using var client = NewClient();
         var fields = new Dictionary<string, string>();
@@ -470,9 +476,9 @@ public sealed class HeimdallHost : TestWebApplicationFactory
         }
 
         using var request = new HttpRequestMessage(HttpMethod.Post, "/auth/heimdall/complete") { Content = new FormUrlEncodedContent(fields) };
-        if (cookie is not null)
+        if (cookieHeader is not null)
         {
-            request.Headers.Add("Cookie", $"{cookieName ?? HeimdallAttemptCookie.Prefix + nonce}={cookie}");
+            request.Headers.Add("Cookie", cookieHeader);
         }
 
         var response = await client.SendAsync(request);
@@ -481,7 +487,7 @@ public sealed class HeimdallHost : TestWebApplicationFactory
     }
 
     public Task<CompletionResult> CompleteAsync(StartedAttempt attempt, string code) =>
-        CompleteAsync(attempt.Nonce, code, attempt.Cookie);
+        CompleteAsync(attempt.Nonce, code, attempt.Cookie, attempt.CookieName);
 
     public static string? CookieValue(HttpResponseMessage response, string name)
     {

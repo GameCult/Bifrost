@@ -58,6 +58,7 @@ public sealed class HeimdallAuthService(
         string callbackBaseUrl,
         LocalReturnPath returnPath,
         bool requireMemberAccess,
+        IEnumerable<KeyValuePair<string, string>> requestCookies,
         CancellationToken cancellationToken)
     {
         if (!AllowedProviders.Contains(provider))
@@ -106,54 +107,53 @@ public sealed class HeimdallAuthService(
             returnPath,
             timeProvider.GetUtcNow() + HeimdallAttemptCookie.Lifetime);
         return new HeimdallAuthStartResult(
-            new Uri(payload.AuthorizationUrl, UriKind.Absolute), HeimdallAttemptCookie.NameFor(nonce)!, Protect(attempt));
+            new Uri(payload.AuthorizationUrl, UriKind.Absolute), ChooseSlot(requestCookies), Protect(attempt));
     }
 
     /// <summary>
-    /// The attempt cookies Start must delete so the Cookie header the browser sends to /auth/heimdall stays under
-    /// the proxy's header limit: every request cookie that is no live attempt, then the live attempts that expire
-    /// first until the new attempt and the survivors fit <see cref="HeimdallAttemptCookie.MaxAggregateBytes"/>.
-    /// The new attempt is always kept.
+    /// The slot the new attempt's cookie takes: the first slot that holds no live attempt, else the one whose
+    /// attempt expires first. Parallel starts carry the same request cookies, so they choose the same slot and
+    /// overwrite each other; the Cookie header holds at most <see cref="HeimdallAttemptCookie.SlotNames"/> attempt
+    /// cookies however many starts a browser makes.
     /// </summary>
-    public IReadOnlyList<string> SupersededAttemptCookies(
-        IEnumerable<KeyValuePair<string, string>> requestCookies,
-        HeimdallAuthStartResult start)
+    private string ChooseSlot(IEnumerable<KeyValuePair<string, string>> requestCookies)
     {
-        var used = HeimdallAttemptCookie.EntrySize(start.CookieName, start.CookieValue);
-        var superseded = new List<string>();
-        var live = new List<(string Name, int Size, DateTimeOffset ExpiresAt)>();
+        var cookies = requestCookies.ToLookup(x => x.Key, x => x.Value, StringComparer.Ordinal);
+        string? oldest = null;
+        var oldestExpiry = DateTimeOffset.MaxValue;
+        foreach (var name in HeimdallAttemptCookie.SlotNames)
+        {
+            var live = Read(cookies[name].FirstOrDefault());
+            if (live is null)
+            {
+                return name;
+            }
+
+            if (live.ExpiresAt < oldestExpiry)
+            {
+                oldest = name;
+                oldestExpiry = live.ExpiresAt;
+            }
+        }
+
+        return oldest!;
+    }
+
+    /// <summary>
+    /// The slot cookie that holds the attempt for this nonce: its name and value, or null when the browser holds
+    /// none (never started here, expired, or overwritten by a later start).
+    /// </summary>
+    public (string Name, string Value)? FindAttemptCookie(IEnumerable<KeyValuePair<string, string>> requestCookies, string? nonce)
+    {
         foreach (var (name, value) in requestCookies)
         {
-            if (!name.StartsWith(HeimdallAttemptCookie.Prefix, StringComparison.Ordinal) ||
-                string.Equals(name, start.CookieName, StringComparison.Ordinal))
+            if (HeimdallAttemptCookie.SlotNames.Contains(name) && Unprotect(value, nonce) is not null)
             {
-                continue;
-            }
-
-            var attempt = Unprotect(value, name[HeimdallAttemptCookie.Prefix.Length..]);
-            if (attempt is null)
-            {
-                superseded.Add(name);
-            }
-            else
-            {
-                live.Add((name, HeimdallAttemptCookie.EntrySize(name, value), attempt.ExpiresAt));
+                return (name, value);
             }
         }
 
-        foreach (var cookie in live.OrderByDescending(x => x.ExpiresAt))
-        {
-            if (used + cookie.Size <= HeimdallAttemptCookie.MaxAggregateBytes)
-            {
-                used += cookie.Size;
-            }
-            else
-            {
-                superseded.Add(cookie.Name);
-            }
-        }
-
-        return superseded;
+        return null;
     }
 
     public async Task<HeimdallCompletedSignIn> CompleteAsync(
@@ -223,9 +223,13 @@ public sealed class HeimdallAuthService(
         _protector.Protect(JsonSerializer.Serialize(new AttemptWire(
             attempt.Nonce, attempt.Provider, attempt.RequiresMemberAccess, attempt.ReturnPath.Value, attempt.ExpiresAt)));
 
-    private HeimdallAttempt? Unprotect(string? cookieValue, string? nonce)
+    private HeimdallAttempt? Unprotect(string? cookieValue, string? nonce) =>
+        string.IsNullOrEmpty(nonce) ? null : Read(cookieValue, nonce);
+
+    /// <summary>The live attempt a cookie value protects (for this nonce when given), else null.</summary>
+    private HeimdallAttempt? Read(string? cookieValue, string? nonce = null)
     {
-        if (string.IsNullOrEmpty(cookieValue) || string.IsNullOrEmpty(nonce))
+        if (string.IsNullOrEmpty(cookieValue))
         {
             return null;
         }
@@ -234,7 +238,7 @@ public sealed class HeimdallAuthService(
         {
             var wire = JsonSerializer.Deserialize<AttemptWire>(_protector.Unprotect(cookieValue));
             if (wire is null ||
-                !string.Equals(wire.Nonce, nonce, StringComparison.Ordinal) ||
+                (nonce is not null && !string.Equals(wire.Nonce, nonce, StringComparison.Ordinal)) ||
                 wire.ExpiresAt <= timeProvider.GetUtcNow())
             {
                 return null;
@@ -442,29 +446,20 @@ public sealed record HeimdallAccount(
     [property: JsonPropertyName("id")] string Id);
 
 /// <summary>
-/// The per-attempt cookie: named for the attempt's nonce so two attempts in one browser both complete.
-/// A name is only built from a well-formed nonce, so request input never becomes an arbitrary cookie name.
+/// The attempt cookies: a ring of <see cref="SlotNames"/> fixed names, so the Cookie header a browser sends to
+/// /auth/heimdall is bounded by construction (a worst-case attempt is about 2.4 KB; nginx's line limit is 8 KB).
+/// A start takes a free slot or overwrites the one expiring first; an overwritten attempt finds no cookie and
+/// is refused. The attempt's nonce lives inside the protected value, never in the cookie name.
 /// </summary>
 public static class HeimdallAttemptCookie
 {
     public const string Prefix = "bifrost_heimdall_";
-    public const int NonceLength = 43;
+    public const int SlotCount = 2;
 
     public static readonly TimeSpan Lifetime = TimeSpan.FromMinutes(10);
 
-    /// <summary>
-    /// The most bytes of attempt cookies a browser may hold at once. One worst-case cookie is about 2.4 KB, and
-    /// the Cookie header must stay under nginx's 8 KB with room for the session and antiforgery cookies.
-    /// </summary>
-    public const int MaxAggregateBytes = 5120;
-
-    /// <summary>A cookie's bytes in a Cookie header: name, '=', value and the '; ' separator.</summary>
-    public static int EntrySize(string name, string value) => name.Length + 1 + value.Length + 2;
-
-    public static string? NameFor(string? nonce) =>
-        nonce is { Length: NonceLength } && nonce.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_')
-            ? Prefix + nonce
-            : null;
+    public static readonly IReadOnlyList<string> SlotNames =
+        Enumerable.Range(0, SlotCount).Select(x => Prefix + x).ToArray();
 
     public static CookieOptions Options() => new()
     {

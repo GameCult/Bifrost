@@ -80,7 +80,7 @@ public sealed class HeimdallCompletionTests
         Assert.Equal("Genuine Name", account!.DisplayName);
         Assert.Equal(MembershipStatus.Authenticated, account.Membership!.Status);
         Assert.Empty(account.Membership.RoleAssignments);
-        var cleared = HeimdallHost.SetCookieHeader(done.Response, HeimdallAttemptCookie.Prefix + attempt.Nonce);
+        var cleared = HeimdallHost.SetCookieHeader(done.Response, attempt.CookieName!);
         Assert.NotNull(cleared);
         Assert.Contains("1970", cleared);
 
@@ -515,7 +515,7 @@ public sealed class HeimdallCompletionTests
         Assert.Equal("https://heimdall.test/oauth/discord/authorize?state=fixture", first.Response.Headers.Location!.OriginalString);
         Assert.Equal(43, first.Nonce.Length);
         Assert.NotEqual(first.Nonce, second.Nonce);
-        var header = HeimdallHost.SetCookieHeader(first.Response, "bifrost_heimdall_" + first.Nonce);
+        var header = HeimdallHost.SetCookieHeader(first.Response, first.CookieName!);
         Assert.NotNull(header);
         var attributes = header!.Split(';').Select(x => x.Trim().ToLowerInvariant()).ToArray();
         Assert.Contains("httponly", attributes);
@@ -689,7 +689,7 @@ public sealed class HeimdallCompletionTests
                 "Heimdall completion has no attempt for this browser."),
             ("bad cookie", await host.CompleteAsync(attempt.Nonce, host.CodeFor(attempt, accountId), Corrupt(attempt.Cookie!)),
                 "Heimdall completion has no attempt for this browser."),
-            ("no attempt field", await host.CompleteAsync(null, "code", attempt.Cookie, HeimdallAttemptCookie.Prefix + attempt.Nonce),
+            ("no attempt field", await host.CompleteAsync(null, "code", attempt.Cookie),
                 "Heimdall completion has no attempt for this browser."),
             ("malformed attempt", await host.CompleteAsync("short", "code", attempt.Cookie, "bifrost_heimdall_short"),
                 "Heimdall completion has no attempt for this browser."),
@@ -1174,9 +1174,8 @@ public sealed class HeimdallCompletionTests
         Assert.DoesNotContain(canary, logs);
     }
 
-    private static void AssertAttemptCookieExpired(HttpResponseMessage response, string nonce)
+    private static void AssertAttemptCookieExpired(HttpResponseMessage response, string name)
     {
-        var name = HeimdallAttemptCookie.Prefix + nonce;
         var header = HeimdallHost.SetCookieHeader(response, name);
         Assert.NotNull(header);
         Assert.StartsWith(name + "=;", header);
@@ -1231,7 +1230,7 @@ public sealed class HeimdallCompletionTests
         Assert.Equal("/App", overSignIn.Response.Headers.Location!.OriginalString);
 
         var heaviest = await host.StartAsync(returnUrl: worstCase);
-        var header = HeimdallHost.SetCookieHeader(heaviest.Response, HeimdallAttemptCookie.Prefix + heaviest.Nonce)!;
+        var header = HeimdallHost.SetCookieHeader(heaviest.Response, heaviest.CookieName!)!;
         Assert.InRange(header.Split(';')[0].Length, 1, 3072);
     }
 
@@ -1278,62 +1277,80 @@ public sealed class HeimdallCompletionTests
     }
 
     [Fact]
-    public async Task Attempts_opened_past_the_cookie_bound_keep_the_header_small_and_the_newest_completes()
+    public async Task Parallel_starts_cannot_push_the_Cookie_header_past_the_bound_and_the_last_start_completes()
     {
         using var host = new HeimdallHost();
         var worstCase = "/" + new string('<', LocalReturnPath.MaxLength - 1);
         var jar = new Dictionary<string, string>();
-        var started = new List<StartedAttempt>();
-        var deletions = 0;
+        var largest = 0;
 
-        for (var i = 0; i < 12; i++)
+        // Rounds of parallel starts: every start of a round carries the same Cookie header, as a browser's
+        // simultaneous requests do before any Set-Cookie lands.
+        for (var round = 0; round < 3; round++)
         {
-            host.Clock.Advance(TimeSpan.FromSeconds(1));
-            var attempt = await host.StartAsync(returnUrl: worstCase, cookieHeader: jar.Count == 0 ? null : CookieHeader(jar));
-            Assert.NotNull(attempt.Cookie);
-            deletions += Deletions(attempt.Response);
-            ApplySetCookies(jar, attempt.Response);
-            started.Add(attempt);
-            Assert.True(CookieHeader(jar).Length <= 6144, $"Cookie header is {CookieHeader(jar).Length} bytes after start {i}");
-            Assert.Contains(HeimdallAttemptCookie.Prefix + attempt.Nonce, jar.Keys);
+            var header = jar.Count == 0 ? null : CookieHeader(jar);
+            var parallel = new List<StartedAttempt>();
+            for (var i = 0; i < 6; i++)
+            {
+                host.Clock.Advance(TimeSpan.FromSeconds(1));
+                parallel.Add(await host.StartAsync(returnUrl: worstCase, cookieHeader: header));
+            }
+
+            foreach (var attempt in parallel)
+            {
+                Assert.NotNull(attempt.Cookie);
+                Assert.Equal(0, Deletions(attempt.Response));
+                ApplySetCookies(jar, attempt.Response);
+                largest = Math.Max(largest, CookieHeader(jar).Length);
+            }
+
+            // The browser holds the last-started attempt and it completes; an overwritten one fails cleanly.
+            var last = parallel[^1];
+            var overwritten = parallel[0];
+            var lost = await host.CompleteWithHeaderAsync(
+                overwritten.Nonce, host.CodeFor(overwritten, HeimdallShapes.NewAccountId()), CookieHeader(jar));
+            Assert.False(lost.SignedIn);
+            Assert.Equal(HttpStatusCode.Redirect, lost.Response.StatusCode);
+            Assert.Equal(ErrorRedirect, lost.Response.Headers.Location!.OriginalString);
+            Assert.DoesNotContain(overwritten.Nonce, string.Join("\n", lost.Response.Headers.SelectMany(x => x.Value)));
+            var done = await host.CompleteWithHeaderAsync(
+                last.Nonce, host.CodeFor(last, HeimdallShapes.NewAccountId()), CookieHeader(jar));
+            Assert.True(done.SignedIn);
+            ApplySetCookies(jar, done.Response);
         }
 
-        Assert.True(deletions > 0, "the bound was never reached");
-        Assert.True(jar.Count < started.Count);
-
-        // The oldest attempts were the ones given up: the newest completes, the first has no cookie left.
-        Assert.True((await Genuine(host, started[^1], HeimdallShapes.NewAccountId())).SignedIn);
-        Assert.DoesNotContain(HeimdallAttemptCookie.Prefix + started[0].Nonce, jar.Keys);
-        Assert.Contains(HeimdallAttemptCookie.Prefix + started[^2].Nonce, jar.Keys);
+        Assert.True(largest <= 6144, $"Cookie header reached {largest} bytes");
+        Assert.True(largest > 4096, "the probe never held two worst-case attempts");
     }
 
     [Fact]
-    public async Task Small_attempts_all_survive_under_the_cookie_bound_and_dead_cookies_are_swept()
+    public async Task A_third_sequential_attempt_takes_the_oldest_slot_and_the_others_still_complete()
     {
         using var host = new HeimdallHost();
         var jar = new Dictionary<string, string>();
         var started = new List<StartedAttempt>();
-        for (var i = 0; i < 5; i++)
+        for (var i = 0; i < 3; i++)
         {
             host.Clock.Advance(TimeSpan.FromSeconds(1));
-            var unrelated = ".AspNetCore.Cookies=session; x=1";
             var attempt = await host.StartAsync(
-                returnUrl: "/App", cookieHeader: jar.Count == 0 ? unrelated : CookieHeader(jar) + "; " + unrelated);
-            Assert.NotNull(attempt.Cookie);
-            Assert.Equal(0, Deletions(attempt.Response));
+                returnUrl: "/App", cookieHeader: (jar.Count == 0 ? "" : CookieHeader(jar) + "; ") + ".AspNetCore.Cookies=session; x=1");
             ApplySetCookies(jar, attempt.Response);
             started.Add(attempt);
         }
 
-        Assert.Equal(5, jar.Count);
-        foreach (var attempt in started)
-        {
-            Assert.True((await Genuine(host, attempt, HeimdallShapes.NewAccountId())).SignedIn);
-        }
+        Assert.Equal(HeimdallAttemptCookie.SlotCount, jar.Keys.Count(x => x.StartsWith(HeimdallAttemptCookie.Prefix, StringComparison.Ordinal)));
+        Assert.Equal(started[0].CookieName, started[2].CookieName);
 
-        var deadName = HeimdallAttemptCookie.Prefix + new string('A', HeimdallAttemptCookie.NonceLength);
-        var next = await host.StartAsync(cookieHeader: deadName + "=not-protected");
-        Assert.Contains("1970", HeimdallHost.SetCookieHeader(next.Response, deadName));
+        var oldest = await host.CompleteWithHeaderAsync(
+            started[0].Nonce, host.CodeFor(started[0], HeimdallShapes.NewAccountId()), CookieHeader(jar));
+        Assert.False(oldest.SignedIn);
+        Assert.Equal(ErrorRedirect, oldest.Response.Headers.Location!.OriginalString);
+        foreach (var attempt in started.Skip(1))
+        {
+            var done = await host.CompleteWithHeaderAsync(
+                attempt.Nonce, host.CodeFor(attempt, HeimdallShapes.NewAccountId()), CookieHeader(jar));
+            Assert.True(done.SignedIn);
+        }
     }
 
     [Fact]
@@ -1346,6 +1363,9 @@ public sealed class HeimdallCompletionTests
         var form = Regex.Match(page, @"<form\b([^>]*)>(.*?)</form>", RegexOptions.Singleline);
         Assert.True(form.Success);
         Assert.Matches(@"\bmethod=""post""", form.Groups[1].Value);
+        var formId = Regex.Match(form.Groups[1].Value, @"\bid=""([^""]*)""").Groups[1].Value;
+        Assert.NotEmpty(formId);
+        Assert.Contains($"getElementById(\"{formId}\")", page);
         var action = Regex.Match(form.Groups[1].Value, @"\baction=""([^""]*)""").Groups[1].Value;
         Assert.Equal("/auth/heimdall/complete", action);
         var inputs = Regex.Matches(form.Groups[2].Value, @"<input\b([^>]*)>");
@@ -1358,7 +1378,7 @@ public sealed class HeimdallCompletionTests
         var code = host.CodeFor(attempt, HeimdallShapes.NewAccountId());
         var fields = new Dictionary<string, string> { [names[0]] = attempt.Nonce, [names[1]] = code };
         using var post = new HttpRequestMessage(HttpMethod.Post, action) { Content = new FormUrlEncodedContent(fields) };
-        post.Headers.Add("Cookie", $"{HeimdallAttemptCookie.Prefix + attempt.Nonce}={attempt.Cookie}");
+        post.Headers.Add("Cookie", $"{attempt.CookieName}={attempt.Cookie}");
         using var response = await client.SendAsync(post);
         Assert.False(string.IsNullOrEmpty(HeimdallHost.CookieValue(response, ".AspNetCore.Cookies")));
     }
