@@ -144,7 +144,7 @@ public sealed class HeimdallTokenVerifier(
             throw Refuse("token is not yet valid");
         }
 
-        if (NumericDate(claims, "exp") is not { } expires || now >= expires + ClockSkew)
+        if (NumericDate(claims, "exp") is not { } expires || now - ClockSkew >= expires)
         {
             throw Refuse("token has expired");
         }

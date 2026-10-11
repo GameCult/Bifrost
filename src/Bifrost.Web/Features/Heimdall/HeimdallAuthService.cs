@@ -118,7 +118,7 @@ public sealed class HeimdallAuthService(
             cancellationToken);
         return new HeimdallCompletedSignIn(
             bifrostIdentityService.BuildPrincipal(userAccount, attempt.Provider),
-            string.IsNullOrWhiteSpace(attempt.ReturnUrl) ? "/App" : attempt.ReturnUrl);
+            attempt.ReturnUrl);
     }
 
     private async Task<UserAccount> UpsertUserAccountAsync(

@@ -24,6 +24,14 @@ public sealed class HeimdallCallbackTests
             attempt.AttemptId, accountId, host.Token(accountId, capabilities, displayName)));
     }
 
+    private static void AssertLogged(HeimdallHost host, string reason) =>
+        Assert.Contains("Heimdall callback refused: " + reason, string.Join("\n", host.Logs.Lines));
+
+    private static void AssertTokenRefused(HeimdallHost host, string rule) =>
+        AssertLogged(host, $"Heimdall token refused: {rule}.");
+
+    private static string ErrorLocation(string message) => "/?auth=heimdall-error&detail=" + Uri.EscapeDataString(message);
+
     private static async Task AssertRefused(HeimdallHost host, StartedAttempt attempt, string accountId, HttpResponseMessage delivery)
     {
         Assert.Equal(HttpStatusCode.BadRequest, delivery.StatusCode);
@@ -90,6 +98,19 @@ public sealed class HeimdallCallbackTests
         using var delivery = await host.DeliverAsync(payload);
 
         await AssertRefused(host, attempt, accountId, delivery);
+        AssertLogged(host, "Heimdall callback carried no access token.");
+    }
+
+    [Fact]
+    public async Task A_callback_without_an_attempt_id_signs_nobody_in()
+    {
+        using var host = new HeimdallHost();
+        var accountId = HeimdallShapes.NewAccountId();
+
+        using var delivery = await host.DeliverAsync(HeimdallShapes.Delivery(" ", accountId, host.Token(accountId)));
+
+        Assert.Equal(HttpStatusCode.BadRequest, delivery.StatusCode);
+        AssertLogged(host, "Heimdall callback omitted attempt id.");
     }
 
     [Fact]
@@ -102,27 +123,32 @@ public sealed class HeimdallCallbackTests
         using var delivery = await host.DeliverAsync(HeimdallShapes.Delivery(attempt.AttemptId, accountId, "  "));
 
         await AssertRefused(host, attempt, accountId, delivery);
+        AssertLogged(host, "Heimdall callback carried no access token.");
     }
 
     [Theory]
-    [InlineData("other-key-same-kid")]
-    [InlineData("other-key-other-kid")]
-    [InlineData("tampered-payload")]
-    [InlineData("alg-none")]
-    [InlineData("alg-hs256")]
-    [InlineData("truncated-signature")]
-    [InlineData("no-kid")]
-    [InlineData("unpublished-kid")]
-    [InlineData("four-segments")]
-    [InlineData("two-segments")]
-    [InlineData("not-base64url")]
-    [InlineData("payload-not-json")]
-    public async Task A_forged_token_signs_nobody_in(string forgery)
+    [InlineData("other-key-same-kid", "token signature is invalid")]
+    [InlineData("other-key-other-kid", "token key is not published")]
+    [InlineData("tampered-payload", "token signature is invalid")]
+    [InlineData("alg-none", "token algorithm is not EdDSA")]
+    [InlineData("alg-hs256", "token algorithm is not EdDSA")]
+    [InlineData("header-array", "token algorithm is not EdDSA")]
+    [InlineData("header-not-json", "token header is not JSON")]
+    [InlineData("truncated-signature", "token signature is invalid")]
+    [InlineData("no-kid", "token has no key id")]
+    [InlineData("unpublished-kid", "token key is not published")]
+    [InlineData("four-segments", "token is not a compact JWS")]
+    [InlineData("two-segments", "token is not a compact JWS")]
+    [InlineData("not-base64url", "token is not base64url")]
+    [InlineData("payload-not-json", "token payload is not JSON")]
+    [InlineData("payload-not-object", "token payload is not an object")]
+    public async Task A_forged_token_signs_nobody_in(string forgery, string rule)
     {
         using var host = new HeimdallHost();
         var accountId = HeimdallShapes.NewAccountId();
         var attempt = await host.StartAsync();
         var claims = HeimdallShapes.AccessClaims(accountId, host.Clock.Now, ["member_access"]);
+        var claimBytes = JsonSerializer.SerializeToUtf8Bytes(claims);
         var genuine = host.Key.Sign(claims);
         var parts = genuine.Split('.');
 
@@ -134,6 +160,8 @@ public sealed class HeimdallCallbackTests
                 HeimdallShapes.AccessClaims(accountId, host.Clock.Now, ["member_access", "x"]))) + "." + parts[2],
             "alg-none" => WebEncoders.Base64UrlEncode(Encoding.UTF8.GetBytes("{\"alg\":\"none\",\"typ\":\"JWT\"}")) + "." + parts[1] + ".",
             "alg-hs256" => host.Key.Sign(claims, alg: "HS256"),
+            "header-array" => host.Key.SignParts(Encoding.UTF8.GetBytes("[1]"), claimBytes),
+            "header-not-json" => host.Key.SignParts(Encoding.UTF8.GetBytes("not json"), claimBytes),
             "truncated-signature" => parts[0] + "." + parts[1] + "." +
                 WebEncoders.Base64UrlEncode(WebEncoders.Base64UrlDecode(parts[2])[..63]),
             "no-kid" => host.Key.Sign(claims, kid: null),
@@ -141,7 +169,8 @@ public sealed class HeimdallCallbackTests
             "four-segments" => genuine + ".AAAA",
             "two-segments" => parts[0] + "." + parts[1],
             "not-base64url" => parts[0] + "." + parts[1] + ".!!" + parts[2][2..],
-            "payload-not-json" => parts[0] + "." + WebEncoders.Base64UrlEncode(Encoding.UTF8.GetBytes("not json")) + "." + parts[2],
+            "payload-not-json" => host.Key.SignParts(host.Key.HeaderBytes(), Encoding.UTF8.GetBytes("not json")),
+            "payload-not-object" => host.Key.SignParts(host.Key.HeaderBytes(), Encoding.UTF8.GetBytes("[1]")),
             _ => throw new InvalidOperationException(forgery)
         };
         Assert.NotEqual(genuine, token);
@@ -149,6 +178,7 @@ public sealed class HeimdallCallbackTests
         using var delivery = await host.DeliverAsync(HeimdallShapes.Delivery(attempt.AttemptId, accountId, token));
 
         await AssertRefused(host, attempt, accountId, delivery);
+        AssertTokenRefused(host, rule);
     }
 
     [Fact]
@@ -170,27 +200,30 @@ public sealed class HeimdallCallbackTests
     }
 
     [Theory]
-    [InlineData("aud-other-app")]
-    [InlineData("aud-case")]
-    [InlineData("aud-array")]
-    [InlineData("aud-missing")]
-    [InlineData("app-slug-other")]
-    [InlineData("app-missing")]
-    [InlineData("typ-refresh")]
-    [InlineData("typ-missing")]
-    [InlineData("iss-other")]
-    [InlineData("iss-trailing-slash")]
-    [InlineData("expired")]
-    [InlineData("not-yet-valid")]
-    [InlineData("nbf-missing")]
-    [InlineData("exp-missing")]
-    [InlineData("exp-string")]
-    [InlineData("exp-out-of-range")]
-    [InlineData("sub-differs")]
-    [InlineData("account-id-differs")]
-    [InlineData("account-id-missing")]
-    [InlineData("sub-empty")]
-    public async Task A_signed_token_with_a_wrong_claim_signs_nobody_in(string wrong)
+    [InlineData("aud-other-app", "token audience is not this app")]
+    [InlineData("aud-case", "token audience is not this app")]
+    [InlineData("aud-array", "token audience is not this app")]
+    [InlineData("aud-missing", "token audience is not this app")]
+    [InlineData("app-slug-other", "token app is not this app")]
+    [InlineData("app-missing", "token app is not this app")]
+    [InlineData("app-not-object", "token app is not this app")]
+    [InlineData("typ-refresh", "token type is not an access token")]
+    [InlineData("typ-missing", "token type is not an access token")]
+    [InlineData("iss-other", "token issuer is not Heimdall")]
+    [InlineData("iss-trailing-slash", "token issuer is not Heimdall")]
+    [InlineData("expired", "token has expired")]
+    [InlineData("exp-missing", "token has expired")]
+    [InlineData("exp-string", "token has expired")]
+    [InlineData("exp-out-of-range", "token has expired")]
+    [InlineData("exp-negative", "token has expired")]
+    [InlineData("not-yet-valid", "token is not yet valid")]
+    [InlineData("nbf-missing", "token is not yet valid")]
+    [InlineData("nbf-negative", "token is not yet valid")]
+    [InlineData("sub-differs", "token subject does not match the account")]
+    [InlineData("account-id-differs", "token subject does not match the account")]
+    [InlineData("account-id-missing", "token subject does not match the account")]
+    [InlineData("sub-empty", "token subject does not match the account")]
+    public async Task A_signed_token_with_a_wrong_claim_signs_nobody_in(string wrong, string rule)
     {
         using var host = new HeimdallHost();
         var accountId = HeimdallShapes.NewAccountId();
@@ -206,16 +239,19 @@ public sealed class HeimdallCallbackTests
                 case "aud-missing": claims.Remove("aud"); break;
                 case "app-slug-other": claims["app"] = new Dictionary<string, object?> { ["slug"] = "ghostlight" }; break;
                 case "app-missing": claims.Remove("app"); break;
+                case "app-not-object": claims["app"] = "bifrost"; break;
                 case "typ-refresh": claims["typ"] = "heimdall_refresh"; break;
                 case "typ-missing": claims.Remove("typ"); break;
                 case "iss-other": claims["iss"] = "https://heimdall.example"; break;
                 case "iss-trailing-slash": claims["iss"] = HeimdallShapes.Issuer + "/"; break;
                 case "expired": claims["exp"] = now - 3600; break;
-                case "not-yet-valid": claims["nbf"] = now + 3600; claims["exp"] = now + 7200; break;
-                case "nbf-missing": claims.Remove("nbf"); break;
                 case "exp-missing": claims.Remove("exp"); break;
                 case "exp-string": claims["exp"] = (now + 900).ToString(); break;
                 case "exp-out-of-range": claims["exp"] = long.MaxValue; break;
+                case "exp-negative": claims["exp"] = -1; break;
+                case "not-yet-valid": claims["nbf"] = now + 3600; claims["exp"] = now + 7200; break;
+                case "nbf-missing": claims.Remove("nbf"); break;
+                case "nbf-negative": claims["nbf"] = -1; break;
                 case "sub-differs": claims["sub"] = Flip(accountId); break;
                 case "account-id-differs": claims["account_id"] = Flip(accountId); break;
                 case "account-id-missing": claims.Remove("account_id"); break;
@@ -227,6 +263,7 @@ public sealed class HeimdallCallbackTests
         using var delivery = await host.DeliverAsync(HeimdallShapes.Delivery(attempt.AttemptId, accountId, token));
 
         await AssertRefused(host, attempt, accountId, delivery);
+        AssertTokenRefused(host, rule);
     }
 
     [Fact]
@@ -244,6 +281,7 @@ public sealed class HeimdallCallbackTests
         Assert.False((await host.WaitAsync(attempt.AttemptId, attempt.Binding)).SignedIn);
         Assert.Null(await host.Account(tokenAccount));
         Assert.Null(await host.Account(payloadAccount));
+        AssertTokenRefused(host, "token subject does not match the account");
     }
 
     [Fact]
@@ -258,6 +296,7 @@ public sealed class HeimdallCallbackTests
         using var delivery = await host.DeliverAsync(payload);
 
         await AssertRefused(host, attempt, accountId, delivery);
+        AssertTokenRefused(host, "token subject does not match the account");
     }
 
     [Theory]
@@ -294,12 +333,9 @@ public sealed class HeimdallCallbackTests
         Assert.Equal(HttpStatusCode.BadRequest, delivery.StatusCode);
         var wait = await host.WaitAsync(unissued, "anything");
         Assert.False(wait.SignedIn);
-        Assert.StartsWith("/?auth=heimdall-error", wait.Response.Headers.Location!.OriginalString);
+        Assert.Equal(ErrorLocation("Heimdall auth attempt is not valid for this browser."), wait.Response.Headers.Location!.OriginalString);
         Assert.Null(await host.Account(accountId));
-
-        // The same id arriving at wait before and after the refused delivery is equally unknown: no pending page.
-        var again = await host.WaitAsync(unissued, "anything");
-        Assert.Equal(HttpStatusCode.Redirect, again.Response.StatusCode);
+        AssertLogged(host, "Heimdall callback did not match a pending attempt.");
     }
 
     [Fact]
@@ -315,6 +351,7 @@ public sealed class HeimdallCallbackTests
 
         Assert.Equal(HttpStatusCode.Accepted, accepted.StatusCode);
         Assert.Equal(HttpStatusCode.BadRequest, replaced.StatusCode);
+        AssertLogged(host, "Heimdall callback did not match a pending attempt.");
         Assert.True((await host.WaitAsync(attempt.AttemptId, attempt.Binding)).SignedIn);
         Assert.NotNull(await host.Account(first));
         Assert.Null(await host.Account(second));
@@ -345,9 +382,10 @@ public sealed class HeimdallCallbackTests
         using var delivery = await DeliverGenuine(host, attempt, accountId);
 
         Assert.Equal(HttpStatusCode.BadRequest, delivery.StatusCode);
+        AssertLogged(host, "Heimdall callback did not match a pending attempt.");
         var wait = await host.WaitAsync(attempt.AttemptId, attempt.Binding);
         Assert.False(wait.SignedIn);
-        Assert.StartsWith("/?auth=heimdall-error", wait.Response.Headers.Location!.OriginalString);
+        Assert.Equal(ErrorLocation("Heimdall auth attempt is not valid for this browser."), wait.Response.Headers.Location!.OriginalString);
     }
 
     [Fact]
@@ -362,7 +400,7 @@ public sealed class HeimdallCallbackTests
         var wait = await host.WaitAsync(attempt.AttemptId, attempt.Binding);
 
         Assert.False(wait.SignedIn);
-        Assert.StartsWith("/?auth=heimdall-error", wait.Response.Headers.Location!.OriginalString);
+        Assert.Equal(ErrorLocation("Heimdall auth attempt is not valid for this browser."), wait.Response.Headers.Location!.OriginalString);
         Assert.Null(await host.Account(accountId));
     }
 
@@ -379,11 +417,11 @@ public sealed class HeimdallCallbackTests
         }
 
         // Exactly at capacity nothing has been dropped yet.
-        store.Complete("attempt-0", identity);
+        store.Complete("attempt-1", identity);
         store.Create("attempt-extra", "discord", "/App", false);
 
         Assert.Throws<HeimdallAuthException>(() => store.Complete("attempt-0", identity));
-        store.Complete("attempt-1", identity);
+        store.Complete("attempt-2", identity);
         store.Complete("attempt-extra", identity);
         store.Complete($"attempt-{HeimdallAuthAttemptStore.Capacity - 1}", identity);
     }
@@ -434,7 +472,7 @@ public sealed class HeimdallCallbackTests
         {
             var refused = await host.WaitAsync(attempt.AttemptId, binding);
             Assert.False(refused.SignedIn, name);
-            Assert.StartsWith("/?auth=heimdall-error", refused.Response.Headers.Location!.OriginalString);
+            Assert.Equal(ErrorLocation("Heimdall auth attempt is not valid for this browser."), refused.Response.Headers.Location!.OriginalString);
         }
 
         Assert.Null(await host.Account(accountId));
@@ -506,7 +544,7 @@ public sealed class HeimdallCallbackTests
         else
         {
             Assert.False(wait.SignedIn);
-            Assert.StartsWith("/?auth=heimdall-error", wait.Response.Headers.Location!.OriginalString);
+            Assert.Equal(ErrorLocation("Heimdall did not grant Bifrost member access."), wait.Response.Headers.Location!.OriginalString);
             Assert.Null(account);
         }
     }
@@ -665,6 +703,7 @@ public sealed class HeimdallCallbackTests
         using (var down = await DeliverGenuine(host, first, accountId))
         {
             Assert.Equal(HttpStatusCode.BadRequest, down.StatusCode);
+            AssertTokenRefused(host, "Heimdall keys could not be fetched");
         }
 
         var second = await host.StartAsync();
@@ -709,6 +748,75 @@ public sealed class HeimdallCallbackTests
         var genuine = await host.StartAsync();
         using var accepted = await DeliverGenuine(host, genuine, accountId);
         Assert.Equal(HttpStatusCode.Accepted, accepted.StatusCode);
+    }
+
+    [Fact]
+    public async Task Capabilities_that_are_not_a_list_of_names_grant_nothing_and_do_not_crash()
+    {
+        using var host = new HeimdallHost();
+        var accountId = HeimdallShapes.NewAccountId();
+        var attempt = await host.StartAsync();
+        var token = host.Token(accountId, mutate: claims => claims["capabilities"] = "member_access");
+
+        using var delivery = await host.DeliverAsync(HeimdallShapes.Delivery(attempt.AttemptId, accountId, token));
+
+        Assert.Equal(HttpStatusCode.Accepted, delivery.StatusCode);
+        Assert.True((await host.WaitAsync(attempt.AttemptId, attempt.Binding)).SignedIn);
+        Assert.Empty((await host.Account(accountId))!.Membership!.RoleAssignments);
+    }
+
+    [Fact]
+    public async Task Member_access_is_found_among_other_and_non_string_capabilities()
+    {
+        using var host = new HeimdallHost();
+        var accountId = HeimdallShapes.NewAccountId();
+        var attempt = await host.StartAsync(member: true);
+        var token = host.Token(accountId, mutate: claims =>
+            claims["capabilities"] = new object?[] { 7, null, "billing_access", "member_access" });
+
+        using var delivery = await host.DeliverAsync(HeimdallShapes.Delivery(attempt.AttemptId, accountId, token));
+
+        Assert.Equal(HttpStatusCode.Accepted, delivery.StatusCode);
+        Assert.True((await host.WaitAsync(attempt.AttemptId, attempt.Binding)).SignedIn);
+        Assert.Contains((await host.Account(accountId))!.Membership!.RoleAssignments, x => x.Role == MemberRole.StandardMember);
+    }
+
+    [Theory]
+    [InlineData(0L, 900L)]
+    [InlineData(-1L, 253402300799L)]
+    public async Task Numeric_dates_at_the_ends_of_the_valid_range_are_accepted(long notBefore, long expires)
+    {
+        using var host = new HeimdallHost();
+        var accountId = HeimdallShapes.NewAccountId();
+        var attempt = await host.StartAsync();
+        var now = host.Clock.Now.ToUnixTimeSeconds();
+        var token = host.Token(accountId, mutate: claims =>
+        {
+            claims["nbf"] = notBefore < 0 ? now : notBefore;
+            claims["exp"] = expires == 900 ? now + 900 : expires;
+        });
+
+        using var delivery = await host.DeliverAsync(HeimdallShapes.Delivery(attempt.AttemptId, accountId, token));
+
+        Assert.Equal(HttpStatusCode.Accepted, delivery.StatusCode);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.InternalServerError, "{}", "Heimdall rejected the auth start.")]
+    [InlineData(HttpStatusCode.OK, "{}", "Heimdall auth start returned no authorization URL.")]
+    [InlineData(HttpStatusCode.OK, "{\"authorizationUrl\":\" \"}", "Heimdall auth start returned no authorization URL.")]
+    public async Task A_start_Heimdall_cannot_serve_issues_no_attempt_and_no_cookie(HttpStatusCode status, string body, string message)
+    {
+        using var host = new HeimdallHost();
+        host.Heimdall.StartStatus = status;
+        host.Heimdall.StartBody = body;
+
+        var attempt = await host.StartAsync();
+
+        Assert.Equal(ErrorLocation(message), attempt.Response.Headers.Location!.OriginalString);
+        Assert.Null(attempt.Binding);
+        var wait = await host.WaitAsync(attempt.AttemptId, "anything");
+        Assert.False(wait.SignedIn);
     }
 
     [Fact]

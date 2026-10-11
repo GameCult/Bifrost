@@ -52,7 +52,10 @@ public sealed class HeimdallKey
     };
 
     /// <summary>Signs like Heimdall's signJwt: header {alg, kid, typ}, compact JWS.</summary>
-    public string Sign(IDictionary<string, object?> claims, string alg = "EdDSA", string? kid = "")
+    public string Sign(IDictionary<string, object?> claims, string alg = "EdDSA", string? kid = "") =>
+        SignParts(HeaderBytes(alg, kid), JsonSerializer.SerializeToUtf8Bytes(claims));
+
+    public byte[] HeaderBytes(string alg = "EdDSA", string? kid = "")
     {
         var header = new Dictionary<string, object?> { ["alg"] = alg, ["typ"] = "JWT" };
         if (kid is not null)
@@ -60,9 +63,13 @@ public sealed class HeimdallKey
             header["kid"] = kid.Length == 0 ? Kid : kid;
         }
 
-        var signingInput =
-            WebEncoders.Base64UrlEncode(JsonSerializer.SerializeToUtf8Bytes(header)) + "." +
-            WebEncoders.Base64UrlEncode(JsonSerializer.SerializeToUtf8Bytes(claims));
+        return JsonSerializer.SerializeToUtf8Bytes(header);
+    }
+
+    /// <summary>Signs exactly these header and payload bytes, whatever they hold.</summary>
+    public string SignParts(byte[] headerBytes, byte[] payloadBytes)
+    {
+        var signingInput = WebEncoders.Base64UrlEncode(headerBytes) + "." + WebEncoders.Base64UrlEncode(payloadBytes);
         var message = Encoding.ASCII.GetBytes(signingInput);
         var signature = new byte[Ed25519.SignatureSize];
         Ed25519.Sign(_seed, 0, message, 0, message.Length, signature, 0);
@@ -175,6 +182,11 @@ public sealed class FakeHeimdall : HttpMessageHandler
 
     public List<string> StartBodies { get; } = [];
 
+    public HttpStatusCode StartStatus { get; set; } = HttpStatusCode.OK;
+
+    public string StartBody { get; set; } =
+        """{"authorizationUrl":"https://heimdall.test/oauth/discord/authorize?state=fixture"}""";
+
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         var path = request.RequestUri!.AbsolutePath;
@@ -191,12 +203,9 @@ public sealed class FakeHeimdall : HttpMessageHandler
         if (request.Method == HttpMethod.Post && path.StartsWith("/v1/oauth/", StringComparison.Ordinal) && path.EndsWith("/start", StringComparison.Ordinal))
         {
             StartBodies.Add(await request.Content!.ReadAsStringAsync(cancellationToken));
-            return new HttpResponseMessage(HttpStatusCode.OK)
+            return new HttpResponseMessage(StartStatus)
             {
-                Content = new StringContent(
-                    """{"authorizationUrl":"https://heimdall.test/oauth/discord/authorize?state=fixture"}""",
-                    Encoding.UTF8,
-                    "application/json")
+                Content = new StringContent(StartBody, Encoding.UTF8, "application/json")
             };
         }
 
