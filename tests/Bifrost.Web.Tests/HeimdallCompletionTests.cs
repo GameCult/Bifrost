@@ -1355,8 +1355,11 @@ public sealed class HeimdallCompletionTests
 
         var fits = Pair(HeimdallAttemptCookie.MaxAggregateBytes);
         var overflows = Pair(HeimdallAttemptCookie.MaxAggregateBytes + 1);
-        Assert.NotNull(fits);
-        Assert.NotNull(overflows);
+        var near = string.Join(",", (from a in byLength.Values from b in byLength.Values
+                                     let sum = a.Bytes + b.Bytes
+                                     where Math.Abs(sum - HeimdallAttemptCookie.MaxAggregateBytes) <= 40
+                                     select sum).Distinct().Order());
+        Assert.True(fits is not null && overflows is not null, $"sums near the bound: {near}");
 
         foreach (var (pair, overflow) in new[] { (fits.Value, false), (overflows.Value, true) })
         {
