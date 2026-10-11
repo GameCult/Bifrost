@@ -20,6 +20,20 @@ public sealed class ConceptVoteOptions
     // default weighed in the note, not a standard. Tune on observed abuse.
     public int IPv6PrefixLength { get; init; } = 56;
 
+    // Vote budgets (Features/ConceptVotes/ConceptVoteRateLimits). The research note
+    // (docs/research/anonymous-vote-stuffing-prior-art.md section 3) gives no numbers, so these are first values to tune on
+    // observed abuse. Cast: one visitor reading through the Mill can vote on a few dozen concepts in a sitting, so 30 per
+    // 10 minutes per account or network prefix does not trouble a person and caps a script at 180 an hour.
+    public int CastPermits { get; init; } = 30;
+
+    public TimeSpan CastWindow { get; init; } = TimeSpan.FromMinutes(10);
+
+    // Mint: a new device cookie is a new voter identity, the cheapest stuffing lever, and a household has few devices,
+    // so 5 new devices per hour per network prefix.
+    public int MintPermits { get; init; } = 5;
+
+    public TimeSpan MintWindow { get; init; } = TimeSpan.FromHours(1);
+
     // The origins whose pages may read the public tally export from a browser (CORS). Each entry is exactly
     // https://host[:non-default-port], lower case, no path; empty allows none. StartupConfigurationValidator
     // refuses anything else outside Development and Testing, because "*" would allow every origin.

@@ -17,6 +17,7 @@ public sealed class VoteModel(
     ICurrentBifrostActorAccessor actorAccessor,
     ConceptAppraisalService appraisals,
     VoterKeyResolver deviceCookie,
+    ConceptVoteRateLimits limits,
     IOptions<ConceptVoteOptions> options,
     IOptions<BifrostHostOptions> host) : PageModel
 {
@@ -61,7 +62,7 @@ public sealed class VoteModel(
     public async Task<IActionResult> OnGetAsync(string collection, string key, CancellationToken cancellationToken)
     {
         var actor = await actorAccessor.GetAsync(cancellationToken);
-        var voter = ResolveVoter(actor, mint: false);
+        var voter = ResolveVoter(actor);
         SignedIn = voter?.UserAccountId is not null;
         return await LoadAsync(collection, key, voter, cancellationToken) ? Page() : NotFound();
     }
@@ -75,12 +76,17 @@ public sealed class VoteModel(
     public async Task<IActionResult> OnPostRetractAsync(string collection, string key, CancellationToken cancellationToken)
     {
         var actor = await actorAccessor.GetAsync(cancellationToken);
+        var voter = ResolveVoter(actor);
+        if (Throttled(limits.DenyCast(HttpContext.Connection.RemoteIpAddress, voter)) is { } throttled)
+        {
+            return throttled;
+        }
+
         if (await appraisals.GetSubjectAsync(collection, key, null, cancellationToken) is null)
         {
             return NotFound();
         }
 
-        var voter = ResolveVoter(actor, mint: false);
         await appraisals.RetractAsync(collection, key, voter, cancellationToken);
         return RedirectToPage(new { collection, key });
     }
@@ -92,12 +98,28 @@ public sealed class VoteModel(
         CancellationToken cancellationToken)
     {
         var actor = await actorAccessor.GetAsync(cancellationToken);
+        var client = HttpContext.Connection.RemoteIpAddress;
+        var voter = ResolveVoter(actor);
+        if (Throttled(limits.DenyCast(client, voter)) is { } throttled)
+        {
+            return throttled;
+        }
+
         if (await appraisals.GetSubjectAsync(collection, key, null, cancellationToken) is null)
         {
             return NotFound();
         }
 
-        var voter = ResolveVoter(actor, mint: true);
+        if (voter is null)
+        {
+            if (Throttled(limits.DenyMint(client)) is { } mintThrottled)
+            {
+                return mintThrottled;
+            }
+
+            voter = VoterIdentity.For(actor, deviceCookie.Mint(HttpContext));
+        }
+
         var result = await appraisals.CastAsync(
             collection, key, voter, stance, HttpContext.Connection.RemoteIpAddress, cancellationToken);
         return result is CastResult.UnknownSubject or CastResult.RetiredSubject
@@ -106,16 +128,20 @@ public sealed class VoteModel(
     }
 
     // Accounts key to the account and never touch the cookie. An anonymous visitor keys to a device cookie that
-    // unprotects to a well-formed id; a cast without one mints it, and no other path does.
-    private VoterIdentity? ResolveVoter(CurrentBifrostActor actor, bool mint)
+    // unprotects to a well-formed id; a cast without one mints it (CastAsync, after the mint budget), and no other path does.
+    private VoterIdentity? ResolveVoter(CurrentBifrostActor actor) =>
+        VoterIdentity.For(actor, null) ?? VoterIdentity.For(actor, deviceCookie.TryRead(HttpContext));
+
+    // A denied budget is a 429 that says when to retry; it writes no row and sets no cookie.
+    private IActionResult? Throttled(TimeSpan? retryAfter)
     {
-        var voter = VoterIdentity.For(actor, null) ?? VoterIdentity.For(actor, deviceCookie.TryRead(HttpContext));
-        if (voter is null && mint)
+        if (retryAfter is not { } wait)
         {
-            voter = VoterIdentity.For(actor, deviceCookie.Mint(HttpContext));
+            return null;
         }
 
-        return voter;
+        Response.Headers.RetryAfter = Math.Max(1, (int)Math.Ceiling(wait.TotalSeconds)).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        return new StatusCodeResult(StatusCodes.Status429TooManyRequests);
     }
 
     private async Task<bool> LoadAsync(string collection, string key, VoterIdentity? voter, CancellationToken cancellationToken)

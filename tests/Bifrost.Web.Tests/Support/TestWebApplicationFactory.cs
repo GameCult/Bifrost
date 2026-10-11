@@ -34,6 +34,8 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
                 ["GitHubApp:PrivateKeyPem"] = "test-private-key",
                 ["GitHubApp:AppId"] = "1",
                 ["Bridge:LocalBridgeToken"] = "test-bridge-token",
+                ["ConceptVotes:CastPermits"] = "100000",
+                ["ConceptVotes:MintPermits"] = "100000",
                 ["Host:PublicBaseUrl"] = "https://localhost",
                 ["Host:ExpectedHost"] = "localhost",
                 ["Host:RequireStrictHostValidation"] = "false",

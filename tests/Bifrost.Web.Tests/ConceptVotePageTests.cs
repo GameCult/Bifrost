@@ -184,6 +184,22 @@ public sealed partial class ConceptVotePageTests : IClassFixture<TestWebApplicat
     }
 
     [Theory]
+    [InlineData(null)]
+    [InlineData("same-origin")]
+    public async Task Cast_with_an_empty_origin_header_is_refused_whatever_fetch_site_says(string? fetchSite)
+    {
+        var collection = NewCollection();
+        await AddSubject(collection, "alpha");
+        var visitor = NewVisitor(anonymous: true);
+
+        using var response = await visitor.Post(collection, "alpha", "Up", origin: string.Empty, fetchSite: fetchSite);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.False(response.Headers.Contains("Set-Cookie"));
+        Assert.Empty(await Rows(collection, "alpha"));
+    }
+
+    [Theory]
     [InlineData("same-origin", true)]
     [InlineData("same-site", false)]
     [InlineData("cross-site", false)]
@@ -636,48 +652,6 @@ public sealed partial class ConceptVotePageTests : IClassFixture<TestWebApplicat
             }
 
             return response;
-        }
-    }
-
-    private sealed class CapturingLoggerProvider : ILoggerProvider
-    {
-        private readonly List<string> _lines = [];
-
-        public IReadOnlyList<string> Lines
-        {
-            get
-            {
-                lock (_lines)
-                {
-                    return _lines.ToArray();
-                }
-            }
-        }
-
-        public ILogger CreateLogger(string categoryName) => new Capture(this);
-
-        public void Dispose()
-        {
-        }
-
-        private sealed class Capture(CapturingLoggerProvider owner) : ILogger
-        {
-            public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
-
-            public bool IsEnabled(LogLevel logLevel) => true;
-
-            public void Log<TState>(
-                LogLevel logLevel,
-                EventId eventId,
-                TState state,
-                Exception? exception,
-                Func<TState, Exception?, string> formatter)
-            {
-                lock (owner._lines)
-                {
-                    owner._lines.Add(formatter(state, exception) + (exception is null ? string.Empty : "\n" + exception));
-                }
-            }
         }
     }
 }

@@ -119,6 +119,7 @@ builder.Services.AddScoped<StripeWebhookService>();
 builder.Services.AddScoped<HeimdallPatronSupportIntakeService>();
 builder.Services.AddScoped<ConceptAppraisalService>();
 builder.Services.AddScoped<VoterKeyResolver>();
+builder.Services.AddSingleton<ConceptVoteRateLimits>();
 builder.Services.AddScoped<ConceptSubjectRegistry>();
 builder.Services.AddScoped<ReadinessService>();
 builder.Services.AddScoped<ApplicationBootstrapper>();

@@ -186,6 +186,50 @@ public sealed class HostTrustTests : IClassFixture<TestWebApplicationFactory>
     }
 
     [Theory]
+    [InlineData("Development")]
+    [InlineData("Testing")]
+    [InlineData("Production")]
+    public void Every_environment_refuses_prefix_lengths_outside_the_address_family(string environment)
+    {
+        var v4 = Assert.Throws<InvalidOperationException>(
+            () => Validate(keysPath: "/keys", environment: environment, ipv4Length: 33));
+        Assert.Contains("ConceptVotes:IPv4PrefixLength", v4.Message);
+        Assert.DoesNotContain("IPv6PrefixLength", v4.Message);
+
+        var v6 = Assert.Throws<InvalidOperationException>(
+            () => Validate(keysPath: "/keys", environment: environment, ipv6Length: 129));
+        Assert.Contains("ConceptVotes:IPv6PrefixLength", v6.Message);
+        Assert.DoesNotContain("IPv4PrefixLength", v6.Message);
+
+        Validate(keysPath: "/keys", environment: environment, ipv4Length: 0, ipv6Length: 0);
+    }
+
+    [Theory]
+    [InlineData("Development", 0, 1, 5, 1, "ConceptVotes:CastPermits")]
+    [InlineData("Testing", 30, 0, 5, 1, "ConceptVotes:CastPermits")]
+    [InlineData("Production", 30, 1, 0, 1, "ConceptVotes:MintPermits")]
+    [InlineData("Production", 30, 1, 5, 0, "ConceptVotes:MintPermits")]
+    public void Every_environment_refuses_a_vote_budget_that_cannot_be_enforced(
+        string environment,
+        int castPermits,
+        int castMinutes,
+        int mintPermits,
+        int mintMinutes,
+        string key)
+    {
+        var refusal = Assert.Throws<InvalidOperationException>(() => Validate(
+            keysPath: "/keys",
+            environment: environment,
+            castPermits: castPermits,
+            castWindow: TimeSpan.FromMinutes(castMinutes),
+            mintPermits: mintPermits,
+            mintWindow: TimeSpan.FromMinutes(mintMinutes)));
+
+        Assert.Contains(key, refusal.Message);
+        Validate(keysPath: "/keys", environment: environment);
+    }
+
+    [Theory]
     [InlineData("*")]
     [InlineData("")]
     [InlineData("null")]
@@ -267,7 +311,11 @@ public sealed class HostTrustTests : IClassFixture<TestWebApplicationFactory>
         string? tagSecret = ValidTagSecret,
         int ipv4Length = 32,
         int ipv6Length = 56,
-        string[]? allowedOrigins = null)
+        string[]? allowedOrigins = null,
+        int castPermits = 30,
+        TimeSpan? castWindow = null,
+        int mintPermits = 5,
+        TimeSpan? mintWindow = null)
     {
         var values = new Dictionary<string, string?>
         {
@@ -295,7 +343,11 @@ public sealed class HostTrustTests : IClassFixture<TestWebApplicationFactory>
                 NetworkTagSecret = tagSecret ?? string.Empty,
                 IPv4PrefixLength = ipv4Length,
                 IPv6PrefixLength = ipv6Length,
-                AllowedOrigins = allowedOrigins ?? []
+                AllowedOrigins = allowedOrigins ?? [],
+                CastPermits = castPermits,
+                CastWindow = castWindow ?? TimeSpan.FromMinutes(10),
+                MintPermits = mintPermits,
+                MintWindow = mintWindow ?? TimeSpan.FromHours(1)
             })).Validate();
     }
 

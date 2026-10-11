@@ -1,0 +1,392 @@
+using System.Net;
+using Bifrost.Web.Data;
+using Bifrost.Web.Domain;
+using Bifrost.Web.Tests.Support;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
+
+namespace Bifrost.Web.Tests;
+
+// The vote budgets through the full pipeline: a loopback peer (the proxy) forwards the client address in
+// X-Forwarded-For, the clock is the test's own, and Cast is 3 per 10 minutes, Mint 2 per hour.
+public sealed class ConceptVoteRateLimitTests : IClassFixture<ConceptVoteRateLimitTests.LimitedFactory>
+{
+    private const string Site = "https://localhost";
+    private const string CookieName = "bifrost_voter";
+
+    private readonly LimitedFactory _factory;
+
+    public ConceptVoteRateLimitTests(LimitedFactory factory) => _factory = factory;
+
+    [Fact]
+    public async Task Burst_from_one_prefix_gets_429_while_another_prefix_is_unaffected()
+    {
+        var collection = await NewSubject();
+        var device = new Client(_factory, "203.0.113.10");
+        foreach (var handler in new[] { "Up", "Down", "Up" })
+        {
+            using var ok = await device.Post(collection, handler);
+            Assert.Equal(HttpStatusCode.Redirect, ok.StatusCode);
+        }
+
+        using var denied = await device.Post(collection, "Down");
+        Assert.Equal(HttpStatusCode.TooManyRequests, denied.StatusCode);
+
+        var other = new Client(_factory, "203.0.113.11");
+        using var unaffected = await other.Post(collection, "Up");
+        Assert.Equal(HttpStatusCode.Redirect, unaffected.StatusCode);
+    }
+
+    [Fact]
+    public async Task Retract_spends_the_cast_budget()
+    {
+        var collection = await NewSubject();
+        var device = new Client(_factory, "203.0.113.12");
+        await device.Post(collection, "Up");
+        await device.Post(collection, "Retract");
+        await device.Post(collection, "Retract");
+
+        using var denied = await device.Post(collection, "Retract");
+
+        Assert.Equal(HttpStatusCode.TooManyRequests, denied.StatusCode);
+    }
+
+    [Fact]
+    public async Task Addresses_in_one_ipv6_prefix_share_a_bucket_and_another_prefix_does_not()
+    {
+        var collection = await NewSubject();
+        var first = new Client(_factory, "2001:db8:1:100::1");
+        var sameBlock = new Client(_factory, "2001:db8:1:1ff::2");
+        await first.Post(collection, "Up");
+        await first.Post(collection, "Down");
+        using var third = await sameBlock.Post(collection, "Up");
+        Assert.Equal(HttpStatusCode.Redirect, third.StatusCode);
+
+        using var denied = await sameBlock.Post(collection, "Down");
+        Assert.Equal(HttpStatusCode.TooManyRequests, denied.StatusCode);
+
+        var elsewhere = new Client(_factory, "2001:db8:1:200::1");
+        using var unaffected = await elsewhere.Post(collection, "Up");
+        Assert.Equal(HttpStatusCode.Redirect, unaffected.StatusCode);
+    }
+
+    [Fact]
+    public async Task The_window_ends_exactly_at_its_length_and_retry_after_counts_down_to_it()
+    {
+        var collection = await NewSubject();
+        var device = new Client(_factory, "203.0.113.13");
+        for (var i = 0; i < 3; i++)
+        {
+            await device.Post(collection, "Up");
+        }
+
+        using (var first = await device.Post(collection, "Up"))
+        {
+            Assert.Equal(HttpStatusCode.TooManyRequests, first.StatusCode);
+            Assert.Equal("600", RetryAfter(first));
+        }
+
+        _factory.Clock.Advance(TimeSpan.FromSeconds(100));
+        using (var later = await device.Post(collection, "Up"))
+        {
+            Assert.Equal(HttpStatusCode.TooManyRequests, later.StatusCode);
+            Assert.Equal("500", RetryAfter(later));
+        }
+
+        _factory.Clock.Advance(TimeSpan.FromSeconds(499));
+        using (var last = await device.Post(collection, "Up"))
+        {
+            Assert.Equal(HttpStatusCode.TooManyRequests, last.StatusCode);
+            Assert.Equal("1", RetryAfter(last));
+        }
+
+        _factory.Clock.Advance(TimeSpan.FromSeconds(1));
+        using var reopened = await device.Post(collection, "Up");
+        Assert.Equal(HttpStatusCode.Redirect, reopened.StatusCode);
+    }
+
+    [Fact]
+    public async Task Forged_forwarded_header_from_non_loopback_peer_does_not_move_the_bucket()
+    {
+        var collection = await NewSubject();
+        var device = new Client(_factory, "198.51.100.9") { Peer = "198.51.100.9" };
+        for (var i = 0; i < 3; i++)
+        {
+            using var ok = await device.Post(collection, "Up", forwardedFor: $"192.0.2.{i + 1}");
+            Assert.Equal(HttpStatusCode.Redirect, ok.StatusCode);
+        }
+
+        using var denied = await device.Post(collection, "Up", forwardedFor: "192.0.2.200");
+        Assert.Equal(HttpStatusCode.TooManyRequests, denied.StatusCode);
+    }
+
+    [Fact]
+    public async Task Signed_in_accounts_are_limited_per_account()
+    {
+        var collection = await NewSubject();
+        var alice = new Client(_factory, "203.0.113.20") { Account = ("7001", "alice-limits") };
+        var aliceElsewhere = new Client(_factory, "203.0.113.21") { Account = ("7001", "alice-limits") };
+        var bob = new Client(_factory, "203.0.113.20") { Account = ("7002", "bob-limits") };
+        var visitor = new Client(_factory, "203.0.113.20");
+
+        await alice.Post(collection, "Up");
+        await alice.Post(collection, "Down");
+        await aliceElsewhere.Post(collection, "Up");
+        using var denied = await aliceElsewhere.Post(collection, "Down");
+        Assert.Equal(HttpStatusCode.TooManyRequests, denied.StatusCode);
+
+        var aliceAgain = new Client(_factory, "203.0.113.22") { Account = ("7001", "alice-limits") };
+        using var sameAccountNewPrefix = await aliceAgain.Post(collection, "Down");
+        Assert.Equal(HttpStatusCode.TooManyRequests, sameAccountNewPrefix.StatusCode);
+
+        using var bobOk = await bob.Post(collection, "Up");
+        Assert.Equal(HttpStatusCode.Redirect, bobOk.StatusCode);
+        using var visitorOk = await visitor.Post(collection, "Up");
+        Assert.Equal(HttpStatusCode.Redirect, visitorOk.StatusCode);
+    }
+
+    [Fact]
+    public async Task Mint_budget_is_spent_only_by_minting_casts()
+    {
+        var collection = await NewSubject();
+        const string prefix = "203.0.113.30";
+        var first = new Client(_factory, prefix);
+        using (var mint = await first.Post(collection, "Up"))
+        {
+            Assert.NotNull(SetCookie(mint));
+        }
+
+        // Recasts by the existing device spend cast permits only; they would exhaust a budget of 2 if they spent mint.
+        using (var recast = await first.Post(collection, "Down"))
+        {
+            Assert.Equal(HttpStatusCode.Redirect, recast.StatusCode);
+            Assert.Null(SetCookie(recast));
+        }
+
+        using (var recastAgain = await first.Post(collection, "Up"))
+        {
+            Assert.Equal(HttpStatusCode.Redirect, recastAgain.StatusCode);
+        }
+
+        _factory.Clock.Advance(TimeSpan.FromMinutes(10));
+        var second = new Client(_factory, prefix);
+        using (var secondMint = await second.Post(collection, "Up"))
+        {
+            Assert.Equal(HttpStatusCode.Redirect, secondMint.StatusCode);
+            Assert.NotNull(SetCookie(secondMint));
+        }
+
+        var rowsBefore = (await Rows(collection)).Count;
+        var third = new Client(_factory, prefix);
+        using var denied = await third.Post(collection, "Up");
+        Assert.Equal(HttpStatusCode.TooManyRequests, denied.StatusCode);
+        Assert.Null(SetCookie(denied));
+        Assert.Equal(rowsBefore, (await Rows(collection)).Count);
+
+        // An hour after the first mint the budget is whole again.
+        _factory.Clock.Advance(TimeSpan.FromMinutes(50));
+        using var reopened = await third.Post(collection, "Up");
+        Assert.Equal(HttpStatusCode.Redirect, reopened.StatusCode);
+    }
+
+    [Fact]
+    public async Task Anonymous_cast_under_the_limit_succeeds()
+    {
+        var collection = await NewSubject();
+        var visitor = new Client(_factory, "203.0.113.40");
+
+        using var response = await visitor.Post(collection, "Up");
+
+        Assert.Equal(HttpStatusCode.Redirect, response.StatusCode);
+        var row = Assert.Single(await Rows(collection));
+        Assert.Equal(VoterClass.Anonymous, row.VoterClass);
+        Assert.Equal(ConceptStance.Up, row.Stance);
+    }
+
+    [Fact]
+    public async Task Rejection_writes_nothing_says_when_to_retry_and_echoes_no_address()
+    {
+        var logs = new CapturingLoggerProvider();
+        var factory = _factory.WithWebHostBuilder(b => b.ConfigureServices(s => s.AddLogging(l => l.AddProvider(logs))));
+        var collection = await NewSubject();
+        var visitor = new Client(factory, "203.0.113.77");
+        for (var i = 0; i < 3; i++)
+        {
+            await visitor.Post(collection, i == 1 ? "Down" : "Up");
+        }
+
+        var before = Assert.Single(await Rows(collection));
+        using var denied = await visitor.Post(collection, "Down");
+
+        Assert.Equal(HttpStatusCode.TooManyRequests, denied.StatusCode);
+        Assert.NotNull(RetryAfter(denied));
+        Assert.Null(SetCookie(denied));
+        var after = Assert.Single(await Rows(collection));
+        Assert.Equal(before.Stance, after.Stance);
+        var seen = await denied.Content.ReadAsStringAsync()
+            + string.Join("\n", denied.Headers.Select(h => h.Key + ":" + string.Join(",", h.Value)));
+        Assert.DoesNotContain("203.0.113", seen);
+        Assert.DoesNotContain(logs.Lines, line => line.Contains("203.0.113", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Reads_are_not_under_the_vote_budgets()
+    {
+        var collection = await NewSubject();
+        var visitor = new Client(_factory, "203.0.113.50");
+        for (var i = 0; i < 4; i++)
+        {
+            await visitor.Post(collection, "Up");
+        }
+
+        using var page = await visitor.Get($"/mill/{collection}/alpha");
+        using var export = await visitor.Get($"/public/concepts/{collection}/tallies");
+
+        Assert.Equal(HttpStatusCode.OK, page.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, export.StatusCode);
+    }
+
+    private static string? RetryAfter(HttpResponseMessage response) =>
+        response.Headers.TryGetValues("Retry-After", out var values) ? values.Single() : null;
+
+    private static string? SetCookie(HttpResponseMessage response) =>
+        response.Headers.TryGetValues("Set-Cookie", out var values)
+            ? values.FirstOrDefault(x => x.StartsWith(CookieName + "=", StringComparison.Ordinal))
+            : null;
+
+    private async Task<string> NewSubject()
+    {
+        var collection = "c" + Guid.NewGuid().ToString("N");
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
+        db.ConceptSubjects.Add(new ConceptSubject
+        {
+            Collection = collection,
+            Key = "alpha",
+            Title = "alpha",
+            RegisteredAtUtc = DateTimeOffset.UtcNow
+        });
+        await db.SaveChangesAsync();
+        return collection;
+    }
+
+    private async Task<List<ConceptAppraisal>> Rows(string collection)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
+        return await db.ConceptAppraisals.AsNoTracking()
+            .Where(x => x.Subject!.Collection == collection)
+            .ToListAsync();
+    }
+
+    // One browser: a client address that reaches the app through the proxy, a cookie jar, optionally an account.
+    private sealed class Client(WebApplicationFactory<Program> factory, string address)
+    {
+        private readonly HttpClient _http = factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false,
+            HandleCookies = false,
+            BaseAddress = new Uri(Site)
+        });
+
+        private string? _cookie;
+
+        public string Peer { get; init; } = "127.0.0.1";
+
+        public (string Id, string Login)? Account { get; init; }
+
+        public Task<HttpResponseMessage> Post(string collection, string handler, string? forwardedFor = null) =>
+            Send(
+                new HttpRequestMessage(HttpMethod.Post, $"/mill/{collection}/alpha?handler={handler}")
+                {
+                    Content = new FormUrlEncodedContent([])
+                },
+                forwardedFor);
+
+        public Task<HttpResponseMessage> Get(string path) => Send(new HttpRequestMessage(HttpMethod.Get, path), null);
+
+        private async Task<HttpResponseMessage> Send(HttpRequestMessage request, string? forwardedFor)
+        {
+            request.Headers.TryAddWithoutValidation("Origin", Site);
+            request.Headers.TryAddWithoutValidation("X-Forwarded-For", forwardedFor ?? address);
+            request.Headers.TryAddWithoutValidation("X-Test-Peer", Peer);
+            if (Account is { } account)
+            {
+                request.Headers.TryAddWithoutValidation("X-Test-GitHub-Id", account.Id);
+                request.Headers.TryAddWithoutValidation("X-Test-GitHub-Login", account.Login);
+            }
+            else
+            {
+                request.Headers.TryAddWithoutValidation("X-Test-Anonymous", "true");
+            }
+
+            if (_cookie is not null)
+            {
+                request.Headers.TryAddWithoutValidation("Cookie", _cookie);
+            }
+
+            var response = await _http.SendAsync(request);
+            if (SetCookie(response) is { } set)
+            {
+                _cookie = set.Split(';')[0];
+            }
+
+            return response;
+        }
+    }
+
+    public sealed class LimitedFactory : TestWebApplicationFactory
+    {
+        public TestClock Clock { get; } = new();
+
+        protected override void ConfigureWebHost(IWebHostBuilder builder)
+        {
+            base.ConfigureWebHost(builder);
+            builder.ConfigureAppConfiguration((_, configuration) =>
+                configuration.AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["ConceptVotes:CastPermits"] = "3",
+                    ["ConceptVotes:CastWindow"] = "00:10:00",
+                    ["ConceptVotes:MintPermits"] = "2",
+                    ["ConceptVotes:MintWindow"] = "01:00:00",
+                    ["ConceptVotes:NetworkTagSecret"] = "rate-limit-test-tag-secret-0123456789"
+                }));
+            builder.ConfigureServices(services =>
+            {
+                services.RemoveAll<TimeProvider>();
+                services.AddSingleton<TimeProvider>(Clock);
+                services.AddTransient<IStartupFilter, PeerFilter>();
+            });
+        }
+    }
+
+    public sealed class TestClock : TimeProvider
+    {
+        private DateTimeOffset _now = DateTimeOffset.UtcNow;
+
+        public override DateTimeOffset GetUtcNow() => _now;
+
+        public void Advance(TimeSpan by) => _now += by;
+    }
+
+    // The proxy's connection: TestServer has no socket, so the peer address is set ahead of the app pipeline.
+    private sealed class PeerFilter : IStartupFilter
+    {
+        public Action<IApplicationBuilder> Configure(Action<IApplicationBuilder> next) => app =>
+        {
+            app.Use((context, nextMiddleware) =>
+            {
+                context.Connection.RemoteIpAddress =
+                    IPAddress.Parse(context.Request.Headers["X-Test-Peer"].FirstOrDefault() ?? "127.0.0.1");
+                return nextMiddleware(context);
+            });
+            next(app);
+        };
+    }
+}
