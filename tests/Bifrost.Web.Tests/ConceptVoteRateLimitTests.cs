@@ -153,6 +153,23 @@ public sealed class ConceptVoteRateLimitTests : IClassFixture<ConceptVoteRateLim
     }
 
     [Fact]
+    public async Task Retract_by_a_signed_in_account_spends_the_account_budget_from_any_prefix()
+    {
+        var collection = await NewSubject();
+        var home = new Client(_factory, "203.0.113.60") { Account = ("7003", "carol-limits") };
+        var away = new Client(_factory, "203.0.113.61") { Account = ("7003", "carol-limits") };
+        var elsewhere = new Client(_factory, "203.0.113.62") { Account = ("7003", "carol-limits") };
+        await home.Post(collection, "Up");
+        await home.Post(collection, "Down");
+        using var third = await away.Post(collection, "Retract");
+        Assert.Equal(HttpStatusCode.Redirect, third.StatusCode);
+
+        using var denied = await elsewhere.Post(collection, "Retract");
+
+        Assert.Equal(HttpStatusCode.TooManyRequests, denied.StatusCode);
+    }
+
+    [Fact]
     public async Task Mint_budget_is_spent_only_by_minting_casts()
     {
         var collection = await NewSubject();
