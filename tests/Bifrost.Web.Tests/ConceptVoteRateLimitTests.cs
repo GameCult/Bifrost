@@ -92,14 +92,15 @@ public sealed class ConceptVoteRateLimitTests : IClassFixture<ConceptVoteRateLim
             Assert.Equal("600", RetryAfter(first));
         }
 
-        _factory.Clock.Advance(TimeSpan.FromSeconds(100));
+        // 499.5 s remain: Retry-After rounds up, so a client told to wait never retries early.
+        _factory.Clock.Advance(TimeSpan.FromMilliseconds(100_500));
         using (var later = await device.Post(collection, "Up"))
         {
             Assert.Equal(HttpStatusCode.TooManyRequests, later.StatusCode);
             Assert.Equal("500", RetryAfter(later));
         }
 
-        _factory.Clock.Advance(TimeSpan.FromSeconds(499));
+        _factory.Clock.Advance(TimeSpan.FromMilliseconds(498_500));
         using (var last = await device.Post(collection, "Up"))
         {
             Assert.Equal(HttpStatusCode.TooManyRequests, last.StatusCode);

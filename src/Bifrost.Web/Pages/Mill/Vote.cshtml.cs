@@ -140,7 +140,7 @@ public sealed class VoteModel(
             return null;
         }
 
-        Response.Headers.RetryAfter = Math.Max(1, (int)Math.Ceiling(wait.TotalSeconds)).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        Response.Headers.RetryAfter = ((int)Math.Ceiling(wait.TotalSeconds)).ToString(System.Globalization.CultureInfo.InvariantCulture);
         return new StatusCodeResult(StatusCodes.Status429TooManyRequests);
     }
 

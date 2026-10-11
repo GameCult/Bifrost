@@ -55,6 +55,47 @@ public sealed class FixedWindowBudgetTests
     }
 
     [Fact]
+    public void A_sweep_drops_only_expired_windows_and_a_live_one_keeps_counting_to_its_exact_end()
+    {
+        var clock = new Clock();
+        var budget = new FixedWindowBudget(1, Window, clock);
+        budget.TryAcquire("a", out _);
+        clock.Advance(TimeSpan.FromSeconds(30));
+        budget.TryAcquire("b", out _);
+        clock.Advance(TimeSpan.FromSeconds(30));
+
+        // The sweep due at 60 s drops a, which ended, and keeps b, which has 30 s left.
+        budget.TryAcquire("c", out _);
+        Assert.Equal(2, budget.TrackedKeys);
+        Assert.False(budget.TryAcquire("b", out var wait));
+        Assert.Equal(TimeSpan.FromSeconds(30), wait);
+
+        clock.Advance(TimeSpan.FromSeconds(30) - TimeSpan.FromTicks(1));
+        Assert.False(budget.TryAcquire("b", out _));
+        clock.Advance(TimeSpan.FromTicks(1));
+        Assert.True(budget.TryAcquire("b", out _));
+    }
+
+    [Fact]
+    public void Sweeping_is_at_most_once_per_window_so_a_flood_of_keys_costs_one_pass_not_one_per_request()
+    {
+        var clock = new Clock();
+        var budget = new FixedWindowBudget(1, Window, clock);
+        budget.TryAcquire("a", out _);
+        clock.Advance(TimeSpan.FromSeconds(30));
+        budget.TryAcquire("b", out _);
+        clock.Advance(TimeSpan.FromSeconds(31));
+        budget.TryAcquire("c", out _);
+        Assert.Equal(2, budget.TrackedKeys);
+
+        // b ended at 90 s but the next sweep is not due until 121 s.
+        clock.Advance(TimeSpan.FromSeconds(39));
+        budget.TryAcquire("d", out _);
+
+        Assert.Equal(3, budget.TrackedKeys);
+    }
+
+    [Fact]
     public void Expired_windows_are_dropped_so_the_table_does_not_grow_with_every_key_ever_seen()
     {
         var clock = new Clock();
