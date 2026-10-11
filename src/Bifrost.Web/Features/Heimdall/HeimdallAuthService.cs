@@ -223,11 +223,12 @@ public sealed class HeimdallAuthService(
         _protector.Protect(JsonSerializer.Serialize(new AttemptWire(
             attempt.Nonce, attempt.Provider, attempt.RequiresMemberAccess, attempt.ReturnPath.Value, attempt.ExpiresAt)));
 
+    /// <summary>The live attempt a cookie value protects when it belongs to this nonce, else null.</summary>
     private HeimdallAttempt? Unprotect(string? cookieValue, string? nonce) =>
-        string.IsNullOrEmpty(nonce) ? null : Read(cookieValue, nonce);
+        Read(cookieValue) is { } attempt && string.Equals(attempt.Nonce, nonce, StringComparison.Ordinal) ? attempt : null;
 
-    /// <summary>The live attempt a cookie value protects (for this nonce when given), else null.</summary>
-    private HeimdallAttempt? Read(string? cookieValue, string? nonce = null)
+    /// <summary>The live attempt a cookie value protects, else null.</summary>
+    private HeimdallAttempt? Read(string? cookieValue)
     {
         if (string.IsNullOrEmpty(cookieValue))
         {
@@ -237,9 +238,7 @@ public sealed class HeimdallAuthService(
         try
         {
             var wire = JsonSerializer.Deserialize<AttemptWire>(_protector.Unprotect(cookieValue));
-            if (wire is null ||
-                (nonce is not null && !string.Equals(wire.Nonce, nonce, StringComparison.Ordinal)) ||
-                wire.ExpiresAt <= timeProvider.GetUtcNow())
+            if (wire is null || wire.ExpiresAt <= timeProvider.GetUtcNow())
             {
                 return null;
             }
