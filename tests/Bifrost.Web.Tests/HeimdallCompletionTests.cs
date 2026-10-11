@@ -449,6 +449,11 @@ public sealed class HeimdallCompletionTests
             Assert.False(refused.Response.Headers.Contains("Set-Cookie"), name);
         }
 
+        // A genuine cookie value under a name that is no slot is no attempt either: request input never names a slot.
+        var offRing = await host.CompleteAsync(attempt.Nonce, code, attempt.Cookie, HeimdallAttemptCookie.Prefix + "9");
+        AssertRefusedRedirect(offRing);
+        Assert.False(offRing.Response.Headers.Contains("Set-Cookie"));
+
         Assert.Equal(0, host.Heimdall.RedeemCalls);
         Assert.Null(await host.Account(accountId));
 
