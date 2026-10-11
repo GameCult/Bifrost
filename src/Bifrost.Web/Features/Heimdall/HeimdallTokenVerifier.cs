@@ -31,8 +31,7 @@ public sealed class HeimdallTokenVerifier(
     private static readonly string[] MemberCapabilities = ["member_access", "app_access"];
 
     private readonly SemaphoreSlim _fetchGate = new(1, 1);
-    private Dictionary<string, byte[]> _keys = new(StringComparer.Ordinal);
-    private DateTimeOffset _fetchedAt = DateTimeOffset.MinValue;
+    private volatile KeySnapshot _keys = new(new Dictionary<string, byte[]>(StringComparer.Ordinal), DateTimeOffset.MinValue);
     private DateTimeOffset _attemptedAt = DateTimeOffset.MinValue;
 
     public async Task<HeimdallVerifiedIdentity> VerifyAsync(
@@ -68,6 +67,8 @@ public sealed class HeimdallTokenVerifier(
         using var payload = ParseJson(payloadBytes, "token payload is not JSON");
         return CheckClaims(payload.RootElement, heimdallOptions.Value, payloadAccountId);
     }
+
+    private sealed record KeySnapshot(Dictionary<string, byte[]> Keys, DateTimeOffset FetchedAt);
 
     private static byte[] Decode(string segment)
     {
@@ -175,26 +176,48 @@ public sealed class HeimdallTokenVerifier(
             capabilities.Any(capability => MemberCapabilities.Contains(capability, StringComparer.OrdinalIgnoreCase)));
     }
 
+    /// <summary>The JWKS client waits a short, bounded time: a slow fetch must not hold sign-ins for long.</summary>
+    public static void ConfigureClient(HttpClient client, HeimdallOptions options)
+    {
+        client.BaseAddress = new Uri(options.BaseUrl.TrimEnd('/'));
+        client.Timeout = TimeSpan.FromSeconds(10);
+    }
+
     private async Task<byte[]?> FindKeyAsync(string kid, CancellationToken cancellationToken)
     {
+        if (TryFreshKey(kid, out var cached))
+        {
+            return cached;
+        }
+
         await _fetchGate.WaitAsync(cancellationToken);
         try
         {
-            var now = timeProvider.GetUtcNow();
-            var stale = now - _fetchedAt >= KeyMaxAge;
-            if ((stale || !_keys.ContainsKey(kid)) && now - _attemptedAt >= KeyRefreshInterval)
+            if (TryFreshKey(kid, out cached))
             {
-                _attemptedAt = now;
-                _keys = await FetchKeysAsync(cancellationToken);
-                _fetchedAt = now;
+                return cached;
             }
 
-            return _keys.GetValueOrDefault(kid);
+            var now = timeProvider.GetUtcNow();
+            if (now - _attemptedAt >= KeyRefreshInterval)
+            {
+                _attemptedAt = now;
+                _keys = new KeySnapshot(await FetchKeysAsync(cancellationToken), now);
+            }
+
+            return _keys.Keys.GetValueOrDefault(kid);
         }
         finally
         {
             _fetchGate.Release();
         }
+    }
+
+    private bool TryFreshKey(string kid, out byte[]? key)
+    {
+        var snapshot = _keys;
+        key = null;
+        return timeProvider.GetUtcNow() - snapshot.FetchedAt < KeyMaxAge && snapshot.Keys.TryGetValue(kid, out key);
     }
 
     private async Task<Dictionary<string, byte[]>> FetchKeysAsync(CancellationToken cancellationToken)
@@ -203,7 +226,7 @@ public sealed class HeimdallTokenVerifier(
         {
             return await ReadKeysAsync(cancellationToken);
         }
-        catch (Exception error) when (error is not OperationCanceledException)
+        catch (Exception) when (!cancellationToken.IsCancellationRequested)
         {
             throw Refuse("Heimdall keys could not be fetched");
         }

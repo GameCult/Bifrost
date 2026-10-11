@@ -122,32 +122,30 @@ public static class HeimdallShapes
         return claims;
     }
 
-    /// <summary>The success payload of Heimdall src/backend-handoff.ts, with the unsigned fields Bifrost used to trust.</summary>
-    public static Dictionary<string, object?> Delivery(
-        string attemptId,
+    /// <summary>
+    /// The body Heimdall's redeem route answers with: the completionPayload of src/app.ts, whose unsigned
+    /// fields (loose capabilities, facts, name) Bifrost must not decide anything from.
+    /// </summary>
+    public static Dictionary<string, object?> Completion(
+        string returnTo,
         string accountId,
         string accessToken,
         string[]? looseCapabilities = null,
         string[]? looseFacts = null,
-        string looseName = "Loose Name",
-        string returnTo = "/App/Elsewhere") => new()
+        string looseName = "Loose Name") => new()
     {
-        ["source"] = "heimdall",
-        ["kind"] = "oauth_result",
-        ["handoffKind"] = "backend_callback",
-        ["attemptId"] = attemptId,
-        ["provider"] = "discord",
-        ["appSlug"] = "bifrost",
-        ["returnTo"] = returnTo,
-        ["connection"] = null,
         ["status"] = "success",
+        ["provider"] = "discord",
         ["mode"] = "sign_in",
+        ["appSlug"] = "bifrost",
         ["account"] = new Dictionary<string, object?> { ["id"] = accountId, ["displayName"] = looseName },
         ["entitlements"] = new Dictionary<string, object?>
         {
             ["facts"] = looseFacts ?? [],
             ["snapshots"] = Array.Empty<string>()
         },
+        ["returnTo"] = returnTo,
+        ["connection"] = null,
         ["session"] = new Dictionary<string, object?> { ["accountId"] = accountId, ["appSlug"] = "bifrost" },
         ["accessToken"] = accessToken,
         ["refreshToken"] = "refresh-token-not-read",
@@ -169,9 +167,14 @@ public sealed class TestClock : TimeProvider
     public override DateTimeOffset GetUtcNow() => _now;
 }
 
-/// <summary>Stands in for Heimdall's HTTP surface: the JWKS and the oauth start endpoint.</summary>
+/// <summary>
+/// Stands in for Heimdall's HTTP surface: the JWKS, the oauth start endpoint (which, like app.ts, answers
+/// a policy start only when the app caller's secret is present) and the completion-code redeem route.
+/// </summary>
 public sealed class FakeHeimdall : HttpMessageHandler
 {
+    private readonly Dictionary<string, Dictionary<string, object?>> _codes = new(StringComparer.Ordinal);
+
     public List<HeimdallKey> Published { get; } = [];
 
     public List<object> ExtraJwks { get; } = [];
@@ -180,12 +183,45 @@ public sealed class FakeHeimdall : HttpMessageHandler
 
     public HttpStatusCode JwksStatus { get; set; } = HttpStatusCode.OK;
 
+    private TaskCompletionSource? _jwksHold;
+
+    /// <summary>Completes when a JWKS request arrives after <see cref="HoldJwks"/>.</summary>
+    public TaskCompletionSource JwksArrived { get; private set; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    /// <summary>Holds the next JWKS responses until the returned source completes.</summary>
+    public TaskCompletionSource HoldJwks()
+    {
+        JwksArrived = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        return _jwksHold = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+
+    public Exception? JwksFailure { get; set; }
+
     public List<string> StartBodies { get; } = [];
+
+    public List<string?> StartSecrets { get; } = [];
+
+    /// <summary>The secret a policy start must carry in x-heimdall-app-secret; null means Heimdall asks for none.</summary>
+    public string? RequiredAppSecret { get; set; }
 
     public HttpStatusCode StartStatus { get; set; } = HttpStatusCode.OK;
 
     public string StartBody { get; set; } =
         """{"authorizationUrl":"https://heimdall.test/oauth/discord/authorize?state=fixture"}""";
+
+    public int RedeemCalls { get; private set; }
+
+    public HttpStatusCode? RedeemStatus { get; set; }
+
+    public string? RedeemBody { get; set; }
+
+    /// <summary>Registers a completion code Heimdall will redeem once, answering with this payload.</summary>
+    public string RegisterCode(Dictionary<string, object?> completion)
+    {
+        var code = Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
+        _codes[code] = completion;
+        return code;
+    }
 
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
@@ -193,6 +229,17 @@ public sealed class FakeHeimdall : HttpMessageHandler
         if (request.Method == HttpMethod.Get && path == "/.well-known/jwks.json")
         {
             JwksFetches++;
+            JwksArrived.TrySetResult();
+            if (_jwksHold is not null)
+            {
+                await _jwksHold.Task.WaitAsync(cancellationToken);
+            }
+
+            if (JwksFailure is not null)
+            {
+                throw JwksFailure;
+            }
+
             var keys = Published.Select(x => x.Jwk()).Concat(ExtraJwks).ToArray();
             return new HttpResponseMessage(JwksStatus)
             {
@@ -202,10 +249,49 @@ public sealed class FakeHeimdall : HttpMessageHandler
 
         if (request.Method == HttpMethod.Post && path.StartsWith("/v1/oauth/", StringComparison.Ordinal) && path.EndsWith("/start", StringComparison.Ordinal))
         {
-            StartBodies.Add(await request.Content!.ReadAsStringAsync(cancellationToken));
+            var body = await request.Content!.ReadAsStringAsync(cancellationToken);
+            var secret = request.Headers.TryGetValues("x-heimdall-app-secret", out var values) ? values.Single() : null;
+            StartBodies.Add(body);
+            StartSecrets.Add(secret);
+            var wantsPolicy = JsonDocument.Parse(body).RootElement.TryGetProperty("entitlementPolicy", out _);
+            if (wantsPolicy && RequiredAppSecret is not null && secret != RequiredAppSecret)
+            {
+                return new HttpResponseMessage(HttpStatusCode.Unauthorized)
+                {
+                    Content = new StringContent("""{"error":"app_auth_required"}""", Encoding.UTF8, "application/json")
+                };
+            }
+
             return new HttpResponseMessage(StartStatus)
             {
                 Content = new StringContent(StartBody, Encoding.UTF8, "application/json")
+            };
+        }
+
+        if (request.Method == HttpMethod.Post && path == "/v1/apps/bifrost/auth-completions/redeem")
+        {
+            RedeemCalls++;
+            if (RedeemStatus is { } status)
+            {
+                return new HttpResponseMessage(status)
+                {
+                    Content = new StringContent(RedeemBody ?? "{}", Encoding.UTF8, "application/json")
+                };
+            }
+
+            var code = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(cancellationToken))
+                .RootElement.GetProperty("completionCode").GetString()!;
+            if (!_codes.Remove(code, out var completion))
+            {
+                return new HttpResponseMessage(HttpStatusCode.Gone)
+                {
+                    Content = new StringContent("""{"error":"invalid_or_expired_completion_code"}""", Encoding.UTF8, "application/json")
+                };
+            }
+
+            return new HttpResponseMessage(HttpStatusCode.Created)
+            {
+                Content = new StringContent(RedeemBody ?? JsonSerializer.Serialize(completion), Encoding.UTF8, "application/json")
             };
         }
 
@@ -250,14 +336,18 @@ public sealed class CapturedLogs : ILoggerProvider
     }
 }
 
-public sealed record StartedAttempt(string AttemptId, string? Binding, HttpResponseMessage Response);
+/// <summary>An attempt Start issued: its nonce, the cookie it set, and the returnTo it sent Heimdall.</summary>
+public sealed record StartedAttempt(string Nonce, string? Cookie, string ReturnTo, HttpResponseMessage Response);
 
-public sealed record WaitResult(HttpResponseMessage Response, bool SignedIn);
+public sealed record CompletionResult(HttpResponseMessage Response, bool SignedIn);
 
 /// <summary>A local Bifrost with Heimdall faked in-process: a test JWKS, a test clock, captured logs.</summary>
 public sealed class HeimdallHost : TestWebApplicationFactory
 {
-    public const string BindingCookie = "bifrost_heimdall_binding";
+    public const string AppSecret = "test-heimdall-app-secret";
+
+    private readonly string _appSecret;
+    private readonly string _baseUrl;
 
     public TestClock Clock { get; } = new();
 
@@ -267,9 +357,12 @@ public sealed class HeimdallHost : TestWebApplicationFactory
 
     public HeimdallKey Key { get; } = HeimdallKey.Generate();
 
-    public HeimdallHost()
+    public HeimdallHost(string appSecret = AppSecret, string baseUrl = HeimdallShapes.Issuer)
     {
+        _appSecret = appSecret;
+        _baseUrl = baseUrl;
         Heimdall.Published.Add(Key);
+        Heimdall.RequiredAppSecret = AppSecret;
     }
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -279,7 +372,8 @@ public sealed class HeimdallHost : TestWebApplicationFactory
         {
             configuration.AddInMemoryCollection(new Dictionary<string, string?>
             {
-                ["Heimdall:BaseUrl"] = HeimdallShapes.Issuer,
+                ["Heimdall:BaseUrl"] = _baseUrl,
+                ["Heimdall:AppSecret"] = _appSecret,
                 ["Heimdall:DiscordGuildId"] = "guild-1",
                 ["Heimdall:DiscordAllowedRoleIds:0"] = "role-1"
             });
@@ -305,39 +399,62 @@ public sealed class HeimdallHost : TestWebApplicationFactory
         Action<Dictionary<string, object?>>? mutate = null, HeimdallKey? signer = null) =>
         (signer ?? Key).Sign(HeimdallShapes.AccessClaims(accountId, Clock.Now, capabilities, displayName, mutate));
 
-    public async Task<StartedAttempt> StartAsync(bool member = false, string provider = "discord", string returnUrl = "/App/Mill")
+    public Task<StartedAttempt> StartAsync(bool member = false, string provider = "discord", string returnUrl = "/App/Mill") =>
+        StartAtAsync(
+            $"/auth/heimdall/{provider}?returnUrl={Uri.EscapeDataString(returnUrl)}" + (member ? "&access=member" : string.Empty));
+
+    public async Task<StartedAttempt> StartAtAsync(string url)
     {
         using var client = NewClient();
         var before = Heimdall.StartBodies.Count;
-        var response = await client.GetAsync(
-            $"/auth/heimdall/{provider}?returnUrl={Uri.EscapeDataString(returnUrl)}" + (member ? "&access=member" : string.Empty));
-        var attemptId = Heimdall.StartBodies.Count > before
-            ? JsonDocument.Parse(Heimdall.StartBodies[^1]).RootElement.GetProperty("handoff").GetProperty("attemptId").GetString()!
-            : string.Empty;
-        return new StartedAttempt(attemptId, CookieValue(response, BindingCookie), response);
-    }
-
-    public async Task<HttpResponseMessage> DeliverAsync(object payload)
-    {
-        using var client = NewClient();
-        return await client.PostAsync(
-            "/auth/heimdall/callback",
-            new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json"));
-    }
-
-    public async Task<WaitResult> WaitAsync(string attemptId, string? binding)
-    {
-        using var client = NewClient();
-        using var request = new HttpRequestMessage(HttpMethod.Get, $"/auth/heimdall/wait?attemptId={Uri.EscapeDataString(attemptId)}");
-        if (binding is not null)
+        var response = await client.GetAsync(url);
+        if (Heimdall.StartBodies.Count == before)
         {
-            request.Headers.Add("Cookie", $"{BindingCookie}={binding}");
+            return new StartedAttempt(string.Empty, null, string.Empty, response);
+        }
+
+        var returnTo = JsonDocument.Parse(Heimdall.StartBodies[^1]).RootElement.GetProperty("returnTo").GetString()!;
+        var nonce = QueryHelpers.ParseQuery(new Uri(returnTo).Query)["attempt"].ToString();
+        return new StartedAttempt(nonce, CookieValue(response, HeimdallAttemptCookie.Prefix + nonce), returnTo, response);
+    }
+
+    /// <summary>Registers a completion code as Heimdall would mint it after authenticating this attempt.</summary>
+    public string CodeFor(StartedAttempt attempt, string accountId, string? accessToken = null, string[]? looseCapabilities = null,
+        string[]? looseFacts = null, string looseName = "Loose Name", string? returnTo = null)
+    {
+        var completion = HeimdallShapes.Completion(
+            returnTo ?? attempt.ReturnTo, accountId, accessToken ?? Token(accountId), looseCapabilities, looseFacts, looseName);
+        return Heimdall.RegisterCode(completion);
+    }
+
+    /// <summary>The browser's POST from the complete page: the attempt and code in a form, the attempt cookie by name.</summary>
+    public async Task<CompletionResult> CompleteAsync(string? nonce, string? code, string? cookie, string? cookieName = null)
+    {
+        using var client = NewClient();
+        var fields = new Dictionary<string, string>();
+        if (nonce is not null)
+        {
+            fields["attempt"] = nonce;
+        }
+
+        if (code is not null)
+        {
+            fields["code"] = code;
+        }
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/auth/heimdall/complete") { Content = new FormUrlEncodedContent(fields) };
+        if (cookie is not null)
+        {
+            request.Headers.Add("Cookie", $"{cookieName ?? HeimdallAttemptCookie.Prefix + nonce}={cookie}");
         }
 
         var response = await client.SendAsync(request);
         var session = CookieValue(response, ".AspNetCore.Cookies");
-        return new WaitResult(response, !string.IsNullOrEmpty(session));
+        return new CompletionResult(response, !string.IsNullOrEmpty(session));
     }
+
+    public Task<CompletionResult> CompleteAsync(StartedAttempt attempt, string code) =>
+        CompleteAsync(attempt.Nonce, code, attempt.Cookie);
 
     public static string? CookieValue(HttpResponseMessage response, string name)
     {
