@@ -82,7 +82,7 @@ public sealed class VoteModel(
             return NotFound();
         }
 
-        if (Throttled(limits.DenyCast(HttpContext.Connection.RemoteIpAddress, voter), CastRefusal) is { } throttled)
+        if (Throttled(limits.DenyCast(HttpContext.Connection.RemoteIpAddress, voter), CastRefusal, voter) is { } throttled)
         {
             return throttled;
         }
@@ -105,14 +105,14 @@ public sealed class VoteModel(
             return NotFound();
         }
 
-        if (Throttled(limits.DenyCast(client, voter), CastRefusal) is { } throttled)
+        if (Throttled(limits.DenyCast(client, voter), CastRefusal, voter) is { } throttled)
         {
             return throttled;
         }
 
         if (voter is null)
         {
-            if (Throttled(limits.DenyMint(client), MintRefusal) is { } mintThrottled)
+            if (Throttled(limits.DenyMint(client), MintRefusal, voter) is { } mintThrottled)
             {
                 return mintThrottled;
             }
@@ -143,14 +143,19 @@ public sealed class VoteModel(
 
     private const string BusyRefusal = "Voting is very busy right now. Please try again in a little while.";
 
-    private IActionResult? Throttled(BudgetDenial? denial, string spentRefusal)
+    // Accounts have their own table, so a visitor who is not signed in can still vote by signing in while a table is full.
+    private const string BusyRefusalSignIn =
+        "Voting is very busy right now. You can sign in to vote now, or try again in a little while.";
+
+    private IActionResult? Throttled(BudgetDenial? denial, string spentRefusal, VoterIdentity? voter)
     {
         if (denial is not { } refused)
         {
             return null;
         }
 
-        var refusal = refused.TableFull ? BusyRefusal : spentRefusal;
+        var busy = voter?.UserAccountId is null ? BusyRefusalSignIn : BusyRefusal;
+        var refusal = refused.TableFull ? busy : spentRefusal;
         Response.Headers.RetryAfter = ((int)Math.Ceiling(refused.RetryAfter.TotalSeconds)).ToString(System.Globalization.CultureInfo.InvariantCulture);
         return new ContentResult
         {

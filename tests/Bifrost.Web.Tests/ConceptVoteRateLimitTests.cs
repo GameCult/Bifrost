@@ -381,10 +381,34 @@ public sealed class ConceptVoteRateLimitTests : IClassFixture<ConceptVoteRateLim
         var body = await visitor.Content.ReadAsStringAsync();
         Assert.Contains("busy", body);
         Assert.DoesNotContain("too fast", body);
-        Assert.DoesNotContain("sign in", body, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("sign in", body, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("203.0.113", body + string.Join(";", visitor.Headers.Select(h => string.Join(",", h.Value))));
         Assert.Equal(HttpStatusCode.Redirect, account.StatusCode);
         Assert.Equal(rowsBefore + 1, (await Rows(collection)).Count);
+    }
+
+    [Fact]
+    public async Task A_full_account_table_refuses_a_new_account_as_busy_without_offering_sign_in()
+    {
+        var factory = Capped(4);
+        var collection = await NewSubject();
+        for (var i = 0; i < 4; i++)
+        {
+            var spender = new Client(factory, $"203.0.113.{150 + i}") { Account = ($"72{i:00}", $"spent-account-{i}") };
+            for (var cast = 0; cast < 3; cast++)
+            {
+                using var ok = await spender.Post(collection, "Up");
+                Assert.Equal(HttpStatusCode.Redirect, ok.StatusCode);
+            }
+        }
+
+        using var fresh = await new Client(factory, "203.0.113.160") { Account = ("7299", "fresh-signed-in") }
+            .Post(collection, "Up");
+
+        Assert.Equal(HttpStatusCode.TooManyRequests, fresh.StatusCode);
+        var body = await fresh.Content.ReadAsStringAsync();
+        Assert.Contains("busy", body);
+        Assert.DoesNotContain("sign in", body, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
