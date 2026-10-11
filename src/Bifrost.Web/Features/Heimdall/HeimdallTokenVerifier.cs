@@ -193,11 +193,6 @@ public sealed class HeimdallTokenVerifier(
         await _fetchGate.WaitAsync(cancellationToken);
         try
         {
-            if (TryFreshKey(kid, out cached))
-            {
-                return cached;
-            }
-
             var now = timeProvider.GetUtcNow();
             if (now - _attemptedAt >= KeyRefreshInterval)
             {

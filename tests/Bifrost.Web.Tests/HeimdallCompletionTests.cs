@@ -643,6 +643,32 @@ public sealed class HeimdallCompletionTests
         Assert.Null(host.Heimdall.StartSecrets[0]);
     }
 
+    [Theory]
+    [InlineData("https://localhost", "https://localhost/auth/heimdall/complete?attempt=")]
+    [InlineData("https://localhost/", "https://localhost/auth/heimdall/complete?attempt=")]
+    [InlineData("https://localhost/sub", "https://localhost/sub/auth/heimdall/complete?attempt=")]
+    [InlineData("https://localhost/sub/", "https://localhost/sub/auth/heimdall/complete?attempt=")]
+    public async Task The_return_target_Heimdall_gets_is_under_the_public_base_url(string publicBaseUrl, string prefix)
+    {
+        using var host = new HeimdallHost(publicBaseUrl: publicBaseUrl);
+        var attempt = await host.StartAsync();
+
+        Assert.Equal(prefix + attempt.Nonce, attempt.ReturnTo);
+        Assert.True((await Genuine(host, attempt, HeimdallShapes.NewAccountId())).SignedIn);
+    }
+
+    [Fact]
+    public async Task A_member_start_with_no_allowed_discord_roles_is_refused_before_Heimdall_is_called()
+    {
+        using var host = new HeimdallHost(discordRoles: false);
+
+        var member = await host.StartAsync(member: true);
+
+        Assert.Equal(ErrorRedirect, member.Response.Headers.Location!.OriginalString);
+        Assert.Empty(host.Heimdall.StartBodies);
+        Assert.NotNull((await host.StartAsync()).Cookie);
+    }
+
     [Fact]
     public async Task Every_completion_refusal_looks_the_same()
     {
@@ -674,6 +700,9 @@ public sealed class HeimdallCompletionTests
                 "Heimdall did not grant Bifrost member access.")
         };
 
+        var illFormed = await host.CompleteAsync(new string('A', 42) + "!", "code", "x");
+        results.Add(("ill-formed nonce", illFormed, "Heimdall completion has no attempt for this browser."));
+
         using var client = host.NewClient();
         using var json = await client.PostAsync(
             "/auth/heimdall/complete",
@@ -694,6 +723,7 @@ public sealed class HeimdallCompletionTests
         }
 
         Assert.Null(await host.Account(accountId));
+        Assert.False(illFormed.Response.Headers.Contains("Set-Cookie"));
 
         foreach (var url in new[] { "/auth/heimdall/bogus", "/auth/heimdall/twitch?access=member" })
         {

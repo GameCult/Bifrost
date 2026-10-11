@@ -348,6 +348,8 @@ public sealed class HeimdallHost : TestWebApplicationFactory
 
     private readonly string _appSecret;
     private readonly string _baseUrl;
+    private readonly string _publicBaseUrl;
+    private readonly bool _discordRoles;
 
     public TestClock Clock { get; } = new();
 
@@ -357,10 +359,16 @@ public sealed class HeimdallHost : TestWebApplicationFactory
 
     public HeimdallKey Key { get; } = HeimdallKey.Generate();
 
-    public HeimdallHost(string appSecret = AppSecret, string baseUrl = HeimdallShapes.Issuer)
+    public HeimdallHost(
+        string appSecret = AppSecret,
+        string baseUrl = HeimdallShapes.Issuer,
+        string publicBaseUrl = "https://localhost",
+        bool discordRoles = true)
     {
         _appSecret = appSecret;
         _baseUrl = baseUrl;
+        _publicBaseUrl = publicBaseUrl;
+        _discordRoles = discordRoles;
         Heimdall.Published.Add(Key);
         Heimdall.RequiredAppSecret = AppSecret;
     }
@@ -378,8 +386,12 @@ public sealed class HeimdallHost : TestWebApplicationFactory
                 ["Heimdall:BaseUrl"] = _baseUrl,
                 ["Heimdall:AppSecret"] = _appSecret,
                 ["Heimdall:DiscordGuildId"] = "guild-1",
-                ["Heimdall:DiscordAllowedRoleIds:0"] = "role-1"
+                ["Host:PublicBaseUrl"] = _publicBaseUrl
             });
+            if (_discordRoles)
+            {
+                configuration.AddInMemoryCollection(new Dictionary<string, string?> { ["Heimdall:DiscordAllowedRoleIds:0"] = "role-1" });
+            }
         });
         builder.ConfigureLogging(logging => logging.AddProvider(Logs));
         builder.ConfigureServices(services =>
