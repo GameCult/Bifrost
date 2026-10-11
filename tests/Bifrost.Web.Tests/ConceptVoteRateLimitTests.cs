@@ -285,6 +285,18 @@ public sealed class ConceptVoteRateLimitTests : IClassFixture<ConceptVoteRateLim
     }
 
     [Fact]
+    public void A_request_with_no_client_address_shares_one_bucket_apart_from_every_address()
+    {
+        var limits = new Bifrost.Web.Features.ConceptVotes.ConceptVoteRateLimits(
+            Microsoft.Extensions.Options.Options.Create(new Bifrost.Web.Configuration.ConceptVoteOptions { CastPermits = 1 }),
+            new TestClock());
+
+        Assert.Null(limits.DenyCast(null, null));
+        Assert.NotNull(limits.DenyCast(null, null));
+        Assert.Null(limits.DenyCast(IPAddress.Parse("198.51.100.1"), null));
+    }
+
+    [Fact]
     public async Task Reads_are_not_under_the_vote_budgets()
     {
         var collection = await NewSubject();
