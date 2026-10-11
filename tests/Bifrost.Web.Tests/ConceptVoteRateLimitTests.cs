@@ -1,6 +1,7 @@
 using System.Net;
 using Bifrost.Web.Data;
 using Bifrost.Web.Domain;
+using Bifrost.Web.Features.ConceptVotes;
 using Bifrost.Web.Tests.Support;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -270,18 +271,144 @@ public sealed class ConceptVoteRateLimitTests : IClassFixture<ConceptVoteRateLim
     }
 
     [Fact]
-    public void Both_budgets_hold_at_most_the_configured_number_of_partitions_and_refuse_a_new_one_at_the_cap()
+    public void Every_table_holds_at_most_the_configured_keys_and_accounts_have_a_table_of_their_own()
     {
-        var clock = new TestClock();
         var limits = new Bifrost.Web.Features.ConceptVotes.ConceptVoteRateLimits(
-            Microsoft.Extensions.Options.Options.Create(new Bifrost.Web.Configuration.ConceptVoteOptions { MaxTrackedKeys = 1 }),
-            clock);
+            Microsoft.Extensions.Options.Options.Create(
+                new Bifrost.Web.Configuration.ConceptVoteOptions { MaxTrackedKeys = 1, CastPermits = 1, MintPermits = 1 }),
+            new TestClock());
+        var account = new VoterIdentity("account:test", VoterClass.Account, Guid.NewGuid());
 
         Assert.Null(limits.DenyCast(IPAddress.Parse("198.51.100.1"), null));
-        Assert.NotNull(limits.DenyCast(IPAddress.Parse("198.51.100.2"), null));
+        Assert.True(limits.DenyCast(IPAddress.Parse("198.51.100.2"), null)!.Value.TableFull);
+        Assert.Null(limits.DenyCast(IPAddress.Parse("198.51.100.2"), account));
         Assert.Null(limits.DenyMint(IPAddress.Parse("198.51.100.1")));
-        Assert.NotNull(limits.DenyMint(IPAddress.Parse("198.51.100.2")));
-        Assert.Null(limits.DenyCast(IPAddress.Parse("198.51.100.1"), null));
+        Assert.True(limits.DenyMint(IPAddress.Parse("198.51.100.2"))!.Value.TableFull);
+    }
+
+    [Fact]
+    public async Task Filling_the_table_with_unspent_keys_locks_out_neither_a_fresh_visitor_nor_a_fresh_account()
+    {
+        var factory = Capped(4);
+        var collection = await NewSubject();
+        for (var i = 0; i < 4; i++)
+        {
+            using var filler = await new Client(factory, $"203.0.113.{80 + i}").Post(collection, "Up");
+            Assert.Equal(HttpStatusCode.Redirect, filler.StatusCode);
+        }
+
+        using var visitor = await new Client(factory, "203.0.113.90").Post(collection, "Up");
+        using var account = await new Client(factory, "203.0.113.91") { Account = ("7101", "fresh-account") }
+            .Post(collection, "Up");
+
+        Assert.Equal(HttpStatusCode.Redirect, visitor.StatusCode);
+        Assert.NotNull(SetCookie(visitor));
+        Assert.Equal(HttpStatusCode.Redirect, account.StatusCode);
+    }
+
+    [Fact]
+    public async Task A_spent_key_survives_eviction_pressure_and_stays_refused_while_rotating_callers_succeed()
+    {
+        var factory = Capped(4);
+        var collection = await NewSubject();
+        var spender = new Client(factory, "203.0.113.100");
+        for (var i = 0; i < 3; i++)
+        {
+            using var ok = await spender.Post(collection, "Up");
+            Assert.Equal(HttpStatusCode.Redirect, ok.StatusCode);
+        }
+
+        for (var i = 0; i < 12; i++)
+        {
+            using var rotating = await new Client(factory, $"203.0.114.{i + 1}").Post(collection, "Up");
+            Assert.Equal(HttpStatusCode.Redirect, rotating.StatusCode);
+        }
+
+        using var denied = await spender.Post(collection, "Up");
+
+        Assert.Equal(HttpStatusCode.TooManyRequests, denied.StatusCode);
+        Assert.Contains("too fast", await denied.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task A_rotating_caller_wins_back_only_a_forgotten_keys_unspent_budget()
+    {
+        var factory = Capped(2);
+        var collection = await NewSubject();
+        var forgotten = new Client(factory, "203.0.113.110");
+        await forgotten.Post(collection, "Up");
+        await forgotten.Post(collection, "Up");
+        var recent = new Client(factory, "203.0.113.111");
+        await recent.Post(collection, "Up");
+        await new Client(factory, "203.0.113.112").Post(collection, "Up");
+
+        // forgotten was least recently used and had one permit left: it was evicted, so it has all three again, no more.
+        for (var i = 0; i < 3; i++)
+        {
+            using var ok = await forgotten.Post(collection, "Up");
+            Assert.Equal(HttpStatusCode.Redirect, ok.StatusCode);
+        }
+
+        using var denied = await forgotten.Post(collection, "Up");
+        Assert.Equal(HttpStatusCode.TooManyRequests, denied.StatusCode);
+    }
+
+    [Fact]
+    public async Task A_table_full_of_spent_keys_refuses_a_new_visitor_with_its_true_reason_and_leaves_accounts_alone()
+    {
+        var factory = Capped(4);
+        var collection = await NewSubject();
+        for (var i = 0; i < 4; i++)
+        {
+            var spender = new Client(factory, $"203.0.113.{120 + i}");
+            for (var cast = 0; cast < 3; cast++)
+            {
+                using var ok = await spender.Post(collection, "Up");
+                Assert.Equal(HttpStatusCode.Redirect, ok.StatusCode);
+            }
+        }
+
+        var rowsBefore = (await Rows(collection)).Count;
+        using var visitor = await new Client(factory, "203.0.113.130").Post(collection, "Up");
+        using var account = await new Client(factory, "203.0.113.131") { Account = ("7102", "spared-account") }
+            .Post(collection, "Up");
+
+        Assert.Equal(HttpStatusCode.TooManyRequests, visitor.StatusCode);
+        Assert.NotNull(RetryAfter(visitor));
+        Assert.Null(SetCookie(visitor));
+        var body = await visitor.Content.ReadAsStringAsync();
+        Assert.Contains("busy", body);
+        Assert.DoesNotContain("too fast", body);
+        Assert.DoesNotContain("sign in", body, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("203.0.113", body + string.Join("
+", visitor.Headers.Select(h => string.Join(",", h.Value))));
+        Assert.Equal(HttpStatusCode.Redirect, account.StatusCode);
+        Assert.Equal(rowsBefore + 1, (await Rows(collection)).Count);
+    }
+
+    [Fact]
+    public async Task Posts_to_a_missing_subject_spend_no_budget_and_mint_no_device()
+    {
+        var collection = await NewSubject();
+        var sender = new Client(_factory, "203.0.113.140");
+        foreach (var handler in new[] { "Up", "Down", "Retract" })
+        {
+            for (var i = 0; i < 4; i++)
+            {
+                using var missing = await sender.Post("c" + Guid.NewGuid().ToString("N"), handler);
+                Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
+                Assert.Null(SetCookie(missing));
+            }
+        }
+
+        for (var i = 0; i < 3; i++)
+        {
+            using var ok = await sender.Post(collection, "Up");
+            Assert.Equal(HttpStatusCode.Redirect, ok.StatusCode);
+        }
+
+        using var denied = await sender.Post(collection, "Up");
+        Assert.Equal(HttpStatusCode.TooManyRequests, denied.StatusCode);
     }
 
     [Fact]
@@ -312,6 +439,13 @@ public sealed class ConceptVoteRateLimitTests : IClassFixture<ConceptVoteRateLim
         Assert.Equal(HttpStatusCode.OK, page.StatusCode);
         Assert.Equal(HttpStatusCode.OK, export.StatusCode);
     }
+
+    private WebApplicationFactory<Program> Capped(int maxTrackedKeys) =>
+        _factory.WithWebHostBuilder(b => b.ConfigureAppConfiguration((_, configuration) =>
+            configuration.AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["ConceptVotes:MaxTrackedKeys"] = maxTrackedKeys.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            })));
 
     private static string? RetryAfter(HttpResponseMessage response) =>
         response.Headers.TryGetValues("Retry-After", out var values) ? values.Single() : null;

@@ -77,14 +77,14 @@ public sealed class VoteModel(
     {
         var actor = await actorAccessor.GetAsync(cancellationToken);
         var voter = ResolveVoter(actor);
-        if (Throttled(limits.DenyCast(HttpContext.Connection.RemoteIpAddress, voter), CastRefusal) is { } throttled)
-        {
-            return throttled;
-        }
-
         if (await appraisals.GetSubjectAsync(collection, key, null, cancellationToken) is null)
         {
             return NotFound();
+        }
+
+        if (Throttled(limits.DenyCast(HttpContext.Connection.RemoteIpAddress, voter), CastRefusal) is { } throttled)
+        {
+            return throttled;
         }
 
         await appraisals.RetractAsync(collection, key, voter, cancellationToken);
@@ -100,14 +100,14 @@ public sealed class VoteModel(
         var actor = await actorAccessor.GetAsync(cancellationToken);
         var client = HttpContext.Connection.RemoteIpAddress;
         var voter = ResolveVoter(actor);
-        if (Throttled(limits.DenyCast(client, voter), CastRefusal) is { } throttled)
-        {
-            return throttled;
-        }
-
         if (await appraisals.GetSubjectAsync(collection, key, null, cancellationToken) is null)
         {
             return NotFound();
+        }
+
+        if (Throttled(limits.DenyCast(client, voter), CastRefusal) is { } throttled)
+        {
+            return throttled;
         }
 
         if (voter is null)
@@ -133,20 +133,25 @@ public sealed class VoteModel(
         VoterIdentity.For(actor, null) ?? VoterIdentity.For(actor, deviceCookie.TryRead(HttpContext));
 
     // A denied budget is a 429 that says when to retry, in words a voter can read; it writes no row, sets no cookie and
-    // repeats nothing of the request. A refused new device is told it can sign in, which has a budget of its own.
+    // repeats nothing of the request. The subject is checked before any budget is spent, so a request for a concept that
+    // does not exist costs the sender nothing and the table nothing. A refused new device is told it can sign in, which
+    // has a budget of its own. A table full of spent windows is not the visitor's doing and says so.
     private const string CastRefusal = "You are voting too fast. Please wait a little before voting again.";
 
     private const string MintRefusal =
         "Too many new voters have voted from your network recently. You can sign in to vote now, or try again later.";
 
-    private IActionResult? Throttled(TimeSpan? retryAfter, string refusal)
+    private const string BusyRefusal = "Voting is very busy right now. Please try again in a little while.";
+
+    private IActionResult? Throttled(BudgetDenial? denial, string spentRefusal)
     {
-        if (retryAfter is not { } wait)
+        if (denial is not { } refused)
         {
             return null;
         }
 
-        Response.Headers.RetryAfter = ((int)Math.Ceiling(wait.TotalSeconds)).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        var refusal = refused.TableFull ? BusyRefusal : spentRefusal;
+        Response.Headers.RetryAfter = ((int)Math.Ceiling(refused.RetryAfter.TotalSeconds)).ToString(System.Globalization.CultureInfo.InvariantCulture);
         return new ContentResult
         {
             StatusCode = StatusCodes.Status429TooManyRequests,

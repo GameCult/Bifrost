@@ -36,9 +36,10 @@ public sealed class ConceptVoteOptions
 
     public TimeSpan MintWindow { get; init; } = TimeSpan.FromHours(1);
 
-    // The most partitions each budget holds at once. At the cap a partition not yet held is refused with a 429 until
-    // the oldest window ends; held partitions are never evicted, so a rotating caller cannot escape a spent budget.
-    // 100000 partitions is a few tens of MB; a real audience is far below it.
+    // The most partitions each budget table holds at once (cast by account, cast by network prefix, mint). At the cap a
+    // partition not yet held evicts the least recently used one that still has permits left; a partition that has
+    // spent its permits is never evicted, so rotating sources can at most win back a forgotten partition's partial
+    // budget. 100000 partitions is a few tens of MB; a real audience is far below it.
     public int MaxTrackedKeys { get; init; } = 100_000;
 
     // The origins whose pages may read the public tally export from a browser (CORS). Each entry is exactly
