@@ -1315,8 +1315,7 @@ public sealed class HeimdallCompletionTests
             Assert.False(lost.SignedIn);
             Assert.Equal(HttpStatusCode.Redirect, lost.Response.StatusCode);
             Assert.Equal(ErrorRedirect, lost.Response.Headers.Location!.OriginalString);
-            Assert.DoesNotContain(overwritten.Nonce, string.Join("
-", lost.Response.Headers.SelectMany(x => x.Value)));
+            Assert.DoesNotContain(overwritten.Nonce, string.Join(";", lost.Response.Headers.SelectMany(x => x.Value)));
             if (round == 1)
             {
                 var done = await host.CompleteWithHeaderAsync(
