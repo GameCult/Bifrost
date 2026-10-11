@@ -4,6 +4,7 @@ using Bifrost.Web.Data;
 using Bifrost.Web.Domain;
 using Bifrost.Web.Tests.Support;
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -180,6 +181,37 @@ public sealed partial class ConceptVotePageTests : IClassFixture<TestWebApplicat
         using var response = await visitor.Send(request);
 
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Empty(await Rows(collection, "alpha"));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("same-origin")]
+    public async Task Cast_with_an_empty_origin_header_is_refused_whatever_fetch_site_says(string? fetchSite)
+    {
+        var collection = NewCollection();
+        await AddSubject(collection, "alpha");
+
+        // HttpClient drops a header whose value is empty, so the request is built on the server itself, where an
+        // Origin header with an empty value is present in the dictionary as a browser's would be.
+        var context = await _factory.Server.SendAsync(http =>
+        {
+            http.Request.Method = HttpMethods.Post;
+            http.Request.Scheme = "https";
+            http.Request.Host = new HostString("localhost");
+            http.Request.Path = $"/mill/{collection}/alpha";
+            http.Request.QueryString = new QueryString("?handler=Up");
+            http.Request.ContentType = "application/x-www-form-urlencoded";
+            http.Request.Headers["X-Test-Anonymous"] = "true";
+            http.Request.Headers["Origin"] = string.Empty;
+            if (fetchSite is not null)
+            {
+                http.Request.Headers["Sec-Fetch-Site"] = fetchSite;
+            }
+        });
+
+        Assert.Equal(StatusCodes.Status403Forbidden, context.Response.StatusCode);
+        Assert.False(context.Response.Headers.ContainsKey("Set-Cookie"));
         Assert.Empty(await Rows(collection, "alpha"));
     }
 
@@ -636,48 +668,6 @@ public sealed partial class ConceptVotePageTests : IClassFixture<TestWebApplicat
             }
 
             return response;
-        }
-    }
-
-    private sealed class CapturingLoggerProvider : ILoggerProvider
-    {
-        private readonly List<string> _lines = [];
-
-        public IReadOnlyList<string> Lines
-        {
-            get
-            {
-                lock (_lines)
-                {
-                    return _lines.ToArray();
-                }
-            }
-        }
-
-        public ILogger CreateLogger(string categoryName) => new Capture(this);
-
-        public void Dispose()
-        {
-        }
-
-        private sealed class Capture(CapturingLoggerProvider owner) : ILogger
-        {
-            public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
-
-            public bool IsEnabled(LogLevel logLevel) => true;
-
-            public void Log<TState>(
-                LogLevel logLevel,
-                EventId eventId,
-                TState state,
-                Exception? exception,
-                Func<TState, Exception?, string> formatter)
-            {
-                lock (owner._lines)
-                {
-                    owner._lines.Add(formatter(state, exception) + (exception is null ? string.Empty : "\n" + exception));
-                }
-            }
         }
     }
 }

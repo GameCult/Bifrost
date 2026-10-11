@@ -20,6 +20,28 @@ public sealed class ConceptVoteOptions
     // default weighed in the note, not a standard. Tune on observed abuse.
     public int IPv6PrefixLength { get; init; } = 56;
 
+    // Vote budgets (Features/ConceptVotes/ConceptVoteRateLimits). The research note
+    // (docs/research/anonymous-vote-stuffing-prior-art.md section 3) gives no numbers, so these are first values to tune on
+    // observed abuse. Cast: one visitor reading through the Mill can vote on a few dozen concepts in a sitting, so 30 per
+    // 10 minutes per account or network prefix does not trouble a person and caps a script at 180 an hour.
+    public int CastPermits { get; init; } = 30;
+
+    public TimeSpan CastWindow { get; init; } = TimeSpan.FromMinutes(10);
+
+    // Mint: a new device cookie is a new voter identity, the cheapest stuffing lever. Anonymous visitors share an
+    // address behind carrier, school and office NAT (the research note records it), so 30 new devices per hour per
+    // address (operator ruling concept-mill-votes:ruling:mint-budget-30-per-hour); per-device and per-prefix cast
+    // limits still bound stuffing.
+    public int MintPermits { get; init; } = 30;
+
+    public TimeSpan MintWindow { get; init; } = TimeSpan.FromHours(1);
+
+    // The most partitions each budget table holds at once (cast by account, cast by network prefix, mint). At the cap a
+    // partition not yet held evicts the least recently used one that still has permits left; a partition that has
+    // spent its permits is never evicted, so rotating sources can at most win back a forgotten partition's partial
+    // budget. 100000 partitions is a few tens of MB; a real audience is far below it.
+    public int MaxTrackedKeys { get; init; } = 100_000;
+
     // The origins whose pages may read the public tally export from a browser (CORS). Each entry is exactly
     // https://host[:non-default-port], lower case, no path; empty allows none. StartupConfigurationValidator
     // refuses anything else outside Development and Testing, because "*" would allow every origin.

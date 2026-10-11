@@ -16,12 +16,40 @@ public sealed class StartupConfigurationValidator(
 {
     public void Validate()
     {
-        if (hostEnvironment.IsDevelopment() || hostEnvironment.IsEnvironment("Testing"))
+        var failures = new List<string>();
+
+        // Checked in every environment: a bad value here would otherwise pass startup and throw on every cast.
+        var conceptVotes = conceptVoteOptions.Value;
+        if (!NetworkPrefix.IsValidLength(conceptVotes.IPv4PrefixLength, NetworkPrefix.IPv4Bits))
         {
-            return;
+            failures.Add($"ConceptVotes:IPv4PrefixLength must be between 0 and {NetworkPrefix.IPv4Bits}.");
         }
 
-        var failures = new List<string>();
+        if (!NetworkPrefix.IsValidLength(conceptVotes.IPv6PrefixLength, NetworkPrefix.IPv6Bits))
+        {
+            failures.Add($"ConceptVotes:IPv6PrefixLength must be between 0 and {NetworkPrefix.IPv6Bits}.");
+        }
+
+        if (conceptVotes.CastPermits < 1 || conceptVotes.CastWindow <= TimeSpan.Zero)
+        {
+            failures.Add("ConceptVotes:CastPermits must be at least 1 and ConceptVotes:CastWindow must be positive.");
+        }
+
+        if (conceptVotes.MintPermits < 1 || conceptVotes.MintWindow <= TimeSpan.Zero)
+        {
+            failures.Add("ConceptVotes:MintPermits must be at least 1 and ConceptVotes:MintWindow must be positive.");
+        }
+
+        if (conceptVotes.MaxTrackedKeys < 1)
+        {
+            failures.Add("ConceptVotes:MaxTrackedKeys must be at least 1.");
+        }
+
+        if (hostEnvironment.IsDevelopment() || hostEnvironment.IsEnvironment("Testing"))
+        {
+            Refuse(failures);
+            return;
+        }
 
         if (!gitHubOAuthOptions.Value.IsConfigured)
         {
@@ -73,7 +101,6 @@ public sealed class StartupConfigurationValidator(
             failures.Add("DataProtection:KeysPath must be configured for production.");
         }
 
-        var conceptVotes = conceptVoteOptions.Value;
         if (string.IsNullOrWhiteSpace(conceptVotes.NetworkTagSecret) ||
             conceptVotes.NetworkTagSecret.Length < ConceptVoteOptions.MinNetworkTagSecretLength)
         {
@@ -81,21 +108,16 @@ public sealed class StartupConfigurationValidator(
                 $"ConceptVotes:NetworkTagSecret must be configured with at least {ConceptVoteOptions.MinNetworkTagSecretLength} characters for production.");
         }
 
-        if (!NetworkPrefix.IsValidLength(conceptVotes.IPv4PrefixLength, NetworkPrefix.IPv4Bits))
-        {
-            failures.Add($"ConceptVotes:IPv4PrefixLength must be between 0 and {NetworkPrefix.IPv4Bits}.");
-        }
-
-        if (!NetworkPrefix.IsValidLength(conceptVotes.IPv6PrefixLength, NetworkPrefix.IPv6Bits))
-        {
-            failures.Add($"ConceptVotes:IPv6PrefixLength must be between 0 and {NetworkPrefix.IPv6Bits}.");
-        }
-
         if (!conceptVotes.AllowedOrigins.All(IsExactHttpsOrigin))
         {
             failures.Add("ConceptVotes:AllowedOrigins entries must each be exactly https://host with no path, wildcard or trailing slash.");
         }
 
+        Refuse(failures);
+    }
+
+    private static void Refuse(List<string> failures)
+    {
         if (failures.Count > 0)
         {
             throw new InvalidOperationException(

@@ -21,11 +21,14 @@ public sealed class TestAuthHandler(
             return Task.FromResult(AuthenticateResult.NoResult());
         }
 
+        // A test may sign in as another account by naming its GitHub id and login.
+        var gitHubId = Request.Headers["X-Test-GitHub-Id"].FirstOrDefault() ?? "12345";
+        var login = Request.Headers["X-Test-GitHub-Login"].FirstOrDefault() ?? "test-admin";
         var claims = new[]
         {
-            new Claim(ClaimTypes.NameIdentifier, "12345"),
-            new Claim(ClaimTypes.Name, "test-admin"),
-            new Claim(BifrostClaimTypes.GitHubLogin, "test-admin"),
+            new Claim(ClaimTypes.NameIdentifier, gitHubId),
+            new Claim(ClaimTypes.Name, login),
+            new Claim(BifrostClaimTypes.GitHubLogin, login),
             new Claim(BifrostClaimTypes.DisplayName, "Test Admin")
         };
 
