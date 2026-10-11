@@ -40,44 +40,18 @@ public sealed class HeimdallTokenVerifier(
         string? payloadAccountId,
         CancellationToken cancellationToken)
     {
-        var options = heimdallOptions.Value;
         var parts = token.Split('.');
         if (parts.Length != 3)
         {
             throw Refuse("token is not a compact JWS");
         }
 
-        byte[] headerBytes, payloadBytes, signature;
-        try
-        {
-            headerBytes = WebEncoders.Base64UrlDecode(parts[0]);
-            payloadBytes = WebEncoders.Base64UrlDecode(parts[1]);
-            signature = WebEncoders.Base64UrlDecode(parts[2]);
-        }
-        catch (FormatException)
-        {
-            throw Refuse("token is not base64url");
-        }
+        var headerBytes = Decode(parts[0]);
+        var payloadBytes = Decode(parts[1]);
+        var signature = Decode(parts[2]);
 
-        string kid;
-        try
-        {
-            using var header = JsonDocument.Parse(headerBytes);
-            if (header.RootElement.ValueKind != JsonValueKind.Object ||
-                StringClaim(header.RootElement, "alg") != "EdDSA")
-            {
-                throw Refuse("token algorithm is not EdDSA");
-            }
-
-            kid = StringClaim(header.RootElement, "kid") is { Length: > 0 } found
-                ? found
-                : throw Refuse("token has no key id");
-        }
-        catch (JsonException)
-        {
-            throw Refuse("token header is not JSON");
-        }
-
+        using var header = ParseJson(headerBytes, "token header is not JSON");
+        var kid = ReadKeyId(header.RootElement);
         var publicKey = await FindKeyAsync(kid, cancellationToken);
         if (publicKey is null)
         {
@@ -91,15 +65,48 @@ public sealed class HeimdallTokenVerifier(
             throw Refuse("token signature is invalid");
         }
 
+        using var payload = ParseJson(payloadBytes, "token payload is not JSON");
+        return CheckClaims(payload.RootElement, heimdallOptions.Value, payloadAccountId);
+    }
+
+    private static byte[] Decode(string segment)
+    {
         try
         {
-            using var payload = JsonDocument.Parse(payloadBytes);
-            return CheckClaims(payload.RootElement, options, payloadAccountId);
+            return WebEncoders.Base64UrlDecode(segment);
+        }
+        catch (FormatException)
+        {
+            throw Refuse("token is not base64url");
+        }
+    }
+
+    private static JsonDocument ParseJson(byte[] bytes, string rule)
+    {
+        try
+        {
+            return JsonDocument.Parse(bytes);
         }
         catch (JsonException)
         {
-            throw Refuse("token payload is not JSON");
+            throw Refuse(rule);
         }
+    }
+
+    private static string ReadKeyId(JsonElement header)
+    {
+        if (header.ValueKind != JsonValueKind.Object || StringClaim(header, "alg") != "EdDSA")
+        {
+            throw Refuse("token algorithm is not EdDSA");
+        }
+
+        var kid = StringClaim(header, "kid");
+        if (string.IsNullOrEmpty(kid))
+        {
+            throw Refuse("token has no key id");
+        }
+
+        return kid;
     }
 
     private HeimdallVerifiedIdentity CheckClaims(JsonElement claims, HeimdallOptions options, string? payloadAccountId)
@@ -194,39 +201,47 @@ public sealed class HeimdallTokenVerifier(
     {
         try
         {
-            var httpClient = httpClientFactory.CreateClient(ClientName);
-            using var response = await httpClient.GetAsync("/.well-known/jwks.json", cancellationToken);
-            response.EnsureSuccessStatusCode();
-            await using var body = await response.Content.ReadAsStreamAsync(cancellationToken);
-            using var document = await JsonDocument.ParseAsync(body, cancellationToken: cancellationToken);
-            var keys = new Dictionary<string, byte[]>(StringComparer.Ordinal);
-            if (document.RootElement.TryGetProperty("keys", out var list) && list.ValueKind == JsonValueKind.Array)
-            {
-                foreach (var jwk in list.EnumerateArray())
-                {
-                    if (jwk.ValueKind != JsonValueKind.Object ||
-                        StringClaim(jwk, "kty") != "OKP" ||
-                        StringClaim(jwk, "crv") != "Ed25519" ||
-                        StringClaim(jwk, "kid") is not { Length: > 0 } id ||
-                        StringClaim(jwk, "x") is not { } x)
-                    {
-                        continue;
-                    }
-
-                    var key = WebEncoders.Base64UrlDecode(x);
-                    if (key.Length == Ed25519.PublicKeySize)
-                    {
-                        keys[id] = key;
-                    }
-                }
-            }
-
-            return keys;
+            return await ReadKeysAsync(cancellationToken);
         }
-        catch (Exception error) when (error is HttpRequestException or JsonException or FormatException)
+        catch (Exception error) when (error is not OperationCanceledException)
         {
             throw Refuse("Heimdall keys could not be fetched");
         }
+    }
+
+    private async Task<Dictionary<string, byte[]>> ReadKeysAsync(CancellationToken cancellationToken)
+    {
+        var httpClient = httpClientFactory.CreateClient(ClientName);
+        using var response = await httpClient.GetAsync("/.well-known/jwks.json", cancellationToken);
+        response.EnsureSuccessStatusCode();
+        await using var body = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var document = await JsonDocument.ParseAsync(body, cancellationToken: cancellationToken);
+        var keys = new Dictionary<string, byte[]>(StringComparer.Ordinal);
+        foreach (var jwk in document.RootElement.GetProperty("keys").EnumerateArray())
+        {
+            if (jwk.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            var id = StringClaim(jwk, "kid");
+            var x = StringClaim(jwk, "x");
+            if (StringClaim(jwk, "kty") != "OKP" ||
+                StringClaim(jwk, "crv") != "Ed25519" ||
+                string.IsNullOrEmpty(id) ||
+                x is null)
+            {
+                continue;
+            }
+
+            var key = WebEncoders.Base64UrlDecode(x);
+            if (key.Length == Ed25519.PublicKeySize)
+            {
+                keys[id] = key;
+            }
+        }
+
+        return keys;
     }
 
     private static string? StringClaim(JsonElement element, string name) =>
