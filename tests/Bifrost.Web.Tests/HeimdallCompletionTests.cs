@@ -694,7 +694,7 @@ public sealed class HeimdallCompletionTests
                 "Heimdall completion has no attempt for this browser."),
             ("bad cookie", await host.CompleteAsync(attempt.Nonce, host.CodeFor(attempt, accountId), Corrupt(attempt.Cookie!)),
                 "Heimdall completion has no attempt for this browser."),
-            ("no attempt field", await host.CompleteAsync(null, "code", attempt.Cookie),
+            ("no attempt field", await host.CompleteAsync(null, host.CodeFor(attempt, accountId), attempt.Cookie),
                 "Heimdall completion has no attempt for this browser."),
             ("malformed attempt", await host.CompleteAsync("short", "code", attempt.Cookie, "bifrost_heimdall_short"),
                 "Heimdall completion has no attempt for this browser."),
