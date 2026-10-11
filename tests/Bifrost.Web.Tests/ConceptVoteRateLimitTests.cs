@@ -282,6 +282,8 @@ public sealed class ConceptVoteRateLimitTests : IClassFixture<ConceptVoteRateLim
         Assert.Null(limits.DenyCast(IPAddress.Parse("198.51.100.1"), null));
         Assert.True(limits.DenyCast(IPAddress.Parse("198.51.100.2"), null)!.Value.TableFull);
         Assert.Null(limits.DenyCast(IPAddress.Parse("198.51.100.2"), account));
+        var otherAccount = new VoterIdentity("account:other", VoterClass.Account, Guid.NewGuid());
+        Assert.True(limits.DenyCast(IPAddress.Parse("198.51.100.2"), otherAccount)!.Value.TableFull);
         Assert.Null(limits.DenyMint(IPAddress.Parse("198.51.100.1")));
         Assert.True(limits.DenyMint(IPAddress.Parse("198.51.100.2"))!.Value.TableFull);
     }
