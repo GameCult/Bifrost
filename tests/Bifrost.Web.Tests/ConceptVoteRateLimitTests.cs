@@ -380,8 +380,7 @@ public sealed class ConceptVoteRateLimitTests : IClassFixture<ConceptVoteRateLim
         Assert.Contains("busy", body);
         Assert.DoesNotContain("too fast", body);
         Assert.DoesNotContain("sign in", body, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("203.0.113", body + string.Join("
-", visitor.Headers.Select(h => string.Join(",", h.Value))));
+        Assert.DoesNotContain("203.0.113", body + string.Join(";", visitor.Headers.Select(h => string.Join(",", h.Value))));
         Assert.Equal(HttpStatusCode.Redirect, account.StatusCode);
         Assert.Equal(rowsBefore + 1, (await Rows(collection)).Count);
     }
