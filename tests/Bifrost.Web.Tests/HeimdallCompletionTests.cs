@@ -1168,8 +1168,7 @@ public sealed class HeimdallCompletionTests
 
         Assert.Equal(HttpStatusCode.Redirect, start.StatusCode);
         Assert.Equal(canary, Assert.Single(host.Heimdall.StartSecrets));
-        var logs = string.Join("
-", host.Logs.Lines);
+        var logs = string.Join("\n", host.Logs.Lines);
         Assert.Contains(HeimdallAuthService.AppSecretHeader, logs, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain(canary, logs);
     }
@@ -1245,7 +1244,6 @@ public sealed class HeimdallCompletionTests
         Assert.Equal(ErrorRedirect, refused.Response.Headers.Location!.OriginalString);
         Assert.Empty(host.Heimdall.StartBodies);
         Assert.False(refused.Response.Headers.Contains("Set-Cookie"));
-        Assert.Contains("Heimdall start refused: Heimdall is not configured.", string.Join("
-", host.Logs.Lines));
+        Assert.Contains("Heimdall start refused: Heimdall is not configured.", string.Join("\n", host.Logs.Lines));
     }
 }
