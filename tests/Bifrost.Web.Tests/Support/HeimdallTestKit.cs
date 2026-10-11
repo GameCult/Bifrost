@@ -368,6 +368,9 @@ public sealed class HeimdallHost : TestWebApplicationFactory
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         base.ConfigureWebHost(builder);
+        // The GitHub OAuth scheme is registered from configuration read while the app builds, which only host settings reach.
+        builder.UseSetting("GitHubOAuth:ClientId", "configured-for-tests");
+        builder.UseSetting("GitHubOAuth:ClientSecret", "configured-for-tests");
         builder.ConfigureAppConfiguration((_, configuration) =>
         {
             configuration.AddInMemoryCollection(new Dictionary<string, string?>
