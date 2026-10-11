@@ -280,7 +280,7 @@ public sealed class HeimdallHost : TestWebApplicationFactory
         {
             services.RemoveAll<TimeProvider>();
             services.AddSingleton<TimeProvider>(Clock);
-            services.AddHttpClient<HeimdallTokenVerifier>().ConfigurePrimaryHttpMessageHandler(() => Heimdall);
+            services.AddHttpClient(HeimdallTokenVerifier.ClientName).ConfigurePrimaryHttpMessageHandler(() => Heimdall);
             services.AddHttpClient<HeimdallAuthService>().ConfigurePrimaryHttpMessageHandler(() => Heimdall);
         });
     }

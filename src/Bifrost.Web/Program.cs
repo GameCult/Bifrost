@@ -130,7 +130,8 @@ builder.Services.AddHttpClient<HeimdallAuthService>((serviceProvider, client) =>
     var options = serviceProvider.GetRequiredService<IOptions<HeimdallOptions>>().Value;
     client.BaseAddress = new Uri(options.BaseUrl.TrimEnd('/'));
 });
-builder.Services.AddHttpClient<HeimdallTokenVerifier>((serviceProvider, client) =>
+builder.Services.AddSingleton<HeimdallTokenVerifier>();
+builder.Services.AddHttpClient(HeimdallTokenVerifier.ClientName, (serviceProvider, client) =>
 {
     var options = serviceProvider.GetRequiredService<IOptions<HeimdallOptions>>().Value;
     client.BaseAddress = new Uri(options.BaseUrl.TrimEnd('/'));

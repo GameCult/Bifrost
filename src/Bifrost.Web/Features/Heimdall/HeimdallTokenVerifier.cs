@@ -14,14 +14,15 @@ public sealed record HeimdallVerifiedIdentity(string AccountId, string? DisplayN
 /// <summary>
 /// Verifies Heimdall's access tokens (EdDSA) against Heimdall's published JWKS. Heimdall is the issuer
 /// at <see cref="HeimdallOptions.BaseUrl"/>; the audience is this app's slug. Failures name a rule and
-/// never echo the token or any of its contents.
+/// never echo the token or any of its contents. One instance serves the process: it owns the key cache.
 /// </summary>
 public sealed class HeimdallTokenVerifier(
-    HttpClient httpClient,
+    IHttpClientFactory httpClientFactory,
     IOptions<HeimdallOptions> heimdallOptions,
     TimeProvider timeProvider)
 {
     public const string TokenType = "heimdall_access";
+    public const string ClientName = "heimdall-jwks";
 
     internal static readonly TimeSpan ClockSkew = TimeSpan.FromSeconds(60);
     internal static readonly TimeSpan KeyRefreshInterval = TimeSpan.FromSeconds(30);
@@ -193,6 +194,7 @@ public sealed class HeimdallTokenVerifier(
     {
         try
         {
+            var httpClient = httpClientFactory.CreateClient(ClientName);
             using var response = await httpClient.GetAsync("/.well-known/jwks.json", cancellationToken);
             response.EnsureSuccessStatusCode();
             await using var body = await response.Content.ReadAsStreamAsync(cancellationToken);
