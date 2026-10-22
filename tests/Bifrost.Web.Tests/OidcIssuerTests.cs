@@ -291,6 +291,13 @@ public sealed class OidcIssuerTests : IClassFixture<OidcWebApplicationFactory>
     [Fact]
     public async Task Startup_makes_the_one_client_match_configuration_again()
     {
+        // Own host: the drift below leaves the application manager's cache stale for every other test.
+        using var own = new OidcWebApplicationFactory();
+        await new OidcIssuerTests(own).SeederRestoresTheClientAsync();
+    }
+
+    private async Task SeederRestoresTheClientAsync()
+    {
         using var warm = NewClient();
         await warm.GetAsync("/healthz");
         using var scope = _factory.Services.CreateScope();
