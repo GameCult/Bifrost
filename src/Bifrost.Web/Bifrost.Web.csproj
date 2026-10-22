@@ -13,6 +13,10 @@
     </PackageReference>
     <PackageReference Include="BouncyCastle.Cryptography" Version="2.4.0" />
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="8.0.0" />
+    <!-- Direct pins lift transitive packages past their advisories; the lockfile holds the result. -->
+    <PackageReference Include="Npgsql" Version="8.0.3" />
+    <PackageReference Include="System.Text.Json" Version="8.0.5" />
+    <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="8.0.1" />
   </ItemGroup>
 
 </Project>
