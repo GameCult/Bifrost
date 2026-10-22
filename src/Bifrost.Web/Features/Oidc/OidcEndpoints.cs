@@ -24,9 +24,9 @@ public static class OidcEndpoints
 
     public static void MapBifrostOidc(this IEndpointRouteBuilder app)
     {
-        app.MapMethods(OidcServiceCollectionExtensions.AuthorizationPath, ["GET", "POST"], (HttpContext http, ICurrentBifrostActorAccessor actors) => AuthorizeAsync(http, actors)).AllowAnonymous();
-        app.MapPost(OidcServiceCollectionExtensions.TokenPath, (HttpContext http) => ExchangeAsync(http)).AllowAnonymous();
-        app.MapMethods(OidcServiceCollectionExtensions.UserInfoPath, ["GET", "POST"], (HttpContext http) => UserInfoAsync(http)).AllowAnonymous();
+        app.MapMethods(OidcServiceCollectionExtensions.AuthorizationPath, ["GET", "POST"], (Delegate)AuthorizeAsync).AllowAnonymous();
+        app.MapPost(OidcServiceCollectionExtensions.TokenPath, (Delegate)ExchangeAsync).AllowAnonymous();
+        app.MapMethods(OidcServiceCollectionExtensions.UserInfoPath, ["GET", "POST"], (Delegate)UserInfoAsync).AllowAnonymous();
     }
 
     private static async Task<IResult> AuthorizeAsync(HttpContext http, ICurrentBifrostActorAccessor actors)
