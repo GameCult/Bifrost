@@ -9,6 +9,7 @@ using Bifrost.Web.Features.Shared;
 using Bifrost.Web.Tests.Support;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.IdentityModel.JsonWebTokens;
 using Microsoft.IdentityModel.Tokens;
 
@@ -242,6 +243,81 @@ public sealed class OidcIssuerTests : IClassFixture<OidcWebApplicationFactory>
         Assert.Equal("Original", account.BifrostIdentity);
     }
 
+    [Fact]
+    public async Task The_openid_scope_alone_releases_the_subject_and_nothing_else()
+    {
+        var (client, identity) = await SignedInAsync(MembershipStatus.Active, "Scoped Down");
+        var request = NewRequest(scope: "openid");
+        var code = await CodeAsync(client, request);
+
+        var tokens = await ExchangeAsync(client, request, code);
+
+        var verified = await ValidateIdTokenAsync(tokens.IdToken, request.Nonce);
+        Assert.Equal(_factory.AccountId(identity).ToString("D"), verified.Claim("sub"));
+        Assert.Null(verified.Claim("preferred_username"));
+        Assert.Null(verified.Claim("name"));
+
+        using var userinfo = new HttpRequestMessage(HttpMethod.Get, "/connect/userinfo");
+        userinfo.Headers.Authorization = new AuthenticationHeaderValue("Bearer", tokens.AccessToken);
+        using var response = await NewClient().SendAsync(userinfo);
+        var info = (await response.Content.ReadFromJsonAsync<JsonElement>()).EnumerateObject().Select(x => x.Name).ToArray();
+        Assert.Equal(["sub"], info);
+    }
+
+    [Fact]
+    public async Task A_blank_display_name_falls_back_to_the_bifrost_identity()
+    {
+        var (client, identity) = await SignedInAsync(MembershipStatus.Active, "   ");
+
+        var verified = await ValidateIdTokenAsync((await CompleteFlowAsync(client)).IdToken, null);
+
+        Assert.Equal(identity, verified.Claim("name"));
+    }
+
+    [Fact]
+    public async Task Userinfo_without_a_valid_token_is_refused()
+    {
+        using var client = NewClient();
+        using var none = await client.GetAsync("/connect/userinfo");
+        Assert.Equal(HttpStatusCode.Unauthorized, none.StatusCode);
+
+        using var forged = new HttpRequestMessage(HttpMethod.Get, "/connect/userinfo");
+        forged.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "not-a-token");
+        using var forgedResponse = await client.SendAsync(forged);
+        Assert.Equal(HttpStatusCode.Unauthorized, forgedResponse.StatusCode);
+    }
+
+    [Fact]
+    public async Task Startup_makes_the_one_client_match_configuration_again()
+    {
+        using var warm = NewClient();
+        await warm.GetAsync("/healthz");
+        using var scope = _factory.Services.CreateScope();
+        var manager = scope.ServiceProvider.GetRequiredService<OpenIddict.Abstractions.IOpenIddictApplicationManager>();
+        var application = await manager.FindByClientIdAsync(OidcTestKit.ClientId);
+        Assert.NotNull(application);
+
+        // Someone widened the client in the database; the next start puts configuration back.
+        var drifted = new OpenIddict.Abstractions.OpenIddictApplicationDescriptor
+        {
+            ClientId = OidcTestKit.ClientId,
+            ClientType = OpenIddict.Abstractions.OpenIddictConstants.ClientTypes.Confidential,
+            ClientSecret = "drifted-secret",
+            RedirectUris = { new Uri("https://evil.example.test/callback") }
+        };
+        await manager.UpdateAsync(application, drifted);
+        foreach (var seeder in _factory.Services.GetServices<IHostedService>().OfType<Bifrost.Web.Features.Oidc.OidcClientSeeder>())
+        {
+            await seeder.StartAsync(CancellationToken.None);
+        }
+
+        Assert.Equal(1, await manager.CountAsync());
+        var restored = (await manager.FindByClientIdAsync(OidcTestKit.ClientId))!;
+        Assert.Equal([OidcTestKit.RedirectUri], (await manager.GetRedirectUrisAsync(restored)).ToArray());
+        Assert.True(await manager.ValidateClientSecretAsync(restored, _factory.Kit.ClientSecret));
+        Assert.False(await manager.ValidateClientSecretAsync(restored, "drifted-secret"));
+    }
+
     // ---- helpers ----
 
     private static WebApplicationFactoryClientOptions ClientOptions() => new()
@@ -288,7 +364,8 @@ public sealed class OidcIssuerTests : IClassFixture<OidcWebApplicationFactory>
         string clientId = OidcTestKit.ClientId,
         string redirectUri = OidcTestKit.RedirectUri,
         bool pkce = true,
-        string extra = "")
+        string extra = "",
+        string scope = "openid%20profile")
     {
         var verifier = Base64UrlEncoder.Encode(RandomNumberGenerator.GetBytes(48));
         var state = Base64UrlEncoder.Encode(RandomNumberGenerator.GetBytes(24));
@@ -297,7 +374,7 @@ public sealed class OidcIssuerTests : IClassFixture<OidcWebApplicationFactory>
         var path = "/connect/authorize?response_type=code" +
             $"&client_id={Uri.EscapeDataString(clientId)}" +
             $"&redirect_uri={Uri.EscapeDataString(redirectUri)}" +
-            "&scope=openid%20profile" +
+            $"&scope={scope}" +
             $"&state={state}&nonce={nonce}" +
             (pkce ? $"&code_challenge={challenge}&code_challenge_method=S256" : string.Empty) +
             extra;

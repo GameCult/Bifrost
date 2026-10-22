@@ -40,9 +40,11 @@ public sealed class OidcKeyMaterial : IDisposable
         Require(mas.ClientId, "Bifrost:Oidc:Clients:Mas:ClientId");
         Require(mas.ClientSecretPath, "Bifrost:Oidc:Clients:Mas:ClientSecretPath");
         Require(mas.RedirectUri, "Bifrost:Oidc:Clients:Mas:RedirectUri");
-        if (!Uri.TryCreate(mas.RedirectUri, UriKind.Absolute, out _))
+        // A rooted path such as "/callback" parses as an absolute file URI on Linux, so the scheme is checked too.
+        if (!Uri.TryCreate(mas.RedirectUri, UriKind.Absolute, out var redirect) ||
+            redirect.Scheme is not ("https" or "http"))
         {
-            throw new OidcConfigurationException("Bifrost:Oidc:Clients:Mas:RedirectUri must be an absolute URI.");
+            throw new OidcConfigurationException("Bifrost:Oidc:Clients:Mas:RedirectUri must be an absolute http(s) URI.");
         }
 
         var ecdsa = LoadSigningKey(options.SigningKeyPath);

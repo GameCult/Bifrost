@@ -36,13 +36,11 @@ public static class OidcEndpoints
 
         if (http.User.Identity?.IsAuthenticated != true)
         {
-            // OpenIddict has already replaced the request with a short request_uri; sign-in resumes at this URL.
-            var resume = http.Request.PathBase + http.Request.Path + http.Request.QueryString;
-            return LocalReturnPath.Parse(resume).Value == resume
-                ? Results.Challenge(
-                    new AuthenticationProperties { RedirectUri = resume },
-                    [CookieAuthenticationDefaults.AuthenticationScheme])
-                : Deny(Errors.InvalidRequest, "The authorization request is too long to resume after sign-in.");
+            // OpenIddict has already replaced the request with a short request_uri, so this URL fits a sign-in
+            // return path (LocalReturnPath.MaxLength); a test pins that, because Parse would otherwise fall back to /App.
+            return Results.Challenge(
+                new AuthenticationProperties { RedirectUri = http.Request.PathBase + http.Request.Path + http.Request.QueryString },
+                [CookieAuthenticationDefaults.AuthenticationScheme]);
         }
 
         var actor = await actors.GetAsync(http.RequestAborted);
@@ -79,13 +77,7 @@ public static class OidcEndpoints
 
     private static async Task<IResult> ExchangeAsync(HttpContext http)
     {
-        var request = http.GetOpenIddictServerRequest()
-            ?? throw new InvalidOperationException("The OpenIddict request could not be retrieved.");
-        if (!request.IsAuthorizationCodeGrantType())
-        {
-            return Deny(Errors.UnsupportedGrantType, "Only the authorization code grant is supported.");
-        }
-
+        // Only the authorization code grant is enabled, so OpenIddict has refused every other grant already.
         // The code's own principal carries the claims chosen at authorize time.
         var result = await http.AuthenticateAsync(OpenIddictScheme);
         return Results.SignIn(result.Principal!, properties: null, OpenIddictScheme);
