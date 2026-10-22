@@ -8,6 +8,7 @@ using Bifrost.Web.Domain;
 using Bifrost.Web.Features.Shared;
 using Bifrost.Web.Tests.Support;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.IdentityModel.JsonWebTokens;
@@ -306,16 +307,19 @@ public sealed class OidcIssuerTests : IClassFixture<OidcWebApplicationFactory>
             RedirectUris = { new Uri("https://evil.example.test/callback") }
         };
         await manager.UpdateAsync(application, drifted);
-        foreach (var seeder in _factory.Services.GetServices<IHostedService>().OfType<Bifrost.Web.Features.Oidc.OidcClientSeeder>())
-        {
-            await seeder.StartAsync(CancellationToken.None);
-        }
+        var seeders = _factory.Services.GetServices<IHostedService>().OfType<Bifrost.Web.Features.Oidc.OidcClientSeeder>().ToList();
+        var seeder = Assert.Single(seeders);
+        await seeder.StartAsync(CancellationToken.None);
 
-        Assert.Equal(1, await manager.CountAsync());
-        var restored = (await manager.FindByClientIdAsync(OidcTestKit.ClientId))!;
-        Assert.Equal([OidcTestKit.RedirectUri], (await manager.GetRedirectUrisAsync(restored)).ToArray());
-        Assert.True(await manager.ValidateClientSecretAsync(restored, _factory.Kit.ClientSecret));
-        Assert.False(await manager.ValidateClientSecretAsync(restored, "drifted-secret"));
+        // Read the stored row, not through the manager: the manager's cache still holds the drifted instance.
+        using var fresh = _factory.Services.CreateScope();
+        var rows = fresh.ServiceProvider.GetRequiredService<Bifrost.Web.Data.BifrostDbContext>()
+            .Set<OpenIddict.EntityFrameworkCore.Models.OpenIddictEntityFrameworkCoreApplication>()
+            .AsNoTracking().ToList();
+        var stored = Assert.Single(rows);
+        Assert.Equal([OidcTestKit.RedirectUri], (await manager.GetRedirectUrisAsync(stored)).ToArray());
+        Assert.True(await manager.ValidateClientSecretAsync(stored, _factory.Kit.ClientSecret));
+        Assert.False(await manager.ValidateClientSecretAsync(stored, "drifted-secret"));
     }
 
     // ---- helpers ----
