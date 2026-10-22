@@ -1,27 +1,39 @@
+using System.Net;
 using System.Net.Http.Json;
-using System.Collections.Concurrent;
 using System.Security.Claims;
+using System.Security.Cryptography;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using Bifrost.Web.Configuration;
 using Bifrost.Web.Data;
 using Bifrost.Web.Domain;
 using Bifrost.Web.Features.Membership;
 using Bifrost.Web.Features.Shared;
-using Microsoft.AspNetCore.Authentication;
-using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
 namespace Bifrost.Web.Features.Heimdall;
 
+/// <summary>
+/// Heimdall sign-in. Start issues an attempt that lives only in a Data Protection-protected cookie in the
+/// browser that began it. The browser that Heimdall authenticated presents the completion code from its
+/// URL fragment; Bifrost redeems it at Heimdall itself and signs in only when that browser holds the
+/// attempt's cookie and the redeemed return target names the same attempt.
+/// </summary>
 public sealed class HeimdallAuthService(
     HttpClient httpClient,
-    HeimdallAuthAttemptStore attemptStore,
+    HeimdallTokenVerifier tokenVerifier,
     BifrostDbContext dbContext,
     BifrostIdentityService bifrostIdentityService,
     IOptions<HeimdallOptions> heimdallOptions,
+    IDataProtectionProvider dataProtectionProvider,
     TimeProvider timeProvider)
 {
+    public const string ErrorRedirect = "/?auth=heimdall-error";
+    public const string AppSecretHeader = "x-heimdall-app-secret";
+
     private static readonly HashSet<string> AllowedProviders = new(StringComparer.OrdinalIgnoreCase)
     {
         "discord",
@@ -29,16 +41,29 @@ public sealed class HeimdallAuthService(
         "twitch"
     };
 
+    private readonly IDataProtector _protector = dataProtectionProvider.CreateProtector("Bifrost.Heimdall.Attempt.v1");
+
+    /// <summary>Points the client at Heimdall and, when the app has a secret, identifies Bifrost as the app.</summary>
+    public static void ConfigureClient(HttpClient client, HeimdallOptions options)
+    {
+        client.BaseAddress = new Uri(options.BaseUrl.TrimEnd('/'));
+        if (!string.IsNullOrWhiteSpace(options.AppSecret))
+        {
+            client.DefaultRequestHeaders.Add(AppSecretHeader, options.AppSecret);
+        }
+    }
+
     public async Task<HeimdallAuthStartResult> StartAsync(
         string provider,
         string callbackBaseUrl,
-        string returnUrl,
+        LocalReturnPath returnPath,
         bool requireMemberAccess,
+        IEnumerable<KeyValuePair<string, string>> requestCookies,
         CancellationToken cancellationToken)
     {
         if (!AllowedProviders.Contains(provider))
         {
-            throw new HeimdallAuthException($"Unsupported Heimdall provider '{provider}'.");
+            throw new HeimdallAuthException("Unsupported Heimdall provider.");
         }
 
         var options = heimdallOptions.Value;
@@ -50,14 +75,13 @@ public sealed class HeimdallAuthService(
         var entitlementPolicy = requireMemberAccess
             ? BuildMemberAccessPolicy(provider, options)
             : null;
-        var attemptId = Guid.NewGuid().ToString("N");
-        var callbackUrl = new Uri(new Uri(callbackBaseUrl.TrimEnd('/') + "/", UriKind.Absolute), "auth/heimdall/callback");
+        var nonce = WebEncoders.Base64UrlEncode(RandomNumberGenerator.GetBytes(32));
 
         var request = new HeimdallStartRequest(
             options.AppSlug,
             "sign_in",
-            ToAttemptReturnUrl(callbackBaseUrl, attemptId, returnUrl),
-            new HeimdallHandoff("backend_callback", attemptId, callbackUrl.ToString()),
+            ToAttemptReturnUrl(callbackBaseUrl, nonce),
+            new HeimdallHandoff("browser_completion"),
             entitlementPolicy);
 
         var response = await httpClient.PostAsJsonAsync(
@@ -67,8 +91,7 @@ public sealed class HeimdallAuthService(
 
         if (!response.IsSuccessStatusCode)
         {
-            var detail = await response.Content.ReadAsStringAsync(cancellationToken);
-            throw new HeimdallAuthException($"Heimdall rejected {provider} auth start: {detail}");
+            throw new HeimdallAuthException("Heimdall rejected the auth start.");
         }
 
         var payload = await response.Content.ReadFromJsonAsync<HeimdallStartResponse>(cancellationToken);
@@ -77,59 +100,174 @@ public sealed class HeimdallAuthService(
             throw new HeimdallAuthException("Heimdall auth start returned no authorization URL.");
         }
 
-        attemptStore.Create(attemptId, returnUrl);
-        attemptStore.SetRequiresMemberAccess(attemptId, requireMemberAccess);
-        return new HeimdallAuthStartResult(new Uri(payload.AuthorizationUrl, UriKind.Absolute), attemptId);
+        var attempt = new HeimdallAttempt(
+            nonce,
+            provider,
+            requireMemberAccess,
+            returnPath,
+            timeProvider.GetUtcNow() + HeimdallAttemptCookie.Lifetime);
+        return new HeimdallAuthStartResult(
+            new Uri(payload.AuthorizationUrl, UriKind.Absolute), ChooseSlot(requestCookies), Protect(attempt));
     }
 
-    public void StoreBackendCallback(HeimdallBackendCallbackPayload payload)
+    /// <summary>
+    /// The slot the new attempt's cookie takes: the first slot that holds no live attempt, else the one whose
+    /// attempt expires first. Parallel starts carry the same request cookies, so they choose the same slot and
+    /// overwrite each other; the Cookie header holds at most <see cref="HeimdallAttemptCookie.SlotNames"/> attempt
+    /// cookies however many starts a browser makes.
+    /// </summary>
+    private string ChooseSlot(IEnumerable<KeyValuePair<string, string>> requestCookies)
     {
-        if (!string.Equals(payload.AppSlug, heimdallOptions.Value.AppSlug, StringComparison.OrdinalIgnoreCase))
+        var cookies = requestCookies.ToLookup(x => x.Key, x => x.Value, StringComparer.Ordinal);
+        string? oldest = null;
+        var oldestExpiry = DateTimeOffset.MaxValue;
+        foreach (var name in HeimdallAttemptCookie.SlotNames)
         {
-            throw new HeimdallAuthException("Heimdall callback targeted a different app.");
+            var live = Read(cookies[name].FirstOrDefault());
+            if (live is null)
+            {
+                return name;
+            }
+
+            if (live.ExpiresAt < oldestExpiry)
+            {
+                oldest = name;
+                oldestExpiry = live.ExpiresAt;
+            }
         }
 
-        if (string.IsNullOrWhiteSpace(payload.AttemptId))
-        {
-            throw new HeimdallAuthException("Heimdall callback omitted attempt id.");
-        }
-
-        attemptStore.Complete(payload.AttemptId, payload);
+        return oldest!;
     }
 
-    public async Task<HeimdallCompletedSignIn> CompleteAttemptAsync(
-        string attemptId,
+    /// <summary>
+    /// The slot cookie that holds the attempt for this nonce: its name and value, or null when the browser holds
+    /// none (never started here, expired, or overwritten by a later start).
+    /// </summary>
+    public (string Name, string Value)? FindAttemptCookie(IEnumerable<KeyValuePair<string, string>> requestCookies, string? nonce)
+    {
+        foreach (var (name, value) in requestCookies)
+        {
+            if (HeimdallAttemptCookie.SlotNames.Contains(name) && Unprotect(value, nonce) is not null)
+            {
+                return (name, value);
+            }
+        }
+
+        return null;
+    }
+
+    public async Task<HeimdallCompletedSignIn> CompleteAsync(
+        string callbackBaseUrl,
+        string? nonce,
+        string? cookieValue,
+        string? code,
         CancellationToken cancellationToken)
     {
-        var attempt = attemptStore.TryTake(attemptId)
-            ?? throw new HeimdallAuthPendingException("Heimdall has not delivered this auth attempt yet.");
-        var payload = attempt.Payload
-            ?? throw new HeimdallAuthPendingException("Heimdall has not delivered this auth attempt yet.");
-
-        if (!payload.IsSuccessful)
+        var attempt = Unprotect(cookieValue, nonce)
+            ?? throw new HeimdallAuthException("Heimdall completion has no attempt for this browser.");
+        if (string.IsNullOrWhiteSpace(code))
         {
-            throw new HeimdallAuthException(payload.ErrorDescription ?? payload.Error ?? "Heimdall auth did not succeed.");
+            throw new HeimdallAuthException("Heimdall completion carried no code.");
         }
 
-        if (attempt.RequiresMemberAccess && !payload.HasMemberAccess)
+        var redeemed = await RedeemAsync(code, cancellationToken);
+        if (!string.Equals(redeemed.ReturnTo, ToAttemptReturnUrl(callbackBaseUrl, attempt.Nonce), StringComparison.Ordinal))
+        {
+            throw new HeimdallAuthException("Heimdall completion belongs to another attempt.");
+        }
+
+        if (string.IsNullOrWhiteSpace(redeemed.AccessToken))
+        {
+            throw new HeimdallAuthException("Heimdall completion carried no access token.");
+        }
+
+        var identity = await tokenVerifier.VerifyAsync(redeemed.AccessToken, redeemed.Account?.Id, cancellationToken);
+        if (attempt.RequiresMemberAccess && !identity.HasMemberAccess)
         {
             throw new HeimdallAuthException("Heimdall did not grant Bifrost member access.");
         }
 
-        var userAccount = await UpsertUserAccountAsync(payload, attempt.RequiresMemberAccess, cancellationToken);
+        var userAccount = await UpsertUserAccountAsync(
+            identity,
+            attempt.Provider,
+            attempt.RequiresMemberAccess,
+            cancellationToken);
         return new HeimdallCompletedSignIn(
-            bifrostIdentityService.BuildPrincipal(userAccount, payload.Provider ?? "heimdall"),
-            string.IsNullOrWhiteSpace(attempt.ReturnUrl) ? "/App" : attempt.ReturnUrl);
+            bifrostIdentityService.BuildPrincipal(userAccount, attempt.Provider),
+            attempt.ReturnPath);
     }
 
+    private async Task<HeimdallRedeemResponse> RedeemAsync(string code, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var response = await httpClient.PostAsJsonAsync(
+                $"/v1/apps/{Uri.EscapeDataString(heimdallOptions.Value.AppSlug)}/auth-completions/redeem",
+                new HeimdallRedeemRequest(code),
+                cancellationToken);
+            if (response.StatusCode != HttpStatusCode.Created)
+            {
+                throw new HeimdallAuthException("Heimdall did not redeem the completion code.");
+            }
+
+            return await response.Content.ReadFromJsonAsync<HeimdallRedeemResponse>(cancellationToken)
+                ?? throw new HeimdallAuthException("Heimdall redeem returned no body.");
+        }
+        catch (Exception error) when (error is not HeimdallAuthException && !cancellationToken.IsCancellationRequested)
+        {
+            throw new HeimdallAuthException("Heimdall redeem could not be read.");
+        }
+    }
+
+    private string Protect(HeimdallAttempt attempt) =>
+        _protector.Protect(JsonSerializer.Serialize(new AttemptWire(
+            attempt.Nonce, attempt.Provider, attempt.RequiresMemberAccess, attempt.ReturnPath.Value, attempt.ExpiresAt)));
+
+    /// <summary>The live attempt a cookie value protects when it belongs to this nonce, else null.</summary>
+    private HeimdallAttempt? Unprotect(string? cookieValue, string? nonce) =>
+        Read(cookieValue) is { } attempt && string.Equals(attempt.Nonce, nonce, StringComparison.Ordinal) ? attempt : null;
+
+    /// <summary>The live attempt a cookie value protects, else null.</summary>
+    private HeimdallAttempt? Read(string? cookieValue)
+    {
+        if (string.IsNullOrEmpty(cookieValue))
+        {
+            return null;
+        }
+
+        try
+        {
+            var wire = JsonSerializer.Deserialize<AttemptWire>(_protector.Unprotect(cookieValue));
+            if (wire is null || wire.ExpiresAt <= timeProvider.GetUtcNow())
+            {
+                return null;
+            }
+
+            return new HeimdallAttempt(
+                wire.Nonce, wire.Provider, wire.RequiresMemberAccess, LocalReturnPath.Parse(wire.ReturnPath), wire.ExpiresAt);
+        }
+        catch (Exception error) when (error is CryptographicException or JsonException or FormatException)
+        {
+            return null;
+        }
+    }
+
+    private sealed record AttemptWire(
+        string Nonce,
+        string Provider,
+        bool RequiresMemberAccess,
+        string ReturnPath,
+        DateTimeOffset ExpiresAt);
+
     private async Task<UserAccount> UpsertUserAccountAsync(
-        HeimdallBackendCallbackPayload payload,
+        HeimdallVerifiedIdentity identity,
+        string provider,
         bool grantMemberAccess,
         CancellationToken cancellationToken)
     {
         var now = timeProvider.GetUtcNow();
-        var accountId = payload.Account?.Id ?? throw new HeimdallAuthException("Heimdall response omitted account id.");
-        var displayName = payload.Account.DisplayName ?? accountId;
+        var accountId = identity.AccountId;
+        var displayName = identity.DisplayName ?? accountId;
 
         var userAccount = await dbContext.UserAccounts
             .Include(x => x.MemberProfile)
@@ -150,7 +288,7 @@ public sealed class HeimdallAuthService(
                 MemberProfile = new MemberProfile
                 {
                     Nickname = displayName,
-                    Headline = $"Verified through Heimdall {payload.Provider}",
+                    Headline = $"Verified through Heimdall {provider}",
                     UpdatedAtUtc = now
                 },
                 Membership = new Bifrost.Web.Domain.Membership
@@ -160,7 +298,7 @@ public sealed class HeimdallAuthService(
                     ApprovedAtUtc = grantMemberAccess ? now : null,
                     Notes = grantMemberAccess
                         ? "Activated by Heimdall member access claim"
-                        : $"Identity verified through Heimdall {payload.Provider}"
+                        : $"Identity verified through Heimdall {provider}"
                 }
             };
             dbContext.UserAccounts.Add(userAccount);
@@ -173,7 +311,7 @@ public sealed class HeimdallAuthService(
             {
                 UserAccountId = userAccount.Id,
                 Nickname = displayName,
-                Headline = $"Verified through Heimdall {payload.Provider}",
+                Headline = $"Verified through Heimdall {provider}",
                 UpdatedAtUtc = now
             };
             userAccount.Membership ??= new Bifrost.Web.Domain.Membership
@@ -248,61 +386,29 @@ public sealed class HeimdallAuthService(
             return BuildPatreonPolicy(options);
         }
 
-        throw new HeimdallAuthException($"Heimdall provider '{provider}' does not support Bifrost member access.");
+        throw new HeimdallAuthException("Heimdall provider does not support Bifrost member access.");
     }
 
-    private static string ToAttemptReturnUrl(string callbackBaseUrl, string attemptId, string returnUrl)
+    private static string ToAttemptReturnUrl(string callbackBaseUrl, string nonce)
     {
         var baseUri = new Uri(callbackBaseUrl.TrimEnd('/') + "/", UriKind.Absolute);
-        var target = string.IsNullOrWhiteSpace(returnUrl) ? "/App" : returnUrl;
-        var waitUri = new Uri(baseUri, "auth/heimdall/wait");
-        return $"{waitUri}?attemptId={Uri.EscapeDataString(attemptId)}&returnTo={Uri.EscapeDataString(target)}";
+        return $"{new Uri(baseUri, "auth/heimdall/complete")}?attempt={Uri.EscapeDataString(nonce)}";
     }
 }
 
 public class HeimdallAuthException(string message) : InvalidOperationException(message);
 
-public sealed class HeimdallAuthPendingException(string message) : HeimdallAuthException(message);
+public sealed record HeimdallAuthStartResult(Uri AuthorizationUrl, string CookieName, string CookieValue);
 
-public sealed record HeimdallAuthStartResult(Uri AuthorizationUrl, string AttemptId);
+public sealed record HeimdallCompletedSignIn(ClaimsPrincipal Principal, LocalReturnPath ReturnPath);
 
-public sealed record HeimdallCompletedSignIn(ClaimsPrincipal Principal, string RedirectUri);
-
-public sealed class HeimdallAuthAttemptStore
-{
-    private readonly ConcurrentDictionary<string, HeimdallAuthAttempt> _attempts = new(StringComparer.Ordinal);
-
-    public void Create(string attemptId, string returnUrl)
-    {
-        _attempts[attemptId] = new HeimdallAuthAttempt(returnUrl, null);
-    }
-
-    public void SetRequiresMemberAccess(string attemptId, bool requiresMemberAccess)
-    {
-        _attempts.AddOrUpdate(
-            attemptId,
-            _ => new HeimdallAuthAttempt("/App", null, requiresMemberAccess),
-            (_, existing) => existing with { RequiresMemberAccess = requiresMemberAccess });
-    }
-
-    public void Complete(string attemptId, HeimdallBackendCallbackPayload payload)
-    {
-        _attempts.AddOrUpdate(
-            attemptId,
-            _ => new HeimdallAuthAttempt(payload.ReturnTo ?? "/App", payload),
-            (_, existing) => existing with { Payload = payload });
-    }
-
-    public HeimdallAuthAttempt? TryTake(string attemptId)
-    {
-        return _attempts.TryRemove(attemptId, out var attempt) ? attempt : null;
-    }
-}
-
-public sealed record HeimdallAuthAttempt(
-    string ReturnUrl,
-    HeimdallBackendCallbackPayload? Payload,
-    bool RequiresMemberAccess = false);
+/// <summary>An attempt Start issued. It exists only inside its protected cookie.</summary>
+public sealed record HeimdallAttempt(
+    string Nonce,
+    string Provider,
+    bool RequiresMemberAccess,
+    LocalReturnPath ReturnPath,
+    DateTimeOffset ExpiresAt);
 
 public sealed record HeimdallStartRequest(
     [property: JsonPropertyName("appSlug")] string AppSlug,
@@ -313,11 +419,7 @@ public sealed record HeimdallStartRequest(
     [property: JsonPropertyName("entitlementPolicy")] HeimdallEntitlementPolicy? EntitlementPolicy);
 
 public sealed record HeimdallHandoff(
-    [property: JsonPropertyName("kind")] string Kind,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    [property: JsonPropertyName("attemptId")] string? AttemptId = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    [property: JsonPropertyName("callbackUrl")] string? CallbackUrl = null);
+    [property: JsonPropertyName("kind")] string Kind);
 
 public sealed record HeimdallEntitlementPolicy(
     [property: JsonPropertyName("kind")] string Kind,
@@ -331,31 +433,45 @@ public sealed record HeimdallEntitlementPolicy(
 public sealed record HeimdallStartResponse(
     [property: JsonPropertyName("authorizationUrl")] string AuthorizationUrl);
 
-public sealed record HeimdallBackendCallbackPayload(
-    [property: JsonPropertyName("attemptId")] string AttemptId,
-    [property: JsonPropertyName("appSlug")] string? AppSlug,
-    [property: JsonPropertyName("status")] string? Status,
-    [property: JsonPropertyName("provider")] string? Provider,
-    [property: JsonPropertyName("returnTo")] string? ReturnTo,
-    [property: JsonPropertyName("error")] string? Error,
-    [property: JsonPropertyName("errorDescription")] string? ErrorDescription,
-    [property: JsonPropertyName("account")] HeimdallAccount? Account,
-    [property: JsonPropertyName("sharedCapabilities")] string[]? SharedCapabilities,
-    [property: JsonPropertyName("entitlements")] HeimdallEntitlements? Entitlements)
-{
-    public bool IsSuccessful => string.Equals(Status, "success", StringComparison.OrdinalIgnoreCase);
+public sealed record HeimdallRedeemRequest(
+    [property: JsonPropertyName("completionCode")] string CompletionCode);
 
-    public bool HasMemberAccess =>
-        SharedCapabilities?.Any(capability =>
-            string.Equals(capability, "member_access", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(capability, "app_access", StringComparison.OrdinalIgnoreCase)) == true ||
-        Entitlements?.Facts?.Any(fact =>
-            string.Equals(fact, "entitlement.app_access", StringComparison.OrdinalIgnoreCase)) == true;
-}
+public sealed record HeimdallRedeemResponse(
+    [property: JsonPropertyName("returnTo")] string? ReturnTo,
+    [property: JsonPropertyName("accessToken")] string? AccessToken,
+    [property: JsonPropertyName("account")] HeimdallAccount? Account);
 
 public sealed record HeimdallAccount(
-    [property: JsonPropertyName("id")] string Id,
-    [property: JsonPropertyName("displayName")] string? DisplayName);
+    [property: JsonPropertyName("id")] string Id);
 
-public sealed record HeimdallEntitlements(
-    [property: JsonPropertyName("facts")] string[]? Facts);
+/// <summary>
+/// The attempt cookies: a ring of <see cref="SlotNames"/> fixed names, so the Cookie header a browser sends to
+/// /auth/heimdall is bounded by construction (a worst-case attempt is about 2.4 KB; nginx's line limit is 8 KB).
+/// A start takes a free slot or overwrites the one expiring first; an overwritten attempt finds no cookie and
+/// is refused. The attempt's nonce lives inside the protected value, never in the cookie name.
+/// </summary>
+public static class HeimdallAttemptCookie
+{
+    public const string Prefix = "bifrost_heimdall_";
+    public const int SlotCount = 2;
+
+    public static readonly TimeSpan Lifetime = TimeSpan.FromMinutes(10);
+
+    public static readonly IReadOnlyList<string> SlotNames =
+        Enumerable.Range(0, SlotCount).Select(x => Prefix + x).ToArray();
+
+    public static CookieOptions Options() => new()
+    {
+        HttpOnly = true,
+        Secure = true,
+        SameSite = SameSiteMode.Lax,
+        Path = "/auth/heimdall",
+        MaxAge = Lifetime
+    };
+
+    /// <summary>
+    /// The options a deletion carries: only the attempt cookie's Path, which a cookie is matched on. It carries no
+    /// Max-Age, which would take precedence over the expiry Delete writes and leave the emptied cookie alive.
+    /// </summary>
+    public static CookieOptions DeleteOptions() => new() { Path = "/auth/heimdall" };
+}

@@ -125,12 +125,12 @@ builder.Services.AddScoped<ReadinessService>();
 builder.Services.AddScoped<ApplicationBootstrapper>();
 builder.Services.AddSingleton<StartupConfigurationValidator>();
 builder.Services.AddScoped<IAuthorizationHandler, ActiveMemberAuthorizationHandler>();
-builder.Services.AddSingleton<HeimdallAuthAttemptStore>();
 builder.Services.AddHttpClient<HeimdallAuthService>((serviceProvider, client) =>
-{
-    var options = serviceProvider.GetRequiredService<IOptions<HeimdallOptions>>().Value;
-    client.BaseAddress = new Uri(options.BaseUrl.TrimEnd('/'));
-});
+    HeimdallAuthService.ConfigureClient(client, serviceProvider.GetRequiredService<IOptions<HeimdallOptions>>().Value))
+    .RedactLoggedHeaders(header => string.Equals(header, HeimdallAuthService.AppSecretHeader, StringComparison.OrdinalIgnoreCase));
+builder.Services.AddSingleton<HeimdallTokenVerifier>();
+builder.Services.AddHttpClient(HeimdallTokenVerifier.ClientName, (serviceProvider, client) =>
+    HeimdallTokenVerifier.ConfigureClient(client, serviceProvider.GetRequiredService<IOptions<HeimdallOptions>>().Value));
 builder.Services.AddHttpClient<StripeCheckoutService>(client =>
 {
     client.BaseAddress = new Uri("https://api.stripe.com/");
@@ -300,22 +300,18 @@ app.MapPost("/github/webhooks", async (
 
 app.MapGet("/auth/sign-in", async (HttpContext httpContext, IOptions<GitHubOAuthOptions> gitHubOptions) =>
 {
-    var returnUrl = httpContext.Request.Query["returnUrl"].ToString();
-    if (string.IsNullOrWhiteSpace(returnUrl))
-    {
-        returnUrl = "/App";
-    }
+    var returnPath = LocalReturnPath.Parse(httpContext.Request.Query["returnUrl"].ToString());
 
     var provider = httpContext.Request.Query["provider"].ToString();
     if (string.IsNullOrWhiteSpace(provider))
     {
-        await WriteSignInChooserAsync(httpContext, returnUrl);
+        await WriteSignInChooserAsync(httpContext, returnPath.Value);
         return;
     }
 
     if (!provider.Equals("github", StringComparison.OrdinalIgnoreCase))
     {
-        httpContext.Response.Redirect($"/auth/heimdall/{Uri.EscapeDataString(provider)}?returnUrl={Uri.EscapeDataString(returnUrl)}");
+        httpContext.Response.Redirect($"/auth/heimdall/{Uri.EscapeDataString(provider)}?returnUrl={Uri.EscapeDataString(returnPath.Value)}");
         return;
     }
 
@@ -327,7 +323,7 @@ app.MapGet("/auth/sign-in", async (HttpContext httpContext, IOptions<GitHubOAuth
 
     await httpContext.ChallengeAsync(
         GitHubAuthenticationDefaults.AuthenticationScheme,
-        new() { RedirectUri = returnUrl });
+        new() { RedirectUri = returnPath.Value });
 }).AllowAnonymous();
 
 app.MapPost("/auth/bifrost/register", async (
@@ -367,16 +363,12 @@ app.MapGet("/auth/heimdall/{provider}", async (
     HttpContext httpContext,
     HeimdallAuthService heimdallAuthService,
     IOptions<BifrostHostOptions> hostOptions,
+    ILogger<HeimdallAuthService> logger,
     CancellationToken cancellationToken) =>
 {
     try
     {
-        var returnUrl = httpContext.Request.Query["returnUrl"].ToString();
-        if (string.IsNullOrWhiteSpace(returnUrl))
-        {
-            returnUrl = "/App";
-        }
-
+        var returnPath = LocalReturnPath.Parse(httpContext.Request.Query["returnUrl"].ToString());
         var requireMemberAccess = string.Equals(
             httpContext.Request.Query["access"].ToString(),
             "member",
@@ -385,30 +377,18 @@ app.MapGet("/auth/heimdall/{provider}", async (
         var start = await heimdallAuthService.StartAsync(
             provider,
             hostOptions.Value.PublicBaseUrl,
-            returnUrl,
+            returnPath,
             requireMemberAccess,
+            httpContext.Request.Cookies,
             cancellationToken);
 
+        httpContext.Response.Cookies.Append(start.CookieName, start.CookieValue, HeimdallAttemptCookie.Options());
         return Results.Redirect(start.AuthorizationUrl.ToString());
     }
     catch (HeimdallAuthException error)
     {
-        return Results.Redirect($"/?auth=heimdall-error&detail={Uri.EscapeDataString(error.Message)}");
-    }
-}).AllowAnonymous();
-
-app.MapPost("/auth/heimdall/callback", (
-    HeimdallBackendCallbackPayload payload,
-    HeimdallAuthService heimdallAuthService) =>
-{
-    try
-    {
-        heimdallAuthService.StoreBackendCallback(payload);
-        return Results.Accepted();
-    }
-    catch (HeimdallAuthException error)
-    {
-        return Results.BadRequest(error.Message);
+        logger.LogWarning("Heimdall start refused: {Reason}", error.Message);
+        return Results.Redirect(HeimdallAuthService.ErrorRedirect);
     }
 }).AllowAnonymous();
 
@@ -534,31 +514,44 @@ eveGovernance.MapGet("/surface", async (
         "application/json");
 });
 
-app.MapGet("/auth/heimdall/wait", async (
+app.MapGet("/auth/heimdall/complete", (HttpContext httpContext) =>
+{
+    httpContext.Response.Headers.CacheControl = "no-store";
+    httpContext.Response.Headers["Referrer-Policy"] = "no-referrer";
+    return Results.Content(HeimdallCompletePage.Html, "text/html", System.Text.Encoding.UTF8);
+}).AllowAnonymous();
+
+app.MapPost("/auth/heimdall/complete", async (
     HttpContext httpContext,
     HeimdallAuthService heimdallAuthService,
+    IOptions<BifrostHostOptions> hostOptions,
+    ILogger<HeimdallAuthService> logger,
     CancellationToken cancellationToken) =>
 {
-    var attemptId = httpContext.Request.Query["attemptId"].ToString();
-    if (string.IsNullOrWhiteSpace(attemptId))
-    {
-        return Results.Redirect("/?auth=heimdall-error&detail=missing-attempt-id");
-    }
-
+    var form = await ReadFormOrNullAsync(httpContext.Request, cancellationToken);
+    var attempt = form?["attempt"].ToString();
+    var held = heimdallAuthService.FindAttemptCookie(httpContext.Request.Cookies, attempt);
     try
     {
-        var signIn = await heimdallAuthService.CompleteAttemptAsync(attemptId, cancellationToken);
+        var signIn = await heimdallAuthService.CompleteAsync(
+            hostOptions.Value.PublicBaseUrl,
+            attempt,
+            held?.Value,
+            form?["code"].ToString(),
+            cancellationToken);
         await httpContext.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, signIn.Principal);
-        return Results.Redirect(signIn.RedirectUri);
-    }
-    catch (HeimdallAuthPendingException)
-    {
-        httpContext.Response.Headers.Append("Refresh", "2");
-        return Results.Text("Waiting for Heimdall sign-in to complete.", "text/plain");
+        httpContext.Response.Cookies.Delete(held!.Value.Name, HeimdallAttemptCookie.DeleteOptions());
+        return Results.LocalRedirect(signIn.ReturnPath.Value);
     }
     catch (HeimdallAuthException error)
     {
-        return Results.Redirect($"/?auth=heimdall-error&detail={Uri.EscapeDataString(error.Message)}");
+        logger.LogWarning("Heimdall completion refused: {Reason}", error.Message);
+        if (held is not null)
+        {
+            httpContext.Response.Cookies.Delete(held.Value.Name, HeimdallAttemptCookie.DeleteOptions());
+        }
+
+        return Results.Redirect(HeimdallAuthService.ErrorRedirect);
     }
 }).AllowAnonymous();
 
@@ -577,6 +570,23 @@ static IResult JsonResult<T>(T value, JsonSerializerOptions options, int statusC
         JsonSerializer.Serialize(value, options),
         "application/json",
         statusCode: statusCode);
+
+static async Task<IFormCollection?> ReadFormOrNullAsync(HttpRequest request, CancellationToken cancellationToken)
+{
+    if (!request.HasFormContentType)
+    {
+        return null;
+    }
+
+    try
+    {
+        return await request.ReadFormAsync(cancellationToken);
+    }
+    catch (Exception error) when (error is InvalidDataException or BadHttpRequestException)
+    {
+        return null;
+    }
+}
 
 static async Task WriteSignInChooserAsync(HttpContext httpContext, string returnUrl)
 {

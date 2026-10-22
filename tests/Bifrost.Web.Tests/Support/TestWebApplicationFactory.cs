@@ -16,7 +16,8 @@ namespace Bifrost.Web.Tests.Support;
 
 public class TestWebApplicationFactory : WebApplicationFactory<Program>
 {
-    private readonly InMemoryDatabaseRoot _databaseRoot = new();
+    // One root for every factory: EF caches a service provider per root, and warns past twenty.
+    private static readonly InMemoryDatabaseRoot _databaseRoot = new();
     private readonly string _databaseName = $"bifrost-tests-{Guid.NewGuid():N}";
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
