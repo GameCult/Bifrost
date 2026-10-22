@@ -40,7 +40,7 @@ echoes its value.
 | Setting | Meaning |
 | --- | --- |
 | `Bifrost:Oidc:SigningKeyPath` | PEM file with an EC P-256 private key. Tokens and id_tokens are signed ES256; JWKS publishes exactly that key. A non-P-256 or public-only key stops startup. |
-| `Bifrost:Oidc:EncryptionKeyPath` | File holding 32 random bytes as base64 (`openssl rand -base64 32`). Encrypts the access token and the parked authorize request. |
+| `Bifrost:Oidc:EncryptionKeyPath` | File holding 32 random bytes as base64 (`openssl rand -base64 32`). Encrypts the tokens OpenIddict issues, the access token and the parked authorize request among them. |
 | `Bifrost:Oidc:Clients:Mas:ClientId` | The client id MAS presents. |
 | `Bifrost:Oidc:Clients:Mas:ClientSecretPath` | File holding the client secret. |
 | `Bifrost:Oidc:Clients:Mas:RedirectUri` | MAS's callback URL, registered exactly. |

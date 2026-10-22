@@ -28,6 +28,7 @@ public sealed class OidcIssuerTests : IClassFixture<OidcWebApplicationFactory>
         var discovery = await client.GetFromJsonAsync<JsonElement>("/.well-known/openid-configuration");
 
         Assert.Equal(Origin.AbsoluteUri, discovery.GetProperty("issuer").GetString());
+        Assert.Equal("/.well-known/jwks", new Uri(discovery.GetProperty("jwks_uri").GetString()!).AbsolutePath);
         Assert.Equal(["ES256"], Strings(discovery, "id_token_signing_alg_values_supported"));
         Assert.Equal(["code"], Strings(discovery, "response_types_supported"));
         Assert.Equal(["authorization_code"], Strings(discovery, "grant_types_supported"));
