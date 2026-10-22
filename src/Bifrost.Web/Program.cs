@@ -11,6 +11,7 @@ using Bifrost.Web.Features.GitHub;
 using Bifrost.Web.Features.Heimdall;
 using Bifrost.Web.Features.Membership;
 using Bifrost.Web.Features.Motions;
+using Bifrost.Web.Features.Oidc;
 using Bifrost.Web.Features.Patronage;
 using Bifrost.Web.Features.Shared;
 using Microsoft.AspNetCore.Authentication;
@@ -225,6 +226,13 @@ builder.Services.AddAuthorization(options =>
 
 builder.Services.AddConceptTallyCors();
 
+// The OIDC provider is mapped only when Bifrost:Oidc is configured; a configured provider that cannot load its keys stops startup.
+var oidcOptions = OidcIssuerOptions.FromConfiguration(builder.Configuration);
+if (oidcOptions is not null)
+{
+    builder.Services.AddBifrostOidc(oidcOptions);
+}
+
 var app = builder.Build();
 var appJsonSerializerOptions = CreateAppJsonSerializerOptions();
 
@@ -266,6 +274,11 @@ app.MapGet("/readyz", async (ReadinessService readinessService, CancellationToke
 }).AllowAnonymous();
 
 app.MapConceptTallyExport();
+
+if (oidcOptions is not null)
+{
+    app.MapBifrostOidc();
+}
 
 app.MapPost("/github/webhooks", async (
     HttpRequest request,
