@@ -1,14 +1,15 @@
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
 WORKDIR /src
 
-COPY src/Bifrost.Web/Bifrost.Web.csproj src/Bifrost.Web/
-RUN dotnet restore src/Bifrost.Web/Bifrost.Web.csproj
+COPY Directory.Build.props .
+COPY src/Bifrost.Web/Bifrost.Web.csproj src/Bifrost.Web/packages.lock.json src/Bifrost.Web/
+RUN dotnet restore src/Bifrost.Web/Bifrost.Web.csproj --locked-mode
 
 COPY . .
 RUN dotnet publish src/Bifrost.Web/Bifrost.Web.csproj \
     --configuration Release \
     --output /app/publish \
-    /p:UseAppHost=false
+    /p:UseAppHost=false /p:RestoreLockedMode=true
 
 FROM mcr.microsoft.com/dotnet/aspnet:8.0-bookworm-slim AS runtime
 WORKDIR /app
