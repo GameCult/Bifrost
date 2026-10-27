@@ -13,7 +13,7 @@ namespace Bifrost.Web.Tests;
 public sealed class OidcLogoutTests
 {
     private static readonly TimeSpan[] ExpectedBackoff =
-        [30, 60, 120, 240, 480, 900, 900].Select(x => TimeSpan.FromSeconds(x)).ToArray();
+        new[] { 30, 60, 120, 240, 480, 900, 900 }.Select(x => TimeSpan.FromSeconds(x)).ToArray();
 
     [Fact]
     public async Task Probe_authorizations_carry_the_subject_and_a_valid_status_after_a_code_flow()

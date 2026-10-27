@@ -4,6 +4,7 @@ using System.Net.Http.Json;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Bifrost.Web.Configuration;
 using Bifrost.Web.Data;
 using Bifrost.Web.Domain;
 using Bifrost.Web.Features.Oidc;
@@ -136,7 +137,7 @@ public sealed class OidcLogoutFactory : OidcWebApplicationFactory
         Time,
         NullLogger<OidcLogoutReconciler>.Instance);
 
-    public WebApplicationFactoryClientOptions ClientOptions() => new()
+    public WebApplicationFactoryClientOptions HostClientOptions() => new()
     {
         AllowAutoRedirect = false,
         HandleCookies = true,
@@ -146,7 +147,7 @@ public sealed class OidcLogoutFactory : OidcWebApplicationFactory
     /// <summary>Registers a member, sets <paramref name="status"/>, and completes one authorization-code flow for them.</summary>
     public async Task<(string Identity, string IdToken)> GrantAsync(MembershipStatus status = MembershipStatus.Active)
     {
-        using var client = CreateClient(ClientOptions());
+        using var client = CreateClient(HostClientOptions());
         var identity = $"member-{Guid.NewGuid():N}";
         using (var register = await client.PostAsJsonAsync("/auth/bifrost/register", new { identity, displayName = identity }))
         {
@@ -174,7 +175,7 @@ public sealed class OidcLogoutFactory : OidcWebApplicationFactory
         var code = QueryHelpers.ParseQuery(response.Headers.Location!.Query)["code"].ToString();
         response.Dispose();
 
-        using var bare = CreateClient(ClientOptions());
+        using var bare = CreateClient(HostClientOptions());
         using var exchange = new HttpRequestMessage(HttpMethod.Post, "/connect/token")
         {
             Content = new FormUrlEncodedContent(new Dictionary<string, string>
@@ -215,7 +216,7 @@ public sealed class OidcLogoutFactory : OidcWebApplicationFactory
 
     public async Task<JsonWebKeySet> JwksAsync()
     {
-        using var client = CreateClient(ClientOptions());
+        using var client = CreateClient(HostClientOptions());
         return new JsonWebKeySet(await client.GetStringAsync("/.well-known/jwks"));
     }
 }
