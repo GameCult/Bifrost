@@ -85,15 +85,7 @@ public static class OidcEndpoints
         // because the code outlives the authorize decision (a member suspended since gets no tokens).
         var result = await http.AuthenticateAsync(OpenIddictScheme);
         var subject = result.Principal?.GetClaim(Claims.Subject);
-        UserAccount? account = null;
-        if (Guid.TryParse(subject, out var accountId))
-        {
-            account = await db.UserAccounts.AsNoTracking()
-                .Include(x => x.Membership)
-                .SingleOrDefaultAsync(x => x.Id == accountId, http.RequestAborted);
-        }
-
-        if (!new CurrentBifrostActor(true, account).IsActiveMember)
+        if (!await IsStillActiveMemberAsync(db, subject, http.RequestAborted))
         {
             return Deny(Errors.InvalidGrant, NotActiveDescription);
         }
@@ -101,12 +93,18 @@ public static class OidcEndpoints
         return Results.SignIn(result.Principal!, properties: null, OpenIddictScheme);
     }
 
-    private static async Task<IResult> UserInfoAsync(HttpContext http)
+    private static async Task<IResult> UserInfoAsync(HttpContext http, BifrostDbContext db)
     {
         var result = await http.AuthenticateAsync(OpenIddictScheme);
         if (!result.Succeeded || result.Principal is null)
         {
             return Results.Challenge(authenticationSchemes: [OpenIddictScheme]);
+        }
+
+        // An access token outlives the authorize decision too: a member suspended since is no longer answered.
+        if (!await IsStillActiveMemberAsync(db, result.Principal.GetClaim(Claims.Subject), http.RequestAborted))
+        {
+            return Deny(Errors.InsufficientAccess, NotActiveDescription);
         }
 
         var claims = new Dictionary<string, object?> { [Claims.Subject] = result.Principal.GetClaim(Claims.Subject) };
@@ -117,6 +115,20 @@ public static class OidcEndpoints
         }
 
         return Results.Json(claims);
+    }
+
+    /// <summary>The one reading of "this subject is still an Active member", shared by the token and userinfo endpoints.</summary>
+    private static async Task<bool> IsStillActiveMemberAsync(BifrostDbContext db, string? subject, CancellationToken cancellationToken)
+    {
+        if (!Guid.TryParse(subject, out var accountId))
+        {
+            return false;
+        }
+
+        var account = await db.UserAccounts.AsNoTracking()
+            .Include(x => x.Membership)
+            .SingleOrDefaultAsync(x => x.Id == accountId, cancellationToken);
+        return new CurrentBifrostActor(true, account).IsActiveMember;
     }
 
     private static IResult Deny(string error, string description) =>

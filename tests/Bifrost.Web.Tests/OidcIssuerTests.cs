@@ -334,14 +334,18 @@ public sealed class OidcIssuerTests : IClassFixture<OidcWebApplicationFactory>
         Assert.False(await manager.ValidateClientSecretAsync(stored, "drifted-secret"));
     }
 
-    [Fact]
-    public async Task A_member_suspended_after_authorize_gets_no_tokens()
+    [Theory]
+    [InlineData(MembershipStatus.Authenticated)]
+    [InlineData(MembershipStatus.PendingApproval)]
+    [InlineData(MembershipStatus.Suspended)]
+    [InlineData(null)]
+    public async Task A_member_no_longer_active_after_authorize_gets_no_tokens(MembershipStatus? status)
     {
-        var (client, identity) = await SignedInAsync(MembershipStatus.Active, "Soon Suspended");
+        var (client, identity) = await SignedInAsync(MembershipStatus.Active, "Soon Gone");
         var request = NewRequest();
         var code = await CodeAsync(client, request);
 
-        await _factory.SetMembershipAsync(identity, MembershipStatus.Suspended);
+        await LeaveActiveAsync(identity, status);
 
         using var response = await TokenAsync(client, request, code);
         var body = await response.Content.ReadAsStringAsync();
@@ -351,62 +355,130 @@ public sealed class OidcIssuerTests : IClassFixture<OidcWebApplicationFactory>
         Assert.DoesNotContain("access_token", body);
     }
 
-    [Fact]
-    public async Task Startup_removes_every_client_but_the_configured_one()
+    [Theory]
+    [InlineData(MembershipStatus.Authenticated)]
+    [InlineData(MembershipStatus.PendingApproval)]
+    [InlineData(MembershipStatus.Suspended)]
+    [InlineData(null)]
+    public async Task Userinfo_refuses_an_access_token_whose_member_is_no_longer_active(MembershipStatus? status)
     {
-        // Own host: the stale client is a row the other tests must not see.
-        using var own = new OidcInMemoryStoreFactory();
-        await new OidcIssuerTests(own).StaleClientIsRemovedAsync();
+        var (client, identity) = await SignedInAsync(MembershipStatus.Active, "Soon Gone");
+        var tokens = await CompleteFlowAsync(client);
+
+        using (var before = await UserInfoAsync(tokens.AccessToken))
+        {
+            Assert.Equal(HttpStatusCode.OK, before.StatusCode);
+        }
+
+        await LeaveActiveAsync(identity, status);
+
+        using var after = await UserInfoAsync(tokens.AccessToken);
+        Assert.Equal(HttpStatusCode.Forbidden, after.StatusCode);
+        Assert.DoesNotContain(identity, await after.Content.ReadAsStringAsync());
     }
 
-    private async Task StaleClientIsRemovedAsync()
+    private Task<HttpResponseMessage> UserInfoAsync(string accessToken)
     {
-        const string staleId = "old-mas";
-        const string staleRedirect = "https://old.example.test/callback";
+        var request = new HttpRequestMessage(HttpMethod.Get, "/connect/userinfo");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        return NewClient().SendAsync(request);
+    }
+
+    /// <summary>A null status deletes the account instead.</summary>
+    private Task LeaveActiveAsync(string identity, MembershipStatus? status) =>
+        status is { } value ? _factory.SetMembershipAsync(identity, value) : _factory.DeleteAccountAsync(identity);
+
+    [Fact]
+    public async Task Startup_removes_every_client_but_the_configured_one_with_its_tokens_and_authorizations()
+    {
+        // Own host: the stale clients are rows the other tests must not see.
+        using var own = new OidcCascadeFactory();
+        await new OidcIssuerTests(own).StaleClientsAreRemovedAsync();
+    }
+
+    private async Task StaleClientsAreRemovedAsync()
+    {
+        // Two stale clients, one of them differing from the configured id only in case.
+        var stale = new[]
+        {
+            (Id: "old-mas", Redirect: "https://old.example.test/callback"),
+            (Id: OidcTestKit.ClientId.ToUpperInvariant(), Redirect: "https://shouting.example.test/callback")
+        };
         var (client, _) = await SignedInAsync(MembershipStatus.Active, "Member");
         using (var scope = _factory.Services.CreateScope())
         {
             var manager = scope.ServiceProvider.GetRequiredService<OpenIddict.Abstractions.IOpenIddictApplicationManager>();
-            await manager.CreateAsync(new OpenIddict.Abstractions.OpenIddictApplicationDescriptor
+            foreach (var (id, redirect) in stale)
             {
-                ClientId = staleId,
-                ClientSecret = "stale-secret",
-                ClientType = OpenIddict.Abstractions.OpenIddictConstants.ClientTypes.Confidential,
-                ConsentType = OpenIddict.Abstractions.OpenIddictConstants.ConsentTypes.Implicit,
-                RedirectUris = { new Uri(staleRedirect) },
-                Permissions =
+                await manager.CreateAsync(new OpenIddict.Abstractions.OpenIddictApplicationDescriptor
                 {
-                    OpenIddict.Abstractions.OpenIddictConstants.Permissions.Endpoints.Authorization,
-                    OpenIddict.Abstractions.OpenIddictConstants.Permissions.Endpoints.Token,
-                    OpenIddict.Abstractions.OpenIddictConstants.Permissions.GrantTypes.AuthorizationCode,
-                    OpenIddict.Abstractions.OpenIddictConstants.Permissions.ResponseTypes.Code,
-                    OpenIddict.Abstractions.OpenIddictConstants.Permissions.Scopes.Profile,
-                    OpenIddict.Abstractions.OpenIddictConstants.Permissions.Prefixes.Scope + OpenIddict.Abstractions.OpenIddictConstants.Scopes.OpenId
-                }
-            });
+                    ClientId = id,
+                    ClientSecret = "stale-secret",
+                    ClientType = OpenIddict.Abstractions.OpenIddictConstants.ClientTypes.Confidential,
+                    RedirectUris = { new Uri(redirect) },
+                    Permissions =
+                    {
+                        OpenIddict.Abstractions.OpenIddictConstants.Permissions.Endpoints.Authorization,
+                        OpenIddict.Abstractions.OpenIddictConstants.Permissions.Endpoints.Token,
+                        OpenIddict.Abstractions.OpenIddictConstants.Permissions.GrantTypes.AuthorizationCode,
+                        OpenIddict.Abstractions.OpenIddictConstants.Permissions.ResponseTypes.Code,
+                        OpenIddict.Abstractions.OpenIddictConstants.Permissions.Scopes.Profile,
+                        OpenIddict.Abstractions.OpenIddictConstants.Permissions.Prefixes.Scope + OpenIddict.Abstractions.OpenIddictConstants.Scopes.OpenId
+                    }
+                });
+            }
         }
 
-        // The control: before seeding, the stale client really can obtain a code.
-        var before = NewRequest(staleId, staleRedirect);
-        using (var issued = await DriveAsync(client, before))
+        // The control: before seeding every client, stale or configured, really can obtain a code and so holds
+        // an authorization and a token.
+        foreach (var (id, redirect) in stale)
         {
+            using var issued = await DriveAsync(client, NewRequest(id, redirect));
             Assert.Contains("code=", issued.Headers.Location?.OriginalString ?? string.Empty);
         }
+
+        _ = await CodeAsync(client, NewRequest());
+        var staleCounts = Counts(stale.Select(x => x.Id));
+        Assert.Equal(stale.Length, staleCounts.Count);
+        Assert.All(staleCounts, x => Assert.True(x.Tokens > 0 && x.Authorizations > 0, "the control must leave grants to remove"));
+        var configuredBefore = Counts([OidcTestKit.ClientId]).Single();
+        Assert.True(configuredBefore.Tokens > 0 && configuredBefore.Authorizations > 0);
 
         var seeder = Assert.Single(_factory.Services.GetServices<IHostedService>().OfType<Bifrost.Web.Features.Oidc.OidcClientSeeder>());
         await seeder.StartAsync(CancellationToken.None);
 
-        var after = NewRequest(staleId, staleRedirect);
-        using var refused = await DriveAsync(client, after);
-        var location = refused.Headers.Location?.OriginalString ?? string.Empty;
-        Assert.DoesNotContain("code=", location);
-        Assert.NotEqual(HttpStatusCode.OK, refused.StatusCode);
+        foreach (var (id, redirect) in stale)
+        {
+            using var refused = await DriveAsync(client, NewRequest(id, redirect));
+            Assert.DoesNotContain("code=", refused.Headers.Location?.OriginalString ?? string.Empty);
+            Assert.NotEqual(HttpStatusCode.OK, refused.StatusCode);
+        }
 
         using var fresh = _factory.Services.CreateScope();
-        var rows = fresh.ServiceProvider.GetRequiredService<Bifrost.Web.Data.BifrostDbContext>()
-            .Set<OpenIddict.EntityFrameworkCore.Models.OpenIddictEntityFrameworkCoreApplication>()
-            .AsNoTracking().ToList();
+        var db = fresh.ServiceProvider.GetRequiredService<Bifrost.Web.Data.BifrostDbContext>();
+        var rows = db.Set<OpenIddict.EntityFrameworkCore.Models.OpenIddictEntityFrameworkCoreApplication>().AsNoTracking().ToList();
         Assert.Equal([OidcTestKit.ClientId], rows.Select(x => x.ClientId).ToArray());
+
+        // Nothing issued to a removed client survives, and the configured client's grants are untouched.
+        var keptId = rows.Single().Id;
+        Assert.Empty(db.Set<OpenIddict.EntityFrameworkCore.Models.OpenIddictEntityFrameworkCoreToken>().AsNoTracking().Where(x => x.Application!.Id != keptId));
+        Assert.Empty(db.Set<OpenIddict.EntityFrameworkCore.Models.OpenIddictEntityFrameworkCoreAuthorization>().AsNoTracking().Where(x => x.Application!.Id != keptId));
+        Assert.Equal(configuredBefore, Counts([OidcTestKit.ClientId]).Single());
+    }
+
+    private sealed record GrantCount(int Tokens, int Authorizations);
+
+    private List<GrantCount> Counts(IEnumerable<string> clientIds)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<Bifrost.Web.Data.BifrostDbContext>();
+        var applications = db.Set<OpenIddict.EntityFrameworkCore.Models.OpenIddictEntityFrameworkCoreApplication>().AsNoTracking().ToList();
+        return clientIds
+            .Select(id => applications.Single(x => x.ClientId == id).Id)
+            .Select(applicationId => new GrantCount(
+                db.Set<OpenIddict.EntityFrameworkCore.Models.OpenIddictEntityFrameworkCoreToken>().Count(x => x.Application!.Id == applicationId),
+                db.Set<OpenIddict.EntityFrameworkCore.Models.OpenIddictEntityFrameworkCoreAuthorization>().Count(x => x.Application!.Id == applicationId)))
+            .ToList();
     }
 
     [Fact]

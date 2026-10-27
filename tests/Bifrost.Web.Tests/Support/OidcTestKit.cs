@@ -190,6 +190,15 @@ public class OidcWebApplicationFactory : TestWebApplicationFactory
         await db.SaveChangesAsync();
     }
 
+    /// <summary>Removes the account (and with it its membership), as an owner deleting themselves would.</summary>
+    public async Task DeleteAccountAsync(string identity)
+    {
+        using var scope = Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
+        db.UserAccounts.Remove(db.UserAccounts.Single(x => x.NormalizedBifrostIdentity == identity));
+        await db.SaveChangesAsync();
+    }
+
     public Guid AccountId(string identity)
     {
         using var scope = Services.CreateScope();
@@ -236,37 +245,16 @@ public sealed class OidcForeignIssuerFactory : OidcWebApplicationFactory
 }
 
 /// <summary>
-/// An OIDC host whose application store removes a client row without OpenIddict's bulk delete of its tokens and
-/// authorizations, which the in-memory test database cannot run (the cascade is the store's, exercised on Postgres only).
-/// What the seeder decides to remove is what the host then loses.
+/// An OIDC host on OpenIddict's own non-bulk deletion path. The in-memory test database cannot run the bulk
+/// ExecuteDelete the library otherwise uses to remove an application's tokens and authorizations, so this switches
+/// that option and the library's cascade runs unchanged.
 /// </summary>
-public sealed class OidcInMemoryStoreFactory : OidcWebApplicationFactory
+public sealed class OidcCascadeFactory : OidcWebApplicationFactory
 {
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         base.ConfigureWebHost(builder);
         builder.ConfigureServices(services =>
-        {
-            services.RemoveAll<OpenIddict.Abstractions.IOpenIddictApplicationStore<OpenIddictEntityFrameworkCoreApplication>>();
-            services.AddScoped<OpenIddict.Abstractions.IOpenIddictApplicationStore<OpenIddictEntityFrameworkCoreApplication>, RowOnlyApplicationStore>();
-        });
-    }
-
-    private sealed class RowOnlyApplicationStore(
-        IMemoryCache cache,
-        IOpenIddictEntityFrameworkCoreContext openIddictContext,
-        IOptionsMonitor<OpenIddictEntityFrameworkCoreOptions> options,
-        BifrostDbContext context)
-        : OpenIddictEntityFrameworkCoreApplicationStore<
-            OpenIddictEntityFrameworkCoreApplication,
-            OpenIddictEntityFrameworkCoreAuthorization,
-            OpenIddictEntityFrameworkCoreToken,
-            string>(cache, openIddictContext, options)
-    {
-        public override async ValueTask DeleteAsync(OpenIddictEntityFrameworkCoreApplication application, CancellationToken cancellationToken)
-        {
-            context.Remove(application);
-            await context.SaveChangesAsync(cancellationToken);
-        }
+            services.Configure<OpenIddictEntityFrameworkCoreOptions>(options => options.DisableBulkOperations = true));
     }
 }
