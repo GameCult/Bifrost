@@ -260,7 +260,7 @@ public sealed class OidcInMemoryStoreFactory : OidcWebApplicationFactory
             OpenIddictEntityFrameworkCoreApplication,
             OpenIddictEntityFrameworkCoreAuthorization,
             OpenIddictEntityFrameworkCoreToken,
-            BifrostDbContext>(cache, context, options)
+            string>(cache, context, options)
     {
         public override async ValueTask DeleteAsync(OpenIddictEntityFrameworkCoreApplication application, CancellationToken cancellationToken)
         {
