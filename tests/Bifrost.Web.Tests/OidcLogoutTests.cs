@@ -3,6 +3,7 @@ using Bifrost.Web.Domain;
 using Bifrost.Web.Features.Oidc;
 using Bifrost.Web.Tests.Support;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Hosting;
 using Microsoft.IdentityModel.JsonWebTokens;
 using Microsoft.IdentityModel.Tokens;
@@ -157,6 +158,7 @@ public sealed class OidcLogoutTests
     [Theory]
     [InlineData(FakeMasHandler.NetworkFault)]
     [InlineData(FakeMasHandler.Timeout)]
+    [InlineData(300)]
     [InlineData(302)]
     [InlineData(401)]
     public async Task A_network_fault_timeout_or_unexpected_status_keeps_the_authorizations_and_retries(int fault)
@@ -222,19 +224,7 @@ public sealed class OidcLogoutTests
     {
         using var factory = new OidcLogoutFactory();
         var (active, _) = await factory.GrantAsync(MembershipStatus.Active);
-        using (var scope = factory.Services.CreateScope())
-        {
-            var applications = scope.ServiceProvider.GetRequiredService<IOpenIddictApplicationManager>();
-            var authorizations = scope.ServiceProvider.GetRequiredService<IOpenIddictAuthorizationManager>();
-            var application = (await applications.FindByClientIdAsync(OidcTestKit.ClientId))!;
-            await authorizations.CreateAsync(new OpenIddictAuthorizationDescriptor
-            {
-                ApplicationId = await applications.GetIdAsync(application),
-                Subject = "not-a-guid",
-                Status = OpenIddictConstants.Statuses.Valid,
-                Type = OpenIddictConstants.AuthorizationTypes.AdHoc
-            });
-        }
+        await factory.AddAuthorizationAsync("not-a-guid");
 
         await factory.Reconciler.ReconcileOnceAsync(CancellationToken.None);
 
@@ -256,6 +246,140 @@ public sealed class OidcLogoutTests
 
         Assert.Equal(subject, new JsonWebToken(Assert.Single(factory.Mas.LogoutTokens())).Subject);
         Assert.Equal(0, factory.ValidAuthorizations(subject));
+    }
+
+    [Theory]
+    [InlineData(201)]
+    [InlineData(204)]
+    [InlineData(299)]
+    public async Task Any_2xx_is_delivery(int status)
+    {
+        using var factory = new OidcLogoutFactory();
+        var (identity, _) = await factory.GrantAsync(MembershipStatus.Suspended);
+        factory.Mas.Script(status);
+
+        await factory.Reconciler.ReconcileOnceAsync(CancellationToken.None);
+
+        Assert.Equal(0, factory.ValidAuthorizations(factory.AccountId(identity).ToString("D")));
+    }
+
+    [Fact]
+    public async Task A_failure_is_logged_by_status_and_delay_only_and_a_success_logs_no_failure()
+    {
+        using var factory = new OidcLogoutFactory();
+        await factory.GrantAsync(MembershipStatus.Suspended);
+        await factory.GrantAsync(MembershipStatus.Suspended);
+        var log = new ListLogger<OidcLogoutReconciler>();
+        factory.Mas.Script(503, FakeMasHandler.NetworkFault);
+
+        await factory.NewReconciler(logger: log).ReconcileOnceAsync(CancellationToken.None);
+
+        // The first subject failed with 503, the second with no response; both were delivered nothing.
+        var warnings = log.Entries.Where(x => x.Level == LogLevel.Warning).Select(x => x.Message).ToArray();
+        Assert.Equal(2, warnings.Length);
+        Assert.Contains(warnings, x => x.Contains("503", StringComparison.Ordinal) && x.Contains("00:00:30", StringComparison.Ordinal));
+        Assert.Contains(warnings, x => x.Contains("no response", StringComparison.Ordinal));
+        Assert.All(log.Entries, x =>
+        {
+            Assert.DoesNotContain(FakeMasHandler.BodyCanary, x.Message, StringComparison.Ordinal);
+            Assert.DoesNotContain("mas.example.test", x.Message, StringComparison.Ordinal);
+            Assert.DoesNotContain("logout_token", x.Message, StringComparison.Ordinal);
+        });
+
+        var clean = new ListLogger<OidcLogoutReconciler>();
+        await factory.NewReconciler(logger: clean).ReconcileOnceAsync(CancellationToken.None);
+        Assert.Empty(clean.Entries.Where(x => x.Level >= LogLevel.Warning));
+    }
+
+    [Fact]
+    public async Task A_subject_who_recovers_or_whose_grants_vanish_carries_no_stale_backoff()
+    {
+        using var factory = new OidcLogoutFactory();
+        var (identity, _) = await factory.GrantAsync(MembershipStatus.Suspended);
+        var subject = factory.AccountId(identity).ToString("D");
+        factory.Mas.Script(500, 500);
+        var reconciler = factory.Reconciler;
+
+        // Recovered: Active again clears the backoff, so the next demotion is delivered at once.
+        await reconciler.ReconcileOnceAsync(CancellationToken.None);
+        Assert.Single(factory.Mas.Bodies);
+        await factory.SetMembershipAsync(identity, MembershipStatus.Active);
+        await reconciler.ReconcileOnceAsync(CancellationToken.None);
+        await factory.SetMembershipAsync(identity, MembershipStatus.Suspended);
+        await reconciler.ReconcileOnceAsync(CancellationToken.None);
+        Assert.Equal(2, factory.Mas.Bodies.Count);
+
+        // Vanished: grants revoked elsewhere drop the subject from the list, which drops its backoff.
+        await factory.RevokeAllAsync(subject);
+        await reconciler.ReconcileOnceAsync(CancellationToken.None);
+        await factory.AddAuthorizationAsync(subject);
+        await reconciler.ReconcileOnceAsync(CancellationToken.None);
+        Assert.Equal(3, factory.Mas.Bodies.Count);
+        Assert.Equal(0, factory.ValidAuthorizations(subject));
+    }
+
+    [Fact]
+    public async Task An_unexpected_exception_is_not_a_network_fault_and_a_cancelled_post_is_not_a_failed_delivery()
+    {
+        using var factory = new OidcLogoutFactory();
+        var (identity, _) = await factory.GrantAsync(MembershipStatus.Suspended);
+        var subject = factory.AccountId(identity).ToString("D");
+        var reconciler = factory.Reconciler;
+
+        factory.Mas.Script(FakeMasHandler.Unexpected);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => reconciler.ReconcileOnceAsync(CancellationToken.None));
+
+        // Stopping while the post is in flight surfaces as cancellation and records no backoff: the next pass posts at once.
+        factory.Mas.Script(FakeMasHandler.Hang);
+        using var stop = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => reconciler.ReconcileOnceAsync(stop.Token));
+        Assert.Equal(2, factory.Mas.Bodies.Count);
+        await reconciler.ReconcileOnceAsync(CancellationToken.None);
+        Assert.Equal(3, factory.Mas.Bodies.Count);
+        Assert.Equal(0, factory.ValidAuthorizations(subject));
+    }
+
+    [Fact]
+    public async Task The_hosted_loop_ticks_again_after_each_interval_and_survives_a_failed_tick()
+    {
+        using var factory = new OidcLogoutFactory();
+        var clock = new ControlledClock();
+        var reconciler = factory.NewReconciler(clock);
+        var (first, _) = await factory.GrantAsync(MembershipStatus.Suspended);
+        await reconciler.StartAsync(CancellationToken.None);
+        try
+        {
+            await WaitForAsync(() => factory.Mas.Bodies.Count == 1);
+            Assert.Equal(0, factory.ValidAuthorizations(factory.AccountId(first).ToString("D")));
+
+            // A failing tick is logged and retried only after the interval, never in a tight loop.
+            var (second, _) = await factory.GrantAsync(MembershipStatus.Suspended);
+            factory.Mas.Script(FakeMasHandler.Unexpected);
+            await WaitForAsync(() => clock.Waiting > 0);
+            clock.FireTimers();
+            await WaitForAsync(() => factory.Mas.Bodies.Count == 2);
+            await Task.Delay(300);
+            Assert.Equal(2, factory.Mas.Bodies.Count);
+
+            await WaitForAsync(() => clock.Waiting > 0);
+            clock.FireTimers();
+            await WaitForAsync(() => factory.Mas.Bodies.Count == 3);
+            await WaitForAsync(() => factory.ValidAuthorizations(factory.AccountId(second).ToString("D")) == 0);
+        }
+        finally
+        {
+            await reconciler.StopAsync(CancellationToken.None);
+        }
+    }
+
+    private static async Task WaitForAsync(Func<bool> condition)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while (!condition())
+        {
+            Assert.True(DateTime.UtcNow < deadline, "timed out waiting for the reconciler");
+            await Task.Delay(20);
+        }
     }
 
     [Fact]

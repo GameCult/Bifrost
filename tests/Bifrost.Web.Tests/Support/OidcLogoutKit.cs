@@ -15,9 +15,11 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
+using OpenIddict.Abstractions;
 using OpenIddict.EntityFrameworkCore.Models;
 using OpenIddict.Server;
 
@@ -36,6 +38,100 @@ public sealed class ManualClock : TimeProvider
         base.CreateTimer(callback, state, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
 }
 
+/// <summary>A clock whose timers fire only when the test says so, to drive the reconciler's own loop.</summary>
+public sealed class ControlledClock : TimeProvider
+{
+    private readonly List<PendingTimer> _timers = [];
+    private DateTimeOffset _now = DateTimeOffset.UtcNow;
+
+    public override DateTimeOffset GetUtcNow() => _now;
+
+    public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+    {
+        var timer = new PendingTimer(() => callback(state));
+        lock (_timers)
+        {
+            _timers.Add(timer);
+        }
+
+        return timer;
+    }
+
+    /// <summary>How many delays are currently waiting to be fired.</summary>
+    public int Waiting
+    {
+        get
+        {
+            lock (_timers)
+            {
+                return _timers.Count(x => !x.Disposed);
+            }
+        }
+    }
+
+    /// <summary>Fires every timer that is waiting (each delay the loop is sitting in).</summary>
+    public void FireTimers()
+    {
+        PendingTimer[] due;
+        lock (_timers)
+        {
+            due = _timers.Where(x => !x.Disposed).ToArray();
+            _timers.Clear();
+        }
+
+        foreach (var timer in due)
+        {
+            timer.Fire();
+        }
+    }
+
+    private sealed class PendingTimer(Action fire) : ITimer
+    {
+        public bool Disposed { get; private set; }
+
+        public void Fire() => fire();
+
+        public bool Change(TimeSpan dueTime, TimeSpan period) => true;
+
+        public void Dispose() => Disposed = true;
+
+        public ValueTask DisposeAsync()
+        {
+            Disposed = true;
+            return ValueTask.CompletedTask;
+        }
+    }
+}
+
+/// <summary>Collects what a component logs, formatted, so a test can say what must and must not appear.</summary>
+public sealed class ListLogger<T> : ILogger<T>
+{
+    private readonly List<(LogLevel Level, string Message)> _entries = [];
+
+    public IReadOnlyList<(LogLevel Level, string Message)> Entries
+    {
+        get
+        {
+            lock (_entries)
+            {
+                return _entries.ToArray();
+            }
+        }
+    }
+
+    public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+    public bool IsEnabled(LogLevel logLevel) => true;
+
+    public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+    {
+        lock (_entries)
+        {
+            _entries.Add((logLevel, formatter(state, exception)));
+        }
+    }
+}
+
 /// <summary>
 /// A stand-in for MAS's back-channel logout route: answers a scripted status per POST (then 200), records every form
 /// body, and can fail like the network does.
@@ -44,6 +140,8 @@ public sealed class FakeMasHandler : HttpMessageHandler
 {
     public const int NetworkFault = -1;
     public const int Timeout = -2;
+    public const int Unexpected = -3;
+    public const int Hang = -4;
 
     private readonly Queue<int> _script = new();
     private readonly List<string> _bodies = [];
@@ -98,8 +196,18 @@ public sealed class FakeMasHandler : HttpMessageHandler
         {
             NetworkFault => throw new HttpRequestException("network down"),
             Timeout => throw new TaskCanceledException("timed out"),
-            _ => new HttpResponseMessage((HttpStatusCode)status) { Content = new StringContent("mas-body-canary") }
+            Unexpected => throw new InvalidOperationException("not a network fault"),
+            Hang => await HangAsync(cancellationToken),
+            _ => new HttpResponseMessage((HttpStatusCode)status) { Content = new StringContent(BodyCanary) }
         };
+    }
+
+    public const string BodyCanary = "mas-body-canary";
+
+    private static async Task<HttpResponseMessage> HangAsync(CancellationToken cancellationToken)
+    {
+        await Task.Delay(System.Threading.Timeout.InfiniteTimeSpan, cancellationToken);
+        throw new InvalidOperationException("unreachable");
     }
 }
 
@@ -128,14 +236,14 @@ public sealed class OidcLogoutFactory : OidcWebApplicationFactory
     }
 
     /// <summary>A reconciler with no memory, built over this host's database, as a restarted process would have.</summary>
-    public OidcLogoutReconciler NewReconciler() => new(
+    public OidcLogoutReconciler NewReconciler(TimeProvider? time = null, ILogger<OidcLogoutReconciler>? logger = null) => new(
         Services.GetRequiredService<IServiceScopeFactory>(),
         Services.GetRequiredService<OidcIssuerOptions>(),
         Services.GetRequiredService<OidcKeyMaterial>(),
         Services.GetRequiredService<IOptions<OpenIddictServerOptions>>(),
         Services.GetRequiredService<IHttpClientFactory>(),
-        Time,
-        NullLogger<OidcLogoutReconciler>.Instance);
+        time ?? Time,
+        logger ?? NullLogger<OidcLogoutReconciler>.Instance);
 
     public WebApplicationFactoryClientOptions HostClientOptions() => new()
     {
@@ -204,6 +312,33 @@ public sealed class OidcLogoutFactory : OidcWebApplicationFactory
         response.StatusCode is HttpStatusCode.Redirect or HttpStatusCode.Found &&
         response.Headers.Location is { } location &&
         (location.IsAbsoluteUri ? location.AbsolutePath : location.OriginalString).StartsWith("/connect/authorize", StringComparison.Ordinal);
+
+    /// <summary>Gives <paramref name="subject"/> one more valid ad hoc authorization of the MAS client.</summary>
+    public async Task AddAuthorizationAsync(string subject)
+    {
+        using var scope = Services.CreateScope();
+        var applications = scope.ServiceProvider.GetRequiredService<IOpenIddictApplicationManager>();
+        var authorizations = scope.ServiceProvider.GetRequiredService<IOpenIddictAuthorizationManager>();
+        var application = (await applications.FindByClientIdAsync(OidcTestKit.ClientId))!;
+        await authorizations.CreateAsync(new OpenIddictAuthorizationDescriptor
+        {
+            ApplicationId = await applications.GetIdAsync(application),
+            Subject = subject,
+            Status = OpenIddictConstants.Statuses.Valid,
+            Type = OpenIddictConstants.AuthorizationTypes.AdHoc
+        });
+    }
+
+    /// <summary>Revokes every authorization of the subject, as an operator would outside the reconciler.</summary>
+    public async Task RevokeAllAsync(string subject)
+    {
+        using var scope = Services.CreateScope();
+        var authorizations = scope.ServiceProvider.GetRequiredService<IOpenIddictAuthorizationManager>();
+        await foreach (var authorization in authorizations.FindBySubjectAsync(subject))
+        {
+            await authorizations.TryRevokeAsync(authorization);
+        }
+    }
 
     /// <summary>How many of the subject's authorizations are still valid.</summary>
     public int ValidAuthorizations(string subject)
