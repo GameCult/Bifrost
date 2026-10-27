@@ -14,7 +14,7 @@ public static class OidcServiceCollectionExtensions
     public const string UserInfoPath = "/connect/userinfo";
 
     /// <summary>How long a parked authorize request (OpenIddict's request token) can wait for the user to sign in.</summary>
-    public static readonly TimeSpan ParkedRequestLifetime = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan ParkedRequestLifetime = TimeSpan.FromMinutes(10);
 
     /// <summary>
     /// Registers Bifrost as an OIDC provider whose issuer is <see cref="BifrostHostOptions.PublicBaseUrl"/>: authorization-code flow with

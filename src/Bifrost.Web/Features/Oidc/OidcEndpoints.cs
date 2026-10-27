@@ -1,6 +1,9 @@
 using System.Security.Claims;
 using Microsoft.AspNetCore;
+using Bifrost.Web.Data;
+using Bifrost.Web.Domain;
 using Bifrost.Web.Features.Shared;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using OpenIddict.Abstractions;
@@ -75,11 +78,26 @@ public static class OidcEndpoints
         return Results.SignIn(principal, properties: null, OpenIddictScheme);
     }
 
-    private static async Task<IResult> ExchangeAsync(HttpContext http)
+    private static async Task<IResult> ExchangeAsync(HttpContext http, BifrostDbContext db)
     {
         // Only the authorization code grant is enabled, so OpenIddict has refused every other grant already.
-        // The code's own principal carries the claims chosen at authorize time.
+        // The code's own principal carries the claims chosen at authorize time; membership is read again here,
+        // because the code outlives the authorize decision (a member suspended since gets no tokens).
         var result = await http.AuthenticateAsync(OpenIddictScheme);
+        var subject = result.Principal?.GetClaim(Claims.Subject);
+        UserAccount? account = null;
+        if (Guid.TryParse(subject, out var accountId))
+        {
+            account = await db.UserAccounts.AsNoTracking()
+                .Include(x => x.Membership)
+                .SingleOrDefaultAsync(x => x.Id == accountId, http.RequestAborted);
+        }
+
+        if (!new CurrentBifrostActor(true, account).IsActiveMember)
+        {
+            return Deny(Errors.InvalidGrant, NotActiveDescription);
+        }
+
         return Results.SignIn(result.Principal!, properties: null, OpenIddictScheme);
     }
 

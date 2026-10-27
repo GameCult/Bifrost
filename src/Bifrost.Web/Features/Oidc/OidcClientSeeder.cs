@@ -7,8 +7,8 @@ using static OpenIddict.Abstractions.OpenIddictConstants;
 namespace Bifrost.Web.Features.Oidc;
 
 /// <summary>
-/// Makes the provider's one client match configuration at startup, creating it or updating it in place.
-/// Nothing else registers clients: any other client_id is refused by OpenIddict.
+/// Makes the provider's one client match configuration at startup, creating it or updating it in place, and removes
+/// every other application (with its authorizations and tokens), so a client left by an older configuration cannot get codes.
 /// </summary>
 public sealed class OidcClientSeeder(
     IServiceScopeFactory scopeFactory,
@@ -30,7 +30,6 @@ public sealed class OidcClientSeeder(
             ClientId = mas.ClientId,
             ClientSecret = material.ClientSecret,
             ClientType = ClientTypes.Confidential,
-            ConsentType = ConsentTypes.Implicit,
             DisplayName = "Matrix Authentication Service",
             RedirectUris = { new Uri(mas.RedirectUri, UriKind.Absolute) },
             Permissions =
@@ -41,8 +40,7 @@ public sealed class OidcClientSeeder(
                 Permissions.ResponseTypes.Code,
                 Permissions.Scopes.Profile,
                 Permissions.Prefixes.Scope + Scopes.OpenId
-            },
-            Requirements = { Requirements.Features.ProofKeyForCodeExchange }
+            }
         };
 
         var existing = await manager.FindByClientIdAsync(mas.ClientId, cancellationToken);
@@ -53,6 +51,20 @@ public sealed class OidcClientSeeder(
         else
         {
             await manager.UpdateAsync(existing, descriptor, cancellationToken);
+        }
+
+        var applications = new List<object>();
+        await foreach (var application in manager.ListAsync(cancellationToken: cancellationToken))
+        {
+            applications.Add(application);
+        }
+
+        foreach (var application in applications)
+        {
+            if (!string.Equals(await manager.GetClientIdAsync(application, cancellationToken), mas.ClientId, StringComparison.Ordinal))
+            {
+                await manager.DeleteAsync(application, cancellationToken);
+            }
         }
     }
 

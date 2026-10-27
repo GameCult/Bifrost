@@ -5,6 +5,7 @@ using Bifrost.Web.Features.Shared;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
@@ -214,5 +215,18 @@ public sealed class OidcNoIdentityFactory : OidcWebApplicationFactory
                 DisplayName = "No Identity",
                 Membership = new Bifrost.Web.Domain.Membership { Status = MembershipStatus.Active }
             }));
+    }
+}
+
+/// <summary>An OIDC host whose public base URL differs from the origin its requests arrive on, so the issuer cannot be request-derived.</summary>
+public sealed class OidcForeignIssuerFactory : OidcWebApplicationFactory
+{
+    public const string PublicBaseUrl = "https://id.example.test/";
+
+    protected override void ConfigureWebHost(IWebHostBuilder builder)
+    {
+        base.ConfigureWebHost(builder);
+        builder.ConfigureAppConfiguration((_, configuration) =>
+            configuration.AddInMemoryCollection(new Dictionary<string, string?> { ["Host:PublicBaseUrl"] = PublicBaseUrl }));
     }
 }

@@ -27,8 +27,8 @@ client-credentials or device flow, no refresh token, and no dynamic client regis
 
 ## The one client
 
-Exactly one client is registered, from configuration, and seeded or updated at startup. Consent is implicit
-(first-party). Any other `client_id`, an unregistered `redirect_uri`, or a request without PKCE is refused by the
+Exactly one client is registered, from configuration, and seeded or updated at startup; every other application
+row (with its authorizations and tokens) is deleted at startup. Any other `client_id`, an unregistered `redirect_uri`, or a request without PKCE is refused by the
 provider before any sign-in redirect.
 
 ## Configuration
@@ -70,6 +70,7 @@ The authorize endpoint reads the cookie session and the same actor facts the `/A
 - Signed in, `Active`, but `NormalizedBifrostIdentity` empty: `error=access_denied` with
   `error_description=The account has no Bifrost identity.`
 - Signed in and `Active`: a code is issued.
+- Token endpoint: membership is read again; an account no longer `Active` gets `invalid_grant` and no tokens.
 
 ## MAS configuration
 

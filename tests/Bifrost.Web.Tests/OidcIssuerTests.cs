@@ -202,19 +202,24 @@ public sealed class OidcIssuerTests : IClassFixture<OidcWebApplicationFactory>
 
     private async Task ParkedRequestIsRefusedAfterItsLifetimeAsync()
     {
-        var request = NewRequest();
+        // Fixed probe times, not the constant: a lifetime of a day, or of a minute, must show.
+        var early = NewRequest();
+        var late = NewRequest();
         using var client = NewClient();
-        var signIn = await DriveAsync(client, request);
-        var resume = ReturnUrl(signIn);
+        var earlyResume = ReturnUrl(await DriveAsync(client, early));
+        var lateResume = ReturnUrl(await DriveAsync(client, late));
         var identity = await RegisterAsync(client, $"late-{Guid.NewGuid():N}");
         await _factory.SetMembershipAsync(identity, MembershipStatus.Active);
 
-        _factory.Clock.Advance(Bifrost.Web.Features.Oidc.OidcServiceCollectionExtensions.ParkedRequestLifetime + TimeSpan.FromMinutes(1));
+        _factory.Clock.Advance(TimeSpan.FromMinutes(5));
+        using var withinLifetime = await client.GetAsync(earlyResume);
+        Assert.True(AssertRedirectToClient(withinLifetime, early.State).ContainsKey("code"), "five minutes is within the lifetime");
 
-        using var late = await client.GetAsync(resume);
-        var location = late.Headers.Location?.OriginalString ?? string.Empty;
+        _factory.Clock.Advance(TimeSpan.FromMinutes(25));
+        using var expired = await client.GetAsync(lateResume);
+        var location = expired.Headers.Location?.OriginalString ?? string.Empty;
         Assert.DoesNotContain("code=", location);
-        Assert.NotEqual(HttpStatusCode.OK, late.StatusCode);
+        Assert.NotEqual(HttpStatusCode.OK, expired.StatusCode);
     }
 
     [Fact]
@@ -327,6 +332,90 @@ public sealed class OidcIssuerTests : IClassFixture<OidcWebApplicationFactory>
         Assert.Equal([OidcTestKit.RedirectUri], (await manager.GetRedirectUrisAsync(stored)).ToArray());
         Assert.True(await manager.ValidateClientSecretAsync(stored, _factory.Kit.ClientSecret));
         Assert.False(await manager.ValidateClientSecretAsync(stored, "drifted-secret"));
+    }
+
+    [Fact]
+    public async Task A_member_suspended_after_authorize_gets_no_tokens()
+    {
+        var (client, identity) = await SignedInAsync(MembershipStatus.Active, "Soon Suspended");
+        var request = NewRequest();
+        var code = await CodeAsync(client, request);
+
+        await _factory.SetMembershipAsync(identity, MembershipStatus.Suspended);
+
+        using var response = await TokenAsync(client, request, code);
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("invalid_grant", body);
+        Assert.DoesNotContain("id_token", body);
+        Assert.DoesNotContain("access_token", body);
+    }
+
+    [Fact]
+    public async Task Startup_removes_every_client_but_the_configured_one()
+    {
+        // Own host: the stale client is a row the other tests must not see.
+        using var own = new OidcWebApplicationFactory();
+        await new OidcIssuerTests(own).StaleClientIsRemovedAsync();
+    }
+
+    private async Task StaleClientIsRemovedAsync()
+    {
+        const string staleId = "old-mas";
+        const string staleRedirect = "https://old.example.test/callback";
+        var (client, _) = await SignedInAsync(MembershipStatus.Active, "Member");
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var manager = scope.ServiceProvider.GetRequiredService<OpenIddict.Abstractions.IOpenIddictApplicationManager>();
+            await manager.CreateAsync(new OpenIddict.Abstractions.OpenIddictApplicationDescriptor
+            {
+                ClientId = staleId,
+                ClientSecret = "stale-secret",
+                ClientType = OpenIddict.Abstractions.OpenIddictConstants.ClientTypes.Confidential,
+                ConsentType = OpenIddict.Abstractions.OpenIddictConstants.ConsentTypes.Implicit,
+                RedirectUris = { new Uri(staleRedirect) },
+                Permissions =
+                {
+                    OpenIddict.Abstractions.OpenIddictConstants.Permissions.Endpoints.Authorization,
+                    OpenIddict.Abstractions.OpenIddictConstants.Permissions.Endpoints.Token,
+                    OpenIddict.Abstractions.OpenIddictConstants.Permissions.GrantTypes.AuthorizationCode,
+                    OpenIddict.Abstractions.OpenIddictConstants.Permissions.ResponseTypes.Code,
+                    OpenIddict.Abstractions.OpenIddictConstants.Permissions.Prefixes.Scope + OpenIddict.Abstractions.OpenIddictConstants.Scopes.OpenId
+                }
+            });
+        }
+
+        // The control: before seeding, the stale client really can obtain a code.
+        var before = NewRequest(staleId, staleRedirect);
+        using (var issued = await DriveAsync(client, before))
+        {
+            Assert.Contains("code=", issued.Headers.Location?.OriginalString ?? string.Empty);
+        }
+
+        var seeder = Assert.Single(_factory.Services.GetServices<IHostedService>().OfType<Bifrost.Web.Features.Oidc.OidcClientSeeder>());
+        await seeder.StartAsync(CancellationToken.None);
+
+        var after = NewRequest(staleId, staleRedirect);
+        using var refused = await DriveAsync(client, after);
+        var location = refused.Headers.Location?.OriginalString ?? string.Empty;
+        Assert.DoesNotContain("code=", location);
+        Assert.NotEqual(HttpStatusCode.OK, refused.StatusCode);
+
+        using var fresh = _factory.Services.CreateScope();
+        var rows = fresh.ServiceProvider.GetRequiredService<Bifrost.Web.Data.BifrostDbContext>()
+            .Set<OpenIddict.EntityFrameworkCore.Models.OpenIddictEntityFrameworkCoreApplication>()
+            .AsNoTracking().ToList();
+        Assert.Equal([OidcTestKit.ClientId], rows.Select(x => x.ClientId).ToArray());
+    }
+
+    [Fact]
+    public async Task The_issuer_is_the_configured_public_base_url_not_the_request_origin()
+    {
+        using var factory = new OidcForeignIssuerFactory();
+        using var client = factory.CreateClient(ClientOptions());
+        var discovery = await client.GetFromJsonAsync<JsonElement>("/.well-known/openid-configuration");
+
+        Assert.Equal(OidcForeignIssuerFactory.PublicBaseUrl, discovery.GetProperty("issuer").GetString());
     }
 
     // ---- helpers ----
