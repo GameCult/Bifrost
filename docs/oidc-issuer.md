@@ -44,6 +44,7 @@ echoes its value.
 | `Bifrost:Oidc:Clients:Mas:ClientId` | The client id MAS presents. |
 | `Bifrost:Oidc:Clients:Mas:ClientSecretPath` | File holding the client secret. |
 | `Bifrost:Oidc:Clients:Mas:RedirectUri` | MAS's callback URL, registered exactly. |
+| `Bifrost:Oidc:Clients:Mas:BackchannelLogoutUri` | Optional. MAS's back-channel logout URL, `https://<mas>/upstream/backchannel-logout/<provider ULID>`; absolute http(s) or startup fails. Unset: no logout is sent and no authorization is revoked. |
 
 There are no development or ephemeral keys in the host. Key files are provisioned like the other
 `[workload.secret_files]` paths.
@@ -71,6 +72,33 @@ The authorize endpoint reads the cookie session and the same actor facts the `/A
   `error_description=The account has no Bifrost identity.`
 - Signed in and `Active`: a code is issued.
 - Token endpoint: membership is read again; an account no longer `Active` gets `invalid_grant` and no tokens.
+
+## Back-channel logout
+
+When `BackchannelLogoutUri` is set, a hosted reconciler (`OidcLogoutReconciler`) runs every 30 seconds. It lists the
+subjects holding valid authorizations of the MAS client; for each subject whose membership is not `Active` (the same
+reading the token and userinfo endpoints use; a deleted account or a subject that is not an account id counts as not
+`Active`) it POSTs one OIDC back-channel logout token to MAS, and only after a 2xx revokes that subject's authorizations,
+which also invalidates their tokens. Membership is never written by this path: any way of leaving `Active` (admin
+action, sync, a database edit, a future suspend) is covered because the work is derived from membership state.
+
+The token is an ES256 JWT signed with the issuer key, header `typ` `logout+jwt`, with `iss` as the id_token carries it,
+`aud` the MAS client id, `sub` the account id, `iat`, `exp` two minutes later, a fresh `jti` and the
+`http://schemas.openid.net/event/backchannel-logout` event. It carries no `nonce` and no `sid`; MAS finds the sessions
+by `sub`. It is sent as `application/x-www-form-urlencoded` field `logout_token` with a 10 second timeout, and the
+response body is never logged.
+
+Failure handling is per subject, in memory: a 5xx, a timeout or a network fault backs off exponentially from 30 seconds
+to 15 minutes; a 400 (token refused) or 404 (unknown provider ULID) is a configuration fault, logged by status only,
+and retried at the 15 minute cap. Nothing is revoked until MAS answers 2xx. A restart loses the backoff and nothing
+else: the authorizations table is the queue, so a later-set URI also catches up on earlier demotions.
+
+Tradeoff: delivery latency is up to one tick, and a member demoted and re-promoted inside one tick keeps their sessions.
+
+MAS verified at v1.28.0 (`crates/handlers/src/upstream_oauth2/backchannel_logout.rs`): the token is checked like an
+id_token (`iss`, `aud`, `alg`, JWKS signature), `exp` and `iat` are required, `sub` or `sid` is required, `nonce` must be
+absent. Owed on the MAS side (gamecult-chat): the provider's `backchannel_logout_uri` and
+`on_backchannel_logout: logout_all`. Re-check against the MAS version pinned there.
 
 ## MAS configuration
 
