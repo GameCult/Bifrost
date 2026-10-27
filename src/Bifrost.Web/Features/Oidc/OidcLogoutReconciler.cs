@@ -80,11 +80,6 @@ public sealed class OidcLogoutReconciler(
         foreach (var subject in subjects)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (_backoff.TryGetValue(subject, out var wait) && time.GetUtcNow() < wait.NotBefore)
-            {
-                continue;
-            }
-
             await ReconcileSubjectAsync(subject, cancellationToken);
         }
     }
@@ -124,7 +119,14 @@ public sealed class OidcLogoutReconciler(
             return;
         }
 
-        var failures = _backoff.TryGetValue(subject, out var previous) ? previous.Failures + 1 : 1;
+        // A subject that recovered is forgotten at once; one still owed a logout waits out its backoff.
+        _backoff.TryGetValue(subject, out var previous);
+        if (previous is not null && time.GetUtcNow() < previous.NotBefore)
+        {
+            return;
+        }
+
+        var failures = (previous?.Failures ?? 0) + 1;
         var status = await SendLogoutAsync(subject, cancellationToken);
         if (status is { } code && (int)code is >= 200 and < 300)
         {
