@@ -87,7 +87,31 @@ public sealed class OidcKeyMaterialTests : IDisposable
         Assert.Contains("Bifrost:Oidc:SigningKeyPath", failure.Message, StringComparison.Ordinal);
     }
 
-    private OidcIssuerOptions Options(string? blank = null, string? redirectUri = null) => new()
+    [Theory]
+    [InlineData("not a uri")]
+    [InlineData("/upstream/backchannel-logout/01ABC")]
+    [InlineData("ftp://mas.example.test/upstream/backchannel-logout/01ABC")]
+    public void A_back_channel_logout_uri_that_is_not_absolute_http_stops_startup_naming_the_setting_not_the_value(string uri)
+    {
+        var failure = Assert.Throws<OidcConfigurationException>(() => OidcKeyMaterial.Load(Options(logoutUri: uri)));
+
+        Assert.Contains("Bifrost:Oidc:Clients:Mas:BackchannelLogoutUri", failure.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(uri, failure.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("https://mas.example.test/upstream/backchannel-logout/01ABC")]
+    [InlineData("http://mas.internal/upstream/backchannel-logout/01ABC")]
+    public void An_absent_or_absolute_http_back_channel_logout_uri_loads(string uri)
+    {
+        using var material = OidcKeyMaterial.Load(Options(logoutUri: uri));
+
+        Assert.NotNull(material.SigningKey);
+    }
+
+    private OidcIssuerOptions Options(string? blank = null, string? redirectUri = null, string logoutUri = "") => new()
     {
         SigningKeyPath = blank == "SigningKeyPath" ? "" : _kit.SigningKeyPath,
         EncryptionKeyPath = blank == "EncryptionKeyPath" ? "" : _kit.EncryptionKeyPath,
@@ -97,7 +121,8 @@ public sealed class OidcKeyMaterialTests : IDisposable
             {
                 ClientId = blank == "ClientId" ? "" : OidcTestKit.ClientId,
                 ClientSecretPath = blank == "ClientSecretPath" ? "" : _kit.ClientSecretPath,
-                RedirectUri = blank == "RedirectUri" ? "" : redirectUri ?? OidcTestKit.RedirectUri
+                RedirectUri = blank == "RedirectUri" ? "" : redirectUri ?? OidcTestKit.RedirectUri,
+                BackchannelLogoutUri = logoutUri
             }
         }
     };

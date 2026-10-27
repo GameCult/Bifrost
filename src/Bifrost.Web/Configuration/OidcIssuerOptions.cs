@@ -38,4 +38,7 @@ public sealed class OidcClientOptions
     public string ClientSecretPath { get; init; } = string.Empty;
 
     public string RedirectUri { get; init; } = string.Empty;
+
+    /// <summary>MAS's back-channel logout URL for this provider. Empty: no logout is sent and no session is ended.</summary>
+    public string BackchannelLogoutUri { get; init; } = string.Empty;
 }

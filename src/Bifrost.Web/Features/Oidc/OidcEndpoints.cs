@@ -117,8 +117,8 @@ public static class OidcEndpoints
         return Results.Json(claims);
     }
 
-    /// <summary>The one reading of "this subject is still an Active member", shared by the token and userinfo endpoints.</summary>
-    private static async Task<bool> IsStillActiveMemberAsync(BifrostDbContext db, string? subject, CancellationToken cancellationToken)
+    /// <summary>The one reading of "this subject is still an Active member", shared by the token and userinfo endpoints and the logout reconciler.</summary>
+    internal static async Task<bool> IsStillActiveMemberAsync(BifrostDbContext db, string? subject, CancellationToken cancellationToken)
     {
         if (!Guid.TryParse(subject, out var accountId))
         {

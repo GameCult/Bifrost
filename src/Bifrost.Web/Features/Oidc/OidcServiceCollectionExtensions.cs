@@ -68,6 +68,12 @@ public static class OidcServiceCollectionExtensions
         });
 
         services.AddHostedService<OidcClientSeeder>();
+        if (!string.IsNullOrWhiteSpace(options.Clients.Mas.BackchannelLogoutUri))
+        {
+            services.AddHttpClient(OidcLogoutReconciler.HttpClientName, client => client.Timeout = OidcLogoutReconciler.RequestTimeout);
+            services.AddHostedService<OidcLogoutReconciler>();
+        }
+
         return services;
     }
 }
