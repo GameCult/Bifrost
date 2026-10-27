@@ -254,13 +254,14 @@ public sealed class OidcInMemoryStoreFactory : OidcWebApplicationFactory
 
     private sealed class RowOnlyApplicationStore(
         IMemoryCache cache,
-        BifrostDbContext context,
-        IOptionsMonitor<OpenIddictEntityFrameworkCoreOptions> options)
+        IOpenIddictEntityFrameworkCoreContext openIddictContext,
+        IOptionsMonitor<OpenIddictEntityFrameworkCoreOptions> options,
+        BifrostDbContext context)
         : OpenIddictEntityFrameworkCoreApplicationStore<
             OpenIddictEntityFrameworkCoreApplication,
             OpenIddictEntityFrameworkCoreAuthorization,
             OpenIddictEntityFrameworkCoreToken,
-            string>(cache, context, options)
+            string>(cache, openIddictContext, options)
     {
         public override async ValueTask DeleteAsync(OpenIddictEntityFrameworkCoreApplication application, CancellationToken cancellationToken)
         {
