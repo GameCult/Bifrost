@@ -355,7 +355,7 @@ public sealed class OidcIssuerTests : IClassFixture<OidcWebApplicationFactory>
     public async Task Startup_removes_every_client_but_the_configured_one()
     {
         // Own host: the stale client is a row the other tests must not see.
-        using var own = new OidcWebApplicationFactory();
+        using var own = new OidcInMemoryStoreFactory();
         await new OidcIssuerTests(own).StaleClientIsRemovedAsync();
     }
 

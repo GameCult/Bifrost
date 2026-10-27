@@ -5,7 +5,11 @@ using Bifrost.Web.Features.Shared;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Options;
+using OpenIddict.EntityFrameworkCore;
+using OpenIddict.EntityFrameworkCore.Models;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
@@ -228,5 +232,40 @@ public sealed class OidcForeignIssuerFactory : OidcWebApplicationFactory
         base.ConfigureWebHost(builder);
         builder.ConfigureAppConfiguration((_, configuration) =>
             configuration.AddInMemoryCollection(new Dictionary<string, string?> { ["Host:PublicBaseUrl"] = PublicBaseUrl }));
+    }
+}
+
+/// <summary>
+/// An OIDC host whose application store removes a client row without OpenIddict's bulk delete of its tokens and
+/// authorizations, which the in-memory test database cannot run (the cascade is the store's, exercised on Postgres only).
+/// What the seeder decides to remove is what the host then loses.
+/// </summary>
+public sealed class OidcInMemoryStoreFactory : OidcWebApplicationFactory
+{
+    protected override void ConfigureWebHost(IWebHostBuilder builder)
+    {
+        base.ConfigureWebHost(builder);
+        builder.ConfigureServices(services =>
+        {
+            services.RemoveAll<OpenIddict.Abstractions.IOpenIddictApplicationStore<OpenIddictEntityFrameworkCoreApplication>>();
+            services.AddScoped<OpenIddict.Abstractions.IOpenIddictApplicationStore<OpenIddictEntityFrameworkCoreApplication>, RowOnlyApplicationStore>();
+        });
+    }
+
+    private sealed class RowOnlyApplicationStore(
+        IMemoryCache cache,
+        BifrostDbContext context,
+        IOptionsMonitor<OpenIddictEntityFrameworkCoreOptions> options)
+        : OpenIddictEntityFrameworkCoreApplicationStore<
+            OpenIddictEntityFrameworkCoreApplication,
+            OpenIddictEntityFrameworkCoreAuthorization,
+            OpenIddictEntityFrameworkCoreToken,
+            BifrostDbContext>(cache, context, options)
+    {
+        public override async ValueTask DeleteAsync(OpenIddictEntityFrameworkCoreApplication application, CancellationToken cancellationToken)
+        {
+            context.Remove(application);
+            await context.SaveChangesAsync(cancellationToken);
+        }
     }
 }
