@@ -18,8 +18,10 @@ The product center is the Labor Platform loop: eligible participants express pol
   - source of deployment and infrastructure conventions
   - documents Yggdrasil, nginx, systemd, and local-Postgres patterns
 - `E:\Projects\Heimdall`
-  - owns OAuth, linked accounts, token custody, signed claims, grants, consent, and revocation
-  - Bifrost consumes Heimdall identity/capability facts instead of becoming the credential vault
+  - authenticates: owns OAuth, linked accounts, token custody, signed claims, grants, consent, and revocation
+  - does not issue GameCult identity: its account id (`HeimdallAccountId`) is an authenticator handle, never who a person is on GameCult
+  - Bifrost consumes Heimdall authentication/capability facts instead of becoming the credential vault
+  - remaining scar: Heimdall still mints its own account id in code (`src/app.ts` `createAccount`); chat does not need that to move, so it has not
 - `E:\Projects\VoidBot`
   - observes Discord, packages consensus, and runs repo Persona heartbeats
   - should call Bifrost for governed GitHub/Discord/Reddit/intake crossings instead of becoming hidden transport authority
@@ -55,7 +57,7 @@ After bootstrap, the next session should start implementing the first vertical s
 
 - member alpha first
 - invite-only onboarding
-- GitHub as the only auth provider in v1
+- Bifrost is the GameCult identity issuer: `UserAccount.Id` is the subject, and Bifrost is the OIDC provider for chat (`docs/oidc-issuer.md`); GitHub, native, and Heimdall-linked sign-in only authenticate into it
 - GitHub issues and internal tasks both supported
 - app-native governance and voting
 - priority and reward pressure should be transparent and auditable

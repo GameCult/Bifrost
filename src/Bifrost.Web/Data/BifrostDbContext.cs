@@ -5,6 +5,10 @@ namespace Bifrost.Web.Data;
 
 public sealed class BifrostDbContext(DbContextOptions<BifrostDbContext> options) : DbContext(options)
 {
+    // The OpenIddict tables are part of this model for every way a context is built: the host, the concepts
+    // command, tests and the design-time factory that generates migrations.
+    protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder) => optionsBuilder.UseOpenIddict();
+
     public DbSet<UserAccount> UserAccounts => Set<UserAccount>();
 
     public DbSet<MemberProfile> MemberProfiles => Set<MemberProfile>();

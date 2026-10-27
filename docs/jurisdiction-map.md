@@ -103,6 +103,8 @@ This keeps Reddit useful without making subreddit mechanics the secret constitut
 - signed identity and capability claims
 - grants, consent, revocation, and capability evaluation
 
+Heimdall authenticates; it does not issue GameCult identity. Bifrost owns the identity (`UserAccount.Id`, `NormalizedBifrostIdentity`) and issues it to chat as an OIDC provider (`docs/oidc-issuer.md`). `HeimdallAccountId` is an authenticator handle that links a Heimdall account to a Bifrost identity.
+
 Bifrost consumes Heimdall claims. It does not become the key vault. The split is bridge versus gate: Heimdall decides who may cross under which grant; Bifrost moves authorized work across public protocols and records where it landed.
 
 ### Patron Collection Crossing
@@ -153,7 +155,7 @@ Repo Personas may generate bridge requests. They do not own the bridge itself.
 
 | Concern | Owner | Reason |
 | --- | --- | --- |
-| Who is this actor? | Heimdall | Identity and account custody must stay with the auth authority. |
+| Who is this actor? | Bifrost (identity) with Heimdall (authentication) | Bifrost issues the identity; account custody and credential proof stay with the auth authority. |
 | Is this actor allowed to request this crossing? | Heimdall plus Bifrost | Heimdall issues grants; Bifrost applies bridge-domain policy. |
 | What work is being requested? | Bifrost | The request shape, priority, provenance, and lifecycle are governance concerns. |
 | How does interest become reward pressure? | Bifrost | Priority, bounty growth, vote weight, and reward allocation are Labor Platform concerns. |
@@ -205,6 +207,7 @@ This is not the final hosted control plane. It is the current bridge actuator an
 - Do not add Bifrost-scoped Discord transport or dispatch receipts to arbitrary repo Persona scripts. Call Bifrost.
 - Do not add Bifrost-scoped Reddit posting or Persona flair handling to arbitrary repo Persona scripts. Call Bifrost.
 - Do not put OAuth credentials or account custody into Bifrost helper scripts as the long-term plan. Use Heimdall claims.
+- Do not hand Heimdall ids, GitHub ids, or display names out as the GameCult subject. The OIDC `sub` is `UserAccount.Id`, and the localpart is `NormalizedBifrostIdentity`, minted once.
 - Do not make CultCache documents decide policy. They store packets; Bifrost gives those packets meaning.
 - Do not let a repo Persona turn a proposal into endless Aquarium pressure once it has enough shape. Route it to Bifrost as a reviewable artifact.
 - Do not expose bridge debug noise to public channels. Public receipts should say what happened, which Bifrost topic or work item owns it, where it landed, and what comes next.
