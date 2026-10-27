@@ -380,6 +380,7 @@ public sealed class OidcIssuerTests : IClassFixture<OidcWebApplicationFactory>
                     OpenIddict.Abstractions.OpenIddictConstants.Permissions.Endpoints.Token,
                     OpenIddict.Abstractions.OpenIddictConstants.Permissions.GrantTypes.AuthorizationCode,
                     OpenIddict.Abstractions.OpenIddictConstants.Permissions.ResponseTypes.Code,
+                    OpenIddict.Abstractions.OpenIddictConstants.Permissions.Scopes.Profile,
                     OpenIddict.Abstractions.OpenIddictConstants.Permissions.Prefixes.Scope + OpenIddict.Abstractions.OpenIddictConstants.Scopes.OpenId
                 }
             });
