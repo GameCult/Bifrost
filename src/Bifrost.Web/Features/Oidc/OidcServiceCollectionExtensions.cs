@@ -68,6 +68,14 @@ public static class OidcServiceCollectionExtensions
         });
 
         services.AddHostedService<OidcClientSeeder>();
+        if (!string.IsNullOrWhiteSpace(options.Clients.Mas.BackchannelLogoutUri))
+        {
+            // MAS answers the logout POST itself: a redirect is a non-delivery, never followed to some other 2xx.
+            services.AddHttpClient(OidcLogoutReconciler.HttpClientName, client => client.Timeout = OidcLogoutReconciler.RequestTimeout)
+                .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false });
+            services.AddHostedService<OidcLogoutReconciler>();
+        }
+
         return services;
     }
 }

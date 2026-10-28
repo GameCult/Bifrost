@@ -47,6 +47,13 @@ public sealed class OidcKeyMaterial : IDisposable
             throw new OidcConfigurationException("Bifrost:Oidc:Clients:Mas:RedirectUri must be an absolute http(s) URI.");
         }
 
+        if (!string.IsNullOrWhiteSpace(mas.BackchannelLogoutUri) &&
+            (!Uri.TryCreate(mas.BackchannelLogoutUri, UriKind.Absolute, out var logout) ||
+             logout.Scheme is not ("https" or "http")))
+        {
+            throw new OidcConfigurationException("Bifrost:Oidc:Clients:Mas:BackchannelLogoutUri must be an absolute http(s) URI.");
+        }
+
         var ecdsa = LoadSigningKey(options.SigningKeyPath);
         try
         {
