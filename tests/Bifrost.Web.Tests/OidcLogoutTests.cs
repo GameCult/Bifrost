@@ -344,7 +344,8 @@ public sealed class OidcLogoutTests
     {
         using var factory = new OidcLogoutFactory();
         var clock = new ControlledClock();
-        var reconciler = factory.NewReconciler(clock);
+        var log = new ListLogger<OidcLogoutReconciler>();
+        var reconciler = factory.NewReconciler(clock, log);
         var (first, _) = await factory.GrantAsync(MembershipStatus.Suspended);
         await reconciler.StartAsync(CancellationToken.None);
         try
@@ -364,6 +365,9 @@ public sealed class OidcLogoutTests
             await WaitForAsync(() => clock.Waiting > 0);
             clock.FireTimers();
             await WaitForAsync(() => factory.Mas.Bodies.Count == 3);
+            var failure = Assert.Single(log.Entries, x => x.Level == LogLevel.Error);
+            Assert.Contains(nameof(InvalidOperationException), failure.Message, StringComparison.Ordinal);
+            Assert.DoesNotContain("not a network fault", failure.Message, StringComparison.Ordinal);
             await WaitForAsync(() => factory.ValidAuthorizations(factory.AccountId(second).ToString("D")) == 0);
         }
         finally
