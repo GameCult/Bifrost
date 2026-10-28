@@ -319,24 +319,87 @@ public sealed class OidcLogoutTests
     }
 
     [Fact]
-    public async Task An_unexpected_exception_is_not_a_network_fault_and_a_cancelled_post_is_not_a_failed_delivery()
+    public async Task One_subject_that_throws_unexpectedly_does_not_stop_the_pass_and_keeps_its_authorizations()
+    {
+        using var factory = new OidcLogoutFactory();
+        var log = new ListLogger<OidcLogoutReconciler>();
+        var reconciler = factory.NewReconciler(logger: log);
+        var (first, _) = await factory.GrantAsync(MembershipStatus.Suspended);
+        var (second, _) = await factory.GrantAsync(MembershipStatus.Suspended);
+        var subjects = new[] { first, second }.Select(x => factory.AccountId(x).ToString("D")).ToArray();
+
+        // Whichever subject the pass reaches first throws; the other is still logged out and revoked.
+        factory.Mas.Script(FakeMasHandler.Unexpected);
+        await reconciler.ReconcileOnceAsync(CancellationToken.None);
+
+        Assert.Equal(2, factory.Mas.Bodies.Count);
+        var firstToken = factory.Mas.LogoutTokens()[0];
+        var thrown = new JsonWebToken(firstToken).Subject;
+        var other = subjects.Single(x => x != thrown);
+        Assert.Equal(0, factory.ValidAuthorizations(other));
+        Assert.True(factory.ValidAuthorizations(thrown) > 0);
+        var failure = Assert.Single(log.Entries, x => x.Level == LogLevel.Error);
+        Assert.Contains(thrown, failure.Message, StringComparison.Ordinal);
+        Assert.Contains(nameof(InvalidOperationException), failure.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("not a network fault", failure.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(firstToken, failure.Message, StringComparison.Ordinal);
+
+        // The failed subject was not backed off: the next pass tries it again and delivers.
+        await reconciler.ReconcileOnceAsync(CancellationToken.None);
+        Assert.Equal(3, factory.Mas.Bodies.Count);
+        Assert.Equal(0, factory.ValidAuthorizations(thrown));
+    }
+
+    [Fact]
+    public async Task A_cancelled_post_stops_the_pass_and_is_not_a_failed_delivery()
     {
         using var factory = new OidcLogoutFactory();
         var (identity, _) = await factory.GrantAsync(MembershipStatus.Suspended);
         var subject = factory.AccountId(identity).ToString("D");
         var reconciler = factory.Reconciler;
 
-        factory.Mas.Script(FakeMasHandler.Unexpected);
-        await Assert.ThrowsAsync<InvalidOperationException>(() => reconciler.ReconcileOnceAsync(CancellationToken.None));
-
         // Stopping while the post is in flight surfaces as cancellation and records no backoff: the next pass posts at once.
         factory.Mas.Script(FakeMasHandler.Hang);
         using var stop = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => reconciler.ReconcileOnceAsync(stop.Token));
-        Assert.Equal(2, factory.Mas.Bodies.Count);
+        Assert.Single(factory.Mas.Bodies);
         await reconciler.ReconcileOnceAsync(CancellationToken.None);
-        Assert.Equal(3, factory.Mas.Bodies.Count);
+        Assert.Equal(2, factory.Mas.Bodies.Count);
         Assert.Equal(0, factory.ValidAuthorizations(subject));
+    }
+
+    [Fact]
+    public async Task A_redirect_from_mas_is_not_followed_and_is_not_delivery()
+    {
+        using var mas = new RedirectingMas();
+        using var factory = new OidcLogoutFactory(mas.LogoutUri);
+        var (identity, _) = await factory.GrantAsync(MembershipStatus.Suspended);
+        var subject = factory.AccountId(identity).ToString("D");
+        var before = factory.ValidAuthorizations(subject);
+        Assert.True(before > 0);
+
+        await factory.Reconciler.ReconcileOnceAsync(CancellationToken.None);
+
+        Assert.Equal(["POST /logout"], mas.Requests);
+        Assert.Equal(before, factory.ValidAuthorizations(subject));
+
+        // A redirect is a non-delivery like any non-2xx: it backs off, then posts again.
+        factory.Time.Advance(TimeSpan.FromSeconds(30));
+        await factory.Reconciler.ReconcileOnceAsync(CancellationToken.None);
+        Assert.Equal(["POST /logout", "POST /logout"], mas.Requests);
+        Assert.Equal(before, factory.ValidAuthorizations(subject));
+    }
+
+    [Fact]
+    public void The_logout_client_times_out_after_ten_seconds()
+    {
+        using var factory = new OidcLogoutFactory();
+        using var client = factory.CreateClient();
+
+        Assert.Equal(TimeSpan.FromSeconds(10), OidcLogoutReconciler.RequestTimeout);
+        Assert.Equal(
+            TimeSpan.FromSeconds(10),
+            factory.Services.GetRequiredService<IHttpClientFactory>().CreateClient(OidcLogoutReconciler.HttpClientName).Timeout);
     }
 
     [Fact]

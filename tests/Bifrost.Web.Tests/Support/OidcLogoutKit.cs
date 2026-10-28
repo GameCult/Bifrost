@@ -211,11 +211,133 @@ public sealed class FakeMasHandler : HttpMessageHandler
     }
 }
 
+/// <summary>
+/// A real HTTP listener on loopback standing in for a MAS that answers every POST with 302 to /login and GET /login with
+/// 200: what a real HttpClient does with that answer is the registered handler's rule, which a fake handler cannot see.
+/// </summary>
+public sealed class RedirectingMas : IDisposable
+{
+    private readonly System.Net.Sockets.TcpListener _listener = new(IPAddress.Loopback, 0);
+    private readonly List<string> _requests = [];
+    private readonly CancellationTokenSource _stop = new();
+    private readonly Task _accepting;
+
+    public RedirectingMas()
+    {
+        _listener.Start();
+        _accepting = Task.Run(AcceptAsync);
+    }
+
+    public string LogoutUri => $"http://127.0.0.1:{((IPEndPoint)_listener.LocalEndpoint).Port}/logout";
+
+    /// <summary>"METHOD path" for every request received, in order.</summary>
+    public IReadOnlyList<string> Requests
+    {
+        get
+        {
+            lock (_requests)
+            {
+                return _requests.ToArray();
+            }
+        }
+    }
+
+    private async Task AcceptAsync()
+    {
+        try
+        {
+            while (!_stop.IsCancellationRequested)
+            {
+                var connection = await _listener.AcceptTcpClientAsync(_stop.Token);
+                _ = Task.Run(() => ServeAsync(connection));
+            }
+        }
+        catch (Exception) when (_stop.IsCancellationRequested)
+        {
+        }
+    }
+
+    private async Task ServeAsync(System.Net.Sockets.TcpClient connection)
+    {
+        using var owned = connection;
+        try
+        {
+            var stream = connection.GetStream();
+            using var reader = new StreamReader(stream, Encoding.ASCII, leaveOpen: true);
+            var requestLine = await reader.ReadLineAsync(_stop.Token) ?? "";
+            var length = 0;
+            while (await reader.ReadLineAsync(_stop.Token) is { Length: > 0 } header)
+            {
+                if (header.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase))
+                {
+                    length = int.Parse(header["Content-Length:".Length..].Trim());
+                }
+            }
+
+            var body = new char[length];
+            var read = 0;
+            while (read < length)
+            {
+                var n = await reader.ReadAsync(body.AsMemory(read), _stop.Token);
+                if (n == 0)
+                {
+                    break;
+                }
+
+                read += n;
+            }
+
+            var parts = requestLine.Split(' ');
+            lock (_requests)
+            {
+                _requests.Add($"{parts[0]} {parts[1]}");
+            }
+
+            var response = parts[0] == "POST"
+                ? "HTTP/1.1 302 Found\r\nLocation: /login\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                : "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+            await stream.WriteAsync(Encoding.ASCII.GetBytes(response), _stop.Token);
+        }
+        catch (Exception error) when (error is IOException or OperationCanceledException or ObjectDisposedException)
+        {
+        }
+    }
+
+    public void Dispose()
+    {
+        _stop.Cancel();
+        _listener.Stop();
+        try
+        {
+            _accepting.Wait(TimeSpan.FromSeconds(2));
+        }
+        catch (AggregateException)
+        {
+        }
+    }
+}
+
 /// <summary>An OIDC host with MAS's back-channel logout URI set, a fake MAS behind it and a clock the test drives.</summary>
 public sealed class OidcLogoutFactory : OidcWebApplicationFactory
 {
     public const string LogoutUri = "https://mas.example.test/upstream/backchannel-logout/01TESTPROVIDER";
     public static readonly Uri Origin = new("https://localhost");
+
+    private readonly string _logoutUri;
+    private readonly bool _fakeTransport;
+
+    public OidcLogoutFactory()
+    {
+        _logoutUri = LogoutUri;
+        _fakeTransport = true;
+    }
+
+    /// <summary>Keeps the real registered HttpClient and its primary handler and posts to <paramref name="logoutUri"/>.</summary>
+    public OidcLogoutFactory(string logoutUri)
+    {
+        _logoutUri = logoutUri;
+        _fakeTransport = false;
+    }
 
     public FakeMasHandler Mas { get; } = new();
 
@@ -226,12 +348,15 @@ public sealed class OidcLogoutFactory : OidcWebApplicationFactory
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         base.ConfigureWebHost(builder);
-        builder.UseSetting("Bifrost:Oidc:Clients:Mas:BackchannelLogoutUri", LogoutUri);
+        builder.UseSetting("Bifrost:Oidc:Clients:Mas:BackchannelLogoutUri", _logoutUri);
         builder.ConfigureServices(services =>
         {
             services.RemoveAll<TimeProvider>();
             services.AddSingleton<TimeProvider>(Time);
-            services.AddHttpClient(OidcLogoutReconciler.HttpClientName).ConfigurePrimaryHttpMessageHandler(() => Mas);
+            if (_fakeTransport)
+            {
+                services.AddHttpClient(OidcLogoutReconciler.HttpClientName).ConfigurePrimaryHttpMessageHandler(() => Mas);
+            }
         });
     }
 
