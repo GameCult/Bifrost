@@ -439,6 +439,36 @@ public sealed class OidcLogoutTests
         }
     }
 
+    [Fact]
+    public async Task A_pass_that_cannot_read_its_subjects_is_logged_by_type_and_retried_after_the_interval()
+    {
+        using var factory = new OidcLogoutFactory();
+        var clock = new ControlledClock();
+        var log = new ListLogger<OidcLogoutReconciler>();
+        var flaky = new FlakyScopeFactory(factory.Services.GetRequiredService<IServiceScopeFactory>(), failures: 1);
+        var reconciler = factory.NewReconciler(clock, log, flaky);
+        var (identity, _) = await factory.GrantAsync(MembershipStatus.Suspended);
+        await reconciler.StartAsync(CancellationToken.None);
+        try
+        {
+            await WaitForAsync(() => log.Entries.Any(x => x.Level == LogLevel.Error) && clock.Waiting > 0);
+            var failure = Assert.Single(log.Entries, x => x.Level == LogLevel.Error);
+            Assert.Contains(nameof(InvalidOperationException), failure.Message, StringComparison.Ordinal);
+            Assert.DoesNotContain(FlakyScopeFactory.Secret, failure.Message, StringComparison.Ordinal);
+
+            // Never a tight loop: nothing posts until the interval passes, then the pass succeeds.
+            await Task.Delay(300);
+            Assert.Empty(factory.Mas.Bodies);
+            clock.FireTimers();
+            await WaitForAsync(() => factory.Mas.Bodies.Count == 1);
+            await WaitForAsync(() => factory.ValidAuthorizations(factory.AccountId(identity).ToString("D")) == 0);
+        }
+        finally
+        {
+            await reconciler.StopAsync(CancellationToken.None);
+        }
+    }
+
     private static async Task WaitForAsync(Func<bool> condition)
     {
         var deadline = DateTime.UtcNow.AddSeconds(10);

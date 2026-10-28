@@ -317,6 +317,24 @@ public sealed class RedirectingMas : IDisposable
     }
 }
 
+/// <summary>A scope factory that fails the first scopes asked of it, as a database outage would.</summary>
+public sealed class FlakyScopeFactory(IServiceScopeFactory inner, int failures) : IServiceScopeFactory
+{
+    public const string Secret = "scope-factory-secret-detail";
+
+    private int _failures = failures;
+
+    public IServiceScope CreateScope()
+    {
+        if (Interlocked.Decrement(ref _failures) >= 0)
+        {
+            throw new InvalidOperationException(Secret);
+        }
+
+        return inner.CreateScope();
+    }
+}
+
 /// <summary>An OIDC host with MAS's back-channel logout URI set, a fake MAS behind it and a clock the test drives.</summary>
 public sealed class OidcLogoutFactory : OidcWebApplicationFactory
 {
@@ -361,8 +379,11 @@ public sealed class OidcLogoutFactory : OidcWebApplicationFactory
     }
 
     /// <summary>A reconciler with no memory, built over this host's database, as a restarted process would have.</summary>
-    public OidcLogoutReconciler NewReconciler(TimeProvider? time = null, ILogger<OidcLogoutReconciler>? logger = null) => new(
-        Services.GetRequiredService<IServiceScopeFactory>(),
+    public OidcLogoutReconciler NewReconciler(
+        TimeProvider? time = null,
+        ILogger<OidcLogoutReconciler>? logger = null,
+        IServiceScopeFactory? scopes = null) => new(
+        scopes ?? Services.GetRequiredService<IServiceScopeFactory>(),
         Services.GetRequiredService<OidcIssuerOptions>(),
         Services.GetRequiredService<OidcKeyMaterial>(),
         Services.GetRequiredService<IOptions<OpenIddictServerOptions>>(),
