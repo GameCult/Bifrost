@@ -15,7 +15,8 @@ namespace Bifrost.Web.Features.Oidc;
 /// authorizations of the configured client; for each one the shared active-member reading refuses, it POSTs one signed
 /// OIDC back-channel logout token to MAS and, only after a 2xx, revokes that subject's authorizations. The
 /// authorizations table is the queue: nothing is stored, so a restart, a MAS outage or a later-set URI resumes from it.
-/// Per-subject backoff lives in memory only. It never writes membership.
+/// Per-subject backoff lives in memory only. One subject's unexpected exception is logged and skipped, never aborting the
+/// pass. It never writes membership.
 /// </summary>
 public sealed class OidcLogoutReconciler(
     IServiceScopeFactory scopeFactory,
@@ -80,7 +81,20 @@ public sealed class OidcLogoutReconciler(
         foreach (var subject in subjects)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            await ReconcileSubjectAsync(subject, cancellationToken);
+            try
+            {
+                await ReconcileSubjectAsync(subject, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception error)
+            {
+                // One subject's fault never stops the pass: its authorizations stay valid and the next tick retries it.
+                // The subject id and the exception type only: messages can carry connection strings or URLs.
+                logger.LogError("Back-channel logout for subject {Subject} failed: {ErrorType}", subject, error.GetType().Name);
+            }
         }
     }
 
