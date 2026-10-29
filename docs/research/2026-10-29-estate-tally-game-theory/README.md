@@ -172,3 +172,159 @@ S2 logrolling (6-motion agendas, 1500 each, greedy mutually profitable pairwise 
 - Individual equality cuts the other way. WTA two-tier is Penrose-equalizable with sqrt weights; prop needs headcount weights. Gelman et al. and Kirsch argue that correlation pulls the fair weights back toward proportional.
 - Operator dominance. Under WTA her ceiling is the Members bloc's council power (.42 equal, .84 members-heavy). Under prop at q=.5 her influence has no such ceiling. Her internal dictatorship of Members ends at the n shown in the section 5 table.
 - Renormalization with no quorum: participation-safe in every exhaustive probe. Adding any quorum floor while estates are empty hands the sole Member, or the Minds estate, a stay-home veto. The two-estates floor conflicts with the "decide without me" ruling today. The bounds that remain on a lone Minds estate are a headcount floor <= .889, category thresholds (binding only under prop, and void at ICC 1), and a delay window whose cancel opportunity depends on her absence length (section 5b).
+
+## 9. Third rule: `bloc-parliament-at-threshold` (bpt)
+Each live bloc casts its whole weight For iff its internal For share (abstain excluded) >= the category threshold q, else Against. The council then needs weighted For >= q over live estates (renormalized). Code `estate-sims\third.py` (out `third.out.md`) and `estate-sims\bounds.py` (out `bounds.out.md`). The model and draws are the same as sections 3-6 (Minds ICC .44, sizes 8/15/30/4).
+- **bpt vs WTA at q=.5:** these differ only at exact internal ties. A 4/8 Minds split casts For under bpt (.5 >= .5) and nothing under WTA. With continuous shares (logrolling) the two are identical.
+
+**Aggregate bounds** (all four estates live; lowest weighted popular For share that can pass / highest that can fail; prop is exactly q / just under q). bpt applies q twice, so it widens the band on both sides:
+| seed | q | WTA | bpt |
+|---|---|---|---|
+| equal | .15 | .125 / .500 | .037 / .150 |
+| equal | .5 | .250 / .625 | .250 / .625 |
+| equal | .66 | .375 / .750 | .495 / .830 |
+| minds-heavy | .66 | .350 / .800 | .462 / .864 |
+| members-heavy | .66 | .400 / .825 | .528 / .881 |
+- Equal seed, q=.15: one bloc with 15% internal For passes the motion, so 3.7% weighted support suffices.
+- Equal seed, q=.66: three blocs at 66% pass with 49.5% support, while four blocs at 65.9% fail with 65.9% support.
+
+**Outcomes** (T1): P(pass) prop / WTA / bpt, then P(outcomes differ) bpt-prop / bpt-WTA / prop-WTA:
+| seed | q | P(pass) | differ |
+|---|---|---|---|
+| equal | .15 | .934 / .838 / .985 | .050 / .147 / .098 |
+| equal | .5 | .502 / .594 / .676 | .179 / .082 / .119 |
+| equal | .66 | .265 / .405 / .233 | .080 / .171 / .148 |
+| minds-heavy | .5 | .502 / .537 / .575 | .126 / .038 / .117 |
+| members-heavy | .66 | .271 / .343 / .194 | .099 / .149 / .113 |
+- bpt is the most permissive rule at .15 and the strictest at .66. At .5 it passes more than WTA because internal ties count For.
+
+**Pivots and correlation** (T2, T3; equal seed):
+- Single-voter pivot M/Me/U/P under bpt:
+  - q=.15: .002/.004/.002/.017
+  - q=.5: .018/.019/.010/.082
+  - q=.66: .018/.018/.010/.068
+- For comparison at q=.5: prop .050/.026/.014/.102; WTA .020/.023/.011/.076.
+- Single-Persona pivot by Minds ICC 0 / .44 / .8 / 1:
+
+  | q | prop | WTA | bpt |
+  |---|---|---|---|
+  | .15 | .020 / .020 / .021 / .021 | .024 / .014 / .004 / 0 | .006 / .002 / .001 / 0 |
+  | .5 | .051 / .050 / .050 / .048 | .040 / .021 / .007 / 0 | .038 / .018 / .006 / 0 |
+  | .66 | .044 / .042 / .040 / .040 | .040 / .020 / .007 / 0 | .036 / .017 / .006 / 0 |
+
+  Under bpt, as under WTA, a correlated Minds bloc leaves one Persona almost no pivot; prop keeps a 1/8 slice at every correlation.
+
+**Users faction capture** (T4; Users population support .3, 9 random voters + k coordinated For). P(Users bloc casts For):
+| k (share of voters) | WTA | bpt .15 | bpt .5 | bpt .66 | prop share |
+|---|---|---|---|---|---|
+| 0 (0) | .10 | .80 | .10 | .03 | .30 |
+| 1 (.10) | .10 | .96 | .27 | .03 | .37 |
+| 2 (.18) | .27 | 1.00 | .27 | .03 | .43 |
+| 3 (.25) | .27 | 1.00 | .54 | .10 | .48 |
+| 6 (.40) | .81 | 1.00 | .81 | .27 | .58 |
+| 9 (.50) | .96 | 1.00 | 1.00 | .54 | .65 |
+| 12 (.57) | 1.00 | 1.00 | 1.00 | .80 | .70 |
+- At q=.15 the bloc casts For with no faction at all 80% of the time (population support .3 > .15); a 2-voter faction (18%) makes it certain. This confirms the coordinator's note: at .15, about a 15% faction captures the bloc's whole weight.
+- At .66 a faction needs roughly half the turnout to capture the bloc half the time.
+
+**Logrolling** (T5; 800 agendas, 6 motions):
+| seed | q | rule | P(>=1 trade) | mean welfare change | P(a non-trader loses) | P(a trader ends worse) |
+|---|---|---|---|---|---|---|
+| equal | .15 | WTA / bpt / prop .5 | .128 / .001 / .007 | +.56 / +.01 / +.05 | 0 / 0 / 0 | .007 / 0 / 0 |
+| equal | .5 | WTA = bpt / prop .5 | .589 / .451 | +.14 / -.43 | .376 / .316 | .231 / .146 |
+| equal | .66 | WTA / bpt / prop .5 | .614 / .367 / .245 | +.10 / +.60 / +.41 | .393 / .250 / .177 | .231 / .071 / .035 |
+| minds-heavy | .5 | WTA = bpt / prop .5 | .608 / .330 | -.05 / -.26 | .490 / .282 | .176 / .071 |
+| minds-heavy | .66 | WTA / bpt / prop .5 | .463 / .362 / .282 | +.17 / +.39 / +.37 | .375 / .289 / .206 | .095 / .031 / .043 |
+- At .15, almost nothing is left to trade under bpt: nearly everything passes.
+- At .66, bpt trades less than WTA, with higher mean welfare and less third-party harm. Most remaining trades build supermajorities for motions that a strongly-wanting minority of blocs care about.
+
+**Lone Minds, she absent** (T6). P(pass) at Minds ICC 0 / .44 / 1:
+| category | q | prop = bpt | WTA |
+|---|---|---|---|
+| Bugs | .15 | .77 / .65 / .50 | .45 / .47 / .50 |
+| Cosmetics | .30 | .66 / .59 / .50 | .45 / .47 / .50 |
+| Balance | .40 | .56 / .53 / .50 | .45 / .47 / .50 |
+| Features / NewContent | .50 | .56 / .53 / .50 | .45 / .47 / .50 |
+| FundamentalDesign | .66 | .34 / .42 / .50 | .45 / .47 / .50 |
+- A lone estate under bpt behaves exactly as under prop: the internal threshold is the binding one, so categories bind. Under WTA they are inert.
+
+**Present case** (T7; Minds 8 coin-flip, her alone, Users/Patrons empty). P(pass | she For / Against / home):
+| seed | q | prop | WTA | bpt |
+|---|---|---|---|---|
+| equal | .15 | 1 / .855 / .965 | 1 / .363 / .363 | 1 / .965 / .965 |
+| equal | .5 | 1 / .004 / .637 | 1 / .363 / .363 | 1 / .637 / .637 |
+| equal | .66 | .855 / 0 / .145 | .637 / 0 / .363 | .145 / 0 / .145 |
+| minds-heavy | .5 | .996 / .035 / .637 | .637 / .363 / .363 | .637 / .637 / .637 |
+| members-heavy | any | For always passes, Against always fails, under all three rules | | |
+- Under bpt with two equal live estates:
+  - At q <= .5 her For forces passage, and her Against has the same effect as staying home.
+  - At q=.66 her Against is a veto, and her For has the same effect as staying home.
+- Minds-heavy q=.5 under bpt: her vote is irrelevant (.637 in every column), and the Minds alone decide.
+
+**Operator's whole-tally pivot** (T8; coin voters, Users 10, Patrons 2 on log(1+d), her share of contribution S=.8). Values are prop / WTA / bpt:
+| seed | q | alone | n=5 k=3 | n=20 k=3 | n=20 one-each |
+|---|---|---|---|---|---|
+| equal | .15 | .012 / .199 / 0 | .002 / .175 / 0 | 0 / .136 / 0 | 0 / .035 / 0 |
+| equal | .5 | .723 / .429 / .300 | .308 / .376 / .263 | .159 / .293 / .206 | .042 / .076 / .053 |
+| equal | .66 | .373 / .433 / .086 | .150 / .377 / .053 | .074 / .294 / .021 | .019 / .076 / .004 |
+| members-heavy | .5 | 1 / .863 / .734 | .612 / .753 / .641 | .383 / .588 / .500 | .101 / .152 / .130 |
+| members-heavy | .66 | .806 / .630 / .092 | .237 / .549 / .058 | .079 / .428 / .023 | .021 / .111 / .004 |
+- At .15 under bpt, the coin-flip blocs almost always clear 15%, so no single voter matters, her included.
+- At .66, bpt gives her the smallest pivot of the three rules at every Members size, because she can block her bloc but rarely flips the council.
+
+**Strategic checks** (T9; exhaustive, renormalized, no quorum; sizes 8/1/0/0 and 3/3/2/2, all seeds and q): 0 profitable misreports, 0 profitable abstentions and 0 profitable estate stay-homes. bpt is monotone and participation-safe here, as prop and WTA were in sections 6 and N1.
+
+## 10. Capping the operator: weight share vs decisiveness
+Her words, relayed: "I would limit my influence by half, just so I'm not deciding everything". Code `estate-sims\cap.py` (out `cap.out.md`, full grid: 3 cases x 3 seeds x 3 q x 5 caps x 3 rules).
+- **Weight share x:** her internal share of Members x Members weight / live weight (renormalized).
+- **How the cap c works:** if she is the sole Member, the Members estate weight is cut to c/(1-c) x the other live weight. Otherwise her internal weight is cut until x = c.
+- **Decisiveness:** her pivot rate, measured twice. Coin voters (Banzhaf) and the motion model (Minds ICC .44) give different numbers for the same rule.
+- **Unilateral pass (U+):** her For passes with everyone else Against.
+- **Unilateral block (U-):** her Against fails with everyone else For.
+- Ties pass (>=).
+
+**Present case** (Minds 8, her alone, two live estates). Cells: pivot coin / pivot motion, with U+U- flags:
+| seed, q | cap (x) | prop | WTA | bpt |
+|---|---|---|---|---|
+| equal .15 | none = .5 (.50) | .14 / .42 YN | .64 / .53 YN | .03 / .35 YN |
+| equal .15 | .33 | .03 / .35 YN | .64 / .53 YN | .03 / .35 YN |
+| equal .5 | none = .5 (.50) | .996 / .73 YN | .64 / .53 YN | .36 / .47 YN |
+| equal .5 | .49 | .992 / .46 NN | .27 / .06 NN | 0 / 0 NN |
+| equal .5 | .33 | .71 / .17 NN | .27 / .06 NN | 0 / 0 NN |
+| equal .66 | none / .49 / .40 | .86 / .58 to .64 / .53 NY | .64 / .53 NY | .14 / .42 NY |
+| equal .66 | .33 | .64 / .25 NN | .27 / .06 NN | 0 / 0 NN |
+| members-heavy .5 | none (.69) | 1 / 1 YY | 1 / 1 YY | 1 / 1 YY |
+| members-heavy .5 | .5 / .49 | same as equal .5 at cap .5 / .49 | | |
+- **A 50% cap with ties passing does not take away her unilateral power.**
+  - In the two-estate case: at q <= .5 her For alone passes; at q > .5 her Against alone blocks.
+  - Generally: U+ holds iff x >= q, and U- holds iff x > 1-q. Removing both needs x < min(q, 1-q):
+    - q=.5: any cap below .5 (.49 works).
+    - q=.66: below .34 (.40 and .49 still leave her the block).
+    - q=.15: below .15 (no tested cap removes U+).
+- **Pivot at or below half, present case:**
+  - With cap .49 at q=.5: WTA .27 and bpt 0 on both measures (under bpt the Minds then decide alone).
+  - Prop stays at .99 on coin voters even at cap .49 (and .71 at .33). The motion model gives prop .46 at cap .49 and .17 at .33. One Persona For is enough to carry her 49% For past .5, and she loses only to a unanimous Against from the Minds.
+  - WTA at .15 stays at .64 / .53 under every cap. At .15, x >= .15 keeps U+, and the Minds estate casts all or nothing.
+
+**Growth path** (S=.8, k=3, Users 10, Patrons 2). Her weight share is already below every tested cap, so no cap binds:
+- x = .10 / .12 / .18 at n=5 for equal / minds-heavy / members-heavy.
+- x = .05 / .06 / .09 at n=20.
+
+Her decisiveness still exceeds half in some cells (coin / motion):
+| case | prop | WTA | bpt |
+|---|---|---|---|
+| n=5, members-heavy, q=.5 (x=.18) | .61 / .31 | .76 / .42 | .64 / .39 |
+| n=5, equal, q=.5 (x=.10) | .31 / .15 | .38 / .21 | .26 / .19 |
+| n=20, members-heavy, q=.5 (x=.09) | .38 / .14 | .59 / .15 | .50 / .15 |
+| n=5, members-heavy, q=.66 | .24 / .26 | .55 / .32 | .06 / .24 (U- under bpt) |
+- Under WTA and bpt, her pivot comes from steering a bloc that carries 45% of the weight, not from her own 9-18% share. A cap on her personal weight share therefore leaves this channel open.
+- Under bpt at .66 she gets a unilateral block at n=5 members-heavy with x=.18: her Against holds the Members internal For share under .66, so the whole 45% is cast Against.
+
+**Distinction, as measured:**
+- **Weight share is a rule parameter.** A cap on it is enforceable per tally (renormalized) and removes U+/U- only when x < min(q, 1-q) of the tally.
+- **Decisiveness (pivot rate) is not a rule parameter.** It is a function of the rule, the threshold, the bloc structure and how everyone else votes. The same cap gives .99 or .46 (prop, q=.5, cap .49) depending on the voter model. No weight cap tested bounds it under every model.
+- Holding her decisiveness at or below half under unitary rules (WTA, bpt) would need a cap on the weight of any bloc she can steer, or on her internal decisiveness in that bloc. A cap on her own share does not do it.
+- Present case, equal seed: rule and cap combinations whose pivot is at or below .5 on both voter models.
+  - q=.15: prop at every cap (.14 / .42 uncapped); bpt at every cap (.03 / .35). WTA at no cap (.64 / .53).
+  - q=.5: WTA and bpt at cap .49 or lower. Prop at no tested cap (coin .71 even at .33).
+  - q=.66: bpt at every cap (.14 / .42), but U- survives until the cap is below .34. WTA at cap .33. Prop at no tested cap (coin .64 at .33).
