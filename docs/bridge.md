@@ -196,15 +196,7 @@ The command is a dry-run shape probe for public surfaces that are real enough to
 
 Bifrost's native Discord gateway is the conversation observer. A direct mention of the Bifrost bot, or a reply to one of its messages, becomes an immutable typed `bifrost.discord.persona_conversation_event.v0` only when the guild and channel have one exact Persona target binding. Bot-authored, ambient, empty, over-1200-character, unbound, and ambiguously bound messages do not enter the conversation path. The 1200-character cap is the shared signed alpha boundary with Epiphany. The observation store is Bifrost-private working state, never an actuator queue, and insert collisions must contain exactly equal content. VoidBot does not observe, schedule, or answer for the target Persona.
 
-Persona replies cross back through two explicit CultMesh surfaces. Epiphany is
-the sole writer of `epiphany.persona_discord_delivery_request.v0`; Bifrost
-reads that surface, authenticates the dedicated Persona-mouth signer, journals
-external execution before touching Discord, and is the sole writer of
-`bifrost.persona_discord_delivery_receipt.v0`. Epiphany reads receipts but
-never receives the Discord token or write access to Bifrost private state.
-`unknown` is terminal for automatic transport retry: an external post may have
-happened, so restart recovery must not manufacture a duplicate. Failed and
-unknown outcomes remain Persona pressure for explicit resolution.
+Persona speech goes out through Matrix, not Discord. `tools/persona-matrix-mouth.mjs` is the one process per Persona that holds the Persona's Matrix access token (a systemd credential) and nobody else does. It reads the configured rooms by `/sync`, keeps each message from another sender as a delivery, and speaks on a `gamecult.persona.chat_send_request.v1` over a loopback CultNet RUDP endpoint, only while the instance brake is released. Document shapes: `tools/persona-chat-documents.mjs`; golden bytes: `tests/fixtures/persona-chat-v1/`. The Discord posting actuator, its permit and its RUDP listener are removed.
 
 Bifrost admits an observation only when guild, channel, target runtime, canonical repository, Persona, producer, and producer runtime match a preconfigured `bifrost.persona_feedback.target_binding.v0` document in Bifrost's private provider store. That binding also owns source visibility, data classification, and the delivery-store target. Bifrost never infers public visibility from Discord identifiers. It classifies the author using its own `bifrost.discord.actor_link.v0` state: a match yields `linked_governance_feedback`; absence yields `unlinked_social_feedback`. Neither class grants adoption, work, release, or deployment authority.
 
