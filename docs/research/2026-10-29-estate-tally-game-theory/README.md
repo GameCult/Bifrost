@@ -4,7 +4,7 @@ Fork: Fork Desk question 39, `eureka-body:question:estate-internal-tally` (InFor
 Operator additions folded in (her words relayed by the Self): within-bloc vote-power curves ("Patrons vote power scales with donation total, but it's logarithmic... Member vote should scale with contribution... via a lower exponent"); present case ("I'm the only active member"); renormalization ruling ("normalize it by who actually voted").
 
 ## Code, outputs, model
-Dir `C:\Users\Meta\AppData\Local\Temp\claude\F--Projects-CultLib\c4b0441b-f176-4f06-b58b-75efa6163f29\scratchpad\estate-sims\` (numpy 2.5.4, Python 3.13, `python -I <script>`; each `X.py` writes `X.out.md`, full tables there):
+Dir `sims/` (numpy 2.5.4, Python 3.13, `python -I <script>`; each `X.py` writes `X.out.md`, full tables there):
 `power.py` exact Banzhaf/Shapley and two-tier individual power; `mc.py` Monte Carlo outcomes; `weights.py` within-bloc curves; `growth.py` present case and growth path; `strat.py` misreport/abstention and logrolling; `noshow.py` no-show and quorum under renormalization; `lone.py` lone-estate bounds (her absent).
 - Pass rule as in Bifrost `MotionGovernanceService`: For/(For+Against) >= q, abstain excluded. Every tally renormalizes over estates with at least one For/Against ballot (the ruling); a WTA tie casts nothing, so a tied estate also drops out. Ties at exactly q pass (>=).
 - Sizes unless stated: Minds 8, Members 15, Users 30 voting (roll 300, 10% turnout), Patrons 4. Weight seeds M/Me/U/P: equal 25/25/25/25; minds-heavy 40/30/20/10; members-heavy 20/45/20/15.
