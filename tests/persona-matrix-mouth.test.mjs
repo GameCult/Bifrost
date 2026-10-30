@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { resolve, join } from "node:path";
-import { createMouth, createBrakeReader, createRing, redact } from "../tools/persona-matrix-mouth.mjs";
+import { createMouth, createBrakeReader, guarded, redact } from "../tools/persona-matrix-mouth.mjs";
 
 const TOKEN = "syt_SECRET_TOKEN_9f3";
 const HS_NAME = "gamecult.test";
@@ -14,7 +14,7 @@ const message = (id, sender, body, ts) => ({ type: "m.room.message", event_id: i
 const tick = () => new Promise(r => setImmediate(r));
 
 // A fake Matrix client-server API: just the endpoints the mouth uses.
-async function fakeHomeserver({ sync, failWith } = {}) {
+async function fakeHomeserver({ sync, failWith, users, member, direct } = {}) {
   const seen = [];
   const sent = new Map(); // txnId -> event_id
   const server = createServer((req, res) => {
@@ -27,10 +27,15 @@ async function fakeHomeserver({ sync, failWith } = {}) {
       const reply = (status, body) => { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(body)); };
       if (failWith) return reply(failWith, { errcode: "M_UNKNOWN_TOKEN", error: `bad token ${record.auth}` });
       const p = record.path.replace("/_matrix/client/v3", "");
-      if (p === "/account/whoami") return reply(200, { user_id: SELF });
+      const bearer = (record.auth ?? "").replace("Bearer ", "");
+      if (p === "/account/whoami") return reply(200, { user_id: users?.[bearer] ?? SELF });
+      if (p === "/joined_rooms") return reply(200, { joined_rooms: member ?? Object.values(ROOMS) });
+      if (req.method === "PUT" && p.includes("/account_data/m.direct")) return reply(200, {});
+      if (p.endsWith("/leave")) return reply(200, {});
+      if (p.includes("/account_data/m.direct")) return direct ? reply(200, direct) : reply(404, { errcode: "M_NOT_FOUND" });
       if (p.startsWith("/directory/room/")) return reply(200, { room_id: ROOMS[p.slice("/directory/room/".length)] });
       if (p.startsWith("/join/")) return reply(200, { room_id: p.slice(6) });
-      if (p === "/sync") return reply(200, sync(record.query.get("since")));
+      if (p === "/sync") return reply(200, sync(record.query.get("since"), bearer));
       const m = p.match(/^\/rooms\/(.+)\/send\/m\.room\.message\/(.+)$/);
       if (m && req.method === "PUT") {
         if (!sent.has(m[2])) sent.set(m[2], `$event${sent.size + 1}`);
@@ -57,7 +62,7 @@ const joined = events => ({ rooms: { join: events } });
 function mouthFor(hs, overrides = {}) {
   return createMouth({
     persona: "eureka", homeserver: hs.url, rooms: Object.keys(ROOMS), token: TOKEN, state: memoryState(),
-    brake: async () => true, ring: async () => {}, log: () => {}, syncTimeoutMs: 1, ...overrides,
+    serverName: HS_NAME, brake: async () => true, log: () => {}, syncTimeoutMs: 1, ...overrides,
   });
 }
 
@@ -229,59 +234,6 @@ test("brake reader: only a decoded released brake counts as released", async () 
   assert.equal(await readerFor(store({ type: "eureka.control.brake.v1", key: "brake", payload: Buffer.from("not json") }))(), false, "undecodable bytes");
 });
 
-test("ring_starts_persona_unit_once: two deliveries in one idle window cause one start; a drained mailbox rings again", async () => {
-  const hs = await fakeHomeserver({ sync: script });
-  try {
-    let rings = 0;
-    const mouth = mouthFor(hs, { ring: async () => { rings++; } });
-    await mouth.syncOnce(); // baseline
-    await mouth.syncOnce(); // delivery 1 rings
-    await mouth.syncOnce(); // delivery 2, same window, still unacked
-    await tick();
-    assert.equal(rings, 1);
-  } finally { await hs.close(); }
-
-  const every = await fakeHomeserver({ sync: since => ({ next_batch: `n${since}`, ...joined({ "!swarm:gamecult.test": { timeline: { events: [message(`$e${since}`, `@alice:${HS_NAME}`, "again", 5)] } } }) }) });
-  try {
-    let clock = 0, rings = 0;
-    const mouth = mouthFor(every, { ring: async () => { rings++; }, now: () => clock });
-    await mouth.syncOnce(); // baseline
-    await mouth.syncOnce(); await tick();
-    assert.equal(rings, 1);
-    await mouth.syncOnce(); await tick();
-    assert.equal(rings, 1, "inside the window and unacked: no second start");
-    await mouth.ack(2);
-    await mouth.syncOnce(); await tick();
-    assert.equal(rings, 2, "after a drain a new delivery rings again");
-    clock = 6 * 60 * 1000;
-    await mouth.syncOnce(); await tick();
-    assert.equal(rings, 3, "a delivery left unanswered past the window rings again");
-  } finally { await every.close(); }
-});
-
-test("a failed ring is logged once and never retried", async () => {
-  const logs = [];
-  let calls = 0;
-  const hs = await fakeHomeserver({ sync: script });
-  try {
-    const mouth = mouthFor(hs, { ring: async () => { calls++; throw new Error("systemctl refused"); }, log: l => logs.push(l) });
-    await mouth.syncOnce(); await mouth.syncOnce(); await tick(); await tick();
-    assert.equal(calls, 1);
-    assert.equal(logs.filter(l => l.includes("ring failed")).length, 1);
-  } finally { await hs.close(); }
-});
-
-test("ring runs exactly systemctl start --no-block on the instance's unit, with no token in the child's environment", async () => {
-  const calls = [];
-  await createRing({ instance: "eureka", run: (cmd, args, options, cb) => { calls.push({ cmd, args, options }); cb(null); } })();
-  assert.equal(calls.length, 1);
-  assert.deepEqual([calls[0].cmd, calls[0].args], ["systemctl", ["start", "--no-block", "mind-persona@eureka.service"]]);
-  assert.deepEqual(Object.keys(calls[0].options.env), ["PATH"]);
-  const failed = [];
-  await createRing({ instance: "eureka", run: (c, a, o, cb) => cb(new Error("denied")), log: l => failed.push(l) })();
-  assert.deepEqual(failed, ["ring failed: denied"]);
-});
-
 test("the Matrix token goes only in the Authorization header: never in logs, errors, deliveries or receipts", async () => {
   const logs = [];
   const bad = await fakeHomeserver({ sync: script, failWith: 401 });
@@ -316,6 +268,7 @@ test("the Matrix token goes only in the Authorization header: never in logs, err
   assert.ok(logs.length > 0, "failures were logged");
   assert.ok(logs.every(l => !l.includes(TOKEN)), `a log line carried the token: ${logs.find(l => l.includes(TOKEN))}`);
   assert.equal(redact(`x ${TOKEN} y`, TOKEN), "x [redacted] y");
+  assert.equal(redact("a1 b2 a1", ["a1", "b2"]), "[redacted] [redacted] [redacted]");
 });
 
 test("a homeserver error is reported with its status and none of its body", async () => {
@@ -344,4 +297,283 @@ test("the Discord posting actuator is gone and the Matrix path names no Discord"
   for (const gone of ["persona-discord-delivery.mjs", "persona-discord-rudp.mjs", "persona-discord-delivery-documents.mjs", "persona-discord-permit.mjs"]) {
     assert.throws(() => statSync(resolve(root, "tools", gone)));
   }
+});
+
+// ---- one mouth, many Personas ----------------------------------------------------
+
+const NOVA = `@nova:${HS_NAME}`;
+const TOKEN_NOVA = "syt_OTHER_TOKEN_77x";
+
+test("two_personas_two_queues: one message in a room both joined yields one delivery per Persona with separate seqs and only its own token", async () => {
+  const both = since => since === null
+    ? { next_batch: "b0", ...joined({ "!swarm:gamecult.test": { timeline: { events: [] } } }) }
+    : { next_batch: "b1", ...joined({ "!swarm:gamecult.test": { timeline: { events: [message("$m1", `@alice:${HS_NAME}`, "hello both", 1000)] } } }) };
+  const hs = await fakeHomeserver({ sync: both, users: { [TOKEN]: SELF, [TOKEN_NOVA]: NOVA } });
+  try {
+    const eureka = mouthFor(hs);
+    const nova = mouthFor(hs, { persona: "nova", token: TOKEN_NOVA });
+    await eureka.syncOnce(); await nova.syncOnce();
+    await eureka.syncOnce();
+    await eureka.syncOnce(); // a second delivery for eureka only
+    await nova.syncOnce();
+    assert.deepEqual(eureka.pendingAfter(0).map(d => d.seq), [1, 2]);
+    assert.deepEqual(nova.pendingAfter(0).map(d => d.seq), [1], "separate queue, separate seq");
+    await eureka.ack(2);
+    assert.equal(eureka.pendingCount, 0);
+    assert.equal(nova.pendingCount, 1, "one Persona's ack leaves the other's mail alone");
+    for (const r of hs.seen) assert.ok([`Bearer ${TOKEN}`, `Bearer ${TOKEN_NOVA}`].includes(r.auth));
+    const novaCalls = hs.seen.filter(r => r.auth === `Bearer ${TOKEN_NOVA}`);
+    assert.ok(novaCalls.length >= 3 && novaCalls.every(r => !JSON.stringify(r).includes(TOKEN)), "a token never appears in another account's request");
+  } finally { await hs.close(); }
+});
+
+test("a Persona's own words are not mail for it, but are for the other Persona", async () => {
+  const hs = await fakeHomeserver({
+    users: { [TOKEN]: SELF, [TOKEN_NOVA]: NOVA },
+    sync: since => since === null ? { next_batch: "b0" } : { next_batch: "b1", ...joined({ "!swarm:gamecult.test": { timeline: { events: [message("$e", SELF, "eureka speaking", 5)] } } }) },
+  });
+  try {
+    const eureka = mouthFor(hs);
+    const nova = mouthFor(hs, { persona: "nova", token: TOKEN_NOVA });
+    for (const m of [eureka, nova]) { await m.syncOnce(); await m.syncOnce(); }
+    assert.equal(eureka.pendingCount, 0);
+    assert.deepEqual(nova.pendingAfter(0).map(d => d.sender), [SELF]);
+  } finally { await hs.close(); }
+});
+
+test("mentions_carried: m.mentions user ids and the exact sender id are on the delivery; absent or malformed mentions are empty", async () => {
+  const withMentions = (id, mentions) => ({ ...message(id, `@meta:${HS_NAME}`, "hi", 7), content: { msgtype: "m.text", body: "hi", ...(mentions === undefined ? {} : { "m.mentions": mentions }) } });
+  const hs = await fakeHomeserver({
+    sync: since => since === null ? { next_batch: "b0" } : { next_batch: "b1", ...joined({ "!swarm:gamecult.test": { timeline: { events: [
+      withMentions("$a", { user_ids: [SELF, NOVA] }), withMentions("$b", undefined), withMentions("$c", { user_ids: "nope" }), withMentions("$d", { room: true }),
+    ] } } }) },
+  });
+  try {
+    const mouth = mouthFor(hs);
+    await mouth.syncOnce();
+    const made = await mouth.syncOnce();
+    assert.deepEqual(made.map(d => d.mentions), [[SELF, NOVA], [], [], []]);
+    assert.ok(made.every(d => d.sender === `@meta:${HS_NAME}`));
+    assert.ok(made.every(d => d.isDirect === false));
+  } finally { await hs.close(); }
+});
+
+test("dm_flag: a joined room the account marks in m.direct is delivered as a DM, answerable by its room id; other rooms are not", async () => {
+  const DM = "!dm:gamecult.test";
+  const hs = await fakeHomeserver({
+    direct: { [`@meta:${HS_NAME}`]: [DM] },
+    sync: since => since === null ? { next_batch: "b0" } : { next_batch: "b1", account_data: { events: [{ type: "m.direct", content: { [`@meta:${HS_NAME}`]: [DM, "!dm2:gamecult.test"] } }] }, ...joined({
+      [DM]: { timeline: { events: [message("$dm", `@meta:${HS_NAME}`, "private", 9)] } },
+      "!dm2:gamecult.test": { timeline: { events: [message("$dm2", `@meta:${HS_NAME}`, "second", 10)] } },
+      "!swarm:gamecult.test": { timeline: { events: [message("$pub", `@meta:${HS_NAME}`, "public", 11)] } },
+    }) },
+  });
+  try {
+    const mouth = mouthFor(hs);
+    await mouth.syncOnce();
+    const made = await mouth.syncOnce();
+    assert.deepEqual(made.map(d => [d.eventId, d.roomAlias, d.isDirect]), [["$dm", DM, true], ["$dm2", "!dm2:gamecult.test", true], ["$pub", `#swarm:${HS_NAME}`, false]]);
+    assert.equal((await mouth.send({ requestId: "dm-1", persona: "eureka", roomAlias: DM, text: "reply" })).refusal, null);
+    assert.equal(hs.puts().at(-1).path, `/_matrix/client/v3/rooms/${DM}/send/m.room.message/dm-1`);
+  } finally { await hs.close(); }
+});
+
+test("pending_is_not_ack: repeated reads return the same deliveries until an ack", async () => {
+  const hs = await fakeHomeserver({ sync: script });
+  try {
+    const mouth = mouthFor(hs);
+    await mouth.syncOnce(); await mouth.syncOnce();
+    const first = mouth.pendingAfter(0), second = mouth.pendingAfter(0);
+    assert.deepEqual(first, second);
+    assert.equal(first.length, 1);
+    await mouth.ack(first[0].seq);
+    assert.deepEqual(mouth.pendingAfter(0), []);
+  } finally { await hs.close(); }
+});
+
+test("join_while_braked: no join and no send while the brake is held; joining happens on the round after release; a failing join is logged, redacted, and never throws", async () => {
+  let open = false;
+  const logs = [];
+  const hs = await fakeHomeserver({ sync: script, member: [] });
+  try {
+    const mouth = mouthFor(hs, { brake: async () => open, log: l => logs.push(l) });
+    await mouth.syncOnce();
+    await mouth.send({ requestId: "r", persona: "eureka", roomAlias: `#swarm:${HS_NAME}`, text: "speak" });
+    assert.equal(hs.seen.filter(r => r.method === "POST" || r.method === "PUT").length, 0, "braked: nothing is joined or sent");
+    open = true;
+    await mouth.syncOnce();
+    assert.deepEqual(hs.seen.filter(r => r.method === "POST").map(r => r.path.split("/join/")[1]).sort(), ["!operator:gamecult.test", "!swarm:gamecult.test"]);
+    await mouth.syncOnce();
+    assert.equal(hs.seen.filter(r => r.method === "POST").length, 2, "joined rooms are not joined again");
+  } finally { await hs.close(); }
+
+  const failing = await fakeHomeserver({ sync: script, member: [] });
+  try {
+    const mouth = mouthFor(failing, { fetch: (url, init) => String(url).includes("/join/") ? Promise.reject(new Error(`join refused for ${init.headers.authorization}`)) : fetch(url, init), log: l => logs.push(l) });
+    await mouth.syncOnce(); // no throw: the unit does not crash-loop on a failed join
+    assert.ok(logs.some(l => l.includes("not joined")) && logs.every(l => !l.includes(TOKEN)));
+  } finally { await failing.close(); }
+});
+
+test("a freshly joined room's history is context, not mail; an already joined room's backlog still is mail after a restart", async () => {
+  const hs = await fakeHomeserver({
+    member: ["!operator:gamecult.test"],
+    sync: since => since === "b0"
+      ? { next_batch: "b1", ...joined({ "!swarm:gamecult.test": { timeline: { events: [message("$hist", `@alice:${HS_NAME}`, "before I joined", 1)] } }, "!operator:gamecult.test": { timeline: { events: [message("$mail", `@alice:${HS_NAME}`, "waiting for me", 2)] } } }) }
+      : { next_batch: "b0" },
+  });
+  try {
+    const mouth = mouthFor(hs, { state: memoryState({ nextBatch: "b0", seq: 4 }) });
+    const made = await mouth.syncOnce();
+    assert.deepEqual(made.map(d => d.eventId), ["$mail"]);
+    assert.equal(made[0].seq, 5);
+  } finally { await hs.close(); }
+});
+
+test("pending is bounded: at the bound the mouth stops reading, keeps its position, and resumes after an ack", async () => {
+  const hs = await fakeHomeserver({ sync: since => ({ next_batch: `n${since}`, ...joined({ "!swarm:gamecult.test": { timeline: { events: [message(`$e${since}`, `@alice:${HS_NAME}`, "again", 5)] } } }) }) });
+  try {
+    const mouth = mouthFor(hs, { maxPending: 2 });
+    await mouth.syncOnce(); // baseline
+    await mouth.syncOnce(); await mouth.syncOnce();
+    const syncs = () => hs.seen.filter(r => r.path.endsWith("/sync")).length;
+    const before = syncs();
+    assert.deepEqual(await mouth.syncOnce(), []);
+    assert.equal(syncs(), before, "no /sync while the mailbox is at the bound");
+    assert.equal(mouth.pendingCount, 2);
+    await mouth.ack(2);
+    assert.equal((await mouth.syncOnce()).length, 1);
+  } finally { await hs.close(); }
+});
+
+test("guarded: a failure leaves with every secret redacted, however many tokens the process holds", async () => {
+  await assert.rejects(guarded([TOKEN, TOKEN_NOVA], async () => { throw new Error(`boom ${TOKEN} then ${TOKEN_NOVA}`); }), err => err.message === "boom [redacted] then [redacted]");
+  assert.equal(await guarded([TOKEN], async () => 5), 5);
+});
+
+test("the ring is gone: the mouth names no unit manager and spawns no child", () => {
+  const source = readFileSync(resolve(import.meta.dirname, "..", "tools", "persona-matrix-mouth.mjs"), "utf8");
+  assert.ok(!/systemctl|child_process|execFile|mind-persona@/.test(source));
+});
+
+test("delivery_poison_pill: a non-string display name or malformed event fields never reach a delivery; the sender falls back to its localpart", async () => {
+  const hs = await fakeHomeserver({
+    sync: since => since === null ? { next_batch: "b0" } : { next_batch: "b1", ...joined({ "!swarm:gamecult.test": {
+      state: { events: [{ type: "m.room.member", state_key: `@alice:${HS_NAME}`, content: { displayname: 123 } }] },
+      timeline: { events: [
+        message("$a", `@alice:${HS_NAME}`, "numeric name", "not-a-number"),
+        { type: "m.room.message", event_id: "$b", sender: 5, content: { msgtype: "m.text", body: "numeric sender" } },
+        { type: "m.room.message", sender: `@alice:${HS_NAME}`, content: { msgtype: "m.text", body: "no event id" } },
+      ] },
+    } }) },
+  });
+  try {
+    const mouth = mouthFor(hs, { now: () => 42 });
+    await mouth.syncOnce();
+    const made = await mouth.syncOnce();
+    assert.deepEqual(made.map(d => [d.eventId, d.senderDisplay, d.atUnixMs]), [["$a", "alice", 42]]);
+  } finally { await hs.close(); }
+});
+
+test("delivery size: body, context lines and mentions are bounded per delivery, on a character boundary", async () => {
+  const big = "é".repeat(30000);
+  const hs = await fakeHomeserver({
+    sync: since => since === null ? { next_batch: "b0", ...joined({ "!swarm:gamecult.test": { timeline: { events: [message("$h", `@alice:${HS_NAME}`, big, 1)] } } }) }
+      : { next_batch: "b1", ...joined({ "!swarm:gamecult.test": { timeline: { events: [{ ...message("$n", `@bob:${HS_NAME}`, big, 2), content: { msgtype: "m.text", body: big, "m.mentions": { user_ids: Array.from({ length: 500 }, (_, i) => `@u${i}:x`) } } }] } } }) },
+  });
+  try {
+    const mouth = mouthFor(hs);
+    await mouth.syncOnce();
+    const [d] = await mouth.syncOnce();
+    assert.ok(Buffer.byteLength(d.text) <= 4000 && d.text === "é".repeat(2000));
+    assert.ok(d.context.every(c => Buffer.byteLength(c.text) <= 1000));
+    assert.equal(d.mentions.length, 64);
+  } finally { await hs.close(); }
+});
+
+test("bound_is_a_hard_cap: a round that would pass the cap enqueues only what fits, keeps its position, and the rest arrives once after an ack", async () => {
+  const four = ["$w", "$x", "$y", "$z"].map((id, i) => message(id, `@alice:${HS_NAME}`, id, 10 + i));
+  const state = memoryState();
+  const hs = await fakeHomeserver({
+    sync: since => since === null ? { next_batch: "b0" } : since === "b0" ? { next_batch: "b1", ...joined({ "!swarm:gamecult.test": { timeline: { events: four } } }) } : { next_batch: since },
+  });
+  try {
+    const mouth = mouthFor(hs, { maxPending: 3, state });
+    await mouth.syncOnce();
+    assert.deepEqual((await mouth.syncOnce()).map(d => d.eventId), ["$w", "$x", "$y"]);
+    assert.equal(mouth.pendingCount, 3, "never above the cap");
+    assert.deepEqual(await mouth.syncOnce(), [], "full: no read");
+    await mouth.ack(2);
+    const rest = await mouth.syncOnce();
+    assert.deepEqual(rest.map(d => d.eventId), ["$z"], "the four-message round is read again; the three already taken are not delivered twice");
+    assert.deepEqual(mouth.pendingAfter(0).map(d => d.eventId), ["$y", "$z"]);
+    assert.equal(state.box.value.nextBatch, "b0", "the position moves only once the whole round is acked");
+    await mouth.ack(4);
+    assert.equal(state.box.value.nextBatch, "b1");
+  } finally { await hs.close(); }
+});
+
+// ---- DM invitations ----------------------------------------------------------------
+
+const DMROOM = "!newdm:gamecult.test";
+const invite = (inviter, isDirect = true) => ({ [DMROOM]: { invite_state: { events: [{ type: "m.room.member", state_key: SELF, sender: inviter, content: { membership: "invite", is_direct: isDirect } }] } } });
+const inviteSync = (inviter, isDirect) => since => since === null ? { next_batch: "b0" }
+  : since === "b0" ? { next_batch: "b1", rooms: { invite: invite(inviter, isDirect) } }
+  : since === "b1" ? { next_batch: "b2", ...joined({ [DMROOM]: { timeline: { events: [message("$first", `@meta:${HS_NAME}`, "hello in private", 3)] } } }) }
+  : { next_batch: since };
+const joinsOf = hs => hs.seen.filter(r => r.method === "POST" && r.path.includes("/join/")).map(r => r.path.split("/join/")[1]);
+const leavesOf = hs => hs.seen.filter(r => r.method === "POST" && r.path.endsWith("/leave"));
+
+test("dm_invite_accepted: a same-server DM invitation is joined, remembered in m.direct, and its messages arrive as is_direct deliveries", async () => {
+  const hs = await fakeHomeserver({ sync: inviteSync(`@meta:${HS_NAME}`) });
+  try {
+    const mouth = mouthFor(hs);
+    await mouth.syncOnce(); await mouth.syncOnce();
+    assert.deepEqual(joinsOf(hs), [DMROOM]);
+    const saved = hs.puts().find(r => r.path.endsWith("/account_data/m.direct"));
+    assert.deepEqual(saved.body, { [`@meta:${HS_NAME}`]: [DMROOM] });
+    const [d] = await mouth.syncOnce();
+    assert.deepEqual([d.eventId, d.roomAlias, d.isDirect, d.sender], ["$first", DMROOM, true, `@meta:${HS_NAME}`], "the message sent before the join is mail, not history");
+    assert.equal((await mouth.send({ requestId: "dm", persona: "eureka", roomAlias: DMROOM, text: "hi" })).refusal, null);
+  } finally { await hs.close(); }
+});
+
+test("dm_invite_waits_for_release: an invitation received while braked is not joined until the brake is released", async () => {
+  let open = false;
+  const hs = await fakeHomeserver({ sync: inviteSync(`@meta:${HS_NAME}`) });
+  try {
+    const mouth = mouthFor(hs, { brake: async () => open });
+    await mouth.syncOnce(); await mouth.syncOnce(); await mouth.syncOnce();
+    assert.deepEqual(hs.seen.filter(r => r.method === "POST" || r.method === "PUT"), [], "braked: no join, no leave, nothing written");
+    open = true;
+    await mouth.syncOnce();
+    assert.deepEqual(joinsOf(hs), [DMROOM]);
+  } finally { await hs.close(); }
+});
+
+test("dm_invite_other_server_declined: an invitation from another server is declined, never joined, brake or no brake", async () => {
+  const hs = await fakeHomeserver({ sync: inviteSync("@mallory:evil.example") });
+  try {
+    const mouth = mouthFor(hs);
+    await mouth.syncOnce(); await mouth.syncOnce();
+    assert.deepEqual(joinsOf(hs), []);
+    assert.deepEqual(leavesOf(hs).map(r => r.path), [`/_matrix/client/v3/rooms/${DMROOM}/leave`]);
+    await mouth.syncOnce();
+    assert.equal(leavesOf(hs).length, 1, "answered once");
+  } finally { await hs.close(); }
+  const lookalike = await fakeHomeserver({ sync: inviteSync(`@mallory:${HS_NAME}.evil.example`) });
+  try {
+    const mouth = mouthFor(lookalike);
+    await mouth.syncOnce(); await mouth.syncOnce();
+    assert.deepEqual(joinsOf(lookalike), [], "the server name must match exactly");
+  } finally { await lookalike.close(); }
+});
+
+test("a same-server invitation to a room that is not a DM is neither joined nor declined", async () => {
+  const hs = await fakeHomeserver({ sync: inviteSync(`@meta:${HS_NAME}`, false) });
+  try {
+    const mouth = mouthFor(hs);
+    await mouth.syncOnce(); await mouth.syncOnce();
+    assert.deepEqual([joinsOf(hs), leavesOf(hs)], [[], []]);
+  } finally { await hs.close(); }
 });

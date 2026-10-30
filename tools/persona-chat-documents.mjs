@@ -9,12 +9,23 @@ export const kinds = Object.freeze({
   ack: "gamecult.persona.chat_ack.v1",
   sendRequest: "gamecult.persona.chat_send_request.v1",
   sendReceipt: "gamecult.persona.chat_send_receipt.v1",
+  refusal: "gamecult.persona.chat_refusal.v1",
 });
 
-export const refusals = Object.freeze(["Brake", "PersonaMismatch", "UnknownRoom", "EmptyText", "SendFailed"]);
+export const refusals = Object.freeze(["Brake", "PersonaMismatch", "UnknownRoom", "EmptyText", "SendFailed", "UnknownPersona"]);
 
 const maxTextBytes = 4000;
 const maxContext = 20;
+
+// Per-delivery bounds, applied where the mouth reads Matrix: the body is bounded like a send,
+// a context line and a display name are smaller, and a reply is paged to a byte budget.
+export const limits = Object.freeze({ textBytes: maxTextBytes, contextBytes: 1000, displayBytes: 256, mentions: 64, replyBytes: 256 * 1024 });
+
+// `value` cut to at most `maxBytes` of UTF-8 without splitting a character.
+export function clip(value, maxBytes) {
+  if (Buffer.byteLength(value, "utf8") <= maxBytes) return value;
+  return Buffer.from(value, "utf8").subarray(0, maxBytes).toString("utf8").replace(/�$/, "");
+}
 
 export function pendingRequestTuple({ persona, afterSeq }) {
   return [text(persona, "persona"), seq(afterSeq, "after_seq")];
@@ -50,7 +61,19 @@ export function sendReceiptTuple({ requestId, eventId = null, refusal = null }) 
 export function parseSendReceipt(t) {
   const [requestId, eventId, refusal] = tuple(t, 3, "chat_send_receipt");
   if ((eventId === null) === (refusal === null)) throw new Error("a send receipt carries exactly one of event_id and refusal");
+  if (refusal !== null && !refusals.includes(refusal)) throw new Error(`unknown refusal ${String(refusal)}`);
   return { requestId: text(requestId, "request_id"), eventId: eventId === null ? null : text(eventId, "event_id"), refusal };
+}
+
+// A typed refusal for a request that names a Persona the mouth does not serve.
+export function refusalTuple({ persona, refusal }) {
+  if (!refusals.includes(refusal)) throw new Error(`unknown refusal ${refusal}`);
+  return [text(persona, "persona"), refusal];
+}
+export function parseRefusal(t) {
+  const [persona, refusal] = tuple(t, 2, "chat_refusal");
+  if (!refusals.includes(refusal)) throw new Error(`unknown refusal ${String(refusal)}`);
+  return { persona: text(persona, "persona"), refusal };
 }
 
 export function deliveryTuple(d) {
@@ -58,15 +81,18 @@ export function deliveryTuple(d) {
     seq(d.seq, "seq"), text(d.roomAlias, "room_alias"), text(d.roomId, "room_id"), text(d.eventId, "event_id"),
     text(d.sender, "sender"), text(d.senderDisplay, "sender_display"), String(d.text), seq(d.atUnixMs, "at_unix_ms"),
     d.context.slice(-maxContext).map(c => [text(c.sender, "sender"), String(c.text), seq(c.atUnixMs, "at_unix_ms")]),
+    d.mentions.map(id => text(id, "mention")), flag(d.isDirect, "is_direct"),
   ];
 }
 export function parseDelivery(t) {
-  const [s, roomAlias, roomId, eventId, sender, senderDisplay, body, atUnixMs, context] = tuple(t, 9, "delivery");
+  const [s, roomAlias, roomId, eventId, sender, senderDisplay, body, atUnixMs, context, mentions, isDirect] = tuple(t, 11, "delivery");
   if (!Array.isArray(context)) throw new Error("delivery context must be a list");
+  if (!Array.isArray(mentions)) throw new Error("delivery mentions must be a list");
   return {
     seq: seq(s, "seq"), roomAlias: text(roomAlias, "room_alias"), roomId: text(roomId, "room_id"), eventId: text(eventId, "event_id"),
     sender: text(sender, "sender"), senderDisplay: text(senderDisplay, "sender_display"), text: String(body), atUnixMs: seq(atUnixMs, "at_unix_ms"),
     context: context.map(c => { const [cs, ct, ca] = tuple(c, 3, "context"); return { sender: text(cs, "sender"), text: String(ct), atUnixMs: seq(ca, "at_unix_ms") }; }),
+    mentions: mentions.map(id => text(id, "mention")), isDirect: flag(isDirect, "is_direct"),
   };
 }
 
@@ -106,6 +132,10 @@ function tuple(t, n, what) {
 }
 function text(v, what) {
   if (typeof v !== "string" || v === "") throw new Error(`${what} must be a non-empty string`);
+  return v;
+}
+function flag(v, what) {
+  if (typeof v !== "boolean") throw new Error(`${what} must be a boolean`);
   return v;
 }
 function seq(v, what) {
