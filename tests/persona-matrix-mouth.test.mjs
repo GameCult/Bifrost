@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { resolve, join } from "node:path";
-import { createMouth, createBrakeReader, guarded, redact } from "../tools/persona-matrix-mouth.mjs";
+import { createMouth, createBrakeReader, guarded, redact, roomsFor, projectRoomsVariable } from "../tools/persona-matrix-mouth.mjs";
 
 const TOKEN = "syt_SECRET_TOKEN_9f3";
 const HS_NAME = "gamecult.test";
@@ -575,5 +575,26 @@ test("a same-server invitation to a room that is not a DM is neither joined nor 
     const mouth = mouthFor(hs);
     await mouth.syncOnce(); await mouth.syncOnce();
     assert.deepEqual([joinsOf(hs), leavesOf(hs)], [[], []]);
+  } finally { await hs.close(); }
+});
+
+test("project rooms: slug mapping, per-Persona lists, absent variable, malformed alias", () => {
+  assert.equal(projectRoomsVariable("eureka"), "MATRIX_ROOMS_EUREKA");
+  assert.equal(projectRoomsVariable("nova-2.x"), "MATRIX_ROOMS_NOVA_2_X");
+  const env = { MATRIX_ROOMS: "#swarm:t, #ops:t", MATRIX_ROOMS_EUREKA: "#eureka-proj:t,#ops:t", MATRIX_ROOMS_NOVA_2: "#nova-proj:t" };
+  assert.deepEqual(roomsFor(env, "eureka"), ["#swarm:t", "#ops:t", "#eureka-proj:t"], "shared plus own, deduplicated");
+  assert.deepEqual(roomsFor(env, "nova-2"), ["#swarm:t", "#ops:t", "#nova-proj:t"], "dash maps to underscore");
+  assert.ok(!roomsFor(env, "nova-2").includes("#eureka-proj:t") && !roomsFor(env, "eureka").includes("#nova-proj:t"));
+  assert.deepEqual(roomsFor(env, "other"), ["#swarm:t", "#ops:t"], "absent variable: shared rooms only");
+  assert.throws(() => roomsFor({ ...env, MATRIX_ROOMS_EUREKA: "#ok:t,nope" }, "eureka"), /MATRIX_ROOMS_EUREKA.*malformed/);
+});
+
+test("send to another Persona's project room is refused as UnknownRoom", async () => {
+  const hs = await fakeHomeserver({ sync: script });
+  try {
+    const env = { MATRIX_ROOMS: `#swarm:${HS_NAME}`, MATRIX_ROOMS_EUREKA: `#eureka-proj:${HS_NAME}`, MATRIX_ROOMS_NOVA: `#nova-proj:${HS_NAME}` };
+    const mouth = mouthFor(hs, { rooms: roomsFor(env, "eureka") });
+    assert.equal((await mouth.send({ requestId: "p", persona: "eureka", roomAlias: `#nova-proj:${HS_NAME}`, text: "x" })).refusal, "UnknownRoom");
+    assert.equal(hs.puts().length, 0);
   } finally { await hs.close(); }
 });

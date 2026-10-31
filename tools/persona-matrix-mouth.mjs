@@ -396,12 +396,32 @@ function credential(env, name) {
   return readFileSync(join(required(env, "CREDENTIALS_DIRECTORY"), name), "utf8").trim();
 }
 
+const ROOM_ALIAS = /^#[^\s:,]+:[^\s,]+$/;
+
+// The env variable holding one Persona's project rooms: MATRIX_ROOMS_<SLUG>, the slug
+// upper-cased with "." and "-" turned into "_".
+export function projectRoomsVariable(persona) {
+  return `MATRIX_ROOMS_${persona.toUpperCase().replace(/[.-]/g, "_")}`;
+}
+
+// One Persona's rooms: the shared MATRIX_ROOMS plus her own project rooms, deduplicated.
+// Another Persona's project variable is never read. A malformed project alias is refused.
+export function roomsFor(env, persona) {
+  const list = text => text.split(",").map(s => s.trim()).filter(Boolean);
+  const name = projectRoomsVariable(persona);
+  const project = list(env[name] ?? "");
+  const bad = project.find(alias => !ROOM_ALIAS.test(alias));
+  if (bad) throw new Error(`${name} has a malformed room alias: ${JSON.stringify(bad)} (expected #name:server)`);
+  return [...new Set([...list(required(env, "MATRIX_ROOMS")), ...project])];
+}
+
 // PERSONAS is the comma-separated list of Persona slugs this process speaks for.
 // Each slug names its credential (matrix-token-<slug>), its cursor directory under
 // STATE_DIRECTORY and its brake at CONTROL_ROOT/<slug>/control.cc.
 export async function main(env = process.env) {
   const personas = required(env, "PERSONAS").split(",").map(s => s.trim()).filter(Boolean);
   if (personas.length === 0 || new Set(personas).size !== personas.length || !personas.every(p => SLUG.test(p))) throw new Error("PERSONAS must be distinct slugs");
+  if (new Set(personas.map(projectRoomsVariable)).size !== personas.length) throw new Error("PERSONAS must map to distinct MATRIX_ROOMS_<SLUG> variables");
   const tokens = new Map(personas.map(p => [p, credential(env, `matrix-token-${p}`)]));
   const chatKey = credential(env, "chat-key");
   const secrets = [...tokens.values(), chatKey];
@@ -410,13 +430,13 @@ export async function main(env = process.env) {
     const log = line => console.error(redact(line, secrets));
     const homeserver = required(env, "MATRIX_HOMESERVER").replace(/\/$/, "");
     const serverName = required(env, "MATRIX_SERVER_NAME");
-    const rooms = required(env, "MATRIX_ROOMS").split(",").map(s => s.trim()).filter(Boolean);
+    const roomsByPersona = new Map(personas.map(persona => [persona, roomsFor(env, persona)]));
     const stateRoot = required(env, "STATE_DIRECTORY");
     const controlRoot = env.CONTROL_ROOT ?? "/etc/gamecult/minds";
     const mouths = new Map(personas.map(persona => {
       mkdirSync(join(stateRoot, persona), { recursive: true });
       return [persona, createMouth({
-        persona, homeserver, serverName, rooms, token: tokens.get(persona), log: line => log(`${persona}: ${line}`),
+        persona, homeserver, serverName, rooms: roomsByPersona.get(persona), token: tokens.get(persona), log: line => log(`${persona}: ${line}`),
         state: cultcacheState({ runtime, path: join(stateRoot, persona, "cursor.cc") }),
         brake: createBrakeReader({ controlPath: join(controlRoot, persona, "control.cc"), readStore: runtime.readSingleFileStore, decode: runtime.msgpack.decode }),
       })];
