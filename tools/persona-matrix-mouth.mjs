@@ -317,7 +317,9 @@ export function pageOf(persona, deliveries, msgpack, log = () => {}) {
 }
 
 // CultNet RUDP endpoint on loopback, one for every Persona in `mouths` (persona -> mouth).
-// Requests arrive as document_put_raw messages. A request naming a Persona this
+// Every client (each Persona process and heartbeat dials with its own socket) gets its own
+// session, and a request is answered on the session it arrived on. Requests arrive as
+// document_put_raw messages. A request naming a Persona this
 // process does not serve is answered with a typed UnknownPersona refusal.
 export async function startChatEndpoint({ mouths, runtime, port, connectionKey, runtimeId, socketFactory = createSocket, host = "127.0.0.1", log = () => {} }) {
   if (!/^127\.\d+\.\d+\.\d+$/.test(host)) throw new Error("the chat endpoint listens on loopback only");
@@ -325,40 +327,43 @@ export async function startChatEndpoint({ mouths, runtime, port, connectionKey, 
   const socket = socketFactory("udp4");
   await new Promise((ok, fail) => { socket.once("error", fail); socket.once("listening", ok); socket.bind(port, host); });
   const connectionId = connectionIdFor(connectionKey);
-  const connection = new cultnet.CultNetRudpSocketTransportConnection({ runtimeId, socket, mode: "server", connectionId, initialSequence: 100, resendDelayMs: 50, resendPollMs: 10, maxFragmentBytes: 1200 });
-  const respond = (persona, kind, recordKey, tuple) => connection.send("schema", msgpack.encode(cultnet.encodeCultNetMessageForWire(
+  const server = new cultnet.CultNetRudpSocketTransportServer({ runtimeId, socket, connectionId, initialSequence: 100, resendDelayMs: 50, resendPollMs: 10, maxFragmentBytes: 1200,
+    // A client keeps its link between requests and does not redial, so only a client gone for an hour (a crash that sent no goodbye) is reaped.
+    peerTimeoutMs: 3_600_000 });
+  const respond = (peer, persona, kind, recordKey, tuple) => server.send(peer, "schema", msgpack.encode(cultnet.encodeCultNetMessageForWire(
     docs.envelope({ kind, recordKey, payload: msgpack.encode(tuple), sourceRuntimeId: runtimeId, sourceAgentId: persona, sourceRole: "bifrost-persona-matrix-mouth" }), "cultnet.schema.v0")));
-  const refuseUnknown = persona => respond(persona, docs.kinds.refusal, persona, docs.refusalTuple({ persona, refusal: "UnknownPersona" }));
-  let busy = Promise.resolve();
-  const handle = async value => {
+  const refuseUnknown = (peer, persona) => respond(peer, persona, docs.kinds.refusal, persona, docs.refusalTuple({ persona, refusal: "UnknownPersona" }));
+  const handle = async ({ peer, channelId, payload }) => {
     try {
-      if (value.channelId !== "schema") throw new Error("chat request arrived on a foreign channel");
-      const message = cultnet.parseCultNetMessage(msgpack.decode(value.payload), "cultnet.schema.v0");
+      if (channelId !== "schema") throw new Error("chat request arrived on a foreign channel");
+      const message = cultnet.parseCultNetMessage(msgpack.decode(payload), "cultnet.schema.v0");
       const document = docs.checkEnvelope(message, [docs.kinds.pendingRequest, docs.kinds.ack, docs.kinds.sendRequest]);
       const tuple = msgpack.decode(document.payload);
       if (document.schemaId === docs.kinds.pendingRequest) {
         const request = docs.parsePendingRequest(tuple);
         const mouth = mouths.get(request.persona);
-        if (!mouth) return refuseUnknown(request.persona);
-        respond(request.persona, docs.kinds.pending, request.persona, pageOf(request.persona, mouth.pendingAfter(request.afterSeq), msgpack, log));
+        if (!mouth) return refuseUnknown(peer, request.persona);
+        respond(peer, request.persona, docs.kinds.pending, request.persona, pageOf(request.persona, mouth.pendingAfter(request.afterSeq), msgpack, log));
       } else if (document.schemaId === docs.kinds.ack) {
         const request = docs.parseAck(tuple);
         const mouth = mouths.get(request.persona);
-        if (!mouth) return refuseUnknown(request.persona);
+        if (!mouth) return refuseUnknown(peer, request.persona);
         await mouth.ack(request.throughSeq);
       } else {
         const request = docs.parseSendRequest(tuple);
         const mouth = mouths.get(request.persona);
         const receipt = mouth ? await mouth.send(request) : { requestId: request.requestId, eventId: null, refusal: "UnknownPersona" };
-        respond(request.persona, docs.kinds.sendReceipt, receipt.requestId, docs.sendReceiptTuple(receipt));
+        respond(peer, request.persona, docs.kinds.sendReceipt, receipt.requestId, docs.sendReceiptTuple(receipt));
       }
     } catch (error) {
       log(`chat endpoint rejected a frame: ${error?.message ?? error}`);
     }
   };
-  const frame = value => { busy = busy.then(() => handle(value)); };
-  connection.on("frame", frame);
-  return { address: socket.address(), close() { connection.off?.("frame", frame); connection.close(); } };
+  // A peer's requests run in order; peers do not wait on one another.
+  const busy = new WeakMap();
+  const frame = value => { busy.set(value.peer, (busy.get(value.peer) ?? Promise.resolve()).then(() => handle(value))); };
+  server.on("frame", frame);
+  return { address: socket.address(), close() { server.off("frame", frame); server.close(); } };
 }
 
 export function cultcacheState({ runtime, path }) {

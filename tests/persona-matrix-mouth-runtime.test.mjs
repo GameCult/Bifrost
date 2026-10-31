@@ -87,6 +87,50 @@ test("the brake reader reads a real CultCache control store", async () => {
   assert.equal(await reader(resolve(dir, "garbage.cc"))(), false);
 });
 
+test("two clients served at once each get their own answer on their own session", async () => {
+  const mouth = {
+    pendingAfter: () => [],
+    ack: async () => {},
+    // Slow enough that the two requests are in flight together.
+    send: async request => { await new Promise(r => setTimeout(r, 150)); return { requestId: request.requestId, eventId: `$${request.requestId}`, refusal: null }; },
+  };
+  const key = "connection-key-for-concurrency";
+  const server = await startChatEndpoint({ mouths: new Map([["eureka", mouth]]), runtime, port: 0, connectionKey: key, runtimeId: "mouth-test" });
+  const dial = async name => {
+    const socket = dgram.createSocket("udp4");
+    await new Promise(ok => socket.bind(0, "127.0.0.1", ok));
+    const connection = new runtime.cultnet.CultNetRudpSocketTransportConnection({
+      runtimeId: name, socket, mode: "client", remoteHost: "127.0.0.1", remotePort: server.address.port,
+      connectionId: connectionIdFor(key), resendDelayMs: 50, resendPollMs: 10, maxFragmentBytes: 1200,
+    });
+    const receipts = [];
+    connection.on("frame", value => {
+      const message = runtime.cultnet.parseCultNetMessage(msgpack.decode(value.payload), "cultnet.schema.v0");
+      receipts.push(docs.parseSendReceipt(msgpack.decode(message.document.payload)));
+    });
+    connection.connect();
+    for (let i = 0; i < 100 && !connection.connected; i++) await new Promise(r => setTimeout(r, 20));
+    assert.ok(connection.connected, `${name} opened its session`);
+    const send = requestId => connection.send("schema", msgpack.encode(runtime.cultnet.encodeCultNetMessageForWire(
+      docs.envelope({ kind: docs.kinds.sendRequest, recordKey: requestId, payload: msgpack.encode(docs.sendRequestTuple({ requestId, persona: "eureka", roomAlias: "#operator:gamecult.org", text: name })), sourceRuntimeId: name, sourceAgentId: "eureka", sourceRole: "persona-organ" }), "cultnet.schema.v0")));
+    return { connection, receipts, send };
+  };
+  const first = await dial("mind-persona-one");
+  const second = await dial("mind-heartbeat");
+  try {
+    first.send("req-first");
+    second.send("req-second");
+    for (let i = 0; i < 250 && (first.receipts.length < 1 || second.receipts.length < 1); i++) await new Promise(r => setTimeout(r, 20));
+    assert.deepEqual(first.receipts, [{ requestId: "req-first", eventId: "$req-first", refusal: null }]);
+    assert.deepEqual(second.receipts, [{ requestId: "req-second", eventId: "$req-second", refusal: null }]);
+    assert.ok(first.connection.connected && second.connection.connected, "neither session took the other's");
+  } finally {
+    server.close();
+    first.connection.close();
+    second.connection.close();
+  }
+});
+
 test("the RUDP endpoint serves pending, ack and send over CultNet, and answers a held brake with a Brake refusal", async () => {
   const calls = { acks: [], sends: [] };
   const mouth = {
