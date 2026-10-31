@@ -10,6 +10,12 @@
 // Mouth: a send request becomes one PUT with txnId = request_id (a retry is
 // idempotent), and a room is joined, only while that Persona's brake is released.
 //
+// Context: Matrix is the record. A delivery's `context` is read from the homeserver when the delivery
+// is built (GET /messages, or the thread's relations for a threaded message), as this Persona's
+// account, and holds m.room.message events from everyone, her own included, oldest first, ending
+// just before the delivered event. Nothing about a room's past is kept in this process, so a restart
+// loses none of it. A failed fetch gives empty context and a log line; the delivery still goes out.
+//
 // Each Matrix access token is read here, from its own systemd credential, and
 // nowhere else. It is never put in a document, an environment passed to a child,
 // or a log, and it is only ever presented in its own Persona's Authorization header.
@@ -26,7 +32,11 @@ import * as docs from "./persona-chat-documents.mjs";
 
 const API = "/_matrix/client/v3";
 const BRAKE_TYPE = "eureka.control.brake.v1";
-const CONTEXT = 20;
+const CONTEXT = 20; // /sync timeline limit per round
+const CONTEXT_LINES = 20; // the most context lines the delivery tuple carries (persona-chat-documents maxContext)
+const CONTEXT_BYTES = 16 * 1024; // text and sender bytes over all lines of one delivery: under CONTEXT_LINES x limits.contextBytes
+const FETCH_LIMIT = 100; // events asked of the homeserver per context fetch
+const V1 = "/_matrix/client/v1"; // /relations lives only under v1
 const MAX_PENDING = 500;
 const SLUG = /^[A-Za-z0-9_-]{1,64}$/;
 
@@ -41,7 +51,6 @@ export function createMouth({
   const joinedAliases = new Set();
   const freshRooms = new Set(); // joined by this process since the last sync: their history is context, not mail
   const directRooms = new Set(); // room ids the account marks as DMs (m.direct)
-  const history = new Map(); // room_id -> last CONTEXT messages, oldest first
   const displayNames = new Map();
   let selfId = null;
   let cursor = null; // the /sync position we are reading from
@@ -54,10 +63,10 @@ export function createMouth({
   const invites = new Map(); // room id -> { inviter, direct }: invitations not yet answered
   const processed = new Set(); // event ids read since the position last advanced
 
-  async function matrix(method, path, body) {
+  async function matrix(method, path, body, prefix = API) {
     let response;
     try {
-      response = await httpFetch(`${homeserver}${API}${path}`, {
+      response = await httpFetch(`${homeserver}${prefix}${path}`, {
         method,
         headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
         body: body === undefined ? undefined : JSON.stringify(body),
@@ -150,6 +159,50 @@ export function createMouth({
     if (unjoined()) await ensureRooms();
   }
 
+  const isLine = e => e?.type === "m.room.message" && typeof e.content?.body === "string" && typeof e.sender === "string" && e.sender !== "" && e.content?.["m.relates_to"]?.rel_type !== "m.replace";
+  const threadRootOf = e => { const r = e?.content?.["m.relates_to"]; return r?.rel_type === "m.thread" && typeof r.event_id === "string" && r.event_id !== "" ? r.event_id : null; };
+  const lineOf = e => ({ sender: e.sender, text: docs.clip(e.content.body, docs.limits.contextBytes), atUnixMs: Number.isSafeInteger(e.origin_server_ts) && e.origin_server_ts >= 0 ? e.origin_server_ts : 0 });
+
+  // The room's recent messages outside threads, oldest first.
+  async function roomEvents(roomId) {
+    const filter = encodeURIComponent(JSON.stringify({ types: ["m.room.message"] }));
+    const reply = await matrix("GET", `/rooms/${encodeURIComponent(roomId)}/messages?dir=b&limit=${FETCH_LIMIT}&filter=${filter}`);
+    return (reply.chunk ?? []).filter(e => isLine(e) && threadRootOf(e) === null).reverse();
+  }
+  // One thread's messages, root first.
+  async function threadEvents(roomId, rootId) {
+    const room = encodeURIComponent(roomId);
+    const root = await matrix("GET", `/rooms/${room}/event/${encodeURIComponent(rootId)}`);
+    const replies = await matrix("GET", `/rooms/${room}/relations/${encodeURIComponent(rootId)}/m.thread?dir=b&limit=${FETCH_LIMIT}`, undefined, V1);
+    return [root, ...(replies.chunk ?? []).reverse()].filter(isLine);
+  }
+
+  // The context of one delivered event: the messages before it, the newest kept to the byte budget, each line clipped.
+  // `round` caches the fetches of one /sync round, so a room or thread is read once however many deliveries it made.
+  async function contextFor(roomId, event, round) {
+    const root = threadRootOf(event);
+    const key = root ? `${roomId}|${root}` : roomId;
+    if (!round.has(key)) {
+      round.set(key, (root ? threadEvents(roomId, root) : roomEvents(roomId)).catch(error => {
+        say(`context for ${roomId}${root ? ` thread ${root}` : ""} not fetched: ${error.message}`);
+        return [];
+      }));
+    }
+    const events = await round.get(key);
+    let cut = events.findIndex(e => e.event_id === event.event_id);
+    if (cut < 0) cut = events.filter(e => e.origin_server_ts < event.origin_server_ts).length;
+    const lines = [];
+    let bytes = 0;
+    for (const e of events.slice(0, cut).reverse()) {
+      const l = lineOf(e);
+      const size = Buffer.byteLength(l.text) + Buffer.byteLength(l.sender);
+      if (lines.length >= CONTEXT_LINES || bytes + size > CONTEXT_BYTES) break;
+      bytes += size;
+      lines.unshift(l);
+    }
+    return lines;
+  }
+
   // One /sync round. Returns the deliveries it made.
   async function syncOnce() {
     if (!started || unjoined()) await start();
@@ -162,6 +215,7 @@ export function createMouth({
     noteInvites(reply.rooms?.invite);
     await answerInvites();
     const made = [];
+    const round = new Map();
     let truncated = false; // the pending cap was reached inside this round
     rounds: for (const [roomId, room] of Object.entries(reply.rooms?.join ?? {})) {
       const alias = aliasByRoomId.get(roomId) ?? (directRooms.has(roomId) ? roomId : undefined);
@@ -176,21 +230,20 @@ export function createMouth({
         if (processed.has(event.event_id)) continue; // read already in a round the cap kept from advancing
         const ts = event.origin_server_ts;
         const entry = { sender: event.sender, text: docs.clip(event.content.body, docs.limits.textBytes), atUnixMs: Number.isSafeInteger(ts) && ts >= 0 ? ts : now() };
-        const context = (history.get(roomId) ?? []).slice(-CONTEXT);
         const deliverable = !baseline && !freshRooms.has(roomId) && event.sender !== selfId;
         if (deliverable && pending.length + made.length >= maxPending) { truncated = true; break rounds; }
         processed.add(event.event_id);
         if (deliverable) {
+          const context = await contextFor(roomId, event, round);
           const mentioned = event.content["m.mentions"]?.user_ids;
           made.push({
             seq: ++seqCounter, roomAlias: alias, roomId, eventId: event.event_id, sender: event.sender,
             senderDisplay: displayNames.get(event.sender) ?? localpart(event.sender), text: entry.text, atUnixMs: entry.atUnixMs,
-            context: context.map(c => ({ ...c, text: docs.clip(c.text, docs.limits.contextBytes) })),
+            context,
             mentions: Array.isArray(mentioned) ? mentioned.filter(id => typeof id === "string" && id !== "" && id.length <= 255).slice(0, docs.limits.mentions) : [],
             isDirect: directRooms.has(roomId),
           });
         }
-        history.set(roomId, [...context, entry].slice(-CONTEXT));
       }
     }
     pending.push(...made);

@@ -14,8 +14,12 @@ const message = (id, sender, body, ts) => ({ type: "m.room.message", event_id: i
 const tick = () => new Promise(r => setImmediate(r));
 
 // A fake Matrix client-server API: just the endpoints the mouth uses.
-async function fakeHomeserver({ sync, failWith, users, member, direct } = {}) {
+// It is also the record of every room: events the sync script emits and messages sent are kept, and
+// `preload` (room id -> events, oldest first) stands for history from before the mouth's process began.
+async function fakeHomeserver({ sync, failWith, users, member, direct, preload = {}, failContext = false } = {}) {
   const seen = [];
+  const record_ = new Map(Object.entries(preload).map(([room, events]) => [room, [...events]]));
+  const remember = (room, event) => { const list = record_.get(room) ?? []; if (!list.some(e => e.event_id === event.event_id)) list.push(event); record_.set(room, list); };
   const sent = new Map(); // txnId -> event_id
   const server = createServer((req, res) => {
     let raw = "";
@@ -26,7 +30,7 @@ async function fakeHomeserver({ sync, failWith, users, member, direct } = {}) {
       seen.push(record);
       const reply = (status, body) => { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(body)); };
       if (failWith) return reply(failWith, { errcode: "M_UNKNOWN_TOKEN", error: `bad token ${record.auth}` });
-      const p = record.path.replace("/_matrix/client/v3", "");
+      const p = record.path.replace("/_matrix/client/v3", "").replace("/_matrix/client/v1", "");
       const bearer = (record.auth ?? "").replace("Bearer ", "");
       if (p === "/account/whoami") return reply(200, { user_id: users?.[bearer] ?? SELF });
       if (p === "/joined_rooms") return reply(200, { joined_rooms: member ?? Object.values(ROOMS) });
@@ -35,10 +39,26 @@ async function fakeHomeserver({ sync, failWith, users, member, direct } = {}) {
       if (p.includes("/account_data/m.direct")) return direct ? reply(200, direct) : reply(404, { errcode: "M_NOT_FOUND" });
       if (p.startsWith("/directory/room/")) return reply(200, { room_id: ROOMS[p.slice("/directory/room/".length)] });
       if (p.startsWith("/join/")) return reply(200, { room_id: p.slice(6) });
-      if (p === "/sync") return reply(200, sync(record.query.get("since"), bearer));
+      if (p === "/sync") {
+        const out = sync(record.query.get("since"), bearer);
+        for (const [room, r] of Object.entries(out.rooms?.join ?? {})) for (const e of r.timeline?.events ?? []) remember(room, e);
+        return reply(200, out);
+      }
+      const ctx = p.match(/^\/rooms\/(.+?)\/(messages|event\/.+|relations\/.+)$/);
+      if (ctx && req.method === "GET") {
+        if (failContext) return reply(500, { errcode: "M_UNKNOWN", error: `down ${record.auth}` });
+        const events = record_.get(ctx[1]) ?? [];
+        const limit = Number(record.query.get("limit") ?? 10);
+        const threadOf = e => (e.content?.["m.relates_to"]?.rel_type === "m.thread" ? e.content["m.relates_to"].event_id : null);
+        const newestFirst = list => list.slice().reverse().slice(0, limit);
+        if (ctx[2] === "messages") return reply(200, { chunk: newestFirst(events) });
+        if (ctx[2].startsWith("event/")) { const e = events.find(x => x.event_id === ctx[2].slice(6)); return e ? reply(200, e) : reply(404, { errcode: "M_NOT_FOUND" }); }
+        const root = ctx[2].match(/^relations\/(.+)\/m\.thread$/)?.[1];
+        return reply(200, { chunk: newestFirst(events.filter(e => threadOf(e) === root)) });
+      }
       const m = p.match(/^\/rooms\/(.+)\/send\/m\.room\.message\/(.+)$/);
       if (m && req.method === "PUT") {
-        if (!sent.has(m[2])) sent.set(m[2], `$event${sent.size + 1}`);
+        if (!sent.has(m[2])) { sent.set(m[2], `$event${sent.size + 1}`); remember(m[1], { type: "m.room.message", event_id: sent.get(m[2]), sender: users?.[bearer] ?? SELF, origin_server_ts: 5000 + sent.size, content: record.body }); }
         return reply(200, { event_id: sent.get(m[2]) });
       }
       reply(404, { errcode: "M_NOT_FOUND" });
@@ -596,5 +616,82 @@ test("send to another Persona's project room is refused as UnknownRoom", async (
     const mouth = mouthFor(hs, { rooms: roomsFor(env, "eureka") });
     assert.equal((await mouth.send({ requestId: "p", persona: "eureka", roomAlias: `#nova-proj:${HS_NAME}`, text: "x" })).refusal, "UnknownRoom");
     assert.equal(hs.puts().length, 0);
+  } finally { await hs.close(); }
+});
+
+// Context is read from the homeserver, not remembered: these probes start the mouth with a
+// room history the process never saw.
+const ROOM = "!swarm:gamecult.test";
+const DM = "!dm:gamecult.test";
+const ALICE = `@alice:${HS_NAME}`;
+const onlyAfterCursor = (roomId, events) => since => since === "c0" ? { next_batch: "c1", ...joined({ [roomId]: { timeline: { events } } }) } : { next_batch: since };
+const persistedCursor = () => memoryState({ nextBatch: "c0", seq: 7 });
+
+test("context_survives_restart: a mouth that never saw the room delivers with the exchange read back from the homeserver", async () => {
+  const past = [message("$p1", ALICE, "first", 10), message("$p2", SELF, "my answer", 11), message("$p3", ALICE, "second", 12)];
+  const hs = await fakeHomeserver({ preload: { [ROOM]: past }, sync: onlyAfterCursor(ROOM, [message("$n", ALICE, "now", 20)]) });
+  try {
+    const [d] = await mouthFor(hs, { state: persistedCursor() }).syncOnce();
+    assert.deepEqual(d.context.map(c => [c.sender, c.text]), [[ALICE, "first"], [SELF, "my answer"], [ALICE, "second"]]);
+    const asked = hs.seen.find(r => r.path.endsWith("/messages"));
+    assert.equal(asked.query.get("dir"), "b");
+    assert.equal(asked.auth, `Bearer ${TOKEN}`);
+  } finally { await hs.close(); }
+});
+
+test("dm_context_holds_the_whole_exchange: her own earlier replies are in it, and it ends before the delivered message", async () => {
+  const past = [message("$d1", ALICE, "hi", 1), message("$d2", SELF, "hello, Deru", 2), message("$d3", ALICE, "do you remember", 3)];
+  const hs = await fakeHomeserver({ preload: { [DM]: past }, direct: { [ALICE]: [DM] }, member: [...Object.values(ROOMS), DM],
+    sync: onlyAfterCursor(DM, [message("$d4", ALICE, "the thing", 4), message("$d5", ALICE, "after it", 5)]) });
+  try {
+    const made = await mouthFor(hs, { state: persistedCursor() }).syncOnce();
+    assert.equal(made.length, 2);
+    assert.ok(made[0].isDirect);
+    assert.deepEqual(made[0].context.map(c => c.text), ["hi", "hello, Deru", "do you remember"]);
+    assert.deepEqual(made[1].context.map(c => c.text), ["hi", "hello, Deru", "do you remember", "the thing"]);
+    assert.equal(hs.seen.filter(r => r.path.endsWith("/messages")).length, 1, "one fetch serves every delivery of the room in a round");
+  } finally { await hs.close(); }
+});
+
+test("thread_context_is_the_thread: root and replies before the delivered reply, not the room's other messages", async () => {
+  const thread = { rel_type: "m.thread", event_id: "$root" };
+  const inThread = (id, sender, body, ts) => ({ ...message(id, sender, body, ts), content: { msgtype: "m.text", body, "m.relates_to": thread } });
+  const past = [message("$root", ALICE, "thread root", 1), message("$x", ALICE, "elsewhere in the room", 2), inThread("$t1", ALICE, "in thread", 3), inThread("$t2", SELF, "my thread reply", 4)];
+  const hs = await fakeHomeserver({ preload: { [ROOM]: past }, sync: onlyAfterCursor(ROOM, [inThread("$t3", ALICE, "latest", 5)]) });
+  try {
+    const [d] = await mouthFor(hs, { state: persistedCursor() }).syncOnce();
+    assert.deepEqual(d.context.map(c => c.text), ["thread root", "in thread", "my thread reply"]);
+    assert.ok(hs.seen.some(r => r.path.includes("/relations/$root/m.thread")));
+    assert.ok(!hs.seen.some(r => r.path.endsWith("/messages")));
+  } finally { await hs.close(); }
+});
+
+test("context_byte_budget: the newest lines that fit 16 KiB, each clipped to a context line, at most 20", async () => {
+  const wide = Array.from({ length: 40 }, (_, i) => message(`$w${i}`, ALICE, `${String(i).padStart(2, "0")}${"é".repeat(2000)}`, 10 + i));
+  const hs = await fakeHomeserver({ preload: { [ROOM]: wide }, sync: onlyAfterCursor(ROOM, [message("$n", ALICE, "now", 99)]) });
+  try {
+    const [d] = await mouthFor(hs, { state: persistedCursor() }).syncOnce();
+    const bytes = d.context.reduce((n, c) => n + Buffer.byteLength(c.text) + Buffer.byteLength(c.sender), 0);
+    assert.ok(bytes <= 16 * 1024, `${bytes} bytes`);
+    assert.ok(d.context.every(c => Buffer.byteLength(c.text) <= 1000));
+    assert.ok(d.context.length > 0 && d.context.length < 20, "bytes, not count, bound it");
+    assert.ok(d.context.at(-1).text.startsWith("39"), "the newest line is kept");
+    assert.ok(d.context.at(0).text.startsWith(String(40 - d.context.length)), "the lines are contiguous to the newest");
+    const short = Array.from({ length: 40 }, (_, i) => message(`$s${i}`, ALICE, `s${i}`, 10 + i));
+    const hs2 = await fakeHomeserver({ preload: { [ROOM]: short }, sync: onlyAfterCursor(ROOM, [message("$n", ALICE, "now", 99)]) });
+    try { assert.equal((await mouthFor(hs2, { state: persistedCursor() }).syncOnce())[0].context.length, 20, "the wire carries 20 lines"); } finally { await hs2.close(); }
+  } finally { await hs.close(); }
+});
+
+test("context_fetch_failure: empty context, one logged line without the token, and the delivery still goes out", async () => {
+  const lines = [];
+  const hs = await fakeHomeserver({ failContext: true, preload: { [ROOM]: [message("$p", ALICE, "past", 1)] }, sync: onlyAfterCursor(ROOM, [message("$n", ALICE, "now", 9)]) });
+  try {
+    const [d] = await mouthFor(hs, { state: persistedCursor(), log: l => lines.push(l) }).syncOnce();
+    assert.equal(d.text, "now");
+    assert.deepEqual(d.context, []);
+    const logged = lines.filter(l => l.includes("context for"));
+    assert.equal(logged.length, 1);
+    assert.ok(!logged[0].includes(TOKEN));
   } finally { await hs.close(); }
 });
