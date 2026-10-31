@@ -363,6 +363,8 @@ export async function startChatEndpoint({ mouths, runtime, port, connectionKey, 
   const busy = new WeakMap();
   const frame = value => { busy.set(value.peer, (busy.get(value.peer) ?? Promise.resolve()).then(() => handle(value))); };
   server.on("frame", frame);
+  // A socket error is logged; the endpoint keeps serving.
+  server.on("error", error => log(`chat endpoint socket error: ${error?.message ?? error}`));
   return { address: socket.address(), close() { server.off("frame", frame); server.close(); } };
 }
 
