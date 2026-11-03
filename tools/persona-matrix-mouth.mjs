@@ -13,6 +13,8 @@
 // reads the room's head from Matrix and answers RoomMoved, naming the messages that moved it, instead
 // of the PUT. A v1 send, and a v2 send with no basis, are not checked; both still pass through the gate.
 //
+// Media: an m.image/m.file/m.audio/m.video event is delivered as one typed line (see bodyText), not its bare filename. Nothing is downloaded.
+//
 // Context: Matrix is the record. A delivery's `context` is read from the homeserver when the delivery
 // is built (GET /messages, or the thread's relations for a threaded message), as this Persona's
 // account, and holds m.room.message events from everyone, her own included, oldest first, ending
@@ -50,6 +52,32 @@ const isLine = e => e?.type === "m.room.message" && typeof e.content?.body === "
 // Whether `event` moves the room under a Persona whose account is `selfId`: someone else's line that is
 // not an automated notice. Threaded replies count; the ear delivers them to her.
 export const movesRoom = (event, selfId) => isLine(event) && event.sender !== selfId && event.content?.msgtype !== "m.notice";
+
+// A media event (m.image, m.file, m.audio, m.video) reaches the Persona as one typed line, then its caption if it has one:
+//   [image filename="cat.png" mime=image/png size=2048 url=mxc://gamecult.test/abc]
+// A Persona turn is a tool-less text call (it has no way to open a file or see an image), so the mouth names the
+// attachment and fetches nothing. Every field is checked before it is printed; a field that fails is left out.
+// An encrypted attachment names its `file.url` and carries `encrypted`; its key is never read.
+const MEDIA_KIND = { "m.image": "image", "m.file": "file", "m.audio": "audio", "m.video": "video" };
+const MXC = /^mxc:\/\/[A-Za-z0-9.:_-]+\/[A-Za-z0-9_-]+$/;
+const MIME = /^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}\/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}$/;
+const FILENAME_BYTES = 255;
+export function bodyText(content, maxBytes) {
+  const kind = MEDIA_KIND[content?.msgtype];
+  if (!kind) return docs.clip(content.body, maxBytes);
+  const encrypted = typeof content.file?.url === "string" && typeof content.url !== "string";
+  const url = typeof content.url === "string" ? content.url : content.file?.url;
+  const named = typeof content.filename === "string" && content.filename !== "";
+  const filename = named ? content.filename : content.body;
+  const parts = [kind, `filename=${JSON.stringify(docs.clip(filename, FILENAME_BYTES))}`];
+  if (typeof content.info?.mimetype === "string" && MIME.test(content.info.mimetype)) parts.push(`mime=${content.info.mimetype}`);
+  if (Number.isSafeInteger(content.info?.size) && content.info.size >= 0) parts.push(`size=${content.info.size}`);
+  if (typeof url === "string" && MXC.test(url)) parts.push(`url=${url}`);
+  if (encrypted) parts.push("encrypted");
+  const line = docs.clip(`[${parts.join(" ")}]`, maxBytes);
+  const caption = named && content.body !== filename ? content.body : "";
+  return caption === "" ? line : docs.clip(`${line}\n${caption}`, maxBytes);
+}
 
 // The one gate every mouth shares: run(roomId, fn) runs fn after every earlier fn on that room, and a
 // failure of one does not stop the next. It holds ordering only, nothing across a restart.
@@ -187,7 +215,7 @@ export function createMouth({
   }
 
   const threadRootOf = e => { const r = e?.content?.["m.relates_to"]; return r?.rel_type === "m.thread" && typeof r.event_id === "string" && r.event_id !== "" ? r.event_id : null; };
-  const lineOf = e => ({ sender: e.sender, text: docs.clip(e.content.body, docs.limits.contextBytes), atUnixMs: Number.isSafeInteger(e.origin_server_ts) && e.origin_server_ts >= 0 ? e.origin_server_ts : 0 });
+  const lineOf = e => ({ sender: e.sender, text: bodyText(e.content, docs.limits.contextBytes), atUnixMs: Number.isSafeInteger(e.origin_server_ts) && e.origin_server_ts >= 0 ? e.origin_server_ts : 0 });
 
   // The room's recent messages outside threads, oldest first.
   async function roomEvents(roomId) {
@@ -255,7 +283,7 @@ export function createMouth({
         if (typeof event.sender !== "string" || event.sender === "" || typeof event.event_id !== "string" || event.event_id === "") continue;
         if (processed.has(event.event_id)) continue; // read already in a round the cap kept from advancing
         const ts = event.origin_server_ts;
-        const entry = { sender: event.sender, text: docs.clip(event.content.body, docs.limits.textBytes), atUnixMs: Number.isSafeInteger(ts) && ts >= 0 ? ts : now() };
+        const entry = { sender: event.sender, text: bodyText(event.content, docs.limits.textBytes), atUnixMs: Number.isSafeInteger(ts) && ts >= 0 ? ts : now() };
         const deliverable = !baseline && !freshRooms.has(roomId) && event.sender !== selfId;
         if (deliverable && pending.length + made.length >= maxPending) { truncated = true; break rounds; }
         processed.add(event.event_id);
