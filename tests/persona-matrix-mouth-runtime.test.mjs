@@ -279,3 +279,77 @@ test("a reply is paged to the byte budget, oldest first, and one delivery that w
   assert.deepEqual(paged[1].map(t => t[0]), paged[1].map((_, i) => i + 1), "the page is the oldest deliveries");
   assert.equal(pageOf("eureka", [mk(1, "x".repeat(4000))], msgpack)[1].length, 1, "a single delivery is always served");
 });
+
+// The send pair v2: the bytes the Huginn organ pins from its side.
+const v2Dir = resolve(root, "tests", "fixtures", "persona-chat-v2");
+const v2Request = basis => docs.sendRequestV2Tuple({ requestId: "req-1", persona: "eureka", roomAlias: "#swarm:gamecult.org", text: "hi", basis });
+const v2Samples = {
+  "gamecult.persona.chat_send_request.v2.nil-basis": { tuple: v2Request(null), parse: docs.parseSendRequestV2 },
+  "gamecult.persona.chat_send_request.v2.seen-and-since": { tuple: v2Request({ seenEventId: "$seen", sinceUnixMs: 1793698425998 }), parse: docs.parseSendRequestV2 },
+  "gamecult.persona.chat_send_request.v2.since-only": { tuple: v2Request({ seenEventId: null, sinceUnixMs: 1793698425998 }), parse: docs.parseSendRequestV2 },
+  "gamecult.persona.chat_send_receipt.v2.sent": { tuple: docs.sendReceiptV2Tuple({ requestId: "req-1", eventId: "$sent" }), parse: docs.parseSendReceiptV2 },
+  "gamecult.persona.chat_send_receipt.v2.room-moved": { tuple: docs.sendReceiptV2Tuple({ requestId: "req-1", refusal: "RoomMoved", newer: ["$a", "$b"] }), parse: docs.parseSendReceiptV2 },
+};
+for (const [name, { tuple, parse }] of Object.entries(v2Samples)) {
+  test(`golden fixture: ${name} is byte-stable and parses back`, async () => {
+    const bytes = Buffer.from(msgpack.encode(tuple));
+    const file = resolve(v2Dir, `${name}.msgpack`);
+    if (process.env.UPDATE_FIXTURES === "1") { await mkdir(v2Dir, { recursive: true }); await writeFile(file, bytes); }
+    assert.deepEqual(bytes, await readFile(file), "wire bytes changed: Huginn decodes these fixtures");
+    assert.deepEqual(parse(msgpack.decode(bytes)), parse(tuple));
+  });
+}
+
+test("RoomMoved is v2 only, and the v2 documents are strict about arity and newer", () => {
+  assert.throws(() => docs.sendReceiptTuple({ requestId: "r", refusal: "RoomMoved" }), /unknown refusal/, "the v1 receipt cannot carry RoomMoved");
+  assert.throws(() => docs.parseSendReceipt(["r", null, "RoomMoved"]), /unknown refusal/);
+  assert.throws(() => docs.refusalTuple({ persona: "p", refusal: "RoomMoved" }));
+  assert.throws(() => docs.sendReceiptV2Tuple({ requestId: "r", refusal: "RoomMoved" }), /newer/, "RoomMoved names what moved the room");
+  assert.throws(() => docs.sendReceiptV2Tuple({ requestId: "r", eventId: "$e", newer: ["$x"] }), /newer/, "a sent receipt names nothing");
+  assert.throws(() => docs.sendReceiptV2Tuple({ requestId: "r", refusal: "RoomMoved", newer: Array.from({ length: 51 }, (_, i) => `$${i}`) }), /50/);
+  assert.throws(() => docs.parseSendRequestV2(["r", "eureka", "#a:b", "x"]), /5-field/, "a v1 tuple is not a v2 request");
+  assert.throws(() => docs.parseSendRequest(v2Request(null)), /4-field/, "a v2 tuple is not a v1 request");
+  assert.throws(() => docs.parseSendRequestV2(["r", "eureka", "#a:b", "x", [null]]), /2-field/);
+  assert.throws(() => docs.parseSendRequestV2(["r", "eureka", "#a:b", "x", [null, -1]]));
+});
+
+test("the RUDP endpoint answers a v1 send with the three-field receipt and a v2 send with the four-field one", async () => {
+  const seen = [];
+  const mouth = { pendingAfter: () => [], ack: async () => {}, send: async request => {
+    seen.push(request);
+    return request.basis ? { requestId: request.requestId, eventId: null, refusal: "RoomMoved", newer: ["$a"] } : { requestId: request.requestId, eventId: "$sent", refusal: null, newer: [] };
+  } };
+  const key = "connection-key-for-v2";
+  const server = await startChatEndpoint({ mouths: new Map([["eureka", mouth]]), runtime, port: 0, connectionKey: key, runtimeId: "mouth-test" });
+  const client = dgram.createSocket("udp4");
+  await new Promise(ok => client.bind(0, "127.0.0.1", ok));
+  const connection = new runtime.cultnet.CultNetRudpSocketTransportConnection({
+    runtimeId: "huginn-test", socket: client, mode: "client", remoteHost: "127.0.0.1", remotePort: server.address.port,
+    connectionId: connectionIdFor(key), initialSequence: 1, resendDelayMs: 50, resendPollMs: 10, maxFragmentBytes: 1200,
+  });
+  const replies = [];
+  connection.on("frame", value => replies.push(runtime.cultnet.parseCultNetMessage(msgpack.decode(value.payload), "cultnet.schema.v0").document));
+  const put = (kind, recordKey, tuple) => connection.send("schema", msgpack.encode(runtime.cultnet.encodeCultNetMessageForWire(
+    docs.envelope({ kind, recordKey, payload: msgpack.encode(tuple), sourceRuntimeId: "huginn-test", sourceAgentId: "eureka", sourceRole: "persona-organ" }), "cultnet.schema.v0")));
+  const reply = async n => { for (let i = 0; i < 250 && replies.length < n; i++) await new Promise(r => setTimeout(r, 20)); assert.ok(replies.length >= n, "the mouth answered"); return replies[n - 1]; };
+  try {
+    connection.connect();
+    for (let i = 0; i < 100 && !connection.connected; i++) await new Promise(r => setTimeout(r, 20));
+    put(docs.kinds.sendRequest, "v1", docs.sendRequestTuple({ requestId: "v1", persona: "eureka", roomAlias: "#swarm:gamecult.org", text: "old" }));
+    let document = await reply(1);
+    assert.equal(document.schemaId, docs.kinds.sendReceipt);
+    assert.deepEqual(msgpack.decode(document.payload), ["v1", "$sent", null], "three fields, as the old organ parses them");
+    put(docs.kinds.sendRequestV2, "v2", docs.sendRequestV2Tuple({ requestId: "v2", persona: "eureka", roomAlias: "#swarm:gamecult.org", text: "new", basis: { seenEventId: "$s", sinceUnixMs: 5 } }));
+    document = await reply(2);
+    assert.equal(document.schemaId, docs.kinds.sendReceiptV2);
+    assert.deepEqual(docs.parseSendReceiptV2(msgpack.decode(document.payload)), { requestId: "v2", eventId: null, refusal: "RoomMoved", newer: ["$a"] });
+    assert.deepEqual(seen.map(r => r.basis), [undefined, { seenEventId: "$s", sinceUnixMs: 5 }], "v1 reaches the mouth with no basis, v2 with hers");
+    put(docs.kinds.sendRequestV2, "v2-ghost", docs.sendRequestV2Tuple({ requestId: "v2-ghost", persona: "ghost", roomAlias: "#swarm:gamecult.org", text: "x" }));
+    document = await reply(3);
+    assert.deepEqual(docs.parseSendReceiptV2(msgpack.decode(document.payload)), { requestId: "v2-ghost", eventId: null, refusal: "UnknownPersona", newer: [] });
+  } finally {
+    server.close();
+    connection.close();
+    try { client.close(); } catch { /* the connection already closed its socket */ }
+  }
+});

@@ -7,8 +7,11 @@
 // (next_batch) is persisted only when an ack covers it, so a restart before the
 // ack re-delivers instead of losing. Reading wakes nothing: the heartbeat polls
 // with a non-consuming chat_pending_request and decides who runs.
-// Mouth: a send request becomes one PUT with txnId = request_id (a retry is
-// idempotent), and a room is joined, only while that Persona's brake is released.
+// Mouth: a send request becomes one PUT with txnId = request_id (a retry is idempotent), and a room
+// is joined, only while that Persona's brake is released. A v2 send carries the basis of her turn (the
+// newest room event she saw): inside the room gate, one step per room across every Persona, the mouth
+// reads the room's head from Matrix and answers RoomMoved, naming the messages that moved it, instead
+// of the PUT. A v1 send, and a v2 send with no basis, are not checked; both still pass through the gate.
 //
 // Context: Matrix is the record. A delivery's `context` is read from the homeserver when the delivery
 // is built (GET /messages, or the thread's relations for a threaded message), as this Persona's
@@ -39,10 +42,33 @@ const FETCH_LIMIT = 100; // events asked of the homeserver per context fetch
 const V1 = "/_matrix/client/v1"; // /relations lives only under v1
 const MAX_PENDING = 500;
 const SLUG = /^[A-Za-z0-9_-]{1,64}$/;
+const SEND_TIMEOUT_MS = 10000; // the head read and the PUT of one gated send
+const HEAD_PAGE = 50; // the room head a gated send reads; also the most ids a RoomMoved receipt names
+
+// A message line: a text event with a sender, not an edit.
+const isLine = e => e?.type === "m.room.message" && typeof e.content?.body === "string" && typeof e.sender === "string" && e.sender !== "" && e.content?.["m.relates_to"]?.rel_type !== "m.replace";
+// Whether `event` moves the room under a Persona whose account is `selfId`: someone else's line that is
+// not an automated notice. Threaded replies count; the ear delivers them to her.
+export const movesRoom = (event, selfId) => isLine(event) && event.sender !== selfId && event.content?.msgtype !== "m.notice";
+
+// The one gate every mouth shares: run(roomId, fn) runs fn after every earlier fn on that room, and a
+// failure of one does not stop the next. It holds ordering only, nothing across a restart.
+export function createRoomGate() {
+  const tails = new Map();
+  return {
+    run(roomId, fn) {
+      const result = (tails.get(roomId) ?? Promise.resolve()).then(fn);
+      const tail = result.catch(() => {});
+      tails.set(roomId, tail);
+      tail.then(() => { if (tails.get(roomId) === tail) tails.delete(roomId); });
+      return result;
+    },
+  };
+}
 
 export function createMouth({
   persona, homeserver, serverName, rooms, token, fetch: httpFetch = globalThis.fetch, state, brake,
-  now = Date.now, log = () => {}, syncTimeoutMs = 30000, maxPending = MAX_PENDING,
+  now = Date.now, log = () => {}, syncTimeoutMs = 30000, maxPending = MAX_PENDING, gate = createRoomGate(), sendTimeoutMs = SEND_TIMEOUT_MS,
 }) {
   if (!persona || !homeserver || !token || !rooms?.length) throw new Error("persona, homeserver, rooms and token are required");
   const say = message => log(redact(String(message), token));
@@ -63,13 +89,14 @@ export function createMouth({
   const invites = new Map(); // room id -> { inviter, direct }: invitations not yet answered
   const processed = new Set(); // event ids read since the position last advanced
 
-  async function matrix(method, path, body, prefix = API) {
+  async function matrix(method, path, body, prefix = API, signal) {
     let response;
     try {
       response = await httpFetch(`${homeserver}${prefix}${path}`, {
         method,
         headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
         body: body === undefined ? undefined : JSON.stringify(body),
+        signal,
       });
     } catch (error) {
       throw new Error(`homeserver unreachable: ${redact(error?.message ?? String(error), token)}`);
@@ -159,7 +186,6 @@ export function createMouth({
     if (unjoined()) await ensureRooms();
   }
 
-  const isLine = e => e?.type === "m.room.message" && typeof e.content?.body === "string" && typeof e.sender === "string" && e.sender !== "" && e.content?.["m.relates_to"]?.rel_type !== "m.replace";
   const threadRootOf = e => { const r = e?.content?.["m.relates_to"]; return r?.rel_type === "m.thread" && typeof r.event_id === "string" && r.event_id !== "" ? r.event_id : null; };
   const lineOf = e => ({ sender: e.sender, text: docs.clip(e.content.body, docs.limits.contextBytes), atUnixMs: Number.isSafeInteger(e.origin_server_ts) && e.origin_server_ts >= 0 ? e.origin_server_ts : 0 });
 
@@ -278,8 +304,22 @@ export function createMouth({
     return pending.filter(d => d.seq > afterSeq).map(d => ({ ...d, context: d.context.map(c => ({ ...c })), mentions: [...d.mentions] }));
   }
 
-  async function send({ requestId, persona: asked, roomAlias, text }) {
-    const refuse = refusal => ({ requestId, eventId: null, refusal });
+  // The ids of the messages that moved the room since `basis`, oldest first. Walks the head newest to oldest
+  // and stops at the event she saw; with none, at her turn's start time; if she saw an event the page does
+  // not reach, the whole page counts.
+  async function newerThan(roomId, basis) {
+    const filter = encodeURIComponent(JSON.stringify({ types: ["m.room.message"] }));
+    const reply = await matrix("GET", `/rooms/${encodeURIComponent(roomId)}/messages?dir=b&limit=${HEAD_PAGE}&filter=${filter}`, undefined, API, AbortSignal.timeout(sendTimeoutMs));
+    const moved = [];
+    for (const e of reply.chunk ?? []) {
+      if (basis.seenEventId !== null ? e.event_id === basis.seenEventId : e.origin_server_ts <= basis.sinceUnixMs) break;
+      if (movesRoom(e, selfId)) moved.push(e.event_id);
+    }
+    return moved.reverse();
+  }
+
+  async function send({ requestId, persona: asked, roomAlias, text, basis }) {
+    const refuse = (refusal, newer = []) => ({ requestId, eventId: null, refusal, newer });
     if (asked !== persona) return refuse("PersonaMismatch");
     if (!(await released())) return refuse("Brake");
     if (typeof text !== "string" || text.trim() === "") return refuse("EmptyText");
@@ -287,8 +327,14 @@ export function createMouth({
       if (!started || unjoined()) await start();
       const roomId = joinedAliases.has(roomAlias) ? roomIdByAlias.get(roomAlias) : directRooms.has(roomAlias) ? roomAlias : null;
       if (!roomId) return refuse("UnknownRoom");
-      const sent = await matrix("PUT", `/rooms/${encodeURIComponent(roomId)}/send/m.room.message/${encodeURIComponent(requestId)}`, { msgtype: "m.text", body: text });
-      return { requestId, eventId: sent.event_id, refusal: null };
+      return await gate.run(roomId, async () => {
+        if (basis) {
+          const newer = await newerThan(roomId, basis);
+          if (newer.length > 0) return refuse("RoomMoved", newer);
+        }
+        const sent = await matrix("PUT", `/rooms/${encodeURIComponent(roomId)}/send/m.room.message/${encodeURIComponent(requestId)}`, { msgtype: "m.text", body: text }, API, AbortSignal.timeout(sendTimeoutMs));
+        return { requestId, eventId: sent.event_id, refusal: null, newer: [] };
+      });
     } catch (error) {
       say(`send failed: ${error.message}`);
       return refuse("SendFailed");
@@ -390,7 +436,7 @@ export async function startChatEndpoint({ mouths, runtime, port, connectionKey, 
     try {
       if (channelId !== "schema") throw new Error("chat request arrived on a foreign channel");
       const message = cultnet.parseCultNetMessage(msgpack.decode(payload), "cultnet.schema.v0");
-      const document = docs.checkEnvelope(message, [docs.kinds.pendingRequest, docs.kinds.ack, docs.kinds.sendRequest]);
+      const document = docs.checkEnvelope(message, [docs.kinds.pendingRequest, docs.kinds.ack, docs.kinds.sendRequest, docs.kinds.sendRequestV2]);
       const tuple = msgpack.decode(document.payload);
       if (document.schemaId === docs.kinds.pendingRequest) {
         const request = docs.parsePendingRequest(tuple);
@@ -403,10 +449,12 @@ export async function startChatEndpoint({ mouths, runtime, port, connectionKey, 
         if (!mouth) return refuseUnknown(peer, request.persona);
         await mouth.ack(request.throughSeq);
       } else {
-        const request = docs.parseSendRequest(tuple);
+        const v2 = document.schemaId === docs.kinds.sendRequestV2;
+        const request = v2 ? docs.parseSendRequestV2(tuple) : docs.parseSendRequest(tuple);
         const mouth = mouths.get(request.persona);
-        const receipt = mouth ? await mouth.send(request) : { requestId: request.requestId, eventId: null, refusal: "UnknownPersona" };
-        respond(peer, request.persona, docs.kinds.sendReceipt, receipt.requestId, docs.sendReceiptTuple(receipt));
+        const receipt = mouth ? await mouth.send(request) : { requestId: request.requestId, eventId: null, refusal: "UnknownPersona", newer: [] };
+        if (v2) respond(peer, request.persona, docs.kinds.sendReceiptV2, receipt.requestId, docs.sendReceiptV2Tuple(receipt));
+        else respond(peer, request.persona, docs.kinds.sendReceipt, receipt.requestId, docs.sendReceiptTuple(receipt));
       }
     } catch (error) {
       log(`chat endpoint rejected a frame: ${error?.message ?? error}`);
@@ -486,10 +534,11 @@ export async function main(env = process.env) {
     const roomsByPersona = new Map(personas.map(persona => [persona, roomsFor(env, persona)]));
     const stateRoot = required(env, "STATE_DIRECTORY");
     const controlRoot = env.CONTROL_ROOT ?? "/etc/gamecult/minds";
+    const gate = createRoomGate(); // one for every Persona: two Minds in one room take turns
     const mouths = new Map(personas.map(persona => {
       mkdirSync(join(stateRoot, persona), { recursive: true });
       return [persona, createMouth({
-        persona, homeserver, serverName, rooms: roomsByPersona.get(persona), token: tokens.get(persona), log: line => log(`${persona}: ${line}`),
+        persona, homeserver, serverName, rooms: roomsByPersona.get(persona), token: tokens.get(persona), gate, log: line => log(`${persona}: ${line}`),
         state: cultcacheState({ runtime, path: join(stateRoot, persona, "cursor.cc") }),
         brake: createBrakeReader({ controlPath: join(controlRoot, persona, "control.cc"), readStore: runtime.readSingleFileStore, decode: runtime.msgpack.decode }),
       })];
