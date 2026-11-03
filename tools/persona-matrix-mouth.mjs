@@ -332,6 +332,7 @@ export function createMouth({
           const newer = await newerThan(roomId, basis);
           if (newer.length > 0) return refuse("RoomMoved", newer);
         }
+        if (!(await released())) return refuse("Brake"); // a brake placed during the gate wait or the head read stops this send
         const sent = await matrix("PUT", `/rooms/${encodeURIComponent(roomId)}/send/m.room.message/${encodeURIComponent(requestId)}`, { msgtype: "m.text", body: text }, API, AbortSignal.timeout(sendTimeoutMs));
         return { requestId, eventId: sent.event_id, refusal: null, newer: [] };
       });

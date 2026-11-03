@@ -206,3 +206,20 @@ test("a gated send is serial with a gated send in the same room and leaves other
   await Promise.all([hold("!a", "a1", 30), hold("!a", "a2", 1), hold("!b", "b1", 1)]);
   assert.deepEqual(order, ["a1:start", "b1:start", "b1:end", "a1:end", "a2:start", "a2:end"]);
 });
+
+test("a send queued at the gate re-checks the brake before its PUT: braked during the wait, no PUT and a typed Brake refusal", async () => {
+  const hs = await homeserver({ users: { tok: EUREKA }, delay: kind => (kind === "put" ? 150 : 0) });
+  try {
+    let released = true;
+    const m = mouth(hs, "eureka", "tok", { brake: async () => released });
+    const first = send(m, "g1"); // holds the room gate for the length of its PUT
+    await new Promise(r => setTimeout(r, 50));
+    const queued = send(m, "g2"); // passes the entry brake check, then waits at the gate
+    await new Promise(r => setTimeout(r, 20));
+    released = false;
+    const [a, b] = await Promise.all([first, queued]);
+    assert.equal(a.refusal, null);
+    assert.deepEqual([b.refusal, b.eventId, b.newer], ["Brake", null, []]);
+    assert.deepEqual(hs.puts().map(p => p.body.body), ["line g1"], "the queued send never reaches the room");
+  } finally { await hs.close(); }
+});
