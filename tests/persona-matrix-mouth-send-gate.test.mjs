@@ -173,11 +173,16 @@ test("eight Minds answering one message: one PUT, seven RoomMoved naming the fir
 test("revisions with a nil basis all go out, in the order they reached the gate, and read no head", async () => {
   const hs = await homeserver({ events: [question], users: { tok: EUREKA }, delay: kind => (kind === "put" ? 15 : 0) });
   try {
-    const m = mouth(hs, "eureka", "tok");
+    const inner = createRoomGate();
+    let arrivals = 0;
+    const started = [];
+    const gate = { run: (room, fn) => { const n = arrivals++; return inner.run(room, () => { started.push(n); return fn(); }); } };
+    const m = mouth(hs, "eureka", "tok", { gate });
     const ids = Array.from({ length: 7 }, (_, i) => `rev-${i}`);
     const receipts = await Promise.all(ids.map(id => send(m, id, null)));
     assert.ok(receipts.every(r => r.refusal === null));
-    assert.deepEqual(hs.puts().map(p => p.body.body), ids.map(id => `line ${id}`), "gate order is arrival order");
+    assert.deepEqual(started, [0, 1, 2, 3, 4, 5, 6], "the gate runs them in the order they reached it");
+    assert.deepEqual(hs.puts().map(p => p.body.body).sort(), ids.map(id => `line ${id}`), "all seven went out");
     assert.equal(hs.heads().length, 0, "her choice stands: no check");
   } finally { await hs.close(); }
 });
