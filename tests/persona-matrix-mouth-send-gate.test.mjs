@@ -38,7 +38,7 @@ async function homeserver({ events = swarm, users, headStatus = 200, headHangs =
       const path = decodeURIComponent(url.pathname).replace("/_matrix/client/v3", "");
       const bearer = (req.headers.authorization ?? "").replace("Bearer ", "");
       const reply = (status, body) => { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(body)); };
-      const record = { method: req.method, path, body: raw ? JSON.parse(raw) : null, who: users[bearer] };
+      const record = { method: req.method, path, body: raw ? JSON.parse(raw) : null, who: users[bearer], query: url.searchParams };
       seen.push(record);
       if (path === "/account/whoami") return reply(200, { user_id: users[bearer] });
       if (path === "/joined_rooms") return reply(200, { joined_rooms: [ROOM] });
@@ -90,6 +90,8 @@ test("a stale send makes no PUT and answers RoomMoved with the newer ids, oldest
     assert.deepEqual(receipt.newer, idsBy(swarm.slice(1), e => e.sender !== EUREKA));
     assert.equal(receipt.newer.length, 7);
     assert.equal(hs.puts().length, 0, "a refused send reaches the room never");
+    const [head] = hs.heads();
+    assert.deepEqual([head.query.get("dir"), head.query.get("limit"), JSON.parse(head.query.get("filter"))], ["b", "50", { types: ["m.room.message"] }], "the head read asks for messages only, newest first");
   } finally { await hs.close(); }
 });
 
