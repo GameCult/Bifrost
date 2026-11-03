@@ -1,4 +1,4 @@
-// gamecult.persona.chat_*.v1: the documents Huginn and the Matrix mouth exchange.
+// gamecult.persona.chat_*.v1 and the v2 send pair: the documents Huginn and the Matrix mouth exchange.
 // Each kind is a positional tuple (the CultCache payload shape); this module owns
 // the field order, the parsers and the envelope check. It does no I/O and loads no
 // runtime, so the wire encoder (MessagePack) stays with the caller.
@@ -9,12 +9,18 @@ export const kinds = Object.freeze({
   ack: "gamecult.persona.chat_ack.v1",
   sendRequest: "gamecult.persona.chat_send_request.v1",
   sendReceipt: "gamecult.persona.chat_send_receipt.v1",
+  sendRequestV2: "gamecult.persona.chat_send_request.v2",
+  sendReceiptV2: "gamecult.persona.chat_send_receipt.v2",
   refusal: "gamecult.persona.chat_refusal.v1",
 });
 
 export const refusals = Object.freeze(["Brake", "PersonaMismatch", "UnknownRoom", "EmptyText", "SendFailed", "UnknownPersona"]);
 
+// RoomMoved exists only in the v2 receipt: the v1 tuple, a v1 parse and the typed refusal document do not know it.
+export const refusalsV2 = Object.freeze([...refusals, "RoomMoved"]);
+
 const maxTextBytes = 4000;
+export const maxNewer = 50;
 const maxContext = 20;
 
 // Per-delivery bounds, applied where the mouth reads Matrix: the body is bounded like a send,
@@ -63,6 +69,38 @@ export function parseSendReceipt(t) {
   if ((eventId === null) === (refusal === null)) throw new Error("a send receipt carries exactly one of event_id and refusal");
   if (refusal !== null && !refusals.includes(refusal)) throw new Error(`unknown refusal ${String(refusal)}`);
   return { requestId: text(requestId, "request_id"), eventId: eventId === null ? null : text(eventId, "event_id"), refusal };
+}
+
+// v2: the same send plus a basis. basis is null (her choice stands: no check) or { seenEventId|null, sinceUnixMs }.
+export function sendRequestV2Tuple({ requestId, persona, roomAlias, text: body, basis = null }) {
+  return [text(requestId, "request_id"), text(persona, "persona"), text(roomAlias, "room_alias"), String(body),
+    basis === null ? null : [basis.seenEventId === null ? null : text(basis.seenEventId, "seen_event_id"), seq(basis.sinceUnixMs, "since_unix_ms")]];
+}
+export function parseSendRequestV2(t) {
+  const [requestId, persona, roomAlias, body, basis] = tuple(t, 5, "chat_send_request_v2");
+  if (typeof body !== "string") throw new Error("chat_send_request text must be a string");
+  if (Buffer.byteLength(body, "utf8") > maxTextBytes) throw new Error("chat_send_request text is over the byte bound");
+  let parsed = null;
+  if (basis !== null) {
+    const [seen, since] = tuple(basis, 2, "basis");
+    parsed = { seenEventId: seen === null ? null : text(seen, "seen_event_id"), sinceUnixMs: seq(since, "since_unix_ms") };
+  }
+  return { requestId: text(requestId, "request_id"), persona: text(persona, "persona"), roomAlias: text(roomAlias, "room_alias"), text: body, basis: parsed };
+}
+
+// `newer` is the ids of the messages that moved the room, oldest first: non-empty exactly when the refusal is RoomMoved.
+function checkReceiptV2(eventId, refusal, newer) {
+  if ((eventId === null) === (refusal === null)) throw new Error("a send receipt carries exactly one of event_id and refusal");
+  if (refusal !== null && !refusalsV2.includes(refusal)) throw new Error(`unknown refusal ${String(refusal)}`);
+  if (!Array.isArray(newer) || newer.length > maxNewer || (newer.length > 0) !== (refusal === "RoomMoved")) throw new Error("newer is non-empty exactly when the refusal is RoomMoved, and at most 50 ids");
+  return newer.map(id => text(id, "newer"));
+}
+export function sendReceiptV2Tuple({ requestId, eventId = null, refusal = null, newer = [] }) {
+  return [text(requestId, "request_id"), eventId, refusal, checkReceiptV2(eventId, refusal, newer)];
+}
+export function parseSendReceiptV2(t) {
+  const [requestId, eventId, refusal, newer] = tuple(t, 4, "chat_send_receipt_v2");
+  return { requestId: text(requestId, "request_id"), eventId: eventId === null ? null : text(eventId, "event_id"), refusal, newer: checkReceiptV2(eventId, refusal, newer) };
 }
 
 // A typed refusal for a request that names a Persona the mouth does not serve.
