@@ -32,7 +32,7 @@ Not verified: which internal tally an estate uses (proportional or winner-take-a
 2. *Discussion.* At least 14 days (ordinary) or 28 days (entrenched) between notice and the opening of the vote. Debian's constitution uses 2 to 3 weeks of discussion and a 3:1 bar for constitutional change (`docs/research/2026-10-29-swarm-governance-prior-art.md`, section 1); these are proposed defaults, not derived values.
 3. *Text freeze and restart.* Any change to the amendment text during discussion restarts the clock from step 1. Editorial fixes that change no clause are listed and do not restart it.
 4. *Vote.* A fixed window of at least 14 days.
-5. *Delay.* A passed amendment takes effect no sooner than 7 days after the vote closes. This is the exit window for C3: a participant who disagrees can leave, with their data, before it binds them. (The timelock rationale is in the same research note, section 5.)
+5. *Delay.* A passed amendment takes effect no sooner than 7 days after the vote closes. This is the exit window for E4: a participant who disagrees can leave, with their data, before it binds them. (The timelock rationale is in the same research note, section 5.)
 
 **A5. An estate without notice cannot approve.** An estate counts as approving only if the record shows notice delivered to it, through its own channel, on the date and in the form A4.1 requires, **before** the discussion period began. If notice to an estate is missing, late, or only given to part of the estate, that estate's approval is void for this proposal whatever its ballots say, and the amendment fails. Notice delivery is the proposer's burden to prove, not the estate's to disprove. A defect is cured only by re-noticing and restarting at A4.1.
 
@@ -50,7 +50,7 @@ Not verified: which internal tally an estate uses (proportional or winner-take-a
 
 **E3. The estates themselves.** Which classes are estates is entrenched, because adding, merging or splitting an estate changes the A1 and E2 arithmetic and is the obvious way to capture one.
 
-**E4 (C3 in A4). Right to leave with your own data.** Anyone may leave at any time and take their own data with them, in a usable form, without penalty. No amendment may attach a cost to leaving or hold a participant's own data.
+**E4. Right to leave with your own data.** Anyone may leave at any time and take their own data with them, in a usable form, without penalty. No amendment may attach a cost to leaving or hold a participant's own data.
 
 **E5. The amendment rule.** All of Part 1 (A7).
 
