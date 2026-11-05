@@ -1,6 +1,6 @@
 # Estate-rule sim harness: spec (2026-11-05)
 
-Serves follow-up `heimdall-body:follow_up:chat-mind-20261105T002133411Z-t0`. Prior work: `../2026-10-29-estate-tally-game-theory/` (README.md plus numpy probes in `sims/`). Facts there are cited as "prior §n". This document is written before the code; `estatesim.py` implements it, and where the code had to deviate the deviation is listed at the bottom of `REPORT.md`, not edited in here. Revision 2 (delegation rules) was made before any result was generated. Revision 3 (renewal, peer edges) was forced by the first full run, whose delegation cells were inert; the first run's results were discarded, not kept.
+Serves follow-up `heimdall-body:follow_up:chat-mind-20261105T002133411Z-t0`. Prior work: `../2026-10-29-estate-tally-game-theory/` (README.md plus numpy probes in `sims/`). Facts there are cited as "prior §n". This document is written before the code; `estatesim.py` implements it, and where the code had to deviate the deviation is listed at the bottom of `REPORT.md`, not edited in here. Revision 2 (delegation rules) was made before any result was generated. Revision 4 (copy-the-ballot, section 5b) was added after the first reported results and before its own. Revision 3 (renewal, peer edges) was forced by the first full run, whose delegation cells were inert; the first run's results were discarded, not kept.
 
 ## 1. Claim under test
 
@@ -72,6 +72,25 @@ Delegate pool: each delegating estate has 10% of its roll (at least one) as acti
 
 Not modeled: vote selling, delegation to non-members, delegators choosing delegates by track record.
 
+## 5b. Copy-the-ballot (revision 4, written before its results)
+
+Serves `heimdall-body:follow_up:chat-s1946-1946`.
+
+**Source.** Gölz, Kahng, Mackenzie, Procaccia 2018 (arXiv 1808.01906, introduction, "Just how can the maximum weight be reduced?"): capping delegated weight is an option, "however, as argued by Behrens et al. [3], delegation is always possible by coordinating outside of the system and copying the desired delegate's ballot. Pushing delegations outside of the system would not alleviate the problem of super-voters, just reduce transparency." [3] is Behrens, Kistner, Nitsche, Swierczek, *The Principles of LiquidFeedback* (Interaktive Demokratie, 2014), not fetched here. What the source is: a one-paragraph argument, quoted second-hand by Gölz et al. to motivate their own voluntary approach. It gives no model, rate or measurement of copying, so the copy rate below is an assumption and is swept, not calibrated. Verified by fetching the ar5iv text of the paper this pass.
+
+**Agents.** A copier is a delegator in a delegating estate (Members, Users, Patrons) with the following behavior, per motion, after the final resolution of section 5 (strikes, direct overrides and the cap already applied):
+
+- Trigger: the delegator's final holder h has raw resolved weight above the cap value (the weight the cap would void). Only delegators whose weight is routed to an over-cap holder consider copying. There is no copying under a holder within the cap, and none when there is no cap. The agent does not know whether its own weight is among the voided excess (the cap voids "excess", not named delegators), so every delegator under an over-cap holder is exposed.
+- Action: with probability `copy` (friction: the effort of reading and re-entering the ballot; swept {0, .5, 1}) the delegator becomes a direct voter casting weight 1 and holder h's ballot (h's sincere ballot, as it stands before any strategic misreport). Direct voters are never forwarded (section 5 rule 4), so the copied weight leaves h's chain and the cap no longer applies to it. Delegators of the copier now end at the copier, who is itself subject to the cap as a final holder.
+- Copiers are not strategic and do not take strikes for the copy (it is voluntary and aligned with h by construction).
+- One round per motion. The decision is not remembered: a copier delegates again next motion, and copies again if the holder is still over cap. Delegators do not copy as a standing policy and do not copy unconditionally; copy-everything-always would remove delegation altogether and is out of scope.
+- Copy requires that h votes directly this motion, which holds by construction (a final holder is a direct voter).
+- Not modeled: the copy being visible to the mechanism (the real system sees only a direct ballot, which is the point of the source's transparency objection), coordination cost that grows with the number of copiers, and delegators choosing to copy a different, trusted voter than their delegate.
+
+**Measures.** Formal concentration is the section 3 measure on the resolved weights (copiers appear as separate weight-1 holders, which is what the mechanism sees). Effective concentration counts each copier's weight to the voter it copied, so it measures whose ballot the weight follows; the cap's job is to limit that. Also reported: copiers as a share of delegated votes. Outcomes (PS, MT, dPS UNI-DIRECT) are reported alongside.
+
+**Experiment E3f.** The delegation cap sweep with copying: alpha {0, .5, 1, 1.5, 2.5, 4} x cap {.10, .15, .20, .25, .30, none} x copy {0, .5, 1}, depth 3, strategic, F = 20, as E3. `copy = 0` reproduces E3 exactly. The depth sweep E3c is unchanged and runs with `copy = 0`; so does every other experiment. Falsifier fixed in advance: the cap "reduces effective concentration once copying is available" if the paired-by-replicate difference (effective Users top-holder share at cap .10 minus no cap) has a 95% interval entirely below -.01 (a drop under one point of share is not called a reduction). Evaluated per alpha and per copy rate by `run.py` and printed at the top of E3f in `results.md`; the cap reduces effective concentration under copying only if this reads "reduces" at `copy = 1`. The first full E3f run printed only means; the interval was added before the final run, and the numbers did not change.
+
 ## 6. Strategic and adaptive agents
 
 A fraction ρ = .25 of ballot holders and of absent undelegated roll members are strategic. Each is myopic about the motion at hand and best-responds to everyone else's current ballots over three rounds in random order:
@@ -94,6 +113,7 @@ Paired across rules: one set of random draws per motion feeds all rules (common 
 - **E3c transitive depth:** depth {2, 3, 4, 6, unlimited} × delegate turnout {.95, .3} × peer share {.3, .8}, α = 1.5, c = .2.
 - **E3e renewal:** renew {0, .02, .1, .5}, depth 3.
 - **E3d cap basis:** cast vs roll × c ∈ {.05, .10, .20, .30}, depth 3, α = 1.5.
+- **E3f copy-the-ballot:** section 5b.
 - **E4 appeal attraction:** β sweep at α = 1.5, c = .2.
 - **E5 robustness:** Users appeal loading b ∈ {.4, .9, 1.4}; Users base turnout {.05, .10, .30}; Minds ICC (s_Minds ∈ {.3, .9, 1.5}). This is the check on the assumed parameters in section 4.
 
@@ -103,7 +123,7 @@ The claim is **supported** in a cell if the paired difference PS(UNI) − PS(DIR
 
 ## 9. Tests (`test_estatesim.py`)
 
-Pin the rules, not the spelling: rule thresholds including ties; chains within depth, over depth (uncast), unlimited, terminated by an intermediate direct vote, looped, dead-ended; scope as overlap of all links; direct override; two-strike revocation; cap void, cap floor, cap on the final holder, cap basis; determinism (same seed, same bytes); paired draws identical across rules; misreporting never produces an outcome the agent likes less; metrics on hand-built outcome lists.
+Pin the rules, not the spelling: rule thresholds including ties; chains within depth, over depth (uncast), unlimited, terminated by an intermediate direct vote, looped, dead-ended; scope as overlap of all links; direct override; two-strike revocation; cap void, cap floor, copy-the-ballot (off draws nothing, full copying evades the cap, copied ballot is the holder's, within-cap and no-cap holders see no copying, effective weight follows the copied voter), cap on the final holder, cap basis; determinism (same seed, same bytes); paired draws identical across rules; misreporting never produces an outcome the agent likes less; metrics on hand-built outcome lists.
 
 ## 10. Sources
 
@@ -112,6 +132,7 @@ Verified by search this pass [V]; from memory, not fetched [M].
 - [V] Mudde 2004, "The Populist Zeitgeist", Government and Opposition 39(4):541–563: ideational (thin-centered) definition, virtuous people against corrupt elite. https://illiberalism.org/cas-mudde-the-populist-zeitgeist (secondary). Mapping to a measure is this document's, not Mudde's.
 - [V] Kling, Kunegis, Hartmann, Strohmaier, Staab 2015, "Voting Behaviour and Power in Online Democracy: A Study of LiquidFeedback in Germany's Pirate Party", ICWSM 9. https://arxiv.org/abs/1503.07723. Super-voters hold high theoretical power; empirically they voted with the majority and did not fully use it.
 - [V] Gölz, Kahng, Mackenzie, Procaccia 2018/2021, "The Fluid Mechanics of Liquid Democracy", WINE 2018, ACM TEAC 2021. https://arxiv.org/abs/1808.01906. Preferential-attachment delegation model; maximum delegated weight; two delegation choices lower it.
+- [V] Gölz et al. 2018 introduction, second-hand citing Behrens, Kistner, Nitsche, Swierczek 2014, "The Principles of LiquidFeedback" [M], for copy-the-ballot as the answer to caps (section 5b).
 - [V] Caragiannis and Micha 2019, "A Contribution to the Critique of Liquid Democracy", IJCAI. https://www.ijcai.org/proceedings/2019/17. Local delegation can do worse than direct voting or a dictator. Rebuttal: Butterworth and Booth 2022, arXiv 2206.13904, disputes the model assumptions.
 - [V] Palfrey and Rosenthal 1983, "A Strategic Calculus of Voting", Public Choice 41(1):7–53; and 1985, "Voter Participation and Strategic Uncertainty", APSR 79(1):62–78. High-turnout equilibria need complete information. Turnout response here is the myopic pivot-seeker, a simplification.
 - [V] Delegate-cap practice: no official cap found for Optimism, Arbitrum or Uniswap; Lido and a Jupiter forum proposal (5%) are the examples surfaced (https://discuss.jup.ag/t/delegated-voting-for-asr/34971/32; https://gov.optimism.io/t/can-delegates-become-too-powerful/2919 discusses mitigation without an adopted cap). Weak evidence. The operator's "a fifth" is a design choice, which is why c is swept.

@@ -203,6 +203,87 @@ class DelegationTests(unittest.TestCase):
         self.assertEqual(sum(w.values()), 2.0)
 
 
+class CopyTests(unittest.TestCase):
+    """SPEC section 5b: copy-the-ballot."""
+
+    def setup(self, copy, cap=.2, followers=10):
+        e = est(cap)
+        e.cfg = E.Config(delegation=True, cap=cap, copy=copy)
+        for k in range(1, followers + 1):
+            edge(e, k, 0)
+        voting = [False] * e.n
+        voting[0] = True
+        sb = [0] * e.n
+        sb[0] = 1
+        w, dest = e.resolve(0, voting)
+        return e, voting, sb, w, dest
+
+    def test_off_by_default_draws_nothing(self):
+        e, v, sb, w, dest = self.setup(0.0)
+        state = e.rng.getstate()
+        self.assertIsNone(e.copy_step(0, v, sb, dest))
+        self.assertEqual(e.rng.getstate(), state)
+        self.assertEqual(w[0], 2.2)                        # cap .2 of 11 cast weight; excess void
+
+    def test_full_copying_evades_the_cap(self):
+        e, v, sb, w, dest = self.setup(1.0)
+        copiers, w2, _ = e.copy_step(0, v, sb, dest)
+        self.assertEqual(len(copiers), 10)
+        self.assertEqual(w2[0], 1.0)                        # the holder keeps only its own vote
+        self.assertTrue(all(w2[c] == 1.0 and sb[c] == 1 and v[c] for c in copiers))
+        self.assertEqual(sum(w2.values()), 11.0)            # nothing voided
+        self.assertEqual(e.effective(w2, copiers), {0: 11.0})
+
+    def test_copiers_cast_the_holders_ballot_not_their_own(self):
+        e, v, sb, w, dest = self.setup(1.0)
+        sb[0] = -1
+        copiers, w2, _ = e.copy_step(0, v, sb, dest)
+        self.assertTrue(all(sb[c] == -1 for c in copiers))
+
+    def test_no_copying_under_a_holder_within_the_cap(self):
+        e, v, sb, w, dest = self.setup(1.0, cap=1.0, followers=3)   # cap 4.0 of 4 cast, raw 4.0: not over
+        self.assertIsNone(e.copy_step(0, v, sb, dest))
+
+    def test_no_copying_without_a_cap(self):
+        e, v, sb, w, dest = self.setup(1.0, cap=None)
+        self.assertIsNone(e.copy_step(0, v, sb, dest))
+
+    def test_partial_copy_rate_is_between(self):
+        e, v, sb, w, dest = self.setup(.5, followers=40)
+        copiers, w2, _ = e.copy_step(0, v, sb, dest)
+        self.assertTrue(8 <= len(copiers) <= 32)
+        self.assertEqual(e.effective(w2, copiers)[0], sum(w2.values()) - sum(
+            x for t, x in w2.items() if t != 0 and t not in copiers))
+
+    def test_followers_of_a_copier_are_counted_through_it(self):
+        e, v, sb, w, dest = self.setup(1.0, followers=10)
+        edge(e, 20, 5)                                      # 20 delegates to 5, who delegates to 0
+        w, dest = e.resolve(0, v)
+        copiers, w2, dest2 = e.copy_step(0, v, sb, dest)
+        self.assertEqual(sum(w2.values()), 12.0)            # all twelve ballots are cast, none void
+        self.assertEqual(e.effective(w2, copiers), {0: 12.0})
+
+    def test_copying_run_is_deterministic_and_leaves_paired_draws(self):
+        cfg = E.Config(delegation=True, alpha=4.0, cap=.1, copy=.5, rho=.25, faction=10, motions=30)
+        self.assertEqual(E.run_replicate(cfg, 2), E.run_replicate(cfg, 2))
+        a, _ = E.run_replicate(E.Config(motions=30), 2)
+        b, _ = E.run_replicate(cfg, 2)
+        self.assertEqual([r[:3] for r in a], [r[:3] for r in b])
+
+    def test_copy_off_matches_the_no_copy_config_byte_for_byte(self):
+        base = dict(delegation=True, alpha=2.5, cap=.15, rho=.25, faction=20, motions=40)
+        self.assertEqual(E.run_replicate(E.Config(**base), 4), E.run_replicate(E.Config(copy=0.0, **base), 4))
+
+    def test_effective_concentration_exceeds_capped_formal_weight(self):
+        cfg = E.Config(delegation=True, alpha=4.0, cap=.1, copy=1.0, motions=60)
+        _, conc = E.run_replicate(cfg, 0)
+        self.assertGreater(sum(c[7] for c in conc), sum(c[0] for c in conc))
+        self.assertGreater(sum(c[9] for c in conc), 0)
+        _, conc = E.run_replicate(E.Config(delegation=True, alpha=4.0, cap=.1, motions=60), 0)
+        self.assertEqual(sum(c[9] for c in conc), 0)
+        self.assertAlmostEqual(sum(c[7] for c in conc), sum(c[0] for c in conc))
+
+
 class StrategyTests(unittest.TestCase):
     def test_deviation_never_makes_agent_worse_off(self):
         rng = random.Random(3)

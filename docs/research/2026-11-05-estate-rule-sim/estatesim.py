@@ -42,6 +42,7 @@ class Config:
     peer: float = .3         # probability a delegator's edge goes to another delegator, not an active delegate
     dturn: float = .95       # delegates' own turnout; a delegate who stays home passes weight onward
     onward: float = .3       # probability an active delegate itself delegates onward
+    copy: float = 0.0        # probability a delegator under an over-cap holder copies that holder's ballot instead (SPEC section 5b)
     rho: float = 0.0         # strategic fraction
     faction: int = 0         # coordinated Users faction size
     motions: int = 400
@@ -199,14 +200,48 @@ class Estate:
                 w[i] = w.get(i, 0.0) + 1.0
         for i, h in dest.items():
             w[h] = w.get(h, 0.0) + 1.0
+        self.last_raw, self.last_cv = dict(w), None
         if self.cfg.cap is not None:
             base = self.n if self.cfg.cap_basis == "roll" else sum(w.values())
-            cv = max(1.0, self.cfg.cap * base)
+            cv = self.last_cv = max(1.0, self.cfg.cap * base)
             for t in w:
                 if w[t] > cv:
                     w[t] = cv                          # excess is void, not redistributed
         self.last_uncast = uncast
         return w, dest
+
+    def copy_step(self, cat, voting, sb, dest):
+        """Copy-the-ballot (SPEC section 5b), run once on the final resolution.
+
+        Each delegator whose final holder is over the cap copies that holder's
+        ballot with probability cfg.copy: it becomes a direct voter (weight 1,
+        own cap exposure only) casting the holder's ballot. Mutates voting and sb.
+        Returns (copiers {delegator: holder}, w, dest) re-resolved, or None when
+        nobody copies. Draws from self.rng only when copying is on and a holder is over cap.
+        """
+        raw, cv = self.last_raw, self.last_cv
+        if not self.cfg.copy or cv is None:
+            return None
+        copiers = {}
+        for i in sorted(dest):
+            h = dest[i]
+            if raw[h] > cv + EPS and self.rng.random() < self.cfg.copy:
+                copiers[i] = h
+        if not copiers:
+            return None
+        for i, h in copiers.items():
+            voting[i] = True
+            sb[i] = sb[h]
+        w, dest = self.resolve(cat, voting)
+        return copiers, w, dest
+
+    @staticmethod
+    def effective(w, copiers):
+        """Weight by whose ballot it follows: a copier's weight counts to the voter it copied."""
+        eff = dict(w)
+        for c, h in copiers.items():
+            eff[h] = eff.get(h, 0.0) + eff.pop(c, 0.0)
+        return eff
 
     def motion(self, cat, m, d, rng, z):
         """Draw this estate's motion state; returns dict with resolved holders and joiners."""
@@ -248,10 +283,15 @@ class Estate:
                     self.revoked.append(i)
         if forced:
             w, dest = self.resolve(cat, voting)
+        copiers = {}
+        cs = self.copy_step(cat, voting, sb, dest)
+        if cs:
+            copiers, w, dest = cs
         holders = [(t, sb[t], w[t]) for t in w]
         joiners = [(i, sb[i]) for i in range(n)
                    if not voting[i] and i not in dest and sb[i] != 0]
         return dict(u=u, holders=holders, joiners=joiners, weights=sorted(w.values()),
+                copiers=copiers, eff_weights=sorted(self.effective(w, copiers).values()),
                 uncast=self.last_uncast, delegated=len(dest) + self.last_uncast,
                 live=sum(1 for i in self.delegators if self.target[i] is not None) / max(1, len(self.delegators)))
 
@@ -328,7 +368,8 @@ def run_replicate(cfg, rep, base_seed=20261105):
         for e, dt in enumerate(data):
             for _, b, w in dt["holders"]:
                 _move(F0, A0, e, 0, b, w)
-        conc.append(concentration(data[2]["weights"]) + (data[2]["uncast"], data[2]["delegated"], data[2]["live"]))
+        conc.append(concentration(data[2]["weights"]) + (data[2]["uncast"], data[2]["delegated"], data[2]["live"])
+                    + concentration(data[2]["eff_weights"])[:3:2] + (len(data[2]["copiers"]),))
         sinc, strat = [], []
         for rule in RULES:
             sinc.append(passes(rule, F0, A0, W, q))
@@ -339,7 +380,7 @@ def run_replicate(cfg, rep, base_seed=20261105):
             agents = []
             for e, (est, dt) in enumerate(zip(estates, data)):
                 for t, b, w in dt["holders"]:
-                    if est.strategic[t] and not est.faction[t]:
+                    if est.strategic[t] and not est.faction[t] and t not in dt["copiers"]:
                         opts = [x for x in (1, -1, 0) if x != b]
                         agents.append(dict(e=e, w=w, sincere=b, cur=b, pref=dt["u"][t] > 0, opts=[b] + opts))
                 for i, b in dt["joiners"]:

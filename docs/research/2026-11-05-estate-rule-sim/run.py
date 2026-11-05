@@ -62,6 +62,10 @@ def summarize(cfg, chunk):
     for k, nm in enumerate(("top_share", "gini", "n_eff", "weight")):
         conc[nm] = sum(c[k] for c in allc) / len(allc)
     dl = sum(c[5] for c in allc)
+    conc["eff_top"] = sum(c[7] for c in allc) / len(allc)             # top share counting copiers to the voter they copied
+    conc["eff_neff"] = sum(c[8] for c in allc) / len(allc)
+    conc["copied"] = sum(c[9] for c in allc) / dl if dl else 0.0       # copiers as a share of delegated votes
+    conc["eff_top_reps"] = [sum(c[7] for c in ch[1]) / len(ch[1]) for ch in chunk]   # per replicate, for paired contrasts
     conc["live"] = sum(c[6] for c in allc) / len(allc)                # share of delegators still holding an edge
     conc["uncast"] = sum(c[4] for c in allc) / dl if dl else 0.0       # share of delegated votes left uncast
     return dict(cfg=cfg, per=per, percat=percat, paired=paired, conc=conc,
@@ -123,6 +127,10 @@ def experiments(quick):
     X.append(("E3c transitive depth x delegate turnout x peer-delegation share (alpha=1.5, cap=.2, strategic, faction 20)",
               [(f"depth={d} dturn={t} peer={p}", E.Config(delegation=True, alpha=1.5, depth=d, dturn=t, peer=p, cap=.2, rho=.25, faction=20))
                for d in depths for t in (.95, .3) for p in (.3, .8)], False))
+    copies = (0.0, 1.0) if quick else (0.0, .5, 1.0)
+    X.append(("E3f copy-the-ballot: alpha x cap x copy rate (depth 3, strategic, faction 20)",
+              [(f"alpha={a} cap={c} copy={p}", E.Config(delegation=True, alpha=a, cap=c, copy=p, rho=.25, faction=20))
+               for a in alphas for p in copies for c in caps], "copy"))
     X.append(("E3e revocation renewal: how fast revoked delegators re-delegate (alpha=1.5, cap=.2, depth 3, strategic, faction 20)",
               [(f"renew={n}", E.Config(delegation=True, alpha=1.5, cap=.2, renew=n, rho=.25, faction=20))
                for n in (0.0, .02, .1, .5)], False))
@@ -142,6 +150,63 @@ def experiments(quick):
               [(nm, E.Config(delegation=True, alpha=1.5, cap=.2, rho=.25, faction=20, overrides=ov))
                for nm, ov in rob], False))
     return X
+
+
+def copy_tables(cells, res):
+    """Pivots for E3f: rows (alpha, copy), columns cap. Effective = copiers counted to the voter they copied."""
+    caps = []
+    for _, c in cells:
+        if c.cap not in caps:
+            caps.append(c.cap)
+    rows = {}
+    for (_, c), r in zip(cells, res):
+        rows.setdefault((c.alpha, c.copy), {})[c.cap] = r
+    hdr = ["| alpha | copy | " + " | ".join("none" if c is None else f"{c}" for c in caps) + " |",
+           "|---|---|" + "---|" * len(caps)]
+    L = []
+    for title, get in (
+            ("Users top-holder share, formal (copiers are separate weight-1 ballots)", lambda r: f"{r['conc']['top_share']:.3f}"),
+            ("Users top-holder share, effective (copiers counted to the voter they copied)", lambda r: f"{r['conc']['eff_top']:.3f}"),
+            ("Users n_eff, effective", lambda r: f"{r['conc']['eff_neff']:.1f}"),
+            ("copiers as a share of delegated votes", lambda r: f"{r['conc']['copied']:.2f}"),
+            ("dPS UNI-DIRECT", lambda r: f(*r["paired"][("UNI", "DIRECT", "PS")])),
+            ("PS UNI", lambda r: f(*E.mean_ci(r["per"]["UNI"]["PS"])))):
+        L += [f"**{title}**", ""] + hdr
+        for (a, p), byc in rows.items():
+            L.append(f"| {a} | {p} | " + " | ".join(get(byc[c]) for c in caps) + " |")
+        L.append("")
+    return L
+
+
+CAP_MATERIAL = .01   # effective top-share drop below this is not called a reduction (SPEC section 5b)
+
+
+def copy_reading(cells, res):
+    """SPEC section 5b falsifier, computed: does the tightest cap reduce effective Users top-holder share?
+
+    Paired by replicate (same population draw): top share at cap c minus top share with no cap.
+    "reduces" iff the 95% interval lies entirely below -CAP_MATERIAL; "does not reduce" otherwise.
+    """
+    by = {(c.alpha, c.copy, c.cap): r for (_, c), r in zip(cells, res)}
+    tight = min(c.cap for _, c in cells if c.cap is not None)
+    tally = {}
+    L = [f"**Does the cap reduce effective concentration? Effective Users top-holder share at cap {tight} minus no cap, "
+         f"paired by replicate; 'reduces' iff the 95% interval is entirely below -{CAP_MATERIAL}.**", "",
+         "| alpha | copy | effective top share, cap - none | verdict | formal top share, cap - none |", "|---|---|---|---|---|"]
+    for (a, p, c) in by:
+        if c != tight:
+            continue
+        r, n = by[(a, p, c)], by[(a, p, None)]
+        d = E.mean_ci([x - y for x, y in zip(r["conc"]["eff_top_reps"], n["conc"]["eff_top_reps"])])
+        v = "reduces" if d[0] + d[1] < -CAP_MATERIAL else "does not reduce"
+        L.append(f"| {a} | {p} | {f(*d)} | {v} | {r['conc']['top_share'] - n['conc']['top_share']:+.3f} |")
+        tally.setdefault(p, []).append(v == "reduces")
+    L += ["", "Reading, computed from the rows above: the cap reduces effective concentration in " + "; ".join(
+        f"{sum(t)} of {len(t)} alpha values at copy rate {p}" for p, t in tally.items()) +
+        ". Where it reduces at copy 0 and not at copy 1, the formal top share falls (last column) while the weight follows "
+        "the same voters through their copiers, so the cap moves weight from the holder's ledger to its followers' ballots "
+        "without changing whose ballot it is."]
+    return L + [""]
 
 
 def main(argv=None):
@@ -172,7 +237,9 @@ def main(argv=None):
                         f"{f(*E.mean_ci(pe['WTA']['PS']))} | {f(*E.mean_ci(pe['UNI']['PS']))} | "
                         f"{r['conc']['top_share']:.3f} | {r['conc']['n_eff']:.1f} | {r['conc']['uncast']:.2f} | {r['conc']['live']:.2f} | {r['verdict']} |")
         L += summ + [""]
-        if detail:
+        if detail == "copy":
+            L += copy_reading(cells, res) + copy_tables(cells, res)
+        elif detail:
             for (name, _), r in zip(cells, res):
                 L += [f"### {title.split(' ')[0]} / {name}", ""] + rule_table(r) + [""]
                 L += [pair_line(r), "", "PS by category threshold:", ""] + percat_table(r) + [""]
