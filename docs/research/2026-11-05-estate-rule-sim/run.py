@@ -4,6 +4,7 @@ Writes a deterministic markdown results file (no timestamps). See SPEC.md sectio
 """
 import argparse
 import os
+import random
 import sys
 from multiprocessing import Pool
 
@@ -209,6 +210,149 @@ def copy_reading(cells, res):
     return L + [""]
 
 
+PATRONS = E.ESTATES.index("Patrons")
+LIVE = {"all four estates": (0, 1, 2, 3), "Patrons + Minds": (0, PATRONS), "Patrons alone": (PATRONS,)}
+
+
+def _stake_rest(overrides, ladder):
+    """Weight of the ordinary patrons under the estate's own euro conversion."""
+    return sum(E.stake_weight("Patrons", euros=x, overrides=overrides) for x in ladder)
+
+
+def stake_section(quick):
+    """E6 purchased stake (SPEC section 5c). Pure functions of fixed seeds; no wall clock."""
+    seeds = 4 if quick else 40
+    amounts = (1e6,) if quick else (1e4, 1e5, 1e6)
+    bs, units, rolls = ((10.0,), (10.0,), (4, 40)) if quick else ((2.0, 10.0, 100.0), (1.0, 10.0, 100.0), (4, 40, 400))
+    EUR = 1e6
+    L = ["## E6 purchased stake: logarithmic weight, splitting, and the half-influence cap (SPEC section 5c)", "",
+         "Static weight analysis (no motions are simulated, so no PS or MT): a buyer joins the Patrons estate with one purchase; "
+         f"the {E.ROLL['Patrons']}-patron roll of the harness (and 40, 400) holds Pareto({E.PARETO_ALPHA}) donations from {E.PARETO_XM:.0f} EUR, "
+         f"{seeds} seeds each. Weight w = 1 + log_b(amount/unit), 0 below unit; defaults b = {E.STAKE_BASE['Patrons']['euro_b']:.0f}, "
+         f"unit = {E.STAKE_BASE['Patrons']['euro_unit']:.0f} EUR. Share s is the buyer's share of Patrons weight; x is its share of council weight "
+         "(estate weight W x s over the live estates' weights); the cap binds iff x >= .5.", ""]
+    ladders = {(n, s): E.stake_ladder(n, s) for n in rolls for s in range(seeds)}
+    # headline: the million-euro buyer, defaults, roll of the harness
+    n0 = E.ROLL["Patrons"]
+    L += ["**Million-euro buyer, defaults, Patrons roll " + str(n0) + " (mean over seeds, 95% interval); linear = weight proportional to amount, the counterfactual the log is meant to beat**", "",
+          "| weights | live estates | s log | x log | x linear | cap binds (log) | cap binds (linear) | estate decided by buyer alone (s > .5) |",
+          "|---|---|---|---|---|---|---|---|"]
+    for wn, W in E.WEIGHTS.items():
+        for ln, live in LIVE.items():
+            rows = []
+            for s in range(seeds):
+                lad = ladders[(n0, s)]
+                wb = E.stake_weight("Patrons", euros=EUR)
+                lo = E.influence_cap(wb, _stake_rest((), lad), W, PATRONS, live)
+                li = E.influence_cap(EUR / 10.0, sum(x / 10.0 for x in lad), W, PATRONS, live)
+                rows.append((lo["s"], lo["x"], li["x"], lo["binds"], li["binds"], lo["s"] > .5))
+            m = [E.mean_ci([r[k] for r in rows]) for k in range(3)]
+            fr = [sum(r[k] for r in rows) / seeds for k in (3, 4, 5)]
+            L.append(f"| {wn} | {ln} | {f(*m[0])} | {f(*m[1])} | {f(*m[2])} | {fr[0]:.2f} | {fr[1]:.2f} | {fr[2]:.2f} |")
+    L.append("")
+    # the headline share is one (unit, roll) cell: sweep both, state the interval
+    L += ["**Million-euro buyer's share of Patrons weight, b = 10, by unit and roll (mean over seeds, 95% interval; share of seeds in which the buyer alone decides the estate)**", "",
+          "| unit EUR | " + " | ".join(f"roll {n}" for n in rolls) + " |", "|---|" + "---|" * len(rolls)]
+    cells = []
+    for u in units:
+        cols = []
+        for n in rolls:
+            r = E.buyer_runs(EUR, n, seeds, E.WEIGHTS["equal"], (PATRONS,), (("Patrons", "euro_b", 10.0), ("Patrons", "euro_unit", u)))
+            m = E.mean_ci([x["s"] for x in r])
+            cells.append(m[0])
+            cols.append(f"{f(*m)} ({sum(x['s'] > .5 for x in r) / seeds:.2f})")
+        L.append(f"| {u:g} | " + " | ".join(cols) + " |")
+    L += ["", f"Interval over the swept cells: s from {min(cells):.3f} to {max(cells):.3f}. The 0.524 headline is the harness's own cell (roll {n0}, unit 10), "
+          "not a typical one: the buyer's majority of the estate depends on how few other patrons there are.", ""]
+    # cap-binding rate across the whole sweep
+    tally = {}
+    for wn, W in E.WEIGHTS.items():
+        for ln, live in LIVE.items():
+            for b in bs:
+                for u in units:
+                    ov = (("Patrons", "euro_b", b), ("Patrons", "euro_unit", u))
+                    for n in rolls:
+                        for a in amounts:
+                            hit = unf = 0
+                            for s in range(seeds):
+                                lad = ladders[(n, s)]
+                                r = E.influence_cap(E.stake_weight("Patrons", euros=a, overrides=ov), _stake_rest(ov, lad), W, PATRONS, live)
+                                hit += r["binds"]
+                                unf += r["binds"] and not r["enforceable"]
+                            tally.setdefault(ln, []).append((hit, unf, seeds, n, b, a))
+    L += ["**Cap-binding rate over the sweep (b, unit, roll, amount, weights x live set; every cell run on every seed)**", "",
+          "| live estates | cells | cells x seeds | binding (cell, seed) | cells binding in every seed | cells never binding | binding but unenforceable |",
+          "|---|---|---|---|---|---|---|"]
+    for ln, t in tally.items():
+        tot = sum(x[2] for x in t)
+        L.append(f"| {ln} | {len(t)} | {tot} | {sum(x[0] for x in t) / tot:.3f} | "
+                 f"{sum(1 for x in t if x[0] == x[2]) / len(t):.3f} | {sum(1 for x in t if x[0] == 0) / len(t):.3f} | "
+                 f"{sum(x[1] for x in t) / tot:.3f} |")
+    L += ["", "Binding rate in the Patrons-alone scenario by Patrons roll and by log base (fraction of cells x seeds):", "",
+          "| roll | " + " | ".join(f"b={b:g}" for b in bs) + " |", "|---|" + "---|" * len(bs)]
+    for n in rolls:
+        cols = []
+        for b in bs:
+            t = [x for x in tally["Patrons alone"] if x[3] == n and x[4] == b]
+            cols.append(f"{sum(x[0] for x in t) / sum(x[2] for x in t):.3f}")
+        L.append(f"| {n} | " + " | ".join(cols) + " |")
+    L.append("")
+    # splitting
+    L += ["**Splitting: the same total split over k identities (defaults, one honest identity = k 1). Multiplier = total weight of the split / weight of the single purchase**", "",
+          "| amount EUR | single weight | " + " | ".join(f"k={k}" for k in (2, 10, 100, 1000)) + " | best k (grid) | best multiplier |",
+          "|---|---|" + "---|" * 6]
+    b0, u0 = E.STAKE_BASE["Patrons"]["euro_b"], E.STAKE_BASE["Patrons"]["euro_unit"]
+    for a in amounts:
+        w1 = E.log_weight(a, b0, u0)
+        bt, bk = E.best_split(a, b0, u0)
+        L.append(f"| {a:g} | {w1:.2f} | " + " | ".join(
+            f"{E.split_weight(a, k, b0, u0)[0] / w1:.1f}" if a / k >= u0 else "0 (below unit)" for k in (2, 10, 100, 1000)) +
+            f" | {bk} | {bt / w1:.0f} |")
+    L += ["", "Best multiplier at 1,000,000 EUR by log base and unit (b rows, unit columns):", "",
+          "| b | " + " | ".join(f"unit={u:g}" for u in units) + " |", "|---|" + "---|" * len(units)]
+    for b in bs:
+        cols = []
+        for u in units:
+            bt, bk = E.best_split(EUR, b, u)
+            cols.append(f"{bt / E.log_weight(EUR, b, u):.0f} (k={bk})")
+        L.append(f"| {b:g} | " + " | ".join(cols) + " |")
+    # defences, candidates only
+    L += ["", "**Candidate defences, none adopted by SPEC (best multiplier at 1,000,000 EUR, defaults)**", "",
+          "| defence | setting | best multiplier | neutralises (best split is k = 1) |", "|---|---|---|---|"]
+    w1 = E.log_weight(EUR, b0, u0)
+    for wc in (1.0, 3.0, w1):
+        s1 = min(w1, wc)
+        bt, bk = E.best_split(EUR, b0, u0, person_cap=wc)
+        L.append(f"| per-person weight cap | {wc:.1f} | {bt / s1:.0f} | {'yes' if bk == 1 else 'no'} |")
+    for uf in (10.0, 1e3, 1e5, 5e5, 1e6):
+        s1 = E.log_weight(EUR, b0, uf)
+        bt, bk = E.best_split(EUR, b0, uf)
+        L.append(f"| unit floor | {uf:g} EUR | {bt / s1:.1f} | {'yes' if bk == 1 else 'no'} |")
+    for a in amounts:
+        mc = E.min_neutralising_cost(a, b0, u0)
+        L.append(f"| identity cost | smallest cost by bisection, amount {a:g} EUR | | "
+                 + (f"yes at {mc:.0f} EUR per identity ({mc / a:.1%} of the budget, bisection to 0.1%)" if mc else "no cost below the amount") + " |")
+    # cap evasion by splitting, Patrons alone
+    L += ["", "**Cap evasion: the cap is per identity. Patrons alone, equal weights, roll " + str(n0) + ", defaults, 1,000,000 EUR over k identities**", "",
+          "| k | joint share x | share of one identity | cap binds on an identity | joint x >= .5 (evaded) |", "|---|---|---|---|---|"]
+    W = E.WEIGHTS["equal"]
+    for k in (1, 2, 10, 100):
+        rows = []
+        for s in range(seeds):
+            rest = _stake_rest((), ladders[(n0, s)])
+            tot, wi = E.split_weight(EUR, k, b0, u0)
+            joint = E.influence_cap(tot, rest, W, PATRONS, (3,))
+            one = E.influence_cap(wi, rest + tot - wi, W, PATRONS, (3,))
+            rows.append((joint["x"], one["x"], one["binds"], joint["x"] >= E.HALF and not one["binds"]))
+        L.append(f"| {k} | {f(*E.mean_ci([r[0] for r in rows]))} | {f(*E.mean_ci([r[1] for r in rows]))} | "
+                 f"{sum(r[2] for r in rows) / seeds:.2f} | {sum(r[3] for r in rows) / seeds:.2f} |")
+    # hours channel
+    L += ["", "**Contribution hours: Members weight from hours alone (no mechanism for contribution existed in the harness; new per-agent input, own per-estate conversion)**", "",
+          "| hours | " + " | ".join(f"{h:g}" for h in (5, 10, 100, 1000, 10000)) + " |", "|---|---|---|---|---|---|",
+          "| weight | " + " | ".join(f"{E.stake_weight('Members', hours=h):.2f}" for h in (5, 10, 100, 1000, 10000)) + " |", ""]
+    return L
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--quick", action="store_true")
@@ -243,6 +387,7 @@ def main(argv=None):
             for (name, _), r in zip(cells, res):
                 L += [f"### {title.split(' ')[0]} / {name}", ""] + rule_table(r) + [""]
                 L += [pair_line(r), "", "PS by category threshold:", ""] + percat_table(r) + [""]
+    L += stake_section(a.quick)
     L += ["## Claim tally over all cells (SPEC section 8)", "",
           f"supported {tally['supported']}, fails {tally['fails']}, undecided {tally['undecided']}, n/a {tally['n/a']}", ""]
     if failing:

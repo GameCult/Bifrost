@@ -1,6 +1,6 @@
 # Estate-rule sim harness: spec (2026-11-05)
 
-Serves follow-up `heimdall-body:follow_up:chat-mind-20261105T002133411Z-t0`. Prior work: `../2026-10-29-estate-tally-game-theory/` (README.md plus numpy probes in `sims/`). Facts there are cited as "prior §n". This document is written before the code; `estatesim.py` implements it, and where the code had to deviate the deviation is listed at the bottom of `REPORT.md`, not edited in here. Revision 2 (delegation rules) was made before any result was generated. Revision 4 (copy-the-ballot, section 5b) was added after the first reported results and before its own. Revision 3 (renewal, peer edges) was forced by the first full run, whose delegation cells were inert; the first run's results were discarded, not kept.
+Serves follow-up `heimdall-body:follow_up:chat-mind-20261105T002133411Z-t0`. Prior work: `../2026-10-29-estate-tally-game-theory/` (README.md plus numpy probes in `sims/`). Facts there are cited as "prior §n". This document is written before the code; `estatesim.py` implements it, and where the code had to deviate the deviation is listed at the bottom of `REPORT.md`, not edited in here. Revision 2 (delegation rules) was made before any result was generated. Revision 4 (copy-the-ballot, section 5b) was added after the first reported results and before its own. Revision 5 (purchased stake, section 5c) was written before its results and touches no earlier section. Revision 3 (renewal, peer edges) was forced by the first full run, whose delegation cells were inert; the first run's results were discarded, not kept.
 
 ## 1. Claim under test
 
@@ -91,6 +91,26 @@ Serves `heimdall-body:follow_up:chat-s1946-1946`.
 
 **Experiment E3f.** The delegation cap sweep with copying: alpha {0, .5, 1, 1.5, 2.5, 4} x cap {.10, .15, .20, .25, .30, none} x copy {0, .5, 1}, depth 3, strategic, F = 20, as E3. `copy = 0` reproduces E3 exactly. The depth sweep E3c is unchanged and runs with `copy = 0`; so does every other experiment. Falsifier fixed in advance: the cap "reduces effective concentration once copying is available" if the paired-by-replicate difference (effective Users top-holder share at cap .10 minus no cap) has a 95% interval entirely below -.01 (a drop under one point of share is not called a reduction). Evaluated per alpha and per copy rate by `run.py` and printed at the top of E3f in `results.md`; the cap reduces effective concentration under copying only if this reads "reduces" at `copy = 1`. The first full E3f run printed only means; the interval was added before the final run, and the numbers did not change.
 
+## 5c. Purchased stake (revision 5, written before its results)
+
+Serves the purchased-stake brief (operator relayed: Patron vote power is logarithmic in donation, prior section 4; operator influence strictly below half, ruling `operator-influence-below-half`, prior section 10). Not a motion simulation: a static weight analysis, so it measures weight share and decisiveness, not PS or MT.
+
+**Weight.** A purchase of `amount` EUR weighs w = 1 + log_b(amount/unit): 1 at amount = unit, 0 below unit (below the unit buys no weight, never negative). Each estate has its own conversion, set through `Config.overrides` entries `(estate, key, value)` with keys `euro_b`, `euro_unit`, `hours_b`, `hours_unit` (defaults in `STAKE_BASE`). Only Patrons (euros) and Members (hours) carry stake; Minds are counted once and Users are one-each, so both weigh 1.
+
+**Defaults chosen (assumptions, not rulings; the brief gave none).** Patrons and Members alike: euro b = 10, unit = 10 EUR; hours b = 10, unit = 10 hours. b = 10 reads as "each tenfold purchase adds one vote of weight", the simplest reading of the operator's "logarithmic"; 10 EUR is the smallest ordinary Patron donation in the prior ladder (prior section 4: 10, 50, 200, 5000); 10 hours is roughly a working day or so of contribution. The sweep varies b over {2, 10, 100} and unit over {1, 10, 100} EUR; hours are not swept because no buyer outcome depends on them (see below).
+
+**Contribution hours.** The harness had no contribution mechanism (Members were one-each; prior section 4's Pareto contribution curve was left out of scope in section 4 above). Hours are therefore a new per-agent input with their own per-estate conversion: an estate member's weight is the euro channel plus the hours channel, each through its own (b, unit).
+
+**Electorate.** The buyer joins the Patrons estate as an additional member; the other patrons are `ROLL["Patrons"]` = 4 members (also 40 and 400 as a sensitivity) holding Pareto(1.16) donations from 10 EUR (prior section 4's exponent; the scale is mine). 40 seeds, each a fixed integer. Estate weights are the section 4 weights; the live-estate set is a scenario: all four live, Patrons + Minds live, Patrons alone live (renormalization over live estates, section 2).
+
+**Influence.** Council weight share x = W_Patrons x s / (sum of live W), s the buyer's share of Patrons weight; this is the "weight share" of prior section 10. Decisiveness is reported only at the estate level (buyer alone decides the Patrons estate's vote when s > .5 at q = .5); prior section 10 shows weight share is not decisiveness, and no council-level pivot is computed here.
+
+**Half-influence cap.** The cap named in the brief is the prior section 10 operator cap (weight share strictly below one half), which is *not* the `cap` of section 5 (a per-final-holder delegation cap, a fraction of cast weight, with void excess). The harness had no implementation of the operator cap; `influence_cap` is it: binds iff x >= .5, then cuts the holder's internal weight until x = .5(1 - 1e-9), and reports "unenforceable" when no one else holds weight to cut against. It applies per identity.
+
+**Splitting adversary.** The same total split evenly over k identities: weight k(1 + log_b(amount/(k unit))) against 1 + log_b(amount/unit). Splitting wins because the log is sub-linear: the multiplier approaches (amount/unit)/(1 + log_b(amount/unit)) at k = amount/unit. The sweep reports the multiplier by k, the best k on a geometric grid (a lower bound on the maximum), and a table of defences. **SPEC names no sybil defence** (the charter's frozen roll, A6, stops joins after notice, not the buying of many identities beforehand). Three candidates are quantified, none adopted or chosen: a per-person weight cap, a raised unit floor, a per-identity cost paid out of the budget. They are parameters of `split_weight`, off by default.
+
+**Falsifiers fixed in advance.** (1) Working hypothesis "logarithmic weight bounds buyout power": refuted if a one-million-euro buyer's within-estate share s exceeds 1/2 at the harness's own roll, or if splitting multiplies weight by more than 2 at any k. (2) The half-influence cap is "binding" in a (cell, seed) iff x >= .5; the rate over the sweep is reported per live-estate scenario. (3) The cap is "evaded" by splitting iff the joint share is >= .5 while no single identity's share is.
+
 ## 6. Strategic and adaptive agents
 
 A fraction ρ = .25 of ballot holders and of absent undelegated roll members are strategic. Each is myopic about the motion at hand and best-responds to everyone else's current ballots over three rounds in random order:
@@ -115,6 +135,7 @@ Paired across rules: one set of random draws per motion feeds all rules (common 
 - **E3d cap basis:** cast vs roll × c ∈ {.05, .10, .20, .30}, depth 3, α = 1.5.
 - **E3f copy-the-ballot:** section 5b.
 - **E4 appeal attraction:** β sweep at α = 1.5, c = .2.
+- **E6 purchased stake:** section 5c. b x unit x Patrons roll x amount x estate weights x live-estate scenario, 40 seeds; splitting k sweep; candidate defences.
 - **E5 robustness:** Users appeal loading b ∈ {.4, .9, 1.4}; Users base turnout {.05, .10, .30}; Minds ICC (s_Minds ∈ {.3, .9, 1.5}). This is the check on the assumed parameters in section 4.
 
 ## 8. Pre-registered falsifiers
@@ -123,7 +144,7 @@ The claim is **supported** in a cell if the paired difference PS(UNI) − PS(DIR
 
 ## 9. Tests (`test_estatesim.py`)
 
-Pin the rules, not the spelling: rule thresholds including ties; chains within depth, over depth (uncast), unlimited, terminated by an intermediate direct vote, looped, dead-ended; scope as overlap of all links; direct override; two-strike revocation; cap void, cap floor, copy-the-ballot (off draws nothing, full copying evades the cap, copied ballot is the holder's, within-cap and no-cap holders see no copying, effective weight follows the copied voter), cap on the final holder, cap basis; determinism (same seed, same bytes); paired draws identical across rules; misreporting never produces an outcome the agent likes less; metrics on hand-built outcome lists.
+Pin the rules, not the spelling: rule thresholds including ties; chains within depth, over depth (uncast), unlimited, terminated by an intermediate direct vote, looped, dead-ended; scope as overlap of all links; direct override; two-strike revocation; cap void, cap floor, copy-the-ballot (off draws nothing, full copying evades the cap, copied ballot is the holder's, within-cap and no-cap holders see no copying, effective weight follows the copied voter), cap on the final holder, cap basis; purchased stake (weight 1 at unit and 0 below, per-estate conversion, hours channel, the million-euro buyer's share derived from the config, log versus linear, the operator cap's bind and unenforceable cases, the splitting multiplier against its formula, defences that do and do not neutralise, per-identity cap evasion); determinism (same seed, same bytes); paired draws identical across rules; misreporting never produces an outcome the agent likes less; metrics on hand-built outcome lists.
 
 ## 10. Sources
 

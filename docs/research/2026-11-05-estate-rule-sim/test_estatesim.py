@@ -1,4 +1,5 @@
 """python3 -I test_estatesim.py"""
+import math
 import os
 import random
 import sys
@@ -282,6 +283,138 @@ class CopyTests(unittest.TestCase):
         _, conc = E.run_replicate(E.Config(delegation=True, alpha=4.0, cap=.1, motions=60), 0)
         self.assertEqual(sum(c[9] for c in conc), 0)
         self.assertAlmostEqual(sum(c[7] for c in conc), sum(c[0] for c in conc))
+
+
+class StakeTests(unittest.TestCase):
+    """SPEC section 5c: purchased stake, splitting, the half-influence cap."""
+    P = E.ESTATES.index("Patrons")
+    ALL = (0, 1, 2, 3)
+
+    def cfg(self):
+        return E.STAKE_BASE["Patrons"]
+
+    def test_weight_is_one_at_unit_zero_below_and_logarithmic(self):
+        c = self.cfg()
+        b, u = c["euro_b"], c["euro_unit"]
+        self.assertEqual(E.log_weight(u, b, u), 1.0)
+        self.assertEqual(E.log_weight(u * .99, b, u), 0.0)                 # below unit: no weight, not negative
+        self.assertAlmostEqual(E.log_weight(u * b ** 3, b, u), 4.0)        # each factor b adds one
+        self.assertLess(E.log_weight(10 * u, b, u), 10)                     # sub-linear
+
+    def test_conversion_is_per_estate_and_overridable(self):
+        ov = (("Patrons", "euro_b", 2.0), ("Patrons", "euro_unit", 5.0), ("Members", "euro_b", 100.0))
+        self.assertAlmostEqual(E.stake_weight("Patrons", euros=40, overrides=ov), 1 + math.log(8, 2))
+        self.assertAlmostEqual(E.stake_weight("Patrons", euros=100), 1 + math.log(10, 10))
+        self.assertEqual(E.stake_params("Members", ov)["euro_b"], 100.0)
+        self.assertEqual(E.stake_params("Patrons", ov)["euro_b"], 2.0)
+        self.assertEqual(E.stake_weight("Users", euros=1e6), 1.0)           # no stake channel: one-each
+        self.assertEqual(E.stake_weight("Minds", hours=1e6), 1.0)
+
+    def test_hours_add_to_euros_with_their_own_conversion(self):
+        ov = (("Members", "hours_b", 2.0), ("Members", "hours_unit", 4.0))
+        h = E.stake_weight("Members", hours=32, overrides=ov)
+        self.assertAlmostEqual(h, 1 + math.log(8, 2))
+        self.assertAlmostEqual(E.stake_weight("Members", euros=100, hours=32, overrides=ov), h + 2.0)
+
+    def test_million_euro_buyer_share_is_derived_from_config(self):
+        c = self.cfg()
+        wb = E.stake_weight("Patrons", euros=1e6)
+        n = E.ROLL["Patrons"]                       # the harness's patron roll, each at exactly the unit
+        others = n * E.log_weight(c["euro_unit"], c["euro_b"], c["euro_unit"])
+        s_star = wb / (wb + others)
+        for wn, W in E.WEIGHTS.items():
+            # all estates live: the buyer's council share cannot exceed the Patrons estate weight, below half by the charter
+            r = E.influence_cap(wb, others, W, self.P, self.ALL)
+            self.assertAlmostEqual(r["s"], s_star)
+            self.assertAlmostEqual(r["x"], W[self.P] / sum(W) * s_star)
+            self.assertLess(r["x"], W[self.P] / sum(W) + 1e-12)
+            self.assertFalse(r["binds"], wn)
+            # Patrons the only live estate: the cap binds exactly when the buyer outweighs the rest
+            r = E.influence_cap(wb, others, W, self.P, (self.P,))
+            self.assertEqual(r["binds"], s_star >= E.HALF)
+            self.assertEqual(r["binds"], wb >= others)
+            if r["binds"]:
+                self.assertLess(r["x_capped"], E.HALF)
+                self.assertAlmostEqual(r["x_capped"], E.HALF, places=6)
+
+    def test_log_weight_gives_a_smaller_share_than_linear_but_still_a_near_total_one_in_a_tiny_estate(self):
+        c = self.cfg()
+        rest_amounts = [10.0, 50.0, 200.0, 5000.0]
+        W = E.WEIGHTS["equal"]
+        lg = E.council_share(E.stake_weight("Patrons", euros=1e6),
+                             sum(E.stake_weight("Patrons", euros=a) for a in rest_amounts), W, self.P, (self.P,))[1]
+        li = E.council_share(1e6 / c["euro_unit"], sum(a / c["euro_unit"] for a in rest_amounts), W, self.P, (self.P,))[1]
+        self.assertLess(lg, li)
+        self.assertGreater(li, .99)
+
+    def test_cap_is_unenforceable_when_nobody_else_holds_weight(self):
+        r = E.influence_cap(5.0, 0.0, E.WEIGHTS["equal"], self.P, (self.P,))
+        self.assertTrue(r["binds"])
+        self.assertFalse(r["enforceable"])
+
+    def test_splitting_multiplier_matches_the_formula_and_exceeds_one(self):
+        c = self.cfg()
+        b, u, a, k = c["euro_b"], c["euro_unit"], 1e6, 100
+        tot, each = E.split_weight(a, k, b, u)
+        self.assertAlmostEqual(each, 1 + math.log(a / (k * u), b))
+        self.assertAlmostEqual(tot, k * (1 + math.log(a / (k * u), b)))
+        self.assertGreater(tot, E.log_weight(a, b, u))
+        self.assertEqual(E.split_weight(a, int(a / u) + 1, b, u)[0], 0.0)   # every fake below unit: nothing
+        best, bk = E.best_split(a, b, u)
+        self.assertGreaterEqual(best, tot)
+        self.assertAlmostEqual(best, a / u)                                  # b > e: best is k = a/unit, weight 1 each
+
+    def test_per_person_cap_and_unit_floor_below_amount_do_not_neutralise_splitting(self):
+        c = self.cfg()
+        b, u, a = c["euro_b"], c["euro_unit"], 1e6
+        single = E.log_weight(a, b, u)
+        for wc in (1.0, 3.0, single):
+            best, k = E.best_split(a, b, u, person_cap=wc)
+            self.assertGreater(best, min(single, wc))
+        self.assertGreater(E.best_split(a, b, 1000.0)[1], 1)                 # raised unit still splits
+        self.assertEqual(E.best_split(a, b, a)[1], 1)                        # unit = amount leaves nothing to split
+
+    def test_identity_cost_neutralises_only_at_a_large_share_of_the_budget(self):
+        c = self.cfg()
+        b, u, a = c["euro_b"], c["euro_unit"], 1e6
+        cost = E.min_neutralising_cost(a, b, u)
+        self.assertIsNotNone(cost)
+        self.assertEqual(E.best_split(a, b, u, identity_cost=cost)[1], 1)
+        self.assertGreater(E.best_split(a, b, u, identity_cost=cost / 2)[1], 1)
+        self.assertGreater(cost, a / 4)
+        self.assertAlmostEqual(cost / a, .5, delta=.01)                      # bisection value: just under half the budget
+        self.assertLess(cost, a / 2 + 1e-9)
+
+    def test_headline_numbers_are_pinned(self):
+        """The figures REPORT.md quotes, under the placeholder defaults and the fixed seeds (40, STAKE_SEED)."""
+        W = E.WEIGHTS["equal"]
+        r = E.buyer_runs(1e6, E.ROLL["Patrons"], 40, W, (self.P,))
+        m, hw = E.mean_ci([x["s"] for x in r])
+        self.assertEqual(round(m, 3), .524)
+        self.assertEqual(round(hw, 3), .008)
+        self.assertEqual(sum(x["s"] > .5 for x in r) / 40, .85)
+        c = self.cfg()
+        w1 = E.log_weight(1e6, c["euro_b"], c["euro_unit"])
+        for k, want in ((2, 1.9), (10, 8.3), (100, 66.7)):
+            self.assertEqual(round(E.split_weight(1e6, k, c["euro_b"], c["euro_unit"])[0] / w1, 1), want)
+        for n in (40, 400):                                                  # the headline is a small-roll fact
+            self.assertLess(max(x["s"] for x in E.buyer_runs(1e6, n, 40, W, (self.P,))), .5)
+
+    def test_per_identity_cap_is_evaded_by_splitting(self):
+        c = self.cfg()
+        W = E.WEIGHTS["equal"]
+        rest = E.ROLL["Patrons"] * 1.0
+        single = E.stake_weight("Patrons", euros=1e6)
+        self.assertTrue(E.influence_cap(single, rest, W, self.P, (self.P,))["binds"])
+        k = 10
+        tot, wi = E.split_weight(1e6, k, c["euro_b"], c["euro_unit"])
+        self.assertFalse(E.influence_cap(wi, rest + tot - wi, W, self.P, (self.P,))["binds"])
+        self.assertGreaterEqual(E.council_share(tot, rest, W, self.P, (self.P,))[1], E.HALF)
+
+    def test_pareto_ladder_is_deterministic_and_above_floor(self):
+        a, b = E.pareto_ladder(50, random.Random(7)), E.pareto_ladder(50, random.Random(7))
+        self.assertEqual(a, b)
+        self.assertTrue(all(x >= E.PARETO_XM for x in a))
 
 
 class StrategyTests(unittest.TestCase):

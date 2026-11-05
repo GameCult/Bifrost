@@ -791,6 +791,94 @@ PS by category threshold:
 | minds shared s=.3 | -0.035 ±0.008 | -0.093 ±0.008 | 0.041 ±0.009 | 0.312 ±0.013 | 0.353 ±0.013 | 0.277 ±0.011 | 0.103 | 43.1 | 0.50 | 0.81 | undecided |
 | minds shared s=1.5 | -0.020 ±0.008 | -0.081 ±0.008 | 0.055 ±0.010 | 0.312 ±0.013 | 0.367 ±0.014 | 0.292 ±0.010 | 0.103 | 43.1 | 0.50 | 0.81 | undecided |
 
+## E6 purchased stake: logarithmic weight, splitting, and the half-influence cap (SPEC section 5c)
+
+Static weight analysis (no motions are simulated, so no PS or MT): a buyer joins the Patrons estate with one purchase; the 4-patron roll of the harness (and 40, 400) holds Pareto(1.16) donations from 10 EUR, 40 seeds each. Weight w = 1 + log_b(amount/unit), 0 below unit; defaults b = 10, unit = 10 EUR. Share s is the buyer's share of Patrons weight; x is its share of council weight (estate weight W x s over the live estates' weights); the cap binds iff x >= .5.
+
+**Million-euro buyer, defaults, Patrons roll 4 (mean over seeds, 95% interval); linear = weight proportional to amount, the counterfactual the log is meant to beat**
+
+| weights | live estates | s log | x log | x linear | cap binds (log) | cap binds (linear) | estate decided by buyer alone (s > .5) |
+|---|---|---|---|---|---|---|---|
+| equal | all four estates | 0.524 ±0.008 | 0.131 ±0.002 | 0.250 ±0.000 | 0.00 | 0.00 | 0.85 |
+| equal | Patrons + Minds | 0.524 ±0.008 | 0.262 ±0.004 | 0.500 ±0.000 | 0.00 | 0.00 | 0.85 |
+| equal | Patrons alone | 0.524 ±0.008 | 0.524 ±0.008 | 1.000 ±0.000 | 0.85 | 1.00 | 0.85 |
+| minds-heavy | all four estates | 0.524 ±0.008 | 0.052 ±0.001 | 0.100 ±0.000 | 0.00 | 0.00 | 0.85 |
+| minds-heavy | Patrons + Minds | 0.524 ±0.008 | 0.105 ±0.002 | 0.200 ±0.000 | 0.00 | 0.00 | 0.85 |
+| minds-heavy | Patrons alone | 0.524 ±0.008 | 0.524 ±0.008 | 1.000 ±0.000 | 0.85 | 1.00 | 0.85 |
+
+**Million-euro buyer's share of Patrons weight, b = 10, by unit and roll (mean over seeds, 95% interval; share of seeds in which the buyer alone decides the estate)**
+
+| unit EUR | roll 4 | roll 40 | roll 400 |
+|---|---|---|---|
+| 1 | 0.425 ±0.005 (0.00) | 0.069 ±0.000 (0.00) | 0.007 ±0.000 (0.00) |
+| 10 | 0.524 ±0.008 (0.85) | 0.098 ±0.001 (0.00) | 0.011 ±0.000 (0.00) |
+| 100 | 0.953 ±0.028 (1.00) | 0.579 ±0.040 (0.65) | 0.118 ±0.004 (0.00) |
+
+Interval over the swept cells: s from 0.007 to 0.953. The 0.524 headline is the harness's own cell (roll 4, unit 10), not a typical one: the buyer's majority of the estate depends on how few other patrons there are.
+
+**Cap-binding rate over the sweep (b, unit, roll, amount, weights x live set; every cell run on every seed)**
+
+| live estates | cells | cells x seeds | binding (cell, seed) | cells binding in every seed | cells never binding | binding but unenforceable |
+|---|---|---|---|---|---|---|
+| all four estates | 162 | 6480 | 0.000 | 0.000 | 1.000 | 0.000 |
+| Patrons + Minds | 162 | 6480 | 0.044 | 0.000 | 0.889 | 0.044 |
+| Patrons alone | 162 | 6480 | 0.222 | 0.148 | 0.704 | 0.089 |
+
+Binding rate in the Patrons-alone scenario by Patrons roll and by log base (fraction of cells x seeds):
+
+| roll | b=2 | b=10 | b=100 |
+|---|---|---|---|
+| 4 | 0.669 | 0.447 | 0.333 |
+| 40 | 0.286 | 0.169 | 0.094 |
+| 400 | 0.000 | 0.000 | 0.000 |
+
+**Splitting: the same total split over k identities (defaults, one honest identity = k 1). Multiplier = total weight of the split / weight of the single purchase**
+
+| amount EUR | single weight | k=2 | k=10 | k=100 | k=1000 | best k (grid) | best multiplier |
+|---|---|---|---|---|---|---|---|
+| 10000 | 4.00 | 1.8 | 7.5 | 50.0 | 250.0 | 1000 | 250 |
+| 100000 | 5.00 | 1.9 | 8.0 | 60.0 | 400.0 | 10000 | 2000 |
+| 1e+06 | 6.00 | 1.9 | 8.3 | 66.7 | 500.0 | 100000 | 16667 |
+
+Best multiplier at 1,000,000 EUR by log base and unit (b rows, unit columns):
+
+| b | unit=1 | unit=10 | unit=100 |
+|---|---|---|---|
+| 2 | 50711 (k=740348) | 6027 (k=74738) | 743 (k=7185) |
+| 10 | 142857 (k=1000000) | 16667 (k=100000) | 2000 (k=10000) |
+| 100 | 250000 (k=1000000) | 28571 (k=100000) | 3333 (k=10000) |
+
+**Candidate defences, none adopted by SPEC (best multiplier at 1,000,000 EUR, defaults)**
+
+| defence | setting | best multiplier | neutralises (best split is k = 1) |
+|---|---|---|---|
+| per-person weight cap | 1.0 | 100000 | no |
+| per-person weight cap | 3.0 | 33333 | no |
+| per-person weight cap | 6.0 | 16667 | no |
+| unit floor | 10 EUR | 16666.7 | no |
+| unit floor | 1000 EUR | 250.0 | no |
+| unit floor | 100000 EUR | 5.0 | no |
+| unit floor | 500000 EUR | 1.5 | no |
+| unit floor | 1e+06 EUR | 1.0 | yes |
+| identity cost | smallest cost by bisection, amount 10000 EUR | | yes at 4930 EUR per identity (49.3% of the budget, bisection to 0.1%) |
+| identity cost | smallest cost by bisection, amount 100000 EUR | | yes at 49800 EUR per identity (49.8% of the budget, bisection to 0.1%) |
+| identity cost | smallest cost by bisection, amount 1e+06 EUR | | yes at 499520 EUR per identity (50.0% of the budget, bisection to 0.1%) |
+
+**Cap evasion: the cap is per identity. Patrons alone, equal weights, roll 4, defaults, 1,000,000 EUR over k identities**
+
+| k | joint share x | share of one identity | cap binds on an identity | joint x >= .5 (evaded) |
+|---|---|---|---|---|
+| 1 | 0.524 ±0.008 | 0.524 ±0.008 | 0.85 | 0.00 |
+| 2 | 0.676 ±0.007 | 0.338 ±0.004 | 0.00 | 1.00 |
+| 10 | 0.901 ±0.003 | 0.090 ±0.000 | 0.00 | 1.00 |
+| 100 | 0.986 ±0.000 | 0.010 ±0.000 | 0.00 | 1.00 |
+
+**Contribution hours: Members weight from hours alone (no mechanism for contribution existed in the harness; new per-agent input, own per-estate conversion)**
+
+| hours | 5 | 10 | 100 | 1000 | 10000 |
+|---|---|---|---|---|---|
+| weight | 0.00 | 1.00 | 2.00 | 3.00 | 4.00 |
+
 ## Claim tally over all cells (SPEC section 8)
 
 supported 0, fails 2, undecided 233, n/a 0
