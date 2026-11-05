@@ -1,6 +1,6 @@
 # Estate-rule sim harness: spec (2026-11-05)
 
-Serves follow-up `heimdall-body:follow_up:chat-mind-20261105T002133411Z-t0`. Prior work: `../2026-10-29-estate-tally-game-theory/` (README.md plus numpy probes in `sims/`). Facts there are cited as "prior §n". This document is written before the code; `estatesim.py` implements it, and where the code had to deviate the deviation is listed at the bottom of `REPORT.md`, not edited in here.
+Serves follow-up `heimdall-body:follow_up:chat-mind-20261105T002133411Z-t0`. Prior work: `../2026-10-29-estate-tally-game-theory/` (README.md plus numpy probes in `sims/`). Facts there are cited as "prior §n". This document is written before the code; `estatesim.py` implements it, and where the code had to deviate the deviation is listed at the bottom of `REPORT.md`, not edited in here. Revision 2 (delegation rules, section 5, E3) was made before any result was generated.
 
 ## 1. Claim under test
 
@@ -56,21 +56,21 @@ Sincere ballot: For if u > .1, Against if u < −.1, otherwise abstain.
 
 **Turnout response (intensity):** voter turns out with p_i = clamp(base_e × (1 + κ(|u_i| − ū_e)), 0, 1), κ = 1, ū_e = .8·sqrt(a²+b²+s²+σ²) the mean |u|. Aggrieved or enthused voters show up. This is the standard mobilization asymmetry behind low-turnout populist surges and is the channel through which d reaches the Users estate even at 10% turnout.
 
-## 5. Delegation (operator's posted rules)
+## 5. Delegation (operator's posted rules, revision 2)
 
-Rules as posted, each with its realization:
+Revision 2 (same day, brief `heimdall-body:follow_up:chat-s1938-1941`) replaces depth-2 with transitive chains and sweeps the depth limit. Rules as posted, each with its realization:
 
-1. **Within-estate:** a delegator and delegate are in the same estate. Minds do not delegate (δ_Minds = 0): eight accountable Personas delegating to each other would only reduce n_eff. Delegation shares: Members .2, Users .5, Patrons .2 of the roll are delegators.
-2. **Scoped:** a delegation covers a set of motion categories, each of the five included with probability .6. Out of scope the delegator is an ordinary (possibly absent) voter.
-3. **Revocable:** a delegator revokes a delegation after R_strikes = 2 contradicted motions in scope: motions where the delegate's terminal ballot opposes the delegator's strong sincere preference (|u| > .5). Revoked delegations are removed for the rest of the replicate. The strike count is the only delegation memory.
-4. **Direct overrides:** a delegator who turns out votes directly with weight 1; the weight does not flow to the delegate for that motion. A delegator with a strike-worthy contradiction (|u| > .5 against the delegate) turns out regardless of turnout draw, which is the delegation-driven turnout response.
-5. **Depth 2:** weight flows along at most two delegation edges. A weight that would need a third edge is void (it counts as an abstention).
-6. **Per-delegate cap c:** a terminal ballot holder's resolved weight is capped at max(1, c × estate roll size). c is swept over {.10, .15, .20, .25, .30} and "none"; .2 is the posted anchor. Excess weight is void, not redistributed (the posted rule says cap only; redistribution would be a different mechanism).
-7. **Estate rule after resolution:** F_e and A_e are computed from the resolved weights; the rules of section 2 then apply unchanged.
+1. **Within-estate:** an edge joins two members of the same estate. Minds do not delegate (eight accountable Personas delegating to each other would only reduce n_eff). Delegator shares of the roll: Members .2, Users .5, Patrons .2.
+2. **Scoped:** each edge covers a set of motion categories, each of the five included with probability .6 (never empty).
+3. **Revocable:** a delegator whose final holder's ballot opposes the delegator's strong sincere preference (|u| > .5) takes a strike; at `STRIKES` = 2 the edge is revoked for the rest of the replicate. Revoked edges do not return. The strike count is the only delegation memory.
+4. **Direct overrides:** a member who votes directly casts weight 1 and is never forwarded. A delegator with a strike-worthy contradiction turns out regardless of the turnout draw (the delegation-driven turnout response); the motion is then re-resolved, so chains that ran through that member now end at it.
+5. **Transitive chains, depth D:** weight follows edges from the delegator until it reaches a member who votes directly (the final holder). An intermediate member who votes directly ends the chain there. D is the maximum number of edges; swept over {2, 3 (placeholder, default), 4, 6, unlimited}. **Scope is the overlap of all links:** the chain is void when any link's scope excludes the motion's category. **A loop, a chain longer than D, a chain that ends at a member who neither votes nor delegates, or a chain with an out-of-scope link returns the vote uncast** (the delegator counts as an abstainer, not redirected). The `uncast` column in results is the share of delegated votes left uncast.
+6. **Per-final-holder cap c:** a final holder's total resolved weight (own vote plus everything that reached it) is capped at max(1, c × basis). Basis is "cast" (the estate's total resolved weight before capping, default) or "roll" (estate roll size, an alternative swept in E3d). A fifth is read as a fifth of what the estate actually casts, because Users turnout is about 10% and a roll-based fifth (60 of 300) would never bind; E3d shows both. c ∈ {.10, .15, .20, .25, .30} and none. Excess is void, not redistributed.
+7. **Estate rule after resolution:** F_e and A_e are computed from capped resolved weights; section 2 then applies unchanged.
 
-Delegate pool: each delegating estate has 10% of its roll as active delegates (turnout .95, 25% of them populist, i.e. a = .2, b = 1.2, σ = .7, otherwise a = .7, b = .5, σ = .7). A delegate delegates onward with probability .3 (depth 2 is therefore reachable). Delegate choice is Zipf over a fixed delegate ranking with exponent α (concentration), multiplied by (1+β) for populist delegates (β = appeal attraction). α ∈ {0, .5, 1, 1.5, 2.5}, β ∈ {0, 1, 3}. α=0 is uniform choice; larger α is guru formation (Kling et al. 2015 observed super-voters in LiquidFeedback; Gölz et al. 2018 model the effect with preferential attachment and show maximum delegated weight grows with concentration).
+Delegate pool: each delegating estate has 10% of its roll (at least one) as active delegates with turnout `dturn` (default .95; swept {.95, .6, .3}, because when delegates always vote chains never run past one edge and depth is inert), 25% of them populist (a = .2, b = 1.2, σ = .7, otherwise a = .7, b = .5, σ = .7). A delegate delegates onward to another delegate with probability `onward` (default .3; swept {.3, .6}); loops arise naturally. Delegator and onward targets are Zipf over a fixed delegate ranking with exponent α, multiplied by (1+β) for populist delegates. α ∈ {0, .5, 1, 1.5, 2.5, 4}, β ∈ {0, 1, 3}. α=0 is uniform choice; larger α is guru formation (Kling et al. 2015 observed super-voters in LiquidFeedback; Gölz et al. 2018 show maximum delegated weight grows with concentration).
 
-Not modeled: delegation cycles (cycle detection is not needed because depth is capped at two edges and a cycle's weight is void), vote selling, and delegation to non-members.
+Not modeled: vote selling, delegation to non-members, delegators choosing delegates by track record.
 
 ## 6. Strategic and adaptive agents
 
@@ -86,11 +86,13 @@ Limits: delegators are not strategic (their ballot is their delegate's); single-
 
 ## 7. Experiments
 
-Paired across rules: one set of random draws per motion feeds all rules (common random numbers). Replicates R = 24 (a fresh delegation network per replicate), M = 400 motions each, categories uniform. Seeds are fixed integers; no wall-clock or hash use. Confidence intervals are 1.96 standard errors over replicates; paired differences are taken within replicate.
+Paired across rules: one set of random draws per motion feeds all rules (common random numbers). Replicates R = 40 (a fresh delegation network per replicate), M = 500 motions each, categories uniform. Seeds are fixed integers; no wall-clock or hash use. Confidence intervals are 1.96 standard errors over replicates; paired differences are taken within replicate.
 
 - **E1 baseline:** sincere, no delegation, no faction. Rules × weight seeds × q.
 - **E2 strategic:** E1 with ρ = .25 strategic agents and faction sweep.
-- **E3 delegation:** concentration α × cap c (30 cells), δ as in section 5, strategic on, F = 20.
+- **E3 delegation:** concentration α × cap c (36 cells) at depth 3, strategic on, F = 20; **E3b** the same sincere with no faction (isolates delegation).
+- **E3c transitive depth:** depth {2, 3, 4, 6, unlimited} × delegate turnout {.95, .6, .3} × onward {.3, .6}, α = 1.5, c = .2.
+- **E3d cap basis:** cast vs roll × c ∈ {.05, .10, .20, .30}, depth 3, α = 1.5.
 - **E4 appeal attraction:** β sweep at α = 1.5, c = .2.
 - **E5 robustness:** Users appeal loading b ∈ {.4, .9, 1.4}; Users base turnout {.05, .10, .30}; Minds ICC (s_Minds ∈ {.3, .9, 1.5}). This is the check on the assumed parameters in section 4.
 
@@ -100,7 +102,7 @@ The claim is **supported** in a cell if the paired difference PS(UNI) − PS(DIR
 
 ## 9. Tests (`test_estatesim.py`)
 
-Pin the rules, not the spelling: rule thresholds including ties; depth-2 void; direct override; revocation after strikes; cap void and cap floor; scope; determinism (same seed, same bytes); paired draws identical across rules; misreporting never produces an outcome the agent likes less; metrics on hand-built outcome lists.
+Pin the rules, not the spelling: rule thresholds including ties; chains within depth, over depth (uncast), unlimited, terminated by an intermediate direct vote, looped, dead-ended; scope as overlap of all links; direct override; two-strike revocation; cap void, cap floor, cap on the final holder, cap basis; determinism (same seed, same bytes); paired draws identical across rules; misreporting never produces an outcome the agent likes less; metrics on hand-built outcome lists.
 
 ## 10. Sources
 
