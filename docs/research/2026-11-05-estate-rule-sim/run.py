@@ -62,6 +62,7 @@ def summarize(cfg, chunk):
     for k, nm in enumerate(("top_share", "gini", "n_eff", "weight")):
         conc[nm] = sum(c[k] for c in allc) / len(allc)
     dl = sum(c[5] for c in allc)
+    conc["live"] = sum(c[6] for c in allc) / len(allc)                # share of delegators still holding an edge
     conc["uncast"] = sum(c[4] for c in allc) / dl if dl else 0.0       # share of delegated votes left uncast
     return dict(cfg=cfg, per=per, percat=percat, paired=paired, conc=conc,
                 verdict=E.verdict(paired[("UNI", "DIRECT", "PS")], paired[("UNI", "DIRECT", "MT")]))
@@ -119,9 +120,12 @@ def experiments(quick):
               [(f"alpha={a} cap={c}", E.Config(delegation=True, alpha=a, cap=c))
                for a in alphas for c in caps], False))
     depths = (2, None) if quick else (2, 3, 4, 6, None)
-    X.append(("E3c transitive depth x delegate turnout x onward delegation (alpha=1.5, cap=.2, strategic, faction 20)",
-              [(f"depth={d} dturn={t} onward={o}", E.Config(delegation=True, alpha=1.5, depth=d, dturn=t, onward=o, cap=.2, rho=.25, faction=20))
-               for d in depths for t in (.95, .6, .3) for o in (.3, .6)], False))
+    X.append(("E3c transitive depth x delegate turnout x peer-delegation share (alpha=1.5, cap=.2, strategic, faction 20)",
+              [(f"depth={d} dturn={t} peer={p}", E.Config(delegation=True, alpha=1.5, depth=d, dturn=t, peer=p, cap=.2, rho=.25, faction=20))
+               for d in depths for t in (.95, .3) for p in (.3, .8)], False))
+    X.append(("E3e revocation renewal: how fast revoked delegators re-delegate (alpha=1.5, cap=.2, depth 3, strategic, faction 20)",
+              [(f"renew={n}", E.Config(delegation=True, alpha=1.5, cap=.2, renew=n, rho=.25, faction=20))
+               for n in (0.0, .02, .1, .5)], False))
     X.append(("E3d cap basis: share of cast weight vs share of roll (alpha=1.5, depth=3, strategic, faction 20)",
               [(f"basis={bs} cap={c}", E.Config(delegation=True, alpha=1.5, cap=c, cap_basis=bs, rho=.25, faction=20))
                for bs in ("cast", "roll") for c in ((.1, .2) if quick else (.05, .1, .2, .3))], False))
@@ -156,8 +160,8 @@ def main(argv=None):
         cfgs = [E.Config(**{**c.__dict__, "motions": motions}) for _, c in cells]
         res = evaluate(cfgs, reps, a.jobs)
         L += [f"## {title}", ""]
-        summ = ["| cell | dPS UNI-DIRECT | dMT UNI-DIRECT | dPS WTA-DIRECT | PS DIRECT | PS WTA | PS UNI | Users top share | Users n_eff | uncast | claim |",
-                "|---|---|---|---|---|---|---|---|---|---|---|"]
+        summ = ["| cell | dPS UNI-DIRECT | dMT UNI-DIRECT | dPS WTA-DIRECT | PS DIRECT | PS WTA | PS UNI | Users top share | Users n_eff | uncast | live edges | claim |",
+                "|---|---|---|---|---|---|---|---|---|---|---|---|"]
         for (name, _), r in zip(cells, res):
             tally[r["verdict"]] += 1
             if r["verdict"] == "fails":
@@ -166,7 +170,7 @@ def main(argv=None):
             summ.append(f"| {name} | {f(*pr[('UNI','DIRECT','PS')])} | {f(*pr[('UNI','DIRECT','MT')])} | "
                         f"{f(*pr[('WTA','DIRECT','PS')])} | {f(*E.mean_ci(pe['DIRECT']['PS']))} | "
                         f"{f(*E.mean_ci(pe['WTA']['PS']))} | {f(*E.mean_ci(pe['UNI']['PS']))} | "
-                        f"{r['conc']['top_share']:.3f} | {r['conc']['n_eff']:.1f} | {r['conc']['uncast']:.2f} | {r['verdict']} |")
+                        f"{r['conc']['top_share']:.3f} | {r['conc']['n_eff']:.1f} | {r['conc']['uncast']:.2f} | {r['conc']['live']:.2f} | {r['verdict']} |")
         L += summ + [""]
         if detail:
             for (name, _), r in zip(cells, res):

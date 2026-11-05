@@ -185,8 +185,16 @@ class DelegationTests(unittest.TestCase):
         e.motion(0, 1.0, 0.0, random.Random(2), 0.0)
         self.assertIsNone(e.target[1])                              # second strike revokes
         e.motion(0, 1.0, 0.0, random.Random(3), 0.0)
-        self.assertEqual(e.strikes[1], 2)                           # revoked: no further strikes, never returns
+        self.assertEqual(e.strikes[1], 2)                           # revoked: no further strikes while unrenewed
         self.assertIsNone(e.target[1])
+
+    def test_renewal_restores_an_edge_with_fresh_strikes(self):
+        e = self.contradicting_estate()
+        e.cfg = E.Config(delegation=True, renew=1.0, peer=0.0)
+        e.pool, e.delegators = ([0], [1.0]), [1]
+        e.target[1], e.revoked, e.strikes[1] = None, [1], 2
+        e.motion(0, 0.0, 0.0, random.Random(1), 0.0)
+        self.assertEqual((e.target[1], e.strikes[1], e.revoked), (0, 0, []))
 
     def test_direct_voters_never_forwarded(self):
         edge(self.e, 1, 0)

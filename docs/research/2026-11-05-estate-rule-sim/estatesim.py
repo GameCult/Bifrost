@@ -38,6 +38,8 @@ class Config:
     cap: float = None        # per-final-holder cap as a fraction of cap_basis; None = no cap
     cap_basis: str = "cast"  # "cast": estate weight resolved before capping; "roll": estate roll size
     depth: int = 3           # max delegation edges a vote may traverse; None = unlimited
+    renew: float = .1        # per-motion probability a revoked delegator picks a new delegate (0: revocation is final)
+    peer: float = .3         # probability a delegator's edge goes to another delegator, not an active delegate
     dturn: float = .95       # delegates' own turnout; a delegate who stays home passes weight onward
     onward: float = .3       # probability an active delegate itself delegates onward
     rho: float = 0.0         # strategic fraction
@@ -93,6 +95,10 @@ class Estate:
         self.target = [None] * n
         self.scope = [None] * n
         self.strikes = [0] * n
+        self.revoked = []
+        self.delegators = []
+        self.pool = None
+        self.rng = random.Random(rng.getrandbits(32))
         self.is_delegate = [False] * n
         self.populist = [False] * n
         self.faction = [False] * n
@@ -114,10 +120,12 @@ class Estate:
                 self.turn[d], self.kap[d] = cfg.dturn, 0.0
             wts = [(k + 1) ** -cfg.alpha * ((1 + cfg.beta) if self.populist[d] else 1.0)
                    for k, d in enumerate(delegates)]
+            self.pool = (delegates, wts)
             nde = min(len(rest), round(share * n))
             delegators, rest = rest[:nde], rest[nde:]
+            self.delegators = delegators
             for i in delegators:
-                self.target[i] = rng.choices(delegates, wts)[0]
+                self.target[i] = self._pick(i, rng)
                 self.scope[i] = self._scope(rng)
             if len(delegates) > 1:
                 for k, d in enumerate(delegates):
@@ -130,6 +138,12 @@ class Estate:
                 self.faction[i] = True
         self.ubar = [.8 * math.sqrt(self.a[i] ** 2 + self.b[i] ** 2 + self.s ** 2 + self.sig[i] ** 2)
                      for i in range(n)]
+
+    def _pick(self, i, rng):
+        """A new delegation target for delegator i: a peer delegator, or an active delegate by Zipf rank."""
+        if len(self.delegators) > 1 and rng.random() < self.cfg.peer:
+            return rng.choice([x for x in self.delegators if x != i])
+        return rng.choices(*self.pool)[0]
 
     @staticmethod
     def _scope(rng):
@@ -197,6 +211,16 @@ class Estate:
     def motion(self, cat, m, d, rng, z):
         """Draw this estate's motion state; returns dict with resolved holders and joiners."""
         n = self.n
+        if self.revoked:
+            keep = []
+            for i in self.revoked:
+                if self.rng.random() < self.cfg.renew:
+                    self.target[i] = self._pick(i, self.rng)
+                    self.scope[i] = self._scope(self.rng)
+                    self.strikes[i] = 0
+                else:
+                    keep.append(i)
+            self.revoked = keep
         u = [self.a[i] * m + self.b[i] * d + self.s * z + self.sig[i] * rng.gauss(0, 1) for i in range(n)]
         un = [rng.random() for _ in range(n)]
         agenda = d - m > 0
@@ -220,14 +244,16 @@ class Estate:
                 forced = True
                 self.strikes[i] += 1
                 if self.strikes[i] >= STRIKES:
-                    self.target[i] = None              # revoked for the rest of the replicate
+                    self.target[i] = None              # revoked until renewed (cfg.renew)
+                    self.revoked.append(i)
         if forced:
             w, dest = self.resolve(cat, voting)
         holders = [(t, sb[t], w[t]) for t in w]
         joiners = [(i, sb[i]) for i in range(n)
                    if not voting[i] and i not in dest and sb[i] != 0]
         return dict(u=u, holders=holders, joiners=joiners, weights=sorted(w.values()),
-                uncast=self.last_uncast, delegated=len(dest) + self.last_uncast)
+                uncast=self.last_uncast, delegated=len(dest) + self.last_uncast,
+                live=sum(1 for i in self.delegators if self.target[i] is not None) / max(1, len(self.delegators)))
 
 
 def concentration(weights):
@@ -302,7 +328,7 @@ def run_replicate(cfg, rep, base_seed=20261105):
         for e, dt in enumerate(data):
             for _, b, w in dt["holders"]:
                 _move(F0, A0, e, 0, b, w)
-        conc.append(concentration(data[2]["weights"]) + (data[2]["uncast"], data[2]["delegated"]))
+        conc.append(concentration(data[2]["weights"]) + (data[2]["uncast"], data[2]["delegated"], data[2]["live"]))
         sinc, strat = [], []
         for rule in RULES:
             sinc.append(passes(rule, F0, A0, W, q))
