@@ -445,17 +445,19 @@ def verdict(dps, dmt):
 # set of live estates come from the same tables the rules above use.
 
 STAKE_KEYS = ("euro_b", "euro_unit", "hours_b", "hours_unit")
-# Per-estate conversion of stake to weight. Assumptions, stated in SPEC section 5c.
-# Only Patrons (euros) and Members (contribution hours) carry stake; Minds are
+# PLACEHOLDER: every number in STAKE_BASE, HALF excepted, is my assumption (SPEC section 5c), not a ruling
+# or data. Results are conditional on them; run.py sweeps b and unit, not hours.
+# Per-estate conversion of stake to weight. Only Patrons (euros) and Members (contribution hours) carry stake; Minds are
 # counted once and Users are one-each, so they have no entry and weigh 1.
 STAKE_BASE = {
     "Patrons": dict(euro_b=10.0, euro_unit=10.0, hours_b=10.0, hours_unit=10.0),
     "Members": dict(euro_b=10.0, euro_unit=10.0, hours_b=10.0, hours_unit=10.0),
 }
-HALF = .5            # operator-influence cap: council weight share strictly below this (prior section 10)
+HALF = .5            # RULED, not a placeholder: operator-influence cap: council weight share strictly below this (prior section 10)
 STRICT = 1e-9        # "strictly below": a capped holder sits at c*(1-STRICT)
-PARETO_ALPHA = 1.16  # prior section 4: Pareto(1.16) contribution ladder
-PARETO_XM = 10.0     # EUR; smallest ordinary Patron donation
+PARETO_ALPHA = 1.16  # exponent from prior section 4 (Pareto(1.16) ladder); the roll sizes below are PLACEHOLDER
+PARETO_XM = 10.0     # PLACEHOLDER: EUR scale, mine; prior section 4's ladder starts at 10
+STAKE_SEED = 20261105
 
 
 def stake_params(name, overrides=()):
@@ -469,14 +471,22 @@ def stake_params(name, overrides=()):
 
 
 def log_weight(x, b, unit):
-    """w = 1 + log_b(x/unit): 1 at x = unit, 0 (not negative) below unit."""
+    """w = 1 + log_b(x/unit): 1 at x = unit, 0 (not negative) below unit.
+
+    This is the weight of ONE IDENTITY. It is not sybil-safe: log is sub-linear, so the same x split over
+    k identities weighs more (split_weight). Whether the log bounds a purchase depends on identities being
+    scarce, which nothing in this module supplies. b and unit are PLACEHOLDER values (STAKE_BASE)."""
     if b <= 1 or unit <= 0:
         raise ValueError("log base must exceed 1 and unit must be positive")
     return 0.0 if x < unit else 1.0 + math.log(x / unit, b)
 
 
 def stake_weight(name, euros=0.0, hours=0.0, overrides=()):
-    """One member's weight: euro channel plus contribution-hours channel, each with the estate's own (b, unit)."""
+    """One identity's weight: euro channel plus contribution-hours channel, each with the estate's own (b, unit).
+
+    Per identity, not per person: splitting evades it (see log_weight). The hours channel is UNANALYSED:
+    it is added here, but no scenario in run.py gives a buyer hours, so nothing below tests whether hours
+    can be farmed, bought or split. Its (b, unit) are PLACEHOLDER."""
     p = stake_params(name, overrides)
     if not p:
         return 1.0
@@ -499,7 +509,10 @@ def council_share(w, rest, W, e, live):
 def influence_cap(w, rest, W, e, live, c=HALF):
     """Operator-influence cap (prior section 10, ruling operator-influence-below-half): a holder's
     council weight share must be strictly below c. Binds iff x >= c; the holder's internal weight is
-    then cut until x = c*(1-STRICT). Unenforceable when nobody else holds weight in the estate."""
+    then cut until x = c*(1-STRICT). Unenforceable when nobody else holds weight in the estate.
+
+    The cap is applied to ONE IDENTITY's weight w. A holder who splits across identities is never cut
+    (cap evasion, results.md), so this is a bound on a ledger entry, not on a person."""
     s, x = council_share(w, rest, W, e, live)
     out = dict(s=s, x=x, binds=x >= c - EPS, w_capped=w, s_capped=s, x_capped=x, enforceable=True)
     if not out["binds"]:
@@ -534,14 +547,33 @@ def best_split(amount, b, unit, identity_cost=0.0, person_cap=None):
     return best[0], -best[1]
 
 
-def min_neutralising_cost(amount, b, unit, person_cap=None):
-    """Smallest per-identity cost on a doubling grid (from unit) at which no split beats one identity,
-    or None. Neutral = best split is k = 1 and one identity still has weight."""
-    c = unit
-    while c < amount:
-        w1 = split_weight(amount, 1, b, unit, c, person_cap)[0]
-        tot, k = best_split(amount, b, unit, c, person_cap)
-        if w1 > 0 and k == 1:
-            return c
-        c *= 2
-    return None
+def min_neutralising_cost(amount, b, unit, person_cap=None, tol=1e-3):
+    """Smallest per-identity cost at which no split beats one identity, found by bisection to relative
+    tol (a bisection value, not a grid point). Neutral = best split is k = 1 and one identity still has
+    weight. A doubling search from unit brackets the first neutral cost; assumes the predicate is
+    monotone inside the bracket. Returns None if no cost below the amount is neutral."""
+    def neutral(c):
+        return (split_weight(amount, 1, b, unit, c, person_cap)[0] > 0
+                and best_split(amount, b, unit, c, person_cap)[1] == 1)
+    hi = unit
+    while hi < amount and not neutral(hi):
+        hi *= 2
+    if hi >= amount:
+        return None
+    lo = hi / 2 if hi > unit else 0.0
+    while hi - lo > tol * hi:
+        mid = (lo + hi) / 2
+        lo, hi = (lo, mid) if neutral(mid) else (mid, hi)
+    return hi
+
+
+def stake_ladder(n, s):
+    """Seed s's roll of n ordinary patrons: a pure function of (n, s)."""
+    return pareto_ladder(n, random.Random(STAKE_SEED + 1000 * n + s))
+
+
+def buyer_runs(amount, n, seeds, W, live, overrides=()):
+    """influence_cap result for a buyer of `amount` EUR against each of `seeds` rolls of n ordinary patrons."""
+    wb = stake_weight("Patrons", euros=amount, overrides=overrides)
+    return [influence_cap(wb, sum(stake_weight("Patrons", euros=x, overrides=overrides) for x in stake_ladder(n, s)),
+                          W, ESTATES.index("Patrons"), live) for s in range(seeds)]

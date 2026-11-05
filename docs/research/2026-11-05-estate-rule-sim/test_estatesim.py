@@ -337,7 +337,7 @@ class StakeTests(unittest.TestCase):
                 self.assertLess(r["x_capped"], E.HALF)
                 self.assertAlmostEqual(r["x_capped"], E.HALF, places=6)
 
-    def test_log_bounds_buyout_relative_to_linear(self):
+    def test_log_weight_gives_a_smaller_share_than_linear_but_still_a_near_total_one_in_a_tiny_estate(self):
         c = self.cfg()
         rest_amounts = [10.0, 50.0, 200.0, 5000.0]
         W = E.WEIGHTS["equal"]
@@ -382,6 +382,23 @@ class StakeTests(unittest.TestCase):
         self.assertEqual(E.best_split(a, b, u, identity_cost=cost)[1], 1)
         self.assertGreater(E.best_split(a, b, u, identity_cost=cost / 2)[1], 1)
         self.assertGreater(cost, a / 4)
+        self.assertAlmostEqual(cost / a, .5, delta=.01)                      # bisection value: just under half the budget
+        self.assertLess(cost, a / 2 + 1e-9)
+
+    def test_headline_numbers_are_pinned(self):
+        """The figures REPORT.md quotes, under the placeholder defaults and the fixed seeds (40, STAKE_SEED)."""
+        W = E.WEIGHTS["equal"]
+        r = E.buyer_runs(1e6, E.ROLL["Patrons"], 40, W, (self.P,))
+        m, hw = E.mean_ci([x["s"] for x in r])
+        self.assertEqual(round(m, 3), .524)
+        self.assertEqual(round(hw, 3), .008)
+        self.assertEqual(sum(x["s"] > .5 for x in r) / 40, .85)
+        c = self.cfg()
+        w1 = E.log_weight(1e6, c["euro_b"], c["euro_unit"])
+        for k, want in ((2, 1.9), (10, 8.3), (100, 66.7)):
+            self.assertEqual(round(E.split_weight(1e6, k, c["euro_b"], c["euro_unit"])[0] / w1, 1), want)
+        for n in (40, 400):                                                  # the headline is a small-roll fact
+            self.assertLess(max(x["s"] for x in E.buyer_runs(1e6, n, 40, W, (self.P,))), .5)
 
     def test_per_identity_cap_is_evaded_by_splitting(self):
         c = self.cfg()

@@ -210,7 +210,6 @@ def copy_reading(cells, res):
     return L + [""]
 
 
-STAKE_SEED = 20261105
 PATRONS = E.ESTATES.index("Patrons")
 LIVE = {"all four estates": (0, 1, 2, 3), "Patrons + Minds": (0, PATRONS), "Patrons alone": (PATRONS,)}
 
@@ -232,7 +231,7 @@ def stake_section(quick):
          f"{seeds} seeds each. Weight w = 1 + log_b(amount/unit), 0 below unit; defaults b = {E.STAKE_BASE['Patrons']['euro_b']:.0f}, "
          f"unit = {E.STAKE_BASE['Patrons']['euro_unit']:.0f} EUR. Share s is the buyer's share of Patrons weight; x is its share of council weight "
          "(estate weight W x s over the live estates' weights); the cap binds iff x >= .5.", ""]
-    ladders = {(n, s): E.pareto_ladder(n, random.Random(STAKE_SEED + 1000 * n + s)) for n in rolls for s in range(seeds)}
+    ladders = {(n, s): E.stake_ladder(n, s) for n in rolls for s in range(seeds)}
     # headline: the million-euro buyer, defaults, roll of the harness
     n0 = E.ROLL["Patrons"]
     L += ["**Million-euro buyer, defaults, Patrons roll " + str(n0) + " (mean over seeds, 95% interval); linear = weight proportional to amount, the counterfactual the log is meant to beat**", "",
@@ -251,6 +250,20 @@ def stake_section(quick):
             fr = [sum(r[k] for r in rows) / seeds for k in (3, 4, 5)]
             L.append(f"| {wn} | {ln} | {f(*m[0])} | {f(*m[1])} | {f(*m[2])} | {fr[0]:.2f} | {fr[1]:.2f} | {fr[2]:.2f} |")
     L.append("")
+    # the headline share is one (unit, roll) cell: sweep both, state the interval
+    L += ["**Million-euro buyer's share of Patrons weight, b = 10, by unit and roll (mean over seeds, 95% interval; share of seeds in which the buyer alone decides the estate)**", "",
+          "| unit EUR | " + " | ".join(f"roll {n}" for n in rolls) + " |", "|---|" + "---|" * len(rolls)]
+    cells = []
+    for u in units:
+        cols = []
+        for n in rolls:
+            r = E.buyer_runs(EUR, n, seeds, E.WEIGHTS["equal"], (PATRONS,), (("Patrons", "euro_b", 10.0), ("Patrons", "euro_unit", u)))
+            m = E.mean_ci([x["s"] for x in r])
+            cells.append(m[0])
+            cols.append(f"{f(*m)} ({sum(x['s'] > .5 for x in r) / seeds:.2f})")
+        L.append(f"| {u:g} | " + " | ".join(cols) + " |")
+    L += ["", f"Interval over the swept cells: s from {min(cells):.3f} to {max(cells):.3f}. The 0.524 headline is the harness's own cell (roll {n0}, unit 10), "
+          "not a typical one: the buyer's majority of the estate depends on how few other patrons there are.", ""]
     # cap-binding rate across the whole sweep
     tally = {}
     for wn, W in E.WEIGHTS.items():
@@ -317,8 +330,8 @@ def stake_section(quick):
         L.append(f"| unit floor | {uf:g} EUR | {bt / s1:.1f} | {'yes' if bk == 1 else 'no'} |")
     for a in amounts:
         mc = E.min_neutralising_cost(a, b0, u0)
-        L.append(f"| identity cost | smallest on a doubling grid, amount {a:g} EUR | | "
-                 + (f"yes at {mc:g} EUR per identity ({mc / a:.0%} of the budget)" if mc else "no cost below the amount") + " |")
+        L.append(f"| identity cost | smallest cost by bisection, amount {a:g} EUR | | "
+                 + (f"yes at {mc:.0f} EUR per identity ({mc / a:.1%} of the budget, bisection to 0.1%)" if mc else "no cost below the amount") + " |")
     # cap evasion by splitting, Patrons alone
     L += ["", "**Cap evasion: the cap is per identity. Patrons alone, equal weights, roll " + str(n0) + ", defaults, 1,000,000 EUR over k identities**", "",
           "| k | joint share x | share of one identity | cap binds on an identity | joint x >= .5 (evaded) |", "|---|---|---|---|---|"]

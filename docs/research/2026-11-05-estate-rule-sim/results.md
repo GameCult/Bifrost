@@ -806,6 +806,16 @@ Static weight analysis (no motions are simulated, so no PS or MT): a buyer joins
 | minds-heavy | Patrons + Minds | 0.524 ±0.008 | 0.105 ±0.002 | 0.200 ±0.000 | 0.00 | 0.00 | 0.85 |
 | minds-heavy | Patrons alone | 0.524 ±0.008 | 0.524 ±0.008 | 1.000 ±0.000 | 0.85 | 1.00 | 0.85 |
 
+**Million-euro buyer's share of Patrons weight, b = 10, by unit and roll (mean over seeds, 95% interval; share of seeds in which the buyer alone decides the estate)**
+
+| unit EUR | roll 4 | roll 40 | roll 400 |
+|---|---|---|---|
+| 1 | 0.425 ±0.005 (0.00) | 0.069 ±0.000 (0.00) | 0.007 ±0.000 (0.00) |
+| 10 | 0.524 ±0.008 (0.85) | 0.098 ±0.001 (0.00) | 0.011 ±0.000 (0.00) |
+| 100 | 0.953 ±0.028 (1.00) | 0.579 ±0.040 (0.65) | 0.118 ±0.004 (0.00) |
+
+Interval over the swept cells: s from 0.007 to 0.953. The 0.524 headline is the harness's own cell (roll 4, unit 10), not a typical one: the buyer's majority of the estate depends on how few other patrons there are.
+
 **Cap-binding rate over the sweep (b, unit, roll, amount, weights x live set; every cell run on every seed)**
 
 | live estates | cells | cells x seeds | binding (cell, seed) | cells binding in every seed | cells never binding | binding but unenforceable |
@@ -850,9 +860,9 @@ Best multiplier at 1,000,000 EUR by log base and unit (b rows, unit columns):
 | unit floor | 100000 EUR | 5.0 | no |
 | unit floor | 500000 EUR | 1.5 | no |
 | unit floor | 1e+06 EUR | 1.0 | yes |
-| identity cost | smallest on a doubling grid, amount 10000 EUR | | yes at 5120 EUR per identity (51% of the budget) |
-| identity cost | smallest on a doubling grid, amount 100000 EUR | | yes at 81920 EUR per identity (82% of the budget) |
-| identity cost | smallest on a doubling grid, amount 1e+06 EUR | | yes at 655360 EUR per identity (66% of the budget) |
+| identity cost | smallest cost by bisection, amount 10000 EUR | | yes at 4930 EUR per identity (49.3% of the budget, bisection to 0.1%) |
+| identity cost | smallest cost by bisection, amount 100000 EUR | | yes at 49800 EUR per identity (49.8% of the budget, bisection to 0.1%) |
+| identity cost | smallest cost by bisection, amount 1e+06 EUR | | yes at 499520 EUR per identity (50.0% of the budget, bisection to 0.1%) |
 
 **Cap evasion: the cap is per identity. Patrons alone, equal weights, roll 4, defaults, 1,000,000 EUR over k identities**
 
