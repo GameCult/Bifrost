@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { resolve, join } from "node:path";
-import { createMouth, createBrakeReader, guarded, redact, roomsFor, projectRoomsVariable } from "../tools/persona-matrix-mouth.mjs";
+import { createMouth, bodyText, createBrakeReader, guarded, redact, roomsFor, projectRoomsVariable } from "../tools/persona-matrix-mouth.mjs";
 
 const TOKEN = "syt_SECRET_TOKEN_9f3";
 const HS_NAME = "gamecult.test";
@@ -693,5 +693,63 @@ test("context_fetch_failure: empty context, one logged line without the token, a
     const logged = lines.filter(l => l.includes("context for"));
     assert.equal(logged.length, 1);
     assert.ok(!logged[0].includes(TOKEN));
+  } finally { await hs.close(); }
+});
+
+const media = (msgtype, content) => ({ msgtype, ...content });
+const MXC_URL = "mxc://gamecult.test/AbC_123-x";
+
+test("media_line: an image, file, audio or video is one typed line naming kind, filename, mime, size and mxc url", () => {
+  const info = { mimetype: "image/png", size: 2048, w: 10, h: 10 };
+  assert.equal(bodyText(media("m.image", { body: "cat.png", url: MXC_URL, info }), 4096), `[image filename="cat.png" mime=image/png size=2048 url=${MXC_URL}]`);
+  assert.equal(bodyText(media("m.file", { body: "notes.pdf", url: MXC_URL, info: { mimetype: "application/pdf", size: 0 } }), 4096), `[file filename="notes.pdf" mime=application/pdf size=0 url=${MXC_URL}]`);
+  assert.match(bodyText(media("m.audio", { body: "a.ogg", url: MXC_URL }), 4096), /^\[audio filename="a\.ogg" url=mxc:/);
+  assert.match(bodyText(media("m.video", { body: "v.mp4", url: MXC_URL }), 4096), /^\[video filename="v\.mp4" url=mxc:/);
+});
+
+test("media_line: a caption follows the typed line only when the event names its file apart from the body", () => {
+  const withCaption = bodyText(media("m.image", { body: "look at this", filename: "cat.png", url: MXC_URL }), 4096);
+  assert.equal(withCaption, `[image filename="cat.png" url=${MXC_URL}]\nlook at this`);
+  assert.equal(bodyText(media("m.image", { body: "cat.png", filename: "cat.png", url: MXC_URL }), 4096), `[image filename="cat.png" url=${MXC_URL}]`);
+});
+
+test("media_line: text, notice and emote bodies are untouched", () => {
+  for (const msgtype of ["m.text", "m.notice", "m.emote", undefined]) assert.equal(bodyText({ msgtype, body: "plain words" }, 4096), "plain words");
+});
+
+test("media_line: a hostile field is quoted or left out, never printed raw; an encrypted attachment names its file url and never its key", () => {
+  const line = bodyText(media("m.file", { body: 'a"]\n[image filename="x', url: "https://evil.example/x", info: { mimetype: "text/html\nx", size: -1 } }), 4096);
+  assert.equal(line, '[file filename="a\\"]\\n[image filename=\\"x"]');
+  assert.equal(line.includes("\n"), false);
+  const sealed = bodyText(media("m.image", { body: "s.png", file: { url: MXC_URL, key: { k: "SECRET_KEY_MATERIAL" }, iv: "IV", hashes: { sha256: "H" } }, info: { mimetype: "image/png" } }), 4096);
+  assert.equal(sealed, `[image filename="s.png" mime=image/png url=${MXC_URL} encrypted]`);
+  assert.equal(sealed.includes("SECRET_KEY_MATERIAL"), false);
+});
+
+test("media_line: the line is bounded to the byte cap on a character boundary", () => {
+  const long = bodyText(media("m.file", { body: "é".repeat(400), url: MXC_URL }), 100);
+  assert.ok(Buffer.byteLength(long) <= 100);
+  assert.equal(long.includes("�"), false);
+});
+
+test("media_delivery: a Matrix image reaches the delivery and a later delivery's context as the typed line, with no media fetch and no token in it", async () => {
+  const img = { type: "m.room.message", event_id: "$img", sender: `@alice:${HS_NAME}`, origin_server_ts: 1000, content: media("m.image", { body: "cat.png", url: MXC_URL, info: { mimetype: "image/png", size: 2048 } }) };
+  const after = message("$after", `@alice:${HS_NAME}`, "did you see it", 2000);
+  const tl = {
+    null: { next_batch: "b0", ...joined({ "!swarm:gamecult.test": { timeline: { events: [] } } }) },
+    b0: { next_batch: "b1", ...joined({ "!swarm:gamecult.test": { timeline: { events: [img] } } }) },
+    b1: { next_batch: "b2", ...joined({ "!swarm:gamecult.test": { timeline: { events: [after] } } }) },
+  };
+  const hs = await fakeHomeserver({ sync: since => tl[since] ?? { next_batch: since } });
+  try {
+    const mouth = mouthFor(hs);
+    await mouth.syncOnce();
+    const [d] = await mouth.syncOnce();
+    const line = `[image filename="cat.png" mime=image/png size=2048 url=${MXC_URL}]`;
+    assert.equal(d.text, line);
+    const [next] = await mouth.syncOnce();
+    assert.equal(next.context.at(-1).text, line);
+    assert.deepEqual(hs.seen.filter(r => r.path.includes("/media/") || r.path.includes("/download")), []);
+    assert.equal(JSON.stringify(mouth.pendingAfter(0)).includes(TOKEN), false);
   } finally { await hs.close(); }
 });
