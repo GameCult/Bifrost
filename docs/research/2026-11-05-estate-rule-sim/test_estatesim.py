@@ -506,5 +506,36 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(E.verdict((-.01, .05), (0.0, .02)), "undecided")
 
 
+
+class StakeVectors(unittest.TestCase):
+    """Pins the arm's log_weight / split_weight to CultLib heimdall-stake's golden vectors (PR #9, head 84f932ec,
+    copied unmodified to vectors/stake_golden.csv). The arm is Libby's function with min_amount_per_identity = unit,
+    so rows at or above the unit must match; a row below the unit must be 0 in the arm (the cliff) while the
+    vectors, which set no minimum, give the continuous value. Vectors are integer cents and micro-weights, the
+    arm is float and unit-agnostic: tolerance is 1 micro-weight per identity (Libby rounds each identity, the arm the total)."""
+
+    @staticmethod
+    def rows():
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vectors", "stake_golden.csv")
+        with open(path) as fh:
+            lines = [l.strip() for l in fh if l.strip() and not l.startswith("#")]
+        out = [l.split(",") for l in lines]
+        assert len(out) == 26
+        return [(k, int(b), int(u), int(a), int(n), int(e)) for k, b, u, a, n, e in out]
+
+    def test_every_vector_row(self):
+        for kind, b, u, a, k, expected in self.rows():
+            with self.subTest(kind=kind, b=b, unit=u, amount=a, k=k):
+                if kind == "single":
+                    got = E.log_weight(a, b, u) * 1e6
+                    if a < u:
+                        self.assertEqual(got, 0.0)      # arm's cliff = min_amount_per_identity = unit
+                        continue
+                else:
+                    got = E.split_weight(a, k, b, u)[0] * 1e6
+                    self.assertGreaterEqual(a // k, u)  # every split row keeps each identity at or above unit
+                self.assertLessEqual(abs(got - expected), max(1, k))
+
+
 if __name__ == "__main__":
     unittest.main()

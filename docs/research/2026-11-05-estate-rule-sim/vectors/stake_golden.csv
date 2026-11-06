@@ -1,0 +1,29 @@
+# kind,base,unit_cents,amount_cents,k,expected_micro
+# single: weight of one identity holding amount. split: budget (amount) split evenly over k identities (first amount%k hold one extra cent), summed.
+# expected values computed independently with 60-digit decimal ln, rounded half up. No floor, cap or minimum.
+single,10,100,100,1,1000000
+single,10,100,1000,1,2000000
+single,10,100,10000,1,3000000
+single,10,100,1000000,1,5000000
+single,10,100,50,1,698970
+single,10,100,10,1,0
+single,10,100,1,1,0
+single,2,100,400,1,3000000
+single,2,100,100,1,1000000
+single,2,1,1,1,1000000
+single,3,500,123456,1,6014537
+single,7,1,987654321,1,11643268
+single,10,1,1,1,1000000
+single,16,250,99999,1,3160960
+split,10,100,10000,1,3000000
+split,10,100,10000,2,5397940
+split,10,100,10000,10,20000000
+split,10,100,10000,100,100000000
+split,2,100,10000,1,7643856
+split,2,100,10000,2,13287712
+split,2,100,10000,10,43219280
+split,2,100,10000,100,100000000
+split,10,100,100000,1,4000000
+split,10,100,100000,2,7397940
+split,10,100,100000,10,30000000
+split,10,100,100000,100,200000000
