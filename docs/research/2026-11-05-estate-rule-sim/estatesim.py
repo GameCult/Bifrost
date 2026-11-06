@@ -471,18 +471,17 @@ def stake_params(name, overrides=()):
 
 
 def log_weight(x, b, unit):
-    """w = 1 + log_b(x/unit): 1 at x = unit, 0 (not negative) below unit.
+    """w = max(0, 1 + log_b(x/unit)): 1 at x = unit, continuous below it, 0 (not negative) once x <= unit/b.
 
-    Equals CultLib heimdall-stake `weight` with floor 0, cap None and min_amount_per_identity = unit, which
-    is the cliff at unit; Libby's continuous log below unit is not used. Pinned to her golden vectors by
-    test_estatesim.StakeVectors (vectors/stake_golden.csv).
+    Equals CultLib heimdall-stake `weight` (PR #9, 84f932ec) with floor 0, cap None and no minimum: no cliff
+    at unit. Pinned to its golden vectors by test_estatesim.StakeVectors (vectors/stake_golden.csv).
 
     This is the weight of ONE IDENTITY. It is not sybil-safe: log is sub-linear, so the same x split over
     k identities weighs more (split_weight). Whether the log bounds a purchase depends on identities being
     scarce, which nothing in this module supplies. b and unit are PLACEHOLDER values (STAKE_BASE)."""
     if b <= 1 or unit <= 0:
         raise ValueError("log base must exceed 1 and unit must be positive")
-    return 0.0 if x < unit else 1.0 + math.log(x / unit, b)
+    return max(0.0, 1.0 + math.log(x / unit, b)) if x > 0 else 0.0
 
 
 def stake_weight(name, euros=0.0, hours=0.0, overrides=()):

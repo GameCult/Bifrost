@@ -297,7 +297,8 @@ class StakeTests(unittest.TestCase):
         c = self.cfg()
         b, u = c["euro_b"], c["euro_unit"]
         self.assertEqual(E.log_weight(u, b, u), 1.0)
-        self.assertEqual(E.log_weight(u * .99, b, u), 0.0)                 # below unit: no weight, not negative
+        self.assertAlmostEqual(E.log_weight(u / 2, b, u), 1 + math.log(.5, b))   # below unit: continuous, no cliff
+        self.assertEqual(E.log_weight(u / b ** 2, b, u), 0.0)                  # clamped at 0, never negative
         self.assertAlmostEqual(E.log_weight(u * b ** 3, b, u), 4.0)        # each factor b adds one
         self.assertLess(E.log_weight(10 * u, b, u), 10)                     # sub-linear
 
@@ -359,7 +360,9 @@ class StakeTests(unittest.TestCase):
         self.assertAlmostEqual(each, 1 + math.log(a / (k * u), b))
         self.assertAlmostEqual(tot, k * (1 + math.log(a / (k * u), b)))
         self.assertGreater(tot, E.log_weight(a, b, u))
-        self.assertEqual(E.split_weight(a, int(a / u) + 1, b, u)[0], 0.0)   # every fake below unit: nothing
+        kk = int(a / u) + 1                                                  # every fake just below unit: still ~1 each, no cliff
+        self.assertAlmostEqual(E.split_weight(a, kk, b, u)[0], kk * (1 + math.log(a / (kk * u), b)))
+        self.assertGreater(E.split_weight(a, kk, b, u)[0], 0.99 * a / u)
         best, bk = E.best_split(a, b, u)
         self.assertGreaterEqual(best, tot)
         self.assertAlmostEqual(best, a / u)                                  # b > e: best is k = a/unit, weight 1 each
@@ -509,9 +512,8 @@ class HarnessTests(unittest.TestCase):
 
 class StakeVectors(unittest.TestCase):
     """Pins the arm's log_weight / split_weight to CultLib heimdall-stake's golden vectors (PR #9, head 84f932ec,
-    copied unmodified to vectors/stake_golden.csv). The arm is Libby's function with min_amount_per_identity = unit,
-    so rows at or above the unit must match; a row below the unit must be 0 in the arm (the cliff) while the
-    vectors, which set no minimum, give the continuous value. Vectors are integer cents and micro-weights, the
+    copied unmodified to vectors/stake_golden.csv). The arm is Libby's function with no minimum,
+    and every row (14 single, 12 split) must match, including those below the unit: no cliff. Vectors are integer cents and micro-weights, the
     arm is float and unit-agnostic: tolerance is 1 micro-weight per identity (Libby rounds each identity, the arm the total)."""
 
     @staticmethod
@@ -528,12 +530,8 @@ class StakeVectors(unittest.TestCase):
             with self.subTest(kind=kind, b=b, unit=u, amount=a, k=k):
                 if kind == "single":
                     got = E.log_weight(a, b, u) * 1e6
-                    if a < u:
-                        self.assertEqual(got, 0.0)      # arm's cliff = min_amount_per_identity = unit
-                        continue
                 else:
                     got = E.split_weight(a, k, b, u)[0] * 1e6
-                    self.assertGreaterEqual(a // k, u)  # every split row keeps each identity at or above unit
                 self.assertLessEqual(abs(got - expected), max(1, k))
 
 
