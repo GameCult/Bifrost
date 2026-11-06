@@ -228,7 +228,7 @@ def stake_section(quick):
     L = ["## E6 purchased stake: logarithmic weight, splitting, and the half-influence cap (SPEC section 5c)", "",
          "Static weight analysis (no motions are simulated, so no PS or MT): a buyer joins the Patrons estate with one purchase; "
          f"the {E.ROLL['Patrons']}-patron roll of the harness (and 40, 400) holds Pareto({E.PARETO_ALPHA}) donations from {E.PARETO_XM:.0f} EUR, "
-         f"{seeds} seeds each. Weight w = 1 + log_b(amount/unit), 0 below unit; defaults b = {E.STAKE_BASE['Patrons']['euro_b']:.0f}, "
+         f"{seeds} seeds each. Weight w = 1 + log_b(amount/unit), 0 at amount <= unit/b; defaults b = {E.STAKE_BASE['Patrons']['euro_b']:.0f}, "
          f"unit = {E.STAKE_BASE['Patrons']['euro_unit']:.0f} EUR. Share s is the buyer's share of Patrons weight; x is its share of council weight "
          "(estate weight W x s over the live estates' weights); the cap binds iff x >= .5.", ""]
     ladders = {(n, s): E.stake_ladder(n, s) for n in rolls for s in range(seeds)}
@@ -306,7 +306,7 @@ def stake_section(quick):
         w1 = E.log_weight(a, b0, u0)
         bt, bk = E.best_split(a, b0, u0)
         L.append(f"| {a:g} | {w1:.2f} | " + " | ".join(
-            f"{E.split_weight(a, k, b0, u0)[0] / w1:.1f}" if a / k >= u0 else "0 (below unit)" for k in (2, 10, 100, 1000)) +
+            f"{E.split_weight(a, k, b0, u0)[0] / w1:.1f}" for k in (2, 10, 100, 1000)) +
             f" | {bk} | {bt / w1:.0f} |")
     L += ["", "Best multiplier at 1,000,000 EUR by log base and unit (b rows, unit columns):", "",
           "| b | " + " | ".join(f"unit={u:g}" for u in units) + " |", "|---|" + "---|" * len(units)]
