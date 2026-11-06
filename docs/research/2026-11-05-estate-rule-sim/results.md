@@ -793,7 +793,7 @@ PS by category threshold:
 
 ## E6 purchased stake: logarithmic weight, splitting, and the half-influence cap (SPEC section 5c)
 
-Static weight analysis (no motions are simulated, so no PS or MT): a buyer joins the Patrons estate with one purchase; the 4-patron roll of the harness (and 40, 400) holds Pareto(1.16) donations from 10 EUR, 40 seeds each. Weight w = 1 + log_b(amount/unit), 0 below unit; defaults b = 10, unit = 10 EUR. Share s is the buyer's share of Patrons weight; x is its share of council weight (estate weight W x s over the live estates' weights); the cap binds iff x >= .5.
+Static weight analysis (no motions are simulated, so no PS or MT): a buyer joins the Patrons estate with one purchase; the 4-patron roll of the harness (and 40, 400) holds Pareto(1.16) donations from 10 EUR, 40 seeds each. Weight w = 1 + log_b(amount/unit), 0 at amount <= unit/b; defaults b = 10, unit = 10 EUR. Share s is the buyer's share of Patrons weight; x is its share of council weight (estate weight W x s over the live estates' weights); the cap binds iff x >= .5.
 
 **Million-euro buyer, defaults, Patrons roll 4 (mean over seeds, 95% interval); linear = weight proportional to amount, the counterfactual the log is meant to beat**
 
@@ -812,24 +812,24 @@ Static weight analysis (no motions are simulated, so no PS or MT): a buyer joins
 |---|---|---|---|
 | 1 | 0.425 ±0.005 (0.00) | 0.069 ±0.000 (0.00) | 0.007 ±0.000 (0.00) |
 | 10 | 0.524 ±0.008 (0.85) | 0.098 ±0.001 (0.00) | 0.011 ±0.000 (0.00) |
-| 100 | 0.953 ±0.028 (1.00) | 0.579 ±0.040 (0.65) | 0.118 ±0.004 (0.00) |
+| 100 | 0.777 ±0.023 (1.00) | 0.251 ±0.008 (0.00) | 0.032 ±0.000 (0.00) |
 
-Interval over the swept cells: s from 0.007 to 0.953. The 0.524 headline is the harness's own cell (roll 4, unit 10), not a typical one: the buyer's majority of the estate depends on how few other patrons there are.
+Interval over the swept cells: s from 0.007 to 0.777. The 0.524 headline is the harness's own cell (roll 4, unit 10), not a typical one: the buyer's majority of the estate depends on how few other patrons there are.
 
 **Cap-binding rate over the sweep (b, unit, roll, amount, weights x live set; every cell run on every seed)**
 
 | live estates | cells | cells x seeds | binding (cell, seed) | cells binding in every seed | cells never binding | binding but unenforceable |
 |---|---|---|---|---|---|---|
 | all four estates | 162 | 6480 | 0.000 | 0.000 | 1.000 | 0.000 |
-| Patrons + Minds | 162 | 6480 | 0.044 | 0.000 | 0.889 | 0.044 |
-| Patrons alone | 162 | 6480 | 0.222 | 0.148 | 0.704 | 0.089 |
+| Patrons + Minds | 162 | 6480 | 0.008 | 0.000 | 0.981 | 0.008 |
+| Patrons alone | 162 | 6480 | 0.165 | 0.099 | 0.790 | 0.017 |
 
 Binding rate in the Patrons-alone scenario by Patrons roll and by log base (fraction of cells x seeds):
 
 | roll | b=2 | b=10 | b=100 |
 |---|---|---|---|
-| 4 | 0.669 | 0.447 | 0.333 |
-| 40 | 0.286 | 0.169 | 0.094 |
+| 4 | 0.669 | 0.447 | 0.114 |
+| 40 | 0.250 | 0.000 | 0.000 |
 | 400 | 0.000 | 0.000 | 0.000 |
 
 **Splitting: the same total split over k identities (defaults, one honest identity = k 1). Multiplier = total weight of the split / weight of the single purchase**
@@ -877,7 +877,7 @@ Best multiplier at 1,000,000 EUR by log base and unit (b rows, unit columns):
 
 | hours | 5 | 10 | 100 | 1000 | 10000 |
 |---|---|---|---|---|---|
-| weight | 0.00 | 1.00 | 2.00 | 3.00 | 4.00 |
+| weight | 0.70 | 1.00 | 2.00 | 3.00 | 4.00 |
 
 ## Claim tally over all cells (SPEC section 8)
 
