@@ -111,6 +111,22 @@ Serves the purchased-stake brief (operator relayed: Patron vote power is logarit
 
 **Falsifiers fixed in advance.** (1) Working hypothesis "logarithmic weight bounds buyout power": refuted if a one-million-euro buyer's within-estate share s exceeds 1/2 at the harness's own roll, or if splitting multiplies weight by more than 2 at any k. (2) The half-influence cap is "binding" in a (cell, seed) iff x >= .5; the rate over the sweep is reported per live-estate scenario. (3) The cap is "evaded" by splitting iff the joint share is >= .5 while no single identity's share is.
 
+## 5d. Contribution credit (revision 6, written before its results)
+
+Serves `heimdall-body:follow_up:chat-mind-20261106T134754647Z-t14`. A static weight analysis like 5c, for a contribution-weighted arm. It informs Meta's later call and decides nothing: credit does not become vote weight, here or in any rule above.
+
+**Credit.** A person's credit is the sum of their receipts (hours, or credited changes counted in the same linear unit), tallied per person. Weight is `min(credit, cap)`: linear, one function for every person, so a Meta-sized contributor is the same row of the same table as an ordinary member, with no exemption and no separate schedule. The per-person cap is a multiple of the ordinary members' median credit, swept over none, 100x, 20x, 5x (assumptions, not rulings).
+
+**Contributor share.** The contributor holds a fraction phi of the estate's total raw credit (before capping), swept over .05 to .9. This is the "Meta-sized" axis. Placement is the Members estate (where 5c's hours channel lives), a PLACEHOLDER.
+
+**Electorate.** 15 (the harness roll) and 150 ordinary members with Pareto(1.16) credit from 10 (prior section 4's contribution curve; the scale is mine), 40 seeds each, estate weights and live-estate scenarios as 5c.
+
+**Same tally, same half cap.** `council_share` and `influence_cap` of 5c, unchanged: binds iff council weight share x >= .5.
+
+**Splitting.** The contributor's credit split evenly over k = 2, 10, 100 identities. Reported per identity (binds), jointly (joint share >= .5) and as evasion (joint >= .5 with no identity binding), plus the weight multiplier against k = 1. With no credit cap, linear credit makes splitting weight-neutral; with a per-person cap it is not.
+
+**Falsifiers fixed in advance.** (1) Per-person credit cap "contains" a large contributor if the half cap never binds at phi .9 with a cap in force in the Members-alone scenario. (2) Credit cap "survives splitting" if the weight multiplier at k = 10 is at most 1.1 with a cap in force. (3) The half cap is evaded under splitting if joint x >= .5 with no identity binding.
+
 ## 6. Strategic and adaptive agents
 
 A fraction ρ = .25 of ballot holders and of absent undelegated roll members are strategic. Each is myopic about the motion at hand and best-responds to everyone else's current ballots over three rounds in random order:
@@ -136,6 +152,7 @@ Paired across rules: one set of random draws per motion feeds all rules (common 
 - **E3f copy-the-ballot:** section 5b.
 - **E4 appeal attraction:** β sweep at α = 1.5, c = .2.
 - **E6 purchased stake:** section 5c. b x unit x Patrons roll x amount x estate weights x live-estate scenario, 40 seeds; splitting k sweep; candidate defences.
+- **E7 contribution credit:** section 5d. phi x credit cap x roll x weights x live set x seeds; splitting k.
 - **E5 robustness:** Users appeal loading b ∈ {.4, .9, 1.4}; Users base turnout {.05, .10, .30}; Minds ICC (s_Minds ∈ {.3, .9, 1.5}). This is the check on the assumed parameters in section 4.
 
 ## 8. Pre-registered falsifiers

@@ -420,6 +420,67 @@ class StakeTests(unittest.TestCase):
         self.assertTrue(all(x >= E.PARETO_XM for x in a))
 
 
+PINNED_CREDIT_BINDS = {None: 320, 100.0: 140, 20.0: 24, 5.0: 0}   # of 320 (phi .5, .9 x roll 15, 150 x 40 seeds x 2 weights)
+
+
+class CreditTests(unittest.TestCase):
+    """SPEC section 5d: contribution credit, per-person cap, the half-influence cap."""
+    M = E.ESTATES.index("Members")
+    W = E.WEIGHTS["equal"]
+    ALONE = (1,)
+
+    def test_one_standard_for_everyone(self):
+        for c in (3.0, 40.0, 1e6):                                  # a Meta-sized credit gets no schedule of its own
+            self.assertEqual(E.credit_weight(c), c)
+            self.assertEqual(E.credit_weight(c, 25.0), min(c, 25.0))
+
+    def test_cap_is_per_person_and_a_multiple_of_the_ordinary_median(self):
+        lad = E.credit_ladder(15, 0)
+        self.assertIsNone(E.credit_cap_value(lad, None))
+        self.assertEqual(E.credit_cap_value(lad, 20.0), 20.0 * sorted(lad)[7])
+
+    def test_contributor_holds_phi_of_raw_credit(self):
+        r = E.credit_run(.5, 15, 3, self.W, self.ALONE)
+        self.assertAlmostEqual(r["w_total"], r["rest"])                 # uncapped: phi .5 means equal to everyone else
+        self.assertAlmostEqual(r["one"]["s"], .5)
+
+    def test_half_cap_binds_at_half_of_credit_in_a_lone_estate_not_below(self):
+        self.assertTrue(E.credit_run(.5, 15, 0, self.W, self.ALONE)["binds"])
+        self.assertFalse(E.credit_run(.49, 15, 0, self.W, self.ALONE)["binds"])
+
+    def test_other_estates_dilute_the_contributor_below_the_half_cap(self):
+        self.assertFalse(E.credit_run(.9, 15, 0, self.W, (0, 1, 2, 3))["binds"])
+
+    def test_credit_cap_reduces_weight_and_can_release_the_half_cap(self):
+        un = E.credit_run(.9, 15, 0, self.W, self.ALONE)
+        cp = E.credit_run(.9, 15, 0, self.W, self.ALONE, cap_mult=5.0)
+        self.assertTrue(un["binds"])
+        self.assertFalse(cp["binds"])
+        self.assertLess(cp["w_total"], un["w_total"])
+
+    def test_splitting_is_weight_neutral_without_a_cap_and_gains_with_one(self):
+        base = E.credit_run(.9, 15, 0, self.W, self.ALONE)["w_total"]
+        self.assertAlmostEqual(E.credit_run(.9, 15, 0, self.W, self.ALONE, k=10)["w_total"], base)
+        c1 = E.credit_run(.9, 15, 0, self.W, self.ALONE, cap_mult=20.0)["w_total"]
+        self.assertGreater(E.credit_run(.9, 15, 0, self.W, self.ALONE, cap_mult=20.0, k=10)["w_total"], c1)
+
+    def test_per_identity_half_cap_is_evaded_by_splitting_credit(self):
+        r1 = E.credit_run(.9, 15, 0, self.W, self.ALONE, k=1)
+        r2 = E.credit_run(.9, 15, 0, self.W, self.ALONE, k=2)
+        self.assertTrue(r1["binds"] and not r1["evaded"])
+        self.assertFalse(r2["binds"])
+        self.assertTrue(r2["joint_binds"] and r2["evaded"])
+
+    def test_headline_numbers_are_pinned(self):
+        hit = {m: sum(E.credit_run(phi, n, s, w, self.ALONE, m)["binds"] for phi in (.5, .9) for n in (15, 150)
+                      for s in range(40) for w in E.WEIGHTS.values()) for m in (None, 100.0, 20.0, 5.0)}
+        self.assertEqual(hit, PINNED_CREDIT_BINDS)
+
+    def test_deterministic(self):
+        a, b = E.credit_run(.5, 15, 2, self.W, self.ALONE, 20.0, 10), E.credit_run(.5, 15, 2, self.W, self.ALONE, 20.0, 10)
+        self.assertEqual(a, b)
+
+
 class StrategyTests(unittest.TestCase):
     def test_deviation_never_makes_agent_worse_off(self):
         rng = random.Random(3)

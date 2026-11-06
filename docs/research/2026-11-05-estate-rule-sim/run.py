@@ -353,6 +353,73 @@ def stake_section(quick):
     return L
 
 
+MEMBERS = E.ESTATES.index(E.CREDIT_ESTATE)
+CLIVE = {"all four estates": (0, 1, 2, 3), "Members + Minds": (0, MEMBERS), "Members alone": (MEMBERS,)}
+CREDIT_CAPS = (None, 100.0, 20.0, 5.0)     # per-person credit cap, multiples of the ordinary members' median credit
+
+
+def _capname(m):
+    return "none" if m is None else f"{m:g}x median"
+
+
+def credit_section(quick):
+    """E7 contribution-weighted arm (SPEC section 5d). Pure functions of fixed seeds; no wall clock."""
+    seeds = 4 if quick else 40
+    phis = (.1, .5, .9) if quick else (.05, .1, .25, .4, .5, .6, .75, .9)
+    rolls = (E.ROLL["Members"],) if quick else (E.ROLL["Members"], 150)
+    ks = (1, 2, 10, 100)
+    L = ["## E7 contribution-weighted arm: linear credit, per-person cap, the half-influence cap (SPEC section 5d)", "",
+         f"Static weight analysis. One contributor holds a fraction phi of the {E.CREDIT_ESTATE} estate's total raw credit (receipts: hours or credited "
+         f"changes, one linear unit); {rolls[0]}" + (f" and {rolls[1]}" if len(rolls) > 1 else "") +
+         f" ordinary members hold Pareto({E.PARETO_ALPHA}) credit from {E.PARETO_XM:.0f}, {seeds} seeds each. Weight = min(credit, per-person cap), the same function "
+         "for the contributor and everyone else. The tally and the half cap are E6's: council share x = W x s over the live estates; the cap binds iff x >= .5. "
+         "Credit is not vote weight anywhere in this module; this table only says how often the half cap would have to act.", ""]
+    for ln, live in CLIVE.items():
+        L += [f"**Half cap binds, {ln}: fraction of (weights x roll x seed) by contributor share phi (rows) and per-person credit cap (columns); one identity, k = 1**", "",
+              "| phi | " + " | ".join(_capname(m) for m in CREDIT_CAPS) + " |", "|---|" + "---|" * len(CREDIT_CAPS)]
+        for phi in phis:
+            cols = []
+            for m in CREDIT_CAPS:
+                hit = tot = 0
+                for W in E.WEIGHTS.values():
+                    for n in rolls:
+                        for s in range(seeds):
+                            hit += E.credit_run(phi, n, s, W, live, m)["binds"]
+                            tot += 1
+                cols.append(f"{hit / tot:.3f}")
+            L.append(f"| {phi:g} | " + " | ".join(cols) + " |")
+        L.append("")
+    L += ["**Splitting: the contributor's credit split evenly over k identities. Members alone, equal weights, roll "
+          f"{rolls[0]}, mean over seeds. binds = the half cap acts on an identity; joint >= .5 = the combined share would have needed cutting; "
+          "evaded = joint >= .5 and no identity binds; weight x = total weight / weight at k = 1**", "",
+          "| phi | cap | " + " | ".join(f"k={k}: binds / joint>=.5 / evaded / weight x" for k in ks) + " |", "|---|---|" + "---|" * len(ks)]
+    W = E.WEIGHTS["equal"]
+    for phi in (.25, .5, .9):
+        for m in CREDIT_CAPS:
+            cols = []
+            for k in ks:
+                rs = [E.credit_run(phi, rolls[0], s, W, (MEMBERS,), m, k) for s in range(seeds)]
+                base = [E.credit_run(phi, rolls[0], s, W, (MEMBERS,), m, 1)["w_total"] for s in range(seeds)]
+                cols.append(f"{sum(r['binds'] for r in rs) / seeds:.2f} / {sum(r['joint_binds'] for r in rs) / seeds:.2f} / "
+                            f"{sum(r['evaded'] for r in rs) / seeds:.2f} / {sum(r['w_total'] / b for r, b in zip(rs, base)) / seeds:.2f}")
+            L.append(f"| {phi:g} | {_capname(m)} | " + " | ".join(cols) + " |")
+    L += ["", "Evasion rate over the sweep (phi x cap x k in 2, 10, 100 x live set x weights x roll x seed), cases where the joint share needed cutting:", "",
+          "| live estates | joint share >= .5 (k > 1) | of which no identity binds (evaded) |", "|---|---|---|"]
+    for ln, live in CLIVE.items():
+        j = ev = 0
+        for phi in phis:
+            for m in CREDIT_CAPS:
+                for k in ks[1:]:
+                    for Wt in E.WEIGHTS.values():
+                        for n in rolls:
+                            for s in range(seeds):
+                                r = E.credit_run(phi, n, s, Wt, live, m, k)
+                                j += r["joint_binds"]
+                                ev += r["evaded"]
+        L.append(f"| {ln} | {j} | {ev} ({ev / j:.3f}) |" if j else f"| {ln} | 0 | 0 |")
+    return L + [""]
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--quick", action="store_true")
@@ -388,6 +455,7 @@ def main(argv=None):
                 L += [f"### {title.split(' ')[0]} / {name}", ""] + rule_table(r) + [""]
                 L += [pair_line(r), "", "PS by category threshold:", ""] + percat_table(r) + [""]
     L += stake_section(a.quick)
+    L += credit_section(a.quick)
     L += ["## Claim tally over all cells (SPEC section 8)", "",
           f"supported {tally['supported']}, fails {tally['fails']}, undecided {tally['undecided']}, n/a {tally['n/a']}", ""]
     if failing:
