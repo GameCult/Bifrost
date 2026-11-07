@@ -111,6 +111,22 @@ Serves the purchased-stake brief (operator relayed: Patron vote power is logarit
 
 **Falsifiers fixed in advance.** (1) Working hypothesis "logarithmic weight bounds buyout power": refuted if a one-million-euro buyer's within-estate share s exceeds 1/2 at the harness's own roll, or if splitting multiplies weight by more than 2 at any k. (2) The half-influence cap is "binding" in a (cell, seed) iff x >= .5; the rate over the sweep is reported per live-estate scenario. (3) The cap is "evaded" by splitting iff the joint share is >= .5 while no single identity's share is.
 
+## 5d. Sybil policy (ruling, 2026-11-07; not simulated)
+
+Ruled by the operator (Meta, #operator, 2026-11-07), option D of the sybil pick on the purchased-stake arm:
+
+> One account per person. If we determine a person to have broken the policy, their identities are consolidated and decisions they influenced are subject to a recount.
+
+This is a rule enforced after the fact, not a weight formula, so section 5c's weight analysis does not model it and nothing in `estatesim.py` implements it. It names what the estate vote must keep. Each item is a requirement on the real system, not a design:
+
+1. **Durable per-decision vote ledger.** Every cast ballot is kept as a row: decision id, voter identity, estate, weight at the time of the vote, timestamp, and the ballot itself. Append-only. Weight is stored as it was computed then (rule version included), never recomputed from current state, or a recount cannot reproduce the original tally.
+2. **Identity consolidation operation.** Merges the identities found to belong to one person into one account. It writes an audit receipt: who decided, the evidence cited, the identities merged, the surviving account, the time. It does not edit the ledger; it adds a mapping from old identity to person that a recount reads. Reversible by a later receipt that supersedes the first.
+3. **Deterministic recount.** For each decision the consolidated person influenced (any ledger row from any merged identity), re-tally from the ledger under the mapping: the person's rows count as one voter with weight set by the same rule applied to the person (the log of the combined purchase, not the sum of split weights), estates and thresholds as at the decision. The same ledger, mapping and rule version always give the same tally, and the output states which decisions flip. No clock, no randomness, no read of live state.
+4. **Who determines a violation, and appeal: OPEN QUESTION.** The ruling does not say who finds that a person broke the policy, on what evidence, or how the accused can contest it. Needed before the operation in item 2 can run: the deciding body (an estate, the council, a named steward), the standard of evidence, notice to the accused, an appeal path with a different decider, and whether a consolidation takes effect before or after appeal. Not decided here; to be put to the operator.
+5. **Not covered by the ruling: the window before detection.** Decisions stand until a recount flips them; whether a flipped decision is reversed, re-voted or only annotated is also open.
+
+Section 5c's numbers show why enforcement after the fact is the only lever on offer: weight is per identity, so a split buyer holds 0.676 of Patrons weight at k = 2 and 0.901 at k = 10, with no identity over the half cap.
+
 ## 6. Strategic and adaptive agents
 
 A fraction ρ = .25 of ballot holders and of absent undelegated roll members are strategic. Each is myopic about the motion at hand and best-responds to everyone else's current ballots over three rounds in random order:
