@@ -446,13 +446,13 @@ public sealed record HeimdallAccount(
 
 /// <summary>
 /// The attempt cookies: a ring of <see cref="SlotNames"/> fixed names, so the Cookie header a browser sends to
-/// /auth/heimdall is bounded by construction (a worst-case attempt is about 2.4 KB; nginx's line limit is 8 KB).
+/// every path is bounded by construction (the __Host- prefix forces Path=/; a worst-case attempt is about 2.4 KB, nginx's line limit is 8 KB).
 /// A start takes a free slot or overwrites the one expiring first; an overwritten attempt finds no cookie and
 /// is refused. The attempt's nonce lives inside the protected value, never in the cookie name.
 /// </summary>
 public static class HeimdallAttemptCookie
 {
-    public const string Prefix = "bifrost_heimdall_";
+    public const string Prefix = BifrostCookies.HeimdallAttemptPrefix;
     public const int SlotCount = 2;
 
     public static readonly TimeSpan Lifetime = TimeSpan.FromMinutes(10);
@@ -465,7 +465,7 @@ public static class HeimdallAttemptCookie
         HttpOnly = true,
         Secure = true,
         SameSite = SameSiteMode.Lax,
-        Path = "/auth/heimdall",
+        Path = BifrostCookies.Path,
         MaxAge = Lifetime
     };
 
@@ -473,5 +473,5 @@ public static class HeimdallAttemptCookie
     /// The options a deletion carries: only the attempt cookie's Path, which a cookie is matched on. It carries no
     /// Max-Age, which would take precedence over the expiry Delete writes and leave the emptied cookie alive.
     /// </summary>
-    public static CookieOptions DeleteOptions() => new() { Path = "/auth/heimdall" };
+    public static CookieOptions DeleteOptions() => new() { Path = BifrostCookies.Path };
 }

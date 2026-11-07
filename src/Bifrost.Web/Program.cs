@@ -76,6 +76,13 @@ builder.Services
     .AddOptions<ConceptVoteOptions>()
     .BindConfiguration(ConceptVoteOptions.SectionName);
 
+builder.Services.AddAntiforgery(options =>
+{
+    options.Cookie.Name = BifrostCookies.Antiforgery;
+    options.Cookie.SecurePolicy = CookieSecurePolicy.Always;
+    options.Cookie.Path = BifrostCookies.Path;
+});
+
 builder.Services.AddRazorPages(options =>
 {
     options.Conventions.AuthorizePage("/Membership/Status");
@@ -167,6 +174,10 @@ var authenticationBuilder = builder.Services
     .AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
     .AddCookie(options =>
     {
+        options.Cookie.Name = BifrostCookies.Session;
+        options.Cookie.SecurePolicy = CookieSecurePolicy.Always;
+        options.Cookie.Path = BifrostCookies.Path;
+        options.Cookie.Domain = null;
         options.LoginPath = "/auth/sign-in";
         options.AccessDeniedPath = "/Membership/Status";
         options.SlidingExpiration = true;
@@ -183,6 +194,9 @@ if (configuredGitHubOAuthOptions.IsConfigured)
         options.TokenEndpoint = "https://github.com/login/oauth/access_token";
         options.UserInformationEndpoint = "https://api.github.com/user";
         options.SaveTokens = true;
+        options.CorrelationCookie.Name = BifrostCookies.OAuthCorrelation;
+        options.CorrelationCookie.SecurePolicy = CookieSecurePolicy.Always;
+        options.CorrelationCookie.Path = BifrostCookies.Path;
         options.Scope.Add("read:user");
         options.Scope.Add("user:email");
         options.ClaimActions.MapJsonKey(ClaimTypes.NameIdentifier, "id");

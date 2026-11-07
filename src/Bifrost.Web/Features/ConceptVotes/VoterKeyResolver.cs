@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using Bifrost.Web.Features.Shared;
 using Microsoft.AspNetCore.DataProtection;
 
 namespace Bifrost.Web.Features.ConceptVotes;
@@ -7,8 +8,8 @@ namespace Bifrost.Web.Features.ConceptVotes;
 // decides the voter key and class. The cookie holds a protected random id, never a count, class or account.
 public sealed class VoterKeyResolver(IDataProtectionProvider dataProtection)
 {
-    public const string CookieName = "bifrost_voter";
-    public const string CookiePath = "/mill";
+    public const string CookieName = BifrostCookies.Voter;
+    public const string CookiePath = BifrostCookies.Path;
     public static readonly TimeSpan CookieLifetime = TimeSpan.FromDays(365);
 
     private const string Purpose = "Bifrost.ConceptVotes.DeviceToken.v1";
