@@ -32,17 +32,17 @@ Verified in `tools/persona-matrix-mouth.mjs` and `tools/persona-chat-documents.m
 - **Pending is Matrix mail only, held in memory.** `pending` (mouth l.112) is filled in one place, `syncOnce`
   (l.303), from Matrix `/sync` events. No function accepts a delivery from elsewhere.
 - **A request is non-consuming; an ack consumes.** `chat_pending_request` carries `afterSeq`; the mouth answers
-  `pendingAfter(afterSeq)` (l.331-333) paged to 256 KiB (`pageOf`, l.428-445). `chat_ack` carries `throughSeq`; `ack`
-  drops every delivery at or below it (l.326-329). The endpoint accepts exactly these kinds (l.139) and answers a
+  `pendingAfter(afterSeq)` (l.331-333) paged to 256 KiB (`pageOf`, l.431-447). `chat_ack` carries `throughSeq`; `ack`
+  drops every delivery at or below it (l.326-329). The endpoint accepts exactly these kinds (l.468) and answers a
   request for another Persona with a typed `UnknownPersona` refusal.
 - **At-least-once.** The Matrix cursor is persisted only when every delivery of a batch is acked (`commit`, l.316-324), so a
   restart before the ack re-delivers from Matrix. `seqCounter` is persisted whenever a round made deliveries (l.311), so
   sequence numbers never repeat across a restart.
 - **Backpressure.** At 500 unacked (`MAX_PENDING`, l.45) `syncOnce` stops reading (l.263). A truncated round leaves the
   cursor where it was (l.304).
-- **A delivery that will not encode is skipped, not held.** `pageOf` logs and omits it (l.436-440); the caller's
+- **A delivery that will not encode is skipped, not held.** `pageOf` logs and omits it (l.437); the caller's
   next ack covers its seq, so it is dropped. Harmless for a chat line, wrong for a durable record.
-- **The endpoint is loopback RUDP.** `startChatEndpoint` refuses a non-loopback host (l.124). It is another process
+- **The endpoint is loopback RUDP.** `startChatEndpoint` refuses a non-loopback host (l.453). It is another process
   from Bifrost.Web, which has no way to hand the mouth anything.
 - **The delivery tuple is closed.** `deliveryTuple` and `parseDelivery` are exactly eleven fields, with no source or
   kind field (`persona-chat-documents.mjs` l.117-135). A delivery cannot say it is not a Matrix message.
@@ -62,7 +62,7 @@ Options considered for delivery:
 | | What | For | Against |
 |---|---|---|---|
 | A | Inject records into `pending` as synthetic Matrix deliveries | no wire change | forgeable (2); the ack couples to Matrix batches; a restart loses them (3) |
-| **B** | **New kinds on the same endpoint:** `gamecult.persona.feedback_pending_request.v1`, `feedback_pending.v1`, `feedback_ack.v1`, with their own seq space and cursor, reading the receiver's store | typed, unforgeable, no change to the v1 and v2 chat tuples, the Matrix cursor logic untouched, the existing request/ack shape the consumer already knows | the consumer must learn three kinds; `checkEnvelope`'s closed list (l.139) grows |
+| **B** | **New kinds on the same endpoint:** `gamecult.persona.feedback_pending_request.v1`, `feedback_pending.v1`, `feedback_ack.v1`, with their own seq space and cursor, reading the receiver's store | typed, unforgeable, no change to the v1 and v2 chat tuples, the Matrix cursor logic untouched, the existing request/ack shape the consumer already knows | the consumer must learn three kinds; `checkEnvelope`'s closed list (l.468) grows |
 | C | The receiver posts to a Matrix room as a bot | no consumer change | Matrix sender is the wrong identity authority; spam and forgery; the Mind sees it as chat |
 
 Recommended: **B**. Confidence medium: B changes the consumer, which I cannot see.
