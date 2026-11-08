@@ -284,22 +284,22 @@ export function createMouth({
   // One /sync round. Returns the deliveries it made.
   async function syncOnce() {
     if (!started || unjoined()) await start();
-    if (pending.length >= maxPending) return []; // unanswered mail is not outrun: the position stays where it is
-    const filter = encodeURIComponent(JSON.stringify({ room: { timeline: { limit: CONTEXT } } }));
-    const since = cursor === null ? "" : `&since=${encodeURIComponent(cursor)}`;
-    const free = await released(); // the round's one brake read: presence and invites both follow it
+    const free = await released(); // the round's brake read for presence, taken before any early return
     if (!free && lastPresence !== "offline") {
       try {
         await matrix("PUT", `/presence/${encodeURIComponent(selfId)}/status`, { presence: "offline" }, API, AbortSignal.timeout(sendTimeoutMs));
         lastPresence = "offline";
       } catch (error) { say(`presence not set: ${error.message}`); }
     }
+    if (pending.length >= maxPending) return []; // unanswered mail is not outrun: the position stays where it is
+    const filter = encodeURIComponent(JSON.stringify({ room: { timeline: { limit: CONTEXT } } }));
+    const since = cursor === null ? "" : `&since=${encodeURIComponent(cursor)}`;
     const reply = await matrix("GET", `/sync?timeout=${cursor === null ? 0 : syncTimeoutMs}&set_presence=${free ? "online" : "offline"}&filter=${filter}${since}`);
     if (free) lastPresence = "online";
     const baseline = cursor === null; // first ever sync: history is context, not mail
     for (const event of reply.account_data?.events ?? []) if (event.type === "m.direct") noteDirect(event.content);
     noteInvites(reply.rooms?.invite);
-    await answerInvites(free);
+    await answerInvites(await released()); // a brake placed during the long-poll stops the join, as send re-reads it
     const made = [];
     const round = new Map();
     let truncated = false; // the pending cap was reached inside this round
@@ -359,12 +359,15 @@ export function createMouth({
   }
 
   // Her m.read receipt, display-only: public, unthreaded, at the newest event each room's ack covers.
-  // Never awaited by the ack; a failure is one log line and nothing else.
+  // Never awaited by the ack; a failure is one log line and nothing else. Posted only while her brake is
+  // released, read fresh when each receipt would go out; a held brake drops it (the next ack covers it).
   async function readUpTo(newest) {
+    const quiet = message => { try { say(message); } catch { /* a throwing logger must not reject this unawaited call */ } };
     for (const { roomId, eventId } of newest.values()) {
+      if (!(await released())) { quiet("receipts not posted: brake held"); return; } // no receipt while braked; none is queued
       try {
         await matrix("POST", `/rooms/${encodeURIComponent(roomId)}/receipt/m.read/${encodeURIComponent(eventId)}`, {}, API, AbortSignal.timeout(sendTimeoutMs));
-      } catch (error) { say(`receipt in ${roomId} not posted: ${error.message}`); }
+      } catch (error) { quiet(`receipt in ${roomId} not posted: ${error.message}`); }
     }
   }
 
