@@ -3,12 +3,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, chownSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { MAX_BYTES, MAX_PIXELS, RETAIN_MS, ROOM_CAP_BYTES, classify, createImageStore, fetchImage, sniff } from "../tools/persona-chat-images.mjs";
+import { FETCH_TIMEOUT_MS, MAX_BYTES, MAX_PIXELS, RETAIN_MS, ROOM_CAP_BYTES, classify, createImageStore, fetchImage, sniff } from "../tools/persona-chat-images.mjs";
 import * as docs from "../tools/persona-chat-documents.mjs";
-import { gif, jpeg, png, svg, webpL, webpLossy, webpX } from "./image-bytes.mjs";
+import { gif, jpeg, personaStoreRoot, png, svg, webpL, webpLossy, webpX } from "./image-bytes.mjs";
 
 const sha = data => createHash("sha256").update(data).digest("hex");
 const HS = "http://hs.test";
@@ -34,6 +33,25 @@ test("fetch uses this Persona's token on the authenticated media path of its own
   assert.equal(f.calls[0].url, `${HS}/_matrix/client/v1/media/download/gamecult.test/AbC_123-x`);
   assert.equal(f.calls[0].init.headers.authorization, "Bearer tok-own");
   assert.equal(f.calls[0].init.redirect, "error");
+});
+
+test("a redirect is refused, not followed: a fetch that honours redirect:error fails the request", async () => {
+  // The stub behaves as fetch does: with redirect "error" a redirect response throws; with "follow" it would serve the image from elsewhere.
+  const redirecting = async (url, init) => {
+    if (init.redirect === "error") throw new TypeError("fetch failed: redirect");
+    return new Response(png(), { status: 200 });
+  };
+  assert.deepEqual(await get(redirecting), { refusal: "fetch-failed" });
+});
+
+test("a fetch that never answers is abandoned at the timeout, and the default is 30 s", async () => {
+  assert.equal(FETCH_TIMEOUT_MS, 30000);
+  let seen;
+  const hanging = (url, init) => new Promise((_, reject) => { seen = init.signal; init.signal.addEventListener("abort", () => reject(init.signal.reason)); });
+  const started = Date.now();
+  assert.deepEqual(await fetchImage({ fetch: hanging, homeserver: HS, token: "tok-own", mxc, timeoutMs: 50 }), { refusal: "fetch-failed" });
+  assert.ok(seen instanceof AbortSignal && seen.aborted);
+  assert.ok(Date.now() - started < 5000);
 });
 
 test("only a plain mxc url is fetched: no other scheme, no path climbing, nothing missing", async () => {
@@ -111,7 +129,7 @@ test("an error status, a missing body or a throwing fetch is a fetch failure", a
 // ---- the store ----
 
 function storeIn(clock = { t: Date.now() }) {
-  const root = join(mkdtempSync(join(tmpdir(), "images-")), "eureka");
+  const root = personaStoreRoot();
   return { root, clock, store: createImageStore({ root, now: () => clock.t }) };
 }
 const files = root => readdirSync(root).flatMap(d => readdirSync(join(root, d)).map(f => `${d}/${f}`));
@@ -136,16 +154,38 @@ test("a sender-chosen name never reaches the disk: the store takes no name at al
   assert.deepEqual(readdirSync(root).filter(d => !/^[0-9a-f]{64}$/.test(d)), []);
 });
 
-test("files are 0640 and directories 0750 with the setgid bit kept, whatever the umask, and no temp file is left", () => {
+test("files are 0640 and room directories 0750 plus the setgid they inherit, whatever the umask, and no temp file is left", () => {
   const old = process.umask(0o077);
   try {
     const { root, store } = storeIn();
     const ref = store.put("!r:x", png(), "image/png");
     assert.equal(statSync(join(root, ref.path)).mode & 0o7777, 0o640);
     assert.equal(statSync(join(root, ref.path, "..")).mode & 0o7777, 0o2750);
-    assert.equal(statSync(root).mode & 0o777, 0o750);
+    assert.equal(statSync(root).mode & 0o7777, 0o2750, "the Persona's directory is the installer's: untouched");
     assert.deepEqual(readdirSync(join(root, ref.path, "..")).filter(n => n.startsWith(".tmp-")), []);
   } finally { process.umask(old); }
+});
+
+test("a room directory takes the Persona directory's group by inheritance: it is never chmodded, so a non-member's chmod cannot strip setgid", () => {
+  // bifrost is not in the Persona's group. Stand in for that with a group the test user belongs to that is not its own.
+  const other = process.getgroups().find(g => g !== process.getgid());
+  if (other === undefined) return; // no second group to inherit from: the next test covers the missing-setgid refusal
+  const { root, store } = storeIn();
+  try { chownSync(root, process.getuid(), other); } catch { return; } // a sandbox that will not hand the directory to that group cannot show inheritance
+  chmodSync(root, 0o2750);
+  const ref = store.put("!r:x", png(), "image/png");
+  assert.equal(statSync(join(root, ref.path, "..")).gid, other);
+  assert.equal(statSync(join(root, ref.path)).gid, other);
+  assert.equal(statSync(join(root, ref.path, "..")).mode & 0o2000, 0o2000);
+});
+
+test("a Persona directory without setgid refuses the image: nothing is written, and the directories are not chmodded to hide it", () => {
+  const { root, store } = storeIn();
+  chmodSync(root, 0o750);
+  assert.throws(() => store.put("!r:x", png(), "image/png"), { code: "ENOSETGID" });
+  assert.deepEqual(files(root), []);
+  assert.equal(statSync(root).mode & 0o7777, 0o750, "the installer's directory keeps its mode");
+  assert.equal(statSync(join(root, sha("!r:x"))).mode & 0o7777, 0o750, "the room directory it made is left as mkdir made it");
 });
 
 test("a write that cannot finish leaves no temp file and no partial image under the final name", () => {

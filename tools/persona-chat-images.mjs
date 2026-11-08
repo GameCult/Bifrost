@@ -5,7 +5,7 @@
 // are never read), the size and pixel counts are bounded before anything decodes the image, and every name on disk is
 // generated here from hashes. Refusals are a fixed word list so a refusal can be printed without printing sender text.
 import { createHash, randomBytes } from "node:crypto";
-import { chmodSync, closeSync, fsyncSync, mkdirSync, openSync, readdirSync, renameSync, statSync, unlinkSync, writeSync } from "node:fs";
+import { closeSync, fsyncSync, mkdirSync, openSync, readdirSync, renameSync, statSync, unlinkSync, writeSync } from "node:fs";
 import { join } from "node:path";
 
 export const MAX_BYTES = 5 * 1024 * 1024;
@@ -13,8 +13,8 @@ export const MAX_PIXELS = 40_000_000;
 export const ROOM_CAP_BYTES = 50 * 1024 * 1024;
 export const RETAIN_MS = 24 * 60 * 60 * 1000;
 export const FILE_MODE = 0o640;
-export const DIR_MODE = 0o2750; // setgid is kept: the group of the Persona's directory is inherited by what lands in it
-const FETCH_TIMEOUT_MS = 30000;
+export const DIR_MODE = 0o750; // a room directory's mode at mkdir; its setgid bit comes from the Persona's directory, never from a chmod
+export const FETCH_TIMEOUT_MS = 30000;
 
 // Why an image was not stored. Printed in the delivery's text line, so only these words ever are.
 export const refusals = Object.freeze(["encrypted", "no-url", "fetch-failed", "too-big", "wrong-type", "bad-header", "too-many-pixels", "store-failed"]);
@@ -87,10 +87,10 @@ export function classify(bytes) {
 // GET the attachment named by `mxc` as this Persona: its token, its homeserver, the authenticated media path. The
 // body is read stream-wise and abandoned the moment it passes the cap, whatever Content-Length said.
 // Returns { bytes, mime, ext } or { refusal }.
-export async function fetchImage({ fetch: httpFetch, homeserver, token, mxc }) {
+export async function fetchImage({ fetch: httpFetch, homeserver, token, mxc, timeoutMs = FETCH_TIMEOUT_MS }) {
   const named = typeof mxc === "string" ? MXC.exec(mxc) : null;
   if (!named) return { refusal: "no-url" };
-  const signal = AbortSignal.timeout(FETCH_TIMEOUT_MS);
+  const signal = AbortSignal.timeout(timeoutMs);
   try {
     const response = await httpFetch(`${homeserver}/_matrix/client/v1/media/download/${named[1]}/${named[2]}`, {
       method: "GET", headers: { authorization: `Bearer ${token}` }, redirect: "error", signal,
@@ -165,17 +165,24 @@ export function createImageStore({ root, now = Date.now, log = () => {} }) {
     const ext = EXT[mime];
     const path = `${room}/${digest}.${ext}`;
     const dir = join(root, room);
-    const created = mkdirSync(root, { recursive: true });
-    if (created) chmodSync(root, 0o750);
-    mkdirSync(dir, { recursive: true });
-    chmodSync(dir, DIR_MODE);
-    const temp = join(dir, `.tmp-${randomBytes(8).toString("hex")}`);
-    const fd = openSync(temp, "wx", FILE_MODE);
+    // The Persona's directory (`root`) belongs to the installer: bifrost:mind-<slug>, 2750. It is never chmodded here, and
+    // neither is a room directory: bifrost is not in the Persona's group, and a chmod by a non-member clears setgid. A room
+    // directory inherits group and setgid from `root` at mkdir; if it did not, a file in it would take bifrost's group and the
+    // Persona's reader could not open it, so the image is refused instead.
+    // No chmod can set the group bits without risking setgid, so the creation modes must be exact: a fixed umask (it only
+    // withholds other-access) for the mkdir and the open, restored at once. Synchronous, so nothing else runs under it.
+    const umask = process.umask(0o027);
+    let temp, fd;
+    try {
+      mkdirSync(dir, { recursive: true, mode: DIR_MODE });
+      if ((statSync(dir).mode & 0o2000) === 0) throw Object.assign(new Error("image directory lacks the setgid bit"), { code: "ENOSETGID" });
+      temp = join(dir, `.tmp-${randomBytes(8).toString("hex")}`);
+      fd = openSync(temp, "wx", FILE_MODE);
+    } finally { process.umask(umask); }
     try {
       writeSync(fd, bytes);
       fsyncSync(fd);
     } finally { closeSync(fd); }
-    chmodSync(temp, FILE_MODE);
     try { renameSync(temp, join(dir, `${digest}.${ext}`)); } catch (error) { try { unlinkSync(temp); } catch { /* gone */ } throw error; }
     entries.set(path, { room, size: bytes.length, storedAt: now(), seq: entries.get(path)?.seq ?? null });
     evict(room, path);

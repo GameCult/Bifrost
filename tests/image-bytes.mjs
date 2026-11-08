@@ -15,3 +15,14 @@ export const webpL = (w = 4, h = 4) => { const x = Buffer.alloc(5); x[0] = 0x2f;
 export const webpLossy = (w = 4, h = 4) => { const x = Buffer.alloc(10); Buffer.from([0x9d, 0x01, 0x2a]).copy(x, 3); x.writeUInt16LE(w, 6); x.writeUInt16LE(h, 8); return riff("VP8 ", x); };
 export const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>');
 
+
+// A Persona's image directory as the installer leaves it: group-inherited and setgid (2750), empty. Not the mouth's to chmod.
+import { chmodSync, mkdirSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+export function personaStoreRoot() {
+  const root = join(mkdtempSync(join(tmpdir(), "images-")), "eureka");
+  mkdirSync(root);
+  chmodSync(root, 0o2750);
+  return root;
+}

@@ -7,6 +7,7 @@ import { existsSync, mkdtempSync, statSync as stat } from "node:fs";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import { createImageStore, RETAIN_MS } from "../tools/persona-chat-images.mjs";
+import { personaStoreRoot } from "./image-bytes.mjs";
 import * as docs from "../tools/persona-chat-documents.mjs";
 import { gif, png, svg } from "./image-bytes.mjs";
 import { createMouth, bodyText, createBrakeReader, guarded, redact, roomsFor, projectRoomsVariable } from "../tools/persona-matrix-mouth.mjs";
@@ -788,7 +789,7 @@ const imageTimeline = (events, room = IMG_ROOM) => ({
 });
 const served = bytes => (bearer, server, id) => (bearer === TOKEN && server === "gamecult.test" && id === "AbC_123-x" ? { status: 200, body: bytes } : { status: 401, body: "" });
 function imageSetup(clock = { t: Date.now() }) {
-  const root = join(mkdtempSync(join(tmpdir(), "mouth-images-")), "eureka");
+  const root = personaStoreRoot();
   return { root, clock, images: createImageStore({ root, now: () => clock.t }) };
 }
 async function receive(events, { media: mediaFn, room, images, mouthOptions = {} } = {}) {
