@@ -21,11 +21,11 @@ const delivery = {
   seq: 7, roomAlias: "#operator:gamecult.org", roomId: "!abc:gamecult.org", eventId: "$e1", sender: "@meta:gamecult.org", senderDisplay: "Meta",
   text: "hello eureka", atUnixMs: 1761700000000,
   context: [{ sender: "@eureka:gamecult.org", text: "earlier", atUnixMs: 1761699999000 }],
-  mentions: ["@eureka:gamecult.org", "@nova:gamecult.org"], isDirect: true,
+  mentions: ["@eureka:gamecult.org", "@nova:gamecult.org"], isDirect: true, image: null,
 };
+const image = { path: `${"cd".repeat(32)}/${"ab".repeat(32)}.png`, mime: "image/png", size: 2048, sha256: "ab".repeat(32) };
 const samples = {
   [docs.kinds.pendingRequest]: { tuple: docs.pendingRequestTuple({ persona: "eureka", afterSeq: 3 }), parse: docs.parsePendingRequest },
-  [docs.kinds.pending]: { tuple: docs.pendingTuple({ persona: "eureka", deliveries: [delivery] }), parse: docs.parsePending },
   [docs.kinds.ack]: { tuple: docs.ackTuple({ persona: "eureka", throughSeq: 7 }), parse: docs.parseAck },
   [docs.kinds.sendRequest]: { tuple: docs.sendRequestTuple({ requestId: "req-1", persona: "eureka", roomAlias: "#operator:gamecult.org", text: "hi" }), parse: docs.parseSendRequest },
   [docs.kinds.sendReceipt]: { tuple: docs.sendReceiptTuple({ requestId: "req-1", eventId: "$sent" }), parse: docs.parseSendReceipt },
@@ -49,11 +49,11 @@ test("the chat documents refuse malformed tuples", () => {
   assert.throws(() => docs.parseSendRequest(["r", "eureka", "#a:b", "x".repeat(4001)]));
   assert.throws(() => docs.parseSendRequest(["r", "eureka", "#a:b", 5]));
   const wire = docs.deliveryTuple(delivery);
-  assert.equal(wire.length, 11);
+  assert.equal(wire.length, 12);
   assert.deepEqual(docs.parseDelivery(wire), delivery);
-  assert.throws(() => docs.parseDelivery(wire.slice(0, 9)), /11-field/, "the nine-field delivery is gone: one shape");
-  assert.throws(() => docs.parseDelivery([...wire.slice(0, 10), "yes"]), /boolean/);
-  assert.throws(() => docs.parseDelivery([...wire.slice(0, 9), [""], true]));
+  assert.throws(() => docs.parseDelivery(wire.slice(0, 11)), /12-field/, "the eleven-field delivery is gone: one shape");
+  assert.throws(() => docs.parseDelivery([...wire.slice(0, 10), "yes", null]), /boolean/);
+  assert.throws(() => docs.parseDelivery([...wire.slice(0, 9), [""], true, null]));
   assert.throws(() => docs.refusalTuple({ persona: "p", refusal: "Invented" }));
   assert.throws(() => docs.parseSendReceipt(["r", "$e", "Brake"]), /exactly one/);
   assert.throws(() => docs.parseSendReceipt(["r", null, null]), /exactly one/);
@@ -279,6 +279,23 @@ test("a reply is paged to the byte budget, oldest first, and one delivery that w
   assert.deepEqual(paged[1].map(t => t[0]), paged[1].map((_, i) => i + 1), "the page is the oldest deliveries");
   assert.equal(pageOf("eureka", [mk(1, "x".repeat(4000))], msgpack)[1].length, 1, "a single delivery is always served");
 });
+
+// The pending answer v2 (ChatDelivery v3): the bytes Huginn pins in its crates/mind-body/tests/fixtures/persona-chat-v3/.
+const v3Dir = resolve(root, "tests", "fixtures", "persona-chat-v3");
+const v3Samples = {
+  "gamecult.persona.chat_pending.v2.image": { tuple: docs.pendingTuple({ persona: "eureka", deliveries: [{ ...delivery, image }] }), parse: docs.parsePending },
+  "gamecult.persona.chat_pending.v2.no-image": { tuple: docs.pendingTuple({ persona: "eureka", deliveries: [delivery] }), parse: docs.parsePending },
+};
+for (const [name, { tuple, parse }] of Object.entries(v3Samples)) {
+  test(`golden fixture: ${name} is byte-stable and parses back`, async () => {
+    const bytes = Buffer.from(msgpack.encode(tuple));
+    const file = resolve(v3Dir, `${name}.msgpack`);
+    if (process.env.UPDATE_FIXTURES === "1") { await mkdir(v3Dir, { recursive: true }); await writeFile(file, bytes); }
+    assert.deepEqual(bytes, await readFile(file), "wire bytes changed: Huginn decodes these fixtures");
+    assert.deepEqual(parse(msgpack.decode(bytes)), parse(tuple));
+    assert.equal(msgpack.decode(bytes)[1][0].length, 12);
+  });
+}
 
 // The send pair v2: the bytes the Huginn organ pins from its side.
 const v2Dir = resolve(root, "tests", "fixtures", "persona-chat-v2");

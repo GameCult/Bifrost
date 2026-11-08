@@ -1,11 +1,14 @@
-// gamecult.persona.chat_*.v1 and the v2 send pair: the documents Huginn and the Matrix mouth exchange.
+// gamecult.persona.chat_*.v1, the v2 send pair and the v2 pending answer: the documents Huginn and the Matrix mouth exchange.
 // Each kind is a positional tuple (the CultCache payload shape); this module owns
 // the field order, the parsers and the envelope check. It does no I/O and loads no
-// runtime, so the wire encoder (MessagePack) stays with the caller.
+// runtime, so the wire encoder (MessagePack) stays with the caller. The image path, mime and size bounds it checks
+// come from persona-chat-images.mjs, which owns them.
+
+import { IMAGE_PATH, MAX_BYTES, MIMES, extensionOf } from "./persona-chat-images.mjs";
 
 export const kinds = Object.freeze({
   pendingRequest: "gamecult.persona.chat_pending_request.v1",
-  pending: "gamecult.persona.chat_pending.v1",
+  pending: "gamecult.persona.chat_pending.v2",
   ack: "gamecult.persona.chat_ack.v1",
   sendRequest: "gamecult.persona.chat_send_request.v1",
   sendReceipt: "gamecult.persona.chat_send_receipt.v1",
@@ -119,11 +122,31 @@ export function deliveryTuple(d) {
     seq(d.seq, "seq"), text(d.roomAlias, "room_alias"), text(d.roomId, "room_id"), text(d.eventId, "event_id"),
     text(d.sender, "sender"), text(d.senderDisplay, "sender_display"), String(d.text), seq(d.atUnixMs, "at_unix_ms"),
     d.context.slice(-maxContext).map(c => [text(c.sender, "sender"), String(c.text), seq(c.atUnixMs, "at_unix_ms")]),
-    d.mentions.map(id => text(id, "mention")), flag(d.isDirect, "is_direct"),
+    d.mentions.map(id => text(id, "mention")), flag(d.isDirect, "is_direct"), imageTuple(d.image ?? null),
   ];
 }
+
+// The image the mouth stored for a delivery, by reference: [path, mime, size, sha256] or null. The path is relative to the
+// Persona's image store and is exactly `<hex sha256 of the room id>/<hex sha256 of the bytes>[.<ext of the mime>]`, so it can
+// be neither absolute nor climb out of the store. Whether the file matches the rest is the reader's to re-check.
+function imageTuple(image) {
+  if (image === null) return null;
+  const { path, mime, size, sha256 } = image;
+  if (typeof path !== "string" || !IMAGE_PATH.test(path)) throw new Error("image path must be <room hash>/<bytes hash>[.ext]");
+  if (!MIMES.includes(mime)) throw new Error("image mime must be image/png, image/jpeg, image/gif or image/webp");
+  if (path.includes(".") && !path.endsWith(`.${extensionOf(mime)}`)) throw new Error("image path extension must match its mime");
+  if (!Number.isSafeInteger(size) || size < 1 || size > MAX_BYTES) throw new Error("image size must be 1 to 5 MiB");
+  if (typeof sha256 !== "string" || !/^[0-9a-f]{64}$/.test(sha256)) throw new Error("image sha256 must be lowercase hex");
+  if (!path.split("/")[1].startsWith(sha256)) throw new Error("image path must name its sha256");
+  return [path, mime, size, sha256];
+}
+function parseImage(t) {
+  const [path, mime, size, sha256] = tuple(t, 4, "image");
+  imageTuple({ path, mime, size, sha256 });
+  return { path, mime, size, sha256 };
+}
 export function parseDelivery(t) {
-  const [s, roomAlias, roomId, eventId, sender, senderDisplay, body, atUnixMs, context, mentions, isDirect] = tuple(t, 11, "delivery");
+  const [s, roomAlias, roomId, eventId, sender, senderDisplay, body, atUnixMs, context, mentions, isDirect, image] = tuple(t, 12, "delivery");
   if (!Array.isArray(context)) throw new Error("delivery context must be a list");
   if (!Array.isArray(mentions)) throw new Error("delivery mentions must be a list");
   return {
@@ -131,6 +154,7 @@ export function parseDelivery(t) {
     sender: text(sender, "sender"), senderDisplay: text(senderDisplay, "sender_display"), text: String(body), atUnixMs: seq(atUnixMs, "at_unix_ms"),
     context: context.map(c => { const [cs, ct, ca] = tuple(c, 3, "context"); return { sender: text(cs, "sender"), text: String(ct), atUnixMs: seq(ca, "at_unix_ms") }; }),
     mentions: mentions.map(id => text(id, "mention")), isDirect: flag(isDirect, "is_direct"),
+    image: image === null ? null : parseImage(image),
   };
 }
 
