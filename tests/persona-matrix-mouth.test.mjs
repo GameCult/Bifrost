@@ -1012,7 +1012,8 @@ test("the ack does not wait for the receipt", async () => {
   let release;
   const hs = await fakeHomeserver({ sync: receiptScript, deferReceipts: new Promise(r => { release = r; }) });
   const mouth = await withMail(hs);
-  await mouth.ack(3); // resolves while the receipt response is held open
+  const outcome = await Promise.race([mouth.ack(3).then(() => "acked"), new Promise(r => setTimeout(() => r("waited on the receipt"), 500))]);
+  assert.equal(outcome, "acked", "the ack resolves while the receipt response is held open");
   assert.equal(mouth.pendingCount, 0);
   release();
   await until(() => hs.receipts().length >= 2);
