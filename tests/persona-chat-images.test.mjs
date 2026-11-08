@@ -71,9 +71,9 @@ test("the bytes actually read are capped at 5 MiB with a lying or absent Content
   for (const headers of [{}, { "content-length": "100" }]) {
     let pulled = 0;
     const chunk = Buffer.alloc(1024 * 1024);
-    const body = () => new ReadableStream({ pull(c) { pulled++; c.enqueue(chunk); } });
+    const body = () => new ReadableStream({ pull(c) { pulled++; c.enqueue(chunk); if (pulled === 8) c.close(); } });
     assert.deepEqual(await get(fakeFetch({ headers, body })), { refusal: "too-big" });
-    assert.ok(pulled <= 8, `the stream was read ${pulled} chunks past the cap`);
+    assert.ok(pulled <= 7, `the stream was read ${pulled} chunks past the cap`);
   }
 });
 
