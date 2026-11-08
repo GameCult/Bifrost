@@ -6,7 +6,12 @@
 // its m.mentions user ids and whether the room is a DM. The /sync position
 // (next_batch) is persisted only when an ack covers it, so a restart before the
 // ack re-delivers instead of losing. Reading wakes nothing: the heartbeat polls
-// with a non-consuming chat_pending_request and decides who runs.
+// with a non-consuming chat_pending_request and decides who runs. An ack also posts this Persona's public
+// m.read receipt per room, at the newest event the ack covers (fire and forget: the ack never waits on it,
+// a failure is logged once and not retried, the room's next ack covers it). Her presence follows her
+// brake: every /sync says online while it is released and offline while it is held, and a round that
+// finds her braked makes one presence PUT to offline first. A brake placed mid long-poll shows at the next
+// round, within syncTimeoutMs plus one PUT; a stopped mouth reads offline after the homeserver's sync timeout.
 // Mouth: a send request becomes one PUT with txnId = request_id (a retry is idempotent), and a room
 // is joined, only while that Persona's brake is released. A v2 send carries the basis of her turn (the
 // newest room event she saw): inside the room gate, one step per room across every Persona, the mouth
@@ -119,6 +124,7 @@ export function createMouth({
   let batches = []; // { token, maxSeq }: positions awaiting an ack
   let committed = null; // the position that is persisted
   let started = false;
+  let lastPresence = null; // 'online' | 'offline' | null: command-only, suppresses repeat presence PUTs
   const directContent = {}; // the account's m.direct content: user id -> room ids
   const invites = new Map(); // room id -> { inviter, direct }: invitations not yet answered
   const processed = new Set(); // event ids read since the position last advanced
@@ -158,8 +164,7 @@ export function createMouth({
   // A DM invitation from an account on our own homeserver is accepted, and only while the brake is
   // released; one received while braked waits for the release. An invitation from any other server is
   // declined. A same-server invitation to a room that is not a DM is not ours to accept and is dropped.
-  async function answerInvites() {
-    let free = null;
+  async function answerInvites(free) {
     for (const [roomId, invite] of [...invites]) {
       try {
         const room = encodeURIComponent(roomId);
@@ -169,7 +174,6 @@ export function createMouth({
         } else if (!invite.direct) {
           invites.delete(roomId);
         } else {
-          free ??= await released();
           if (!free) continue;
           await matrix("POST", `/join/${room}`, {});
           invites.delete(roomId);
@@ -283,11 +287,19 @@ export function createMouth({
     if (pending.length >= maxPending) return []; // unanswered mail is not outrun: the position stays where it is
     const filter = encodeURIComponent(JSON.stringify({ room: { timeline: { limit: CONTEXT } } }));
     const since = cursor === null ? "" : `&since=${encodeURIComponent(cursor)}`;
-    const reply = await matrix("GET", `/sync?timeout=${cursor === null ? 0 : syncTimeoutMs}&filter=${filter}${since}`);
+    const free = await released(); // the round's one brake read: presence and invites both follow it
+    if (!free && lastPresence !== "offline") {
+      try {
+        await matrix("PUT", `/presence/${encodeURIComponent(selfId)}/status`, { presence: "offline" }, API, AbortSignal.timeout(sendTimeoutMs));
+        lastPresence = "offline";
+      } catch (error) { say(`presence not set: ${error.message}`); }
+    }
+    const reply = await matrix("GET", `/sync?timeout=${cursor === null ? 0 : syncTimeoutMs}&set_presence=${free ? "online" : "offline"}&filter=${filter}${since}`);
+    if (free) lastPresence = "online";
     const baseline = cursor === null; // first ever sync: history is context, not mail
     for (const event of reply.account_data?.events ?? []) if (event.type === "m.direct") noteDirect(event.content);
     noteInvites(reply.rooms?.invite);
-    await answerInvites();
+    await answerInvites(free);
     const made = [];
     const round = new Map();
     let truncated = false; // the pending cap was reached inside this round
@@ -346,10 +358,23 @@ export function createMouth({
     batches = batches.filter(b => b.maxSeq > throughSeq);
   }
 
+  // Her m.read receipt, display-only: public, unthreaded, at the newest event each room's ack covers.
+  // Never awaited by the ack; a failure is one log line and nothing else.
+  async function readUpTo(newest) {
+    for (const { roomId, eventId } of newest.values()) {
+      try {
+        await matrix("POST", `/rooms/${encodeURIComponent(roomId)}/receipt/m.read/${encodeURIComponent(eventId)}`, {}, API, AbortSignal.timeout(sendTimeoutMs));
+      } catch (error) { say(`receipt in ${roomId} not posted: ${error.message}`); }
+    }
+  }
+
   async function ack(throughSeq) {
+    const newest = new Map(); // roomId -> the highest-seq delivery this ack covers
+    for (const d of pending) if (d.seq <= throughSeq && (newest.get(d.roomId)?.seq ?? 0) < d.seq) newest.set(d.roomId, d);
     pending = pending.filter(d => d.seq > throughSeq);
     images?.acked(throughSeq);
     await commit(pending.length ? pending[0].seq - 1 : seqCounter);
+    readUpTo(newest);
   }
 
   function pendingAfter(afterSeq) {

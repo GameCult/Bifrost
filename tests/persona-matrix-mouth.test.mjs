@@ -23,7 +23,7 @@ const tick = () => new Promise(r => setImmediate(r));
 // A fake Matrix client-server API: just the endpoints the mouth uses.
 // It is also the record of every room: events the sync script emits and messages sent are kept, and
 // `preload` (room id -> events, oldest first) stands for history from before the mouth's process began.
-async function fakeHomeserver({ sync, failWith, users, member, direct, preload = {}, failContext = false, media } = {}) {
+async function fakeHomeserver({ sync, failWith, users, member, direct, preload = {}, failContext = false, media, failReceipts = false, deferReceipts = null, failPresence = 0 } = {}) {
   const seen = [];
   const record_ = new Map(Object.entries(preload).map(([room, events]) => [room, [...events]]));
   const remember = (room, event) => { const list = record_.get(room) ?? []; if (!list.some(e => e.event_id === event.event_id)) list.push(event); record_.set(room, list); };
@@ -40,6 +40,11 @@ async function fakeHomeserver({ sync, failWith, users, member, direct, preload =
       if (failWith) return reply(failWith, { errcode: "M_UNKNOWN_TOKEN", error: `bad token ${record.auth}` });
       const p = record.path.replace("/_matrix/client/v3", "").replace("/_matrix/client/v1", "");
       const bearer = (record.auth ?? "").replace("Bearer ", "");
+      if (req.method === "POST" && p.includes("/receipt/m.read/")) {
+        if (deferReceipts) return deferReceipts.then(() => reply(200, {}));
+        return failReceipts ? reply(500, { errcode: "M_UNKNOWN", error: `down ${record.auth}` }) : reply(200, {});
+      }
+      if (req.method === "PUT" && p.includes("/presence/")) return failPresence-- > 0 ? reply(500, { errcode: "M_UNKNOWN" }) : reply(200, {});
       if (p.startsWith("/media/download/")) {
         const served = media?.(bearer, ...p.slice("/media/download/".length).split("/")) ?? { status: 404, body: "" };
         res.writeHead(served.status ?? 200, served.headers ?? {});
@@ -91,7 +96,9 @@ async function fakeHomeserver({ sync, failWith, users, member, direct, preload =
     url: "http://hs.test",
     fetch,
     seen,
-    puts: () => seen.filter(r => r.method === "PUT"),
+    puts: () => seen.filter(r => r.method === "PUT" && !r.path.includes("/presence/")),
+    receipts: () => seen.filter(r => r.path.includes("/receipt/")),
+    presencePuts: () => seen.filter(r => r.path.includes("/presence/")),
     downloads: () => seen.filter(r => r.path.includes("/media/download/")),
     close: async () => {},
   };
@@ -443,7 +450,7 @@ test("join_while_braked: no join and no send while the brake is held; joining ha
     const mouth = mouthFor(hs, { brake: async () => open, log: l => logs.push(l) });
     await mouth.syncOnce();
     await mouth.send({ requestId: "r", persona: "eureka", roomAlias: `#swarm:${HS_NAME}`, text: "speak" });
-    assert.equal(hs.seen.filter(r => r.method === "POST" || r.method === "PUT").length, 0, "braked: nothing is joined or sent");
+    assert.equal(hs.seen.filter(r => (r.method === "POST" || r.method === "PUT") && !r.path.includes("/presence/")).length, 0, "braked: nothing is joined or sent");
     open = true;
     await mouth.syncOnce();
     assert.deepEqual(hs.seen.filter(r => r.method === "POST").map(r => r.path.split("/join/")[1]).sort(), ["!operator:gamecult.test", "!swarm:gamecult.test"]);
@@ -588,7 +595,7 @@ test("dm_invite_waits_for_release: an invitation received while braked is not jo
   try {
     const mouth = mouthFor(hs, { brake: async () => open });
     await mouth.syncOnce(); await mouth.syncOnce(); await mouth.syncOnce();
-    assert.deepEqual(hs.seen.filter(r => r.method === "POST" || r.method === "PUT"), [], "braked: no join, no leave, nothing written");
+    assert.deepEqual(hs.seen.filter(r => (r.method === "POST" || r.method === "PUT") && !r.path.includes("/presence/")), [], "braked: no join, no leave, nothing written");
     open = true;
     await mouth.syncOnce();
     assert.deepEqual(joinsOf(hs), [DMROOM]);
@@ -940,4 +947,121 @@ test("image_delivery: a store that cannot write leaves the line and a nil image,
     assert.match(made[0].text, /refused=store-failed\]/);
     assert.ok(lines.some(l => l.includes("ENOSPC")));
   } finally { await hs.close(); }
+});
+
+// Read receipts and presence: her ack posts her m.read; her brake sets her presence.
+const A = "!swarm:gamecult.test", B = "!operator:gamecult.test";
+const receiptScript = since => since === null ? { next_batch: "b0", ...joined({}) } : since === "b0" ? {
+  next_batch: "b1",
+  ...joined({
+    [A]: { timeline: { events: [message("$a1", `@alice:${HS_NAME}`, "one", 10), message("$a2", `@alice:${HS_NAME}`, "two", 11)] } },
+    [B]: { timeline: { events: [message("$b1", `@bob:${HS_NAME}`, "three", 12)] } },
+  }),
+} : { next_batch: since };
+const until = async check => { for (let i = 0; i < 200 && !check(); i++) await new Promise(r => setImmediate(r)); };
+const withMail = async (hs, overrides) => {
+  const mouth = mouthFor(hs, overrides);
+  await mouth.syncOnce();
+  assert.equal((await mouth.syncOnce()).map(d => d.seq).join(), "1,2,3");
+  return mouth;
+};
+const receiptsOf = hs => hs.receipts().map(r => [r.path.split("/rooms/")[1].split("/receipt/")[0], r.path.split("/m.read/")[1], r.auth, r.body]);
+
+test("an ack posts one m.read per room at the newest covered event, as that Persona", async () => {
+  const hs = await fakeHomeserver({ sync: receiptScript });
+  const mouth = await withMail(hs);
+  await mouth.ack(2);
+  await until(() => hs.receipts().length >= 1);
+  await new Promise(r => setTimeout(r, 20));
+  assert.deepEqual(receiptsOf(hs), [[A, "$a2", `Bearer ${TOKEN}`, {}]], "room A at its second event; room B untouched");
+  await mouth.ack(3);
+  await until(() => hs.receipts().length >= 2);
+  assert.deepEqual(receiptsOf(hs).slice(1), [[B, "$b1", `Bearer ${TOKEN}`, {}]]);
+  assert.equal(hs.receipts().length, 2);
+});
+
+test("pending posts no receipt", async () => {
+  const hs = await fakeHomeserver({ sync: receiptScript });
+  const mouth = await withMail(hs);
+  for (const after of [0, 1, 2, 3]) mouth.pendingAfter(after);
+  await new Promise(r => setTimeout(r, 20));
+  assert.deepEqual(hs.receipts(), []);
+});
+
+test("a failed receipt leaves the ack whole", async () => {
+  const hs = await fakeHomeserver({ sync: receiptScript, failReceipts: true });
+  const lines = [];
+  const state = memoryState();
+  const mouth = await withMail(hs, { state, log: l => lines.push(l) });
+  const saves = [];
+  const save = state.save;
+  state.save = async v => { saves.push(v); return save(v); };
+  await mouth.ack(3);
+  await until(() => lines.some(l => l.includes("receipt in")));
+  assert.equal(mouth.pendingCount, 0);
+  assert.equal(state.box.value.nextBatch, "b1", "the cursor committed");
+  assert.ok(saves.length >= 1, "state.save called");
+  const failures = lines.filter(l => l.startsWith("receipt in "));
+  assert.equal(failures.length, 2, "one line per room, nothing retried");
+  assert.ok(failures.every(l => l.includes("not posted") && !l.includes(TOKEN)));
+  await new Promise(r => setTimeout(r, 20));
+  assert.equal(hs.receipts().length, 2, "no retry");
+});
+
+test("the ack does not wait for the receipt", async () => {
+  let release;
+  const hs = await fakeHomeserver({ sync: receiptScript, deferReceipts: new Promise(r => { release = r; }) });
+  const mouth = await withMail(hs);
+  await mouth.ack(3); // resolves while the receipt response is held open
+  assert.equal(mouth.pendingCount, 0);
+  release();
+  await until(() => hs.receipts().length >= 2);
+});
+
+test("presence follows the brake: online while released, offline and one PUT on the transition", async () => {
+  let open = true;
+  const hs = await fakeHomeserver({ sync: receiptScript });
+  const mouth = mouthFor(hs, { brake: async () => open });
+  const syncs = () => hs.seen.filter(r => r.path.endsWith("/sync")).map(r => r.query.get("set_presence"));
+  await mouth.syncOnce(); await mouth.syncOnce();
+  assert.deepEqual(syncs(), ["online", "online"]);
+  assert.equal(hs.presencePuts().length, 0, "released: no PUT");
+  open = false;
+  await mouth.syncOnce(); await mouth.syncOnce(); await mouth.syncOnce();
+  assert.deepEqual(syncs().slice(2), ["offline", "offline", "offline"]);
+  assert.deepEqual(hs.presencePuts().map(r => [r.path, r.body]), [[`/_matrix/client/v3/presence/${SELF}/status`, { presence: "offline" }]], "exactly one PUT");
+  open = true;
+  await mouth.syncOnce();
+  assert.equal(syncs().at(-1), "online");
+  open = false;
+  await mouth.syncOnce();
+  assert.equal(hs.presencePuts().length, 2, "a second transition PUTs once more");
+});
+
+test("the first braked round of a fresh mouth PUTs offline once; a failed PUT is tried again next round", async () => {
+  const hs = await fakeHomeserver({ sync: receiptScript, failPresence: 1 });
+  const lines = [];
+  const mouth = mouthFor(hs, { brake: async () => false, log: l => lines.push(l) });
+  await mouth.syncOnce();
+  assert.equal(hs.presencePuts().length, 1);
+  assert.ok(lines.some(l => l.startsWith("presence not set")), "one log line");
+  await mouth.syncOnce();
+  assert.equal(hs.presencePuts().length, 2, "retried the next round");
+  await mouth.syncOnce();
+  assert.equal(hs.presencePuts().length, 2, "then settled");
+});
+
+test("two Personas on one homeserver: receipts and presence carry only her own bearer and user id", async () => {
+  const ALICE = `@pa:${HS_NAME}`, BOB = `@pb:${HS_NAME}`;
+  const hs = await fakeHomeserver({ sync: receiptScript, users: { tokA: ALICE, tokB: BOB } });
+  const a = await withMail(hs, { persona: "pa", token: "tokA" });
+  const b = await withMail(hs, { persona: "pb", token: "tokB", brake: async () => false });
+  await a.ack(3);
+  await b.syncOnce();
+  await until(() => hs.receipts().length >= 2);
+  assert.ok(hs.receipts().every(r => r.auth === "Bearer tokA"), "only A acked");
+  await b.ack(3);
+  await until(() => hs.receipts().length >= 4);
+  assert.deepEqual([...new Set(hs.receipts().map(r => r.auth))].sort(), ["Bearer tokA", "Bearer tokB"]);
+  assert.ok(hs.presencePuts().length >= 1 && hs.presencePuts().every(r => r.path.endsWith(`/presence/${BOB}/status`) && r.auth === "Bearer tokB"));
 });
