@@ -1035,6 +1035,7 @@ test("presence follows the brake: online while released, offline and one PUT on 
   await mouth.syncOnce(); await mouth.syncOnce(); await mouth.syncOnce();
   assert.deepEqual(syncs().slice(2), ["offline", "offline", "offline"]);
   assert.deepEqual(hs.presencePuts().map(r => [r.path, r.body]), [[`/_matrix/client/v3/presence/${SELF}/status`, { presence: "offline" }]], "exactly one PUT");
+  assert.equal(hs.presencePuts()[0].rawPath, `/_matrix/client/v3/presence/${encodeURIComponent(SELF)}/status`, "the user id is percent-encoded on the wire");
   open = true;
   await mouth.syncOnce();
   assert.equal(syncs().at(-1), "online");
@@ -1150,4 +1151,19 @@ test("a full backlog still sets presence from the brake", async () => {
   assert.deepEqual(await mouth.syncOnce(), [], "backlog full: no /sync");
   assert.equal(hs.seen.filter(r => r.path.endsWith("/sync")).length, syncsBefore);
   assert.deepEqual(hs.presencePuts().map(r => r.body), [{ presence: "offline" }]);
+});
+
+test("a brake placed during the first of two joins stops the second join and its m.direct write", async () => {
+  const DM2 = "!newdm2:gamecult.test";
+  const invites2 = { ...invite(`@meta:${HS_NAME}`), [DM2]: invite(`@meta:${HS_NAME}`)[DMROOM] };
+  const hs = await fakeHomeserver({ sync: since => since === null ? { next_batch: "b0" } : since === "b0" ? { next_batch: "b1", rooms: { invite: invites2 } } : { next_batch: since } });
+  let open = true;
+  const fetch = async (url, init) => { const res = await hs.fetch(url, init); if (init?.method === "POST" && String(url).includes("/join/")) open = false; return res; }; // the brake lands during the first join
+  const mouth = mouthFor(hs, { fetch, brake: async () => open });
+  await mouth.syncOnce(); await mouth.syncOnce();
+  assert.deepEqual(joinsOf(hs), [DMROOM], "only the join already started");
+  assert.equal(hs.seen.filter(r => r.method === "PUT" && r.path.endsWith("/account_data/m.direct")).length, 1, "one m.direct, for the first join");
+  open = true;
+  await mouth.syncOnce();
+  assert.deepEqual(joinsOf(hs), [DMROOM, DM2], "the second waits for the release");
 });

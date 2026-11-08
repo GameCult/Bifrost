@@ -164,7 +164,7 @@ export function createMouth({
   // A DM invitation from an account on our own homeserver is accepted, and only while the brake is
   // released; one received while braked waits for the release. An invitation from any other server is
   // declined. A same-server invitation to a room that is not a DM is not ours to accept and is dropped.
-  async function answerInvites(free) {
+  async function answerInvites() {
     for (const [roomId, invite] of [...invites]) {
       try {
         const room = encodeURIComponent(roomId);
@@ -174,7 +174,7 @@ export function createMouth({
         } else if (!invite.direct) {
           invites.delete(roomId);
         } else {
-          if (!free) continue;
+          if (!(await released())) continue; // read fresh before every join: a brake placed mid-pass stops the next one
           await matrix("POST", `/join/${room}`, {});
           invites.delete(roomId);
           directRooms.add(roomId);
@@ -299,7 +299,7 @@ export function createMouth({
     const baseline = cursor === null; // first ever sync: history is context, not mail
     for (const event of reply.account_data?.events ?? []) if (event.type === "m.direct") noteDirect(event.content);
     noteInvites(reply.rooms?.invite);
-    await answerInvites(await released()); // a brake placed during the long-poll stops the join, as send re-reads it
+    await answerInvites(); // each join re-reads the brake, as send does
     const made = [];
     const round = new Map();
     let truncated = false; // the pending cap was reached inside this round
