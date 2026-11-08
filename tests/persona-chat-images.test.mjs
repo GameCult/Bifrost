@@ -188,6 +188,27 @@ test("a Persona directory without setgid refuses the image: nothing is written, 
   assert.equal(statSync(join(root, sha("!r:x"))).mode & 0o7777, 0o750, "the room directory it made is left as mkdir made it");
 });
 
+
+test("a room directory whose group is not the Persona directory's is refused: nothing is written", () => {
+  const root = personaStoreRoot();
+  const wrong = createImageStore({ root, stat: path => { const s = statSync(path); return path === root ? s : Object.assign(Object.create(Object.getPrototypeOf(s)), s, { gid: s.gid + 1 }); } });
+  assert.throws(() => wrong.put("!r:x", png(), "image/png"), { code: "ENOGROUP" });
+  assert.deepEqual(files(root), []);
+  const right = createImageStore({ root });
+  assert.ok(right.put("!r:x", png(), "image/png").path, "the same directory is accepted when the group matches");
+});
+
+test("a missing Persona directory is refused, not created, and nothing above or below it appears", () => {
+  const parent = join(personaStoreRoot(), "..");
+  const root = join(parent, "absent", "eureka");
+  const store = createImageStore({ root });
+  assert.throws(() => store.put("!r:x", png(), "image/png"), { code: "ENOPERSONADIR" });
+  assert.equal(existsSync(join(parent, "absent")), false);
+  const file = join(parent, "not-a-dir");
+  writeFileSync(file, "x");
+  assert.throws(() => createImageStore({ root: file }).put("!r:x", png(), "image/png"), { code: "ENOPERSONADIR" });
+});
+
 test("a write that cannot finish leaves no temp file and no partial image under the final name", () => {
   const { root, store } = storeIn();
   const bytes = png(6, 6);

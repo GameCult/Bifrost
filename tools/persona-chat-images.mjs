@@ -128,7 +128,7 @@ const sha256 = data => createHash("sha256").update(data).digest("hex");
 // A stored image leaves when it is at least RETAIN_MS old and the delivery that carried it is acked, whichever is
 // later; a room holds at most ROOM_CAP_BYTES, oldest evicted first. What is on disk at start is old and acked: a
 // delivery still pending after a restart is made again by the next sync and stores its image again.
-export function createImageStore({ root, now = Date.now, log = () => {} }) {
+export function createImageStore({ root, now = Date.now, log = () => {}, stat = statSync }) {
   const entries = new Map(); // relative path -> { room, size, storedAt, seq }  (seq: the newest delivery carrying it, null once acked)
   let loaded = false;
 
@@ -174,8 +174,14 @@ export function createImageStore({ root, now = Date.now, log = () => {} }) {
     const umask = process.umask(0o027);
     let temp, fd;
     try {
-      mkdirSync(dir, { recursive: true, mode: DIR_MODE });
-      if ((statSync(dir).mode & 0o2000) === 0) throw Object.assign(new Error("image directory lacks the setgid bit"), { code: "ENOSETGID" });
+      // Only the room directory is created: a missing Persona directory is the installer's to make, and is not made up here.
+      let persona;
+      try { persona = stat(root); } catch { persona = null; }
+      if (!persona?.isDirectory()) throw Object.assign(new Error("the Persona's image directory does not exist"), { code: "ENOPERSONADIR" });
+      try { mkdirSync(dir, { mode: DIR_MODE }); } catch (error) { if (error.code !== "EEXIST") throw error; }
+      const made = stat(dir);
+      if ((made.mode & 0o2000) === 0) throw Object.assign(new Error("image directory lacks the setgid bit"), { code: "ENOSETGID" });
+      if (made.gid !== persona.gid) throw Object.assign(new Error("image directory is not in the Persona directory's group"), { code: "ENOGROUP" });
       temp = join(dir, `.tmp-${randomBytes(8).toString("hex")}`);
       fd = openSync(temp, "wx", FILE_MODE);
     } finally { process.umask(umask); }
