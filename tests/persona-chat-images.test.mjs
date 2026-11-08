@@ -3,7 +3,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MAX_BYTES, MAX_PIXELS, RETAIN_MS, ROOM_CAP_BYTES, classify, createImageStore, fetchImage, sniff } from "../tools/persona-chat-images.mjs";
@@ -146,6 +146,14 @@ test("files are 0640 and directories 0750 with the setgid bit kept, whatever the
     assert.equal(statSync(root).mode & 0o777, 0o750);
     assert.deepEqual(readdirSync(join(root, ref.path, "..")).filter(n => n.startsWith(".tmp-")), []);
   } finally { process.umask(old); }
+});
+
+test("a write that cannot finish leaves no temp file and no partial image under the final name", () => {
+  const { root, store } = storeIn();
+  const bytes = png(6, 6);
+  mkdirSync(join(root, sha("!r:x"), `${sha(bytes)}.png`), { recursive: true }); // the final name is taken by a directory: the rename fails
+  assert.throws(() => store.put("!r:x", bytes, "image/png"));
+  assert.deepEqual(readdirSync(join(root, sha("!r:x"))).filter(n => n.startsWith(".tmp-")), []);
 });
 
 test("a stored image stays until it is at least 24 h old and acked, whichever is later", () => {
