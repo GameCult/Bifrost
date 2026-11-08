@@ -1,8 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createServer } from "node:http";
+import { EventEmitter } from "node:events";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { resolve, join } from "node:path";
+import { existsSync, mkdtempSync, statSync as stat } from "node:fs";
+import { tmpdir } from "node:os";
+import { createHash } from "node:crypto";
+import { createImageStore, RETAIN_MS } from "../tools/persona-chat-images.mjs";
+import * as docs from "../tools/persona-chat-documents.mjs";
+import { gif, png, svg } from "./image-bytes.mjs";
 import { createMouth, bodyText, createBrakeReader, guarded, redact, roomsFor, projectRoomsVariable } from "../tools/persona-matrix-mouth.mjs";
 
 const TOKEN = "syt_SECRET_TOKEN_9f3";
@@ -16,12 +22,13 @@ const tick = () => new Promise(r => setImmediate(r));
 // A fake Matrix client-server API: just the endpoints the mouth uses.
 // It is also the record of every room: events the sync script emits and messages sent are kept, and
 // `preload` (room id -> events, oldest first) stands for history from before the mouth's process began.
-async function fakeHomeserver({ sync, failWith, users, member, direct, preload = {}, failContext = false } = {}) {
+async function fakeHomeserver({ sync, failWith, users, member, direct, preload = {}, failContext = false, media } = {}) {
   const seen = [];
   const record_ = new Map(Object.entries(preload).map(([room, events]) => [room, [...events]]));
   const remember = (room, event) => { const list = record_.get(room) ?? []; if (!list.some(e => e.event_id === event.event_id)) list.push(event); record_.set(room, list); };
   const sent = new Map(); // txnId -> event_id
-  const server = createServer((req, res) => {
+  // The homeserver is answered in-process (no socket): the suite runs under a capped address space, where undici's HTTP client cannot start.
+  const handler = (req, res) => {
     let raw = "";
     req.on("data", c => (raw += c));
     req.on("end", () => {
@@ -32,6 +39,11 @@ async function fakeHomeserver({ sync, failWith, users, member, direct, preload =
       if (failWith) return reply(failWith, { errcode: "M_UNKNOWN_TOKEN", error: `bad token ${record.auth}` });
       const p = record.path.replace("/_matrix/client/v3", "").replace("/_matrix/client/v1", "");
       const bearer = (record.auth ?? "").replace("Bearer ", "");
+      if (p.startsWith("/media/download/")) {
+        const served = media?.(bearer, ...p.slice("/media/download/".length).split("/")) ?? { status: 404, body: "" };
+        res.writeHead(served.status ?? 200, served.headers ?? {});
+        return res.end(served.body);
+      }
       if (p === "/account/whoami") return reply(200, { user_id: users?.[bearer] ?? SELF });
       if (p === "/joined_rooms") return reply(200, { joined_rooms: member ?? Object.values(ROOMS) });
       if (req.method === "PUT" && p.includes("/account_data/m.direct")) return reply(200, {});
@@ -63,13 +75,24 @@ async function fakeHomeserver({ sync, failWith, users, member, direct, preload =
       }
       reply(404, { errcode: "M_NOT_FOUND" });
     });
+  };
+  const fetch = (url, init = {}) => new Promise(resolve => {
+    const u = new URL(url);
+    const req = Object.assign(new EventEmitter(), { method: init.method ?? "GET", url: u.pathname + u.search, headers: init.headers ?? {} });
+    const res = {
+      writeHead(status, headers) { this.status = status; this.headers = headers; },
+      end(body) { resolve(new Response(body === "" ? null : body, { status: this.status, headers: this.headers })); },
+    };
+    handler(req, res);
+    process.nextTick(() => { if (init.body !== undefined) req.emit("data", init.body); req.emit("end"); });
   });
-  await new Promise(ok => server.listen(0, "127.0.0.1", ok));
   return {
-    url: `http://127.0.0.1:${server.address().port}`,
+    url: "http://hs.test",
+    fetch,
     seen,
     puts: () => seen.filter(r => r.method === "PUT"),
-    close: () => new Promise(ok => server.close(ok)),
+    downloads: () => seen.filter(r => r.path.includes("/media/download/")),
+    close: async () => {},
   };
 }
 
@@ -81,7 +104,7 @@ function memoryState(initial = null) {
 const joined = events => ({ rooms: { join: events } });
 function mouthFor(hs, overrides = {}) {
   return createMouth({
-    persona: "eureka", homeserver: hs.url, rooms: Object.keys(ROOMS), token: TOKEN, state: memoryState(),
+    persona: "eureka", homeserver: hs.url, rooms: Object.keys(ROOMS), token: TOKEN, state: memoryState(), fetch: hs.fetch,
     serverName: HS_NAME, brake: async () => true, log: () => {}, syncTimeoutMs: 1, ...overrides,
   });
 }
@@ -429,7 +452,7 @@ test("join_while_braked: no join and no send while the brake is held; joining ha
 
   const failing = await fakeHomeserver({ sync: script, member: [] });
   try {
-    const mouth = mouthFor(failing, { fetch: (url, init) => String(url).includes("/join/") ? Promise.reject(new Error(`join refused for ${init.headers.authorization}`)) : fetch(url, init), log: l => logs.push(l) });
+    const mouth = mouthFor(failing, { fetch: (url, init) => String(url).includes("/join/") ? Promise.reject(new Error(`join refused for ${init.headers.authorization}`)) : failing.fetch(url, init), log: l => logs.push(l) });
     await mouth.syncOnce(); // no throw: the unit does not crash-loop on a failed join
     assert.ok(logs.some(l => l.includes("not joined")) && logs.every(l => !l.includes(TOKEN)));
   } finally { await failing.close(); }
@@ -751,5 +774,169 @@ test("media_delivery: a Matrix image reaches the delivery and a later delivery's
     assert.equal(next.context.at(-1).text, line);
     assert.deepEqual(hs.seen.filter(r => r.path.includes("/media/") || r.path.includes("/download")), []);
     assert.equal(JSON.stringify(mouth.pendingAfter(0)).includes(TOKEN), false);
+  } finally { await hs.close(); }
+});
+
+// ---- chat images ----
+
+const IMG_ROOM = "!swarm:gamecult.test";
+const sha = data => createHash("sha256").update(data).digest("hex");
+const imageEvent = (id, content, extra = {}) => ({ type: "m.room.message", event_id: id, sender: `@alice:${HS_NAME}`, origin_server_ts: 1000, content: media("m.image", { body: "cat.png", url: MXC_URL, info: { mimetype: "image/png", size: 2048 }, ...content }), ...extra });
+const imageTimeline = (events, room = IMG_ROOM) => ({
+  null: { next_batch: "b0", ...joined({ [IMG_ROOM]: { timeline: { events: [] } } }) },
+  b0: { next_batch: "b1", ...joined({ [room]: { timeline: { events } } }) },
+});
+const served = bytes => (bearer, server, id) => (bearer === TOKEN && server === "gamecult.test" && id === "AbC_123-x" ? { status: 200, body: bytes } : { status: 401, body: "" });
+function imageSetup(clock = { t: Date.now() }) {
+  const root = join(mkdtempSync(join(tmpdir(), "mouth-images-")), "eureka");
+  return { root, clock, images: createImageStore({ root, now: () => clock.t }) };
+}
+async function receive(events, { media: mediaFn, room, images, mouthOptions = {} } = {}) {
+  const tl = imageTimeline(events, room);
+  const hs = await fakeHomeserver({ sync: since => tl[since] ?? { next_batch: since }, media: mediaFn });
+  const mouth = mouthFor(hs, { images, ...mouthOptions });
+  await mouth.syncOnce();
+  const made = await mouth.syncOnce();
+  return { hs, mouth, made };
+}
+
+test("image_delivery: an m.image event is fetched as this Persona, stored by hash, and the delivery carries the reference in the v3 tuple", async () => {
+  const bytes = png(40, 30);
+  const { root, images } = imageSetup();
+  const { hs, made } = await receive([imageEvent("$img", {})], { media: served(bytes), images });
+  try {
+    assert.equal(made.length, 1);
+    const [d] = made;
+    assert.deepEqual(d.image, { path: `${sha(IMG_ROOM)}/${sha(bytes)}.png`, mime: "image/png", size: bytes.length, sha256: sha(bytes) });
+    assert.ok(existsSync(join(root, d.image.path)));
+    assert.deepEqual(hs.downloads().map(r => [r.method, r.path, r.auth]), [["GET", "/_matrix/client/v1/media/download/gamecult.test/AbC_123-x", `Bearer ${TOKEN}`]]);
+    assert.equal(d.text, `[image filename="cat.png" mime=image/png size=2048 url=${MXC_URL}]`, "the text line is unchanged when the image is stored");
+    const tuple = docs.deliveryTuple(d);
+    assert.equal(tuple.length, 12);
+    assert.deepEqual(tuple[11], [d.image.path, "image/png", bytes.length, sha(bytes)]);
+    assert.ok(!d.image.path.startsWith("/") && !d.image.path.includes(".."));
+    assert.equal(stat(join(root, d.image.path)).mode & 0o777, 0o640);
+    assert.equal(stat(join(root, d.image.path, "..")).mode & 0o777, 0o750);
+  } finally { await hs.close(); }
+});
+
+test("image_delivery: the file name is ours, never the sender's filename, body or info", async () => {
+  const bytes = png(5, 5);
+  const { root, images } = imageSetup();
+  const { hs, made } = await receive([imageEvent("$img", { body: "../../etc/passwd", filename: "/abs/evil.sh", info: { mimetype: "text/x-shellscript", size: 1 } })], { media: served(bytes), images });
+  try {
+    assert.equal(made[0].image.path, `${sha(IMG_ROOM)}/${sha(bytes)}.png`);
+    assert.equal(made[0].image.mime, "image/png", "the sniffed type, not the declared one");
+    assert.ok(!JSON.stringify(made[0].image).includes("evil"));
+  } finally { await hs.close(); }
+});
+
+test("image_delivery: only an event the Persona is delivered is fetched: not her own, not another room's, not history, not a plain message naming an mxc url", async () => {
+  const { images } = imageSetup();
+  const events = [
+    imageEvent("$own", {}, { sender: SELF }),
+    imageEvent("$x", {}),
+    { ...message("$text", `@alice:${HS_NAME}`, `see ${MXC_URL} and https://evil.example/a.png`, 1100), content: { msgtype: "m.text", body: `see ${MXC_URL}` } },
+  ];
+  const tl = {
+    null: { next_batch: "b0", ...joined({ [IMG_ROOM]: { timeline: { events: [imageEvent("$hist", {})] } } }) },
+    b0: { next_batch: "b1", ...joined({ [IMG_ROOM]: { timeline: { events: [events[0], events[2]] } }, "!elsewhere:gamecult.test": { timeline: { events: [events[1]] } } }) },
+  };
+  const hs = await fakeHomeserver({ sync: since => tl[since] ?? { next_batch: since }, media: served(png()) });
+  try {
+    const mouth = mouthFor(hs, { images });
+    await mouth.syncOnce();
+    const made = await mouth.syncOnce();
+    assert.deepEqual(made.map(d => d.eventId), ["$text"]);
+    assert.equal(made[0].image, null);
+    assert.deepEqual(hs.downloads(), []);
+  } finally { await hs.close(); }
+});
+
+test("image_delivery: the url is the event's own content.url: a body or caption that names an mxc is not followed", async () => {
+  const { images } = imageSetup();
+  const { hs, made } = await receive([imageEvent("$img", { url: undefined, body: MXC_URL })], { media: served(png()), images });
+  try {
+    assert.equal(made[0].image, null);
+    assert.match(made[0].text, /refused=no-url\]/);
+    assert.deepEqual(hs.downloads(), []);
+  } finally { await hs.close(); }
+});
+
+test("image_delivery: an encrypted attachment is never fetched, whether or not it also names a url", async () => {
+  const { images } = imageSetup();
+  const file = { url: MXC_URL, key: { k: "SECRET_KEY_MATERIAL" }, iv: "IV", hashes: { sha256: "H" } };
+  const { hs, made } = await receive([imageEvent("$sealed", { url: undefined, file }), imageEvent("$both", { file }, { origin_server_ts: 1001 })], { media: served(png()), images });
+  try {
+    assert.deepEqual(made.map(d => d.image), [null, null]);
+    assert.ok(made.every(d => d.text.includes("refused=encrypted") && !d.text.includes("SECRET_KEY_MATERIAL")));
+    assert.deepEqual(hs.downloads(), []);
+  } finally { await hs.close(); }
+});
+
+test("image_delivery: a refused or failed fetch gives a nil image and today's line with a fixed-word reason", async () => {
+  const cases = [
+    ["wrong-type", served(svg)],
+    ["fetch-failed", () => ({ status: 404, body: "" })],
+    ["too-big", (b, s, i) => ({ ...served(png())(b, s, i), headers: { "content-length": String(6 * 1024 * 1024) } })],
+    ["too-many-pixels", served(png(9000, 9000))],
+    ["bad-header", served(png(0, 0))],
+  ];
+  for (const [reason, mediaFn] of cases) {
+    const { images } = imageSetup();
+    const { hs, made } = await receive([imageEvent("$img", { filename: "evil\nrefused=fake" })], { media: mediaFn, images });
+    try {
+      assert.equal(made[0].image, null, reason);
+      assert.equal(made[0].text.split("\n")[0].endsWith(`refused=${reason}]`), true, `${reason}: ${made[0].text}`);
+      assert.ok(made[0].text.startsWith("[image filename="));
+      assert.equal(docs.deliveryTuple(made[0])[11], null);
+    } finally { await hs.close(); }
+  }
+});
+
+test("image_delivery: with no image store the line is today's and nothing is fetched", async () => {
+  const { hs, made } = await receive([imageEvent("$img", {})], { media: served(png()), images: null });
+  try {
+    assert.equal(made[0].image, null);
+    assert.equal(made[0].text, `[image filename="cat.png" mime=image/png size=2048 url=${MXC_URL}]`);
+    assert.deepEqual(hs.downloads(), []);
+  } finally { await hs.close(); }
+});
+
+test("image_delivery: a stored image stays until its delivery is acked and it is 24 h old, and nothing but a reason word is logged", async () => {
+  const bytes = gif(3, 3);
+  const { root, clock, images } = imageSetup();
+  const lines = [];
+  const { hs, mouth, made } = await receive([imageEvent("$img", {})], { media: served(bytes), images, mouthOptions: { log: l => lines.push(l) } });
+  try {
+    const file = join(root, made[0].image.path);
+    clock.t += RETAIN_MS * 2;
+    images.sweep();
+    assert.ok(existsSync(file), "a day old but unacked: kept");
+    await mouth.ack(made[0].seq);
+    assert.ok(!existsSync(file), "acked and a day old: gone");
+    assert.deepEqual(lines.filter(l => l.includes(MXC_URL) || l.includes(root) || l.includes(sha(bytes))), []);
+  } finally { await hs.close(); }
+});
+
+test("image_delivery: an acked image under 24 h stays", async () => {
+  const { root, clock, images } = imageSetup();
+  const { hs, mouth, made } = await receive([imageEvent("$img", {})], { media: served(png()), images });
+  try {
+    await mouth.ack(made[0].seq);
+    clock.t += RETAIN_MS - 5000;
+    images.sweep();
+    assert.ok(existsSync(join(root, made[0].image.path)));
+  } finally { await hs.close(); }
+});
+
+test("image_delivery: a store that cannot write leaves the line and a nil image, and the sync goes on", async () => {
+  const dead = { put() { throw Object.assign(new Error("no space"), { code: "ENOSPC" }); }, hold() {}, acked() {} };
+  const lines = [];
+  const { hs, made } = await receive([imageEvent("$img", {})], { media: served(png()), images: dead, mouthOptions: { log: l => lines.push(l) } });
+  try {
+    assert.equal(made[0].image, null);
+    assert.match(made[0].text, /refused=store-failed\]/);
+    assert.ok(lines.some(l => l.includes("ENOSPC")));
   } finally { await hs.close(); }
 });
