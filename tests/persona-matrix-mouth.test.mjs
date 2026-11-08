@@ -18,12 +18,14 @@ const ROOMS = { [`#swarm:${HS_NAME}`]: "!swarm:gamecult.test", [`#operator:${HS_
 const SELF = `@eureka:${HS_NAME}`;
 
 const message = (id, sender, body, ts) => ({ type: "m.room.message", event_id: id, sender, origin_server_ts: ts, content: { msgtype: "m.text", body } });
+// The one write a braked round makes by design; an online presence PUT or any other write is not exempt.
+const offlinePresence = r => r.method === "PUT" && r.path.includes("/presence/") && r.body?.presence === "offline";
 const tick = () => new Promise(r => setImmediate(r));
 
 // A fake Matrix client-server API: just the endpoints the mouth uses.
 // It is also the record of every room: events the sync script emits and messages sent are kept, and
 // `preload` (room id -> events, oldest first) stands for history from before the mouth's process began.
-async function fakeHomeserver({ sync, failWith, users, member, direct, preload = {}, failContext = false, media } = {}) {
+async function fakeHomeserver({ sync, failWith, users, member, direct, preload = {}, failContext = false, media, failReceipts = false, deferReceipts = null, failPresence = 0 } = {}) {
   const seen = [];
   const record_ = new Map(Object.entries(preload).map(([room, events]) => [room, [...events]]));
   const remember = (room, event) => { const list = record_.get(room) ?? []; if (!list.some(e => e.event_id === event.event_id)) list.push(event); record_.set(room, list); };
@@ -34,12 +36,17 @@ async function fakeHomeserver({ sync, failWith, users, member, direct, preload =
     req.on("data", c => (raw += c));
     req.on("end", () => {
       const url = new URL(req.url, "http://x");
-      const record = { method: req.method, path: decodeURIComponent(url.pathname), query: url.searchParams, auth: req.headers.authorization, body: raw ? JSON.parse(raw) : null };
+      const record = { method: req.method, rawPath: url.pathname, path: decodeURIComponent(url.pathname), query: url.searchParams, auth: req.headers.authorization, body: raw ? JSON.parse(raw) : null };
       seen.push(record);
       const reply = (status, body) => { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(body)); };
       if (failWith) return reply(failWith, { errcode: "M_UNKNOWN_TOKEN", error: `bad token ${record.auth}` });
       const p = record.path.replace("/_matrix/client/v3", "").replace("/_matrix/client/v1", "");
       const bearer = (record.auth ?? "").replace("Bearer ", "");
+      if (req.method === "POST" && p.includes("/receipt/m.read/")) {
+        if (deferReceipts) return deferReceipts.then(() => reply(200, {}));
+        return failReceipts ? reply(500, { errcode: "M_UNKNOWN", error: `down ${record.auth}` }) : reply(200, {});
+      }
+      if (req.method === "PUT" && p.includes("/presence/")) return failPresence-- > 0 ? reply(500, { errcode: "M_UNKNOWN" }) : reply(200, {});
       if (p.startsWith("/media/download/")) {
         const served = media?.(bearer, ...p.slice("/media/download/".length).split("/")) ?? { status: 404, body: "" };
         res.writeHead(served.status ?? 200, served.headers ?? {});
@@ -77,7 +84,9 @@ async function fakeHomeserver({ sync, failWith, users, member, direct, preload =
       reply(404, { errcode: "M_NOT_FOUND" });
     });
   };
-  const fetch = (url, init = {}) => new Promise(resolve => {
+  const fetch = (url, init = {}) => new Promise((resolve, reject) => {
+    if (init.signal?.aborted) return reject(init.signal.reason);
+    init.signal?.addEventListener("abort", () => reject(init.signal.reason), { once: true });
     const u = new URL(url);
     const req = Object.assign(new EventEmitter(), { method: init.method ?? "GET", url: u.pathname + u.search, headers: init.headers ?? {} });
     const res = {
@@ -91,7 +100,9 @@ async function fakeHomeserver({ sync, failWith, users, member, direct, preload =
     url: "http://hs.test",
     fetch,
     seen,
-    puts: () => seen.filter(r => r.method === "PUT"),
+    puts: () => seen.filter(r => r.method === "PUT" && !offlinePresence(r)),
+    receipts: () => seen.filter(r => r.path.includes("/receipt/")),
+    presencePuts: () => seen.filter(r => r.path.includes("/presence/")),
     downloads: () => seen.filter(r => r.path.includes("/media/download/")),
     close: async () => {},
   };
@@ -443,7 +454,7 @@ test("join_while_braked: no join and no send while the brake is held; joining ha
     const mouth = mouthFor(hs, { brake: async () => open, log: l => logs.push(l) });
     await mouth.syncOnce();
     await mouth.send({ requestId: "r", persona: "eureka", roomAlias: `#swarm:${HS_NAME}`, text: "speak" });
-    assert.equal(hs.seen.filter(r => r.method === "POST" || r.method === "PUT").length, 0, "braked: nothing is joined or sent");
+    assert.equal(hs.seen.filter(r => (r.method === "POST" || r.method === "PUT") && !offlinePresence(r)).length, 0, "braked: nothing is joined or sent");
     open = true;
     await mouth.syncOnce();
     assert.deepEqual(hs.seen.filter(r => r.method === "POST").map(r => r.path.split("/join/")[1]).sort(), ["!operator:gamecult.test", "!swarm:gamecult.test"]);
@@ -588,7 +599,7 @@ test("dm_invite_waits_for_release: an invitation received while braked is not jo
   try {
     const mouth = mouthFor(hs, { brake: async () => open });
     await mouth.syncOnce(); await mouth.syncOnce(); await mouth.syncOnce();
-    assert.deepEqual(hs.seen.filter(r => r.method === "POST" || r.method === "PUT"), [], "braked: no join, no leave, nothing written");
+    assert.deepEqual(hs.seen.filter(r => (r.method === "POST" || r.method === "PUT") && !offlinePresence(r)), [], "braked: no join, no leave, nothing written");
     open = true;
     await mouth.syncOnce();
     assert.deepEqual(joinsOf(hs), [DMROOM]);
@@ -940,4 +951,219 @@ test("image_delivery: a store that cannot write leaves the line and a nil image,
     assert.match(made[0].text, /refused=store-failed\]/);
     assert.ok(lines.some(l => l.includes("ENOSPC")));
   } finally { await hs.close(); }
+});
+
+// Read receipts and presence: her ack posts her m.read; her brake sets her presence.
+const A = "!swarm:gamecult.test", B = "!operator:gamecult.test";
+const receiptScript = since => since === null ? { next_batch: "b0", ...joined({}) } : since === "b0" ? {
+  next_batch: "b1",
+  ...joined({
+    [A]: { timeline: { events: [message("$a1", `@alice:${HS_NAME}`, "one", 10), message("$a2", `@alice:${HS_NAME}`, "two", 11)] } },
+    [B]: { timeline: { events: [message("$b1", `@bob:${HS_NAME}`, "three", 12)] } },
+  }),
+} : { next_batch: since };
+const until = async check => { for (let i = 0; i < 200 && !check(); i++) await new Promise(r => setImmediate(r)); };
+const withMail = async (hs, overrides) => {
+  const mouth = mouthFor(hs, overrides);
+  await mouth.syncOnce();
+  assert.equal((await mouth.syncOnce()).map(d => d.seq).join(), "1,2,3");
+  return mouth;
+};
+const receiptsOf = hs => hs.receipts().map(r => [r.path.split("/rooms/")[1].split("/receipt/")[0], r.path.split("/m.read/")[1], r.auth, r.body]);
+
+test("an ack posts one m.read per room at the newest covered event, as that Persona", async () => {
+  const hs = await fakeHomeserver({ sync: receiptScript });
+  const mouth = await withMail(hs);
+  await mouth.ack(2);
+  await until(() => hs.receipts().length >= 1);
+  await new Promise(r => setTimeout(r, 20));
+  assert.deepEqual(receiptsOf(hs), [[A, "$a2", `Bearer ${TOKEN}`, {}]], "room A at its second event; room B untouched");
+  await mouth.ack(3);
+  await until(() => hs.receipts().length >= 2);
+  assert.deepEqual(receiptsOf(hs).slice(1), [[B, "$b1", `Bearer ${TOKEN}`, {}]]);
+  assert.equal(hs.receipts().length, 2);
+});
+
+test("pending posts no receipt", async () => {
+  const hs = await fakeHomeserver({ sync: receiptScript });
+  const mouth = await withMail(hs);
+  for (const after of [0, 1, 2, 3]) mouth.pendingAfter(after);
+  await new Promise(r => setTimeout(r, 20));
+  assert.deepEqual(hs.receipts(), []);
+});
+
+test("a failed receipt leaves the ack whole", async () => {
+  const hs = await fakeHomeserver({ sync: receiptScript, failReceipts: true });
+  const lines = [];
+  const state = memoryState();
+  const mouth = await withMail(hs, { state, log: l => lines.push(l) });
+  const saves = [];
+  const save = state.save;
+  state.save = async v => { saves.push(v); return save(v); };
+  await mouth.ack(3);
+  await until(() => lines.some(l => l.includes("receipt in")));
+  assert.equal(mouth.pendingCount, 0);
+  assert.equal(state.box.value.nextBatch, "b1", "the cursor committed");
+  assert.ok(saves.length >= 1, "state.save called");
+  const failures = lines.filter(l => l.startsWith("receipt in "));
+  assert.equal(failures.length, 2, "one line per room, nothing retried");
+  assert.ok(failures.every(l => l.includes("not posted") && !l.includes(TOKEN)));
+  await new Promise(r => setTimeout(r, 20));
+  assert.equal(hs.receipts().length, 2, "no retry");
+});
+
+test("the ack does not wait for the receipt", async () => {
+  let release;
+  const hs = await fakeHomeserver({ sync: receiptScript, deferReceipts: new Promise(r => { release = r; }) });
+  const mouth = await withMail(hs);
+  const outcome = await Promise.race([mouth.ack(3).then(() => "acked"), new Promise(r => setTimeout(() => r("waited on the receipt"), 500))]);
+  assert.equal(outcome, "acked", "the ack resolves while the receipt response is held open");
+  assert.equal(mouth.pendingCount, 0);
+  release();
+  await until(() => hs.receipts().length >= 2);
+});
+
+test("presence follows the brake: online while released, offline and one PUT on the transition", async () => {
+  let open = true;
+  const hs = await fakeHomeserver({ sync: receiptScript });
+  const mouth = mouthFor(hs, { brake: async () => open });
+  const syncs = () => hs.seen.filter(r => r.path.endsWith("/sync")).map(r => r.query.get("set_presence"));
+  await mouth.syncOnce(); await mouth.syncOnce();
+  assert.deepEqual(syncs(), ["online", "online"]);
+  assert.equal(hs.presencePuts().length, 0, "released: no PUT");
+  open = false;
+  await mouth.syncOnce(); await mouth.syncOnce(); await mouth.syncOnce();
+  assert.deepEqual(syncs().slice(2), ["offline", "offline", "offline"]);
+  assert.deepEqual(hs.presencePuts().map(r => [r.path, r.body]), [[`/_matrix/client/v3/presence/${SELF}/status`, { presence: "offline" }]], "exactly one PUT");
+  assert.equal(hs.presencePuts()[0].rawPath, `/_matrix/client/v3/presence/${encodeURIComponent(SELF)}/status`, "the user id is percent-encoded on the wire");
+  open = true;
+  await mouth.syncOnce();
+  assert.equal(syncs().at(-1), "online");
+  open = false;
+  await mouth.syncOnce();
+  assert.equal(hs.presencePuts().length, 2, "a second transition PUTs once more");
+});
+
+test("the first braked round of a fresh mouth PUTs offline once; a failed PUT is tried again next round", async () => {
+  const hs = await fakeHomeserver({ sync: receiptScript, failPresence: 1 });
+  const lines = [];
+  const mouth = mouthFor(hs, { brake: async () => false, log: l => lines.push(l) });
+  await mouth.syncOnce();
+  assert.equal(hs.presencePuts().length, 1);
+  assert.ok(lines.some(l => l.startsWith("presence not set")), "one log line");
+  await mouth.syncOnce();
+  assert.equal(hs.presencePuts().length, 2, "retried the next round");
+  await mouth.syncOnce();
+  assert.equal(hs.presencePuts().length, 2, "then settled");
+});
+
+test("two Personas on one homeserver: receipts and presence carry only her own bearer and user id", async () => {
+  const ALICE = `@pa:${HS_NAME}`, BOB = `@pb:${HS_NAME}`;
+  const hs = await fakeHomeserver({ sync: receiptScript, users: { tokA: ALICE, tokB: BOB } });
+  const a = await withMail(hs, { persona: "pa", token: "tokA" });
+  let bOpen = false;
+  const b = await withMail(hs, { persona: "pb", token: "tokB", brake: async () => bOpen });
+  await a.ack(3);
+  await b.syncOnce();
+  await until(() => hs.receipts().length >= 2);
+  assert.ok(hs.receipts().every(r => r.auth === "Bearer tokA"), "only A acked");
+  bOpen = true; // her receipts go out only while released
+  await b.ack(3);
+  await until(() => hs.receipts().length >= 4);
+  assert.deepEqual([...new Set(hs.receipts().map(r => r.auth))].sort(), ["Bearer tokA", "Bearer tokB"]);
+  assert.ok(hs.presencePuts().length >= 1 && hs.presencePuts().every(r => r.path.endsWith(`/presence/${BOB}/status`) && r.auth === "Bearer tokB"));
+});
+
+// ---- review fixes ------------------------------------------------------------------
+
+test("a brake placed during the long-poll stops the join the poll's invite asks for", async () => {
+  let open = true;
+  const script = inviteSync(`@meta:${HS_NAME}`);
+  const hs = await fakeHomeserver({ sync: since => { const out = script(since); if (since === "b0") open = false; return out; } }); // the brake lands while this poll is open
+  const mouth = mouthFor(hs, { brake: async () => open });
+  await mouth.syncOnce(); // baseline, released
+  await mouth.syncOnce(); // the poll that carries the invite
+  assert.deepEqual(joinsOf(hs), [], "no join");
+  assert.equal(hs.seen.filter(r => r.path.endsWith("/account_data/m.direct") && r.method === "PUT").length, 0, "no m.direct write");
+});
+
+test("no m.read receipt while braked: the ack proceeds, nothing is queued", async () => {
+  let open = true;
+  const hs = await fakeHomeserver({ sync: receiptScript });
+  const lines = [];
+  const state = memoryState();
+  const mouth = await withMail(hs, { brake: async () => open, state, log: l => lines.push(l) });
+  open = false;
+  await mouth.ack(3);
+  await until(() => lines.some(l => l.includes("receipts not posted")));
+  assert.equal(mouth.pendingCount, 0);
+  assert.equal(state.box.value.nextBatch, "b1", "the cursor committed");
+  assert.equal(lines.filter(l => l.includes("receipts not posted")).length, 1, "one line");
+  open = true;
+  await mouth.syncOnce();
+  await new Promise(r => setTimeout(r, 20));
+  assert.deepEqual(hs.receipts(), [], "released again: nothing deferred is posted");
+});
+
+test("the receipt path is percent-encoded on the wire", async () => {
+  const ROOM = "!od d/room:gamecult.test", EVENT = "$ev/with+odd:chars";
+  const hs = await fakeHomeserver({ sync: since => since === null ? { next_batch: "b0" } : { next_batch: "b1", account_data: { events: [{ type: "m.direct", content: { [`@meta:${HS_NAME}`]: [ROOM] } }] }, ...joined({ [ROOM]: { timeline: { events: [message(EVENT, `@meta:${HS_NAME}`, "x", 9)] } } }) } });
+  const mouth = mouthFor(hs);
+  await mouth.syncOnce(); await mouth.syncOnce();
+  await mouth.ack(1);
+  await until(() => hs.receipts().length >= 1);
+  assert.equal(hs.receipts()[0].rawPath, `/_matrix/client/v3/rooms/${encodeURIComponent(ROOM)}/receipt/m.read/${encodeURIComponent(EVENT)}`);
+});
+
+test("a receipt that never answers is abandoned after sendTimeoutMs", async () => {
+  const hs = await fakeHomeserver({ sync: receiptScript, deferReceipts: new Promise(() => {}) });
+  const lines = [];
+  const mouth = await withMail(hs, { sendTimeoutMs: 40, log: l => lines.push(l) });
+  await mouth.ack(3);
+  await until(() => lines.length >= 1);
+  await new Promise(r => setTimeout(r, 150));
+  assert.ok(lines.some(l => l.startsWith("receipt in ") && l.includes("not posted")), "abandoned and logged");
+  assert.equal(hs.receipts().length, 2, "the next room's receipt went out after the first was abandoned");
+});
+
+test("a throwing logger on a failed receipt causes no unhandled rejection", async () => {
+  const hs = await fakeHomeserver({ sync: receiptScript, failReceipts: true });
+  const mouth = await withMail(hs, { log: () => { throw new Error("logger down"); } });
+  const rejected = [];
+  const note = e => rejected.push(e);
+  process.on("unhandledRejection", note);
+  try {
+    await mouth.ack(3);
+    await until(() => hs.receipts().length >= 2);
+    await new Promise(r => setTimeout(r, 50));
+  } finally { process.off("unhandledRejection", note); }
+  assert.deepEqual(rejected, []);
+});
+
+test("a full backlog still sets presence from the brake", async () => {
+  let open = true;
+  const hs = await fakeHomeserver({ sync: receiptScript });
+  const mouth = mouthFor(hs, { brake: async () => open, maxPending: 3 });
+  await mouth.syncOnce();
+  assert.equal((await mouth.syncOnce()).length, 3);
+  const syncsBefore = hs.seen.filter(r => r.path.endsWith("/sync")).length;
+  open = false;
+  assert.deepEqual(await mouth.syncOnce(), [], "backlog full: no /sync");
+  assert.equal(hs.seen.filter(r => r.path.endsWith("/sync")).length, syncsBefore);
+  assert.deepEqual(hs.presencePuts().map(r => r.body), [{ presence: "offline" }]);
+});
+
+test("a brake placed during the first of two joins stops the second join and its m.direct write", async () => {
+  const DM2 = "!newdm2:gamecult.test";
+  const invites2 = { ...invite(`@meta:${HS_NAME}`), [DM2]: invite(`@meta:${HS_NAME}`)[DMROOM] };
+  const hs = await fakeHomeserver({ sync: since => since === null ? { next_batch: "b0" } : since === "b0" ? { next_batch: "b1", rooms: { invite: invites2 } } : { next_batch: since } });
+  let open = true;
+  const fetch = async (url, init) => { const res = await hs.fetch(url, init); if (init?.method === "POST" && String(url).includes("/join/")) open = false; return res; }; // the brake lands during the first join
+  const mouth = mouthFor(hs, { fetch, brake: async () => open });
+  await mouth.syncOnce(); await mouth.syncOnce();
+  assert.deepEqual(joinsOf(hs), [DMROOM], "only the join already started");
+  assert.equal(hs.seen.filter(r => r.method === "PUT" && r.path.endsWith("/account_data/m.direct")).length, 1, "one m.direct, for the first join");
+  open = true;
+  await mouth.syncOnce();
+  assert.deepEqual(joinsOf(hs), [DMROOM, DM2], "the second waits for the release");
 });

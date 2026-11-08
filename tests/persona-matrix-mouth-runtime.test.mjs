@@ -10,7 +10,7 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import * as docs from "../tools/persona-chat-documents.mjs";
-import { cultcacheState, connectionIdFor, createBrakeReader, loadRuntime, pageOf, startChatEndpoint } from "../tools/persona-matrix-mouth.mjs";
+import { createMouth, cultcacheState, connectionIdFor, createBrakeReader, loadRuntime, pageOf, startChatEndpoint } from "../tools/persona-matrix-mouth.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const runtime = loadRuntime(resolve(process.env.CULTLIB_ROOT ?? resolve(root, "..", "CultLib")));
@@ -368,5 +368,57 @@ test("the RUDP endpoint answers a v1 send with the three-field receipt and a v2 
     server.close();
     connection.close();
     try { client.close(); } catch { /* the connection already closed its socket */ }
+  }
+});
+
+test("over the RUDP endpoint: pending posts no receipt, and an ack never holds up the same peer's next request", async () => {
+  const receipts = [];
+  let release;
+  const held = new Promise(r => { release = r; });
+  const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+  const message = { type: "m.room.message", event_id: "$m1", sender: "@alice:t", origin_server_ts: 5, content: { msgtype: "m.text", body: "hi" } };
+  const fetch = async (url, init = {}) => {
+    const u = new URL(url), p = u.pathname.replace("/_matrix/client/v3", "");
+    if (p === "/account/whoami") return json({ user_id: "@eureka:t" });
+    if (p === "/joined_rooms") return json({ joined_rooms: ["!r:t"] });
+    if (p.startsWith("/directory/room/")) return json({ room_id: "!r:t" });
+    if (p.includes("/account_data/")) return json({}, 404);
+    if (p === "/sync") return json(u.searchParams.get("since") === "b0" ? { next_batch: "b1", rooms: { join: { "!r:t": { timeline: { events: [message] } } } } } : { next_batch: "b0" });
+    if (p.includes("/messages")) return json({ chunk: [] });
+    if (p.includes("/receipt/")) { receipts.push(p); await held; return json({}); }
+    return json({}, 404);
+  };
+  const state = { load: async () => null, save: async () => {} };
+  const mouth = createMouth({ persona: "eureka", homeserver: "http://hs.test", rooms: ["#r:t"], token: "tok", state, fetch, serverName: "t", brake: async () => true, syncTimeoutMs: 1 });
+  await mouth.syncOnce(); await mouth.syncOnce();
+  const key = "connection-key-for-receipts";
+  const server = await startChatEndpoint({ mouths: new Map([["eureka", mouth]]), runtime, port: 0, connectionKey: key, runtimeId: "mouth-test" });
+  const client = dgram.createSocket("udp4");
+  await new Promise(ok => client.bind(0, "127.0.0.1", ok));
+  const connection = new runtime.cultnet.CultNetRudpSocketTransportConnection({
+    runtimeId: "huginn-test", socket: client, mode: "client", remoteHost: "127.0.0.1", remotePort: server.address.port,
+    connectionId: connectionIdFor(key), initialSequence: 1, resendDelayMs: 50, resendPollMs: 10, maxFragmentBytes: 1200,
+  });
+  const replies = [];
+  connection.on("frame", value => replies.push(runtime.cultnet.parseCultNetMessage(msgpack.decode(value.payload), "cultnet.schema.v0").document));
+  const put = (kind, recordKey, tuple) => connection.send("schema", msgpack.encode(runtime.cultnet.encodeCultNetMessageForWire(
+    docs.envelope({ kind, recordKey, payload: msgpack.encode(tuple), sourceRuntimeId: "huginn-test", sourceAgentId: "eureka", sourceRole: "persona-organ" }), "cultnet.schema.v0")));
+  const waitFor = async (check, what) => { for (let i = 0; i < 250 && !check(); i++) await new Promise(r => setTimeout(r, 20)); assert.ok(check(), what); };
+  try {
+    connection.connect();
+    await waitFor(() => connection.connected, "session opens");
+    put(docs.kinds.pendingRequest, "eureka", docs.pendingRequestTuple({ persona: "eureka", afterSeq: 0 }));
+    await waitFor(() => replies.length === 1, "pending answered");
+    assert.deepEqual(receipts, [], "a pending request posts no receipt");
+    put(docs.kinds.ack, "eureka:1", docs.ackTuple({ persona: "eureka", throughSeq: 1 }));
+    await waitFor(() => receipts.length === 1, "the ack posted her receipt");
+    put(docs.kinds.pendingRequest, "eureka", docs.pendingRequestTuple({ persona: "eureka", afterSeq: 0 }));
+    await waitFor(() => replies.length === 2, "the next request is answered while the receipt response is still held open");
+    assert.deepEqual(docs.parsePending(msgpack.decode(replies[1].payload)).deliveries, [], "the ack applied");
+  } finally {
+    release();
+    server.close();
+    connection.close();
+    try { client.close(); } catch { /* already closed */ }
   }
 });
