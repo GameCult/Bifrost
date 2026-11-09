@@ -1,3 +1,4 @@
+using Bifrost.Web.Features.Shared;
 using System.Net;
 using System.Text.RegularExpressions;
 using Bifrost.Web.Data;
@@ -14,7 +15,7 @@ namespace Bifrost.Web.Tests;
 
 public sealed partial class ConceptVotePageTests : IClassFixture<TestWebApplicationFactory>
 {
-    private const string CookieName = "bifrost_voter";
+    private const string CookieName = BifrostCookies.Voter;
     private const string Purpose = "Bifrost.ConceptVotes.DeviceToken.v1";
 
     private readonly TestWebApplicationFactory _factory;
@@ -40,7 +41,7 @@ public sealed partial class ConceptVotePageTests : IClassFixture<TestWebApplicat
         Assert.Contains("httponly", attributes);
         Assert.Contains("secure", attributes);
         Assert.Contains("samesite=lax", attributes);
-        Assert.Contains("path=/mill", attributes);
+        Assert.Contains("path=/", attributes);
         Assert.Contains("max-age=31536000", attributes);
 
         using (var page = await visitor.Get(collection, "alpha"))

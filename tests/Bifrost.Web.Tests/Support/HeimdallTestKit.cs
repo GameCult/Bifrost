@@ -1,3 +1,4 @@
+using Bifrost.Web.Features.Shared;
 using System.Net;
 using System.Security.Cryptography;
 using System.Text;
@@ -482,7 +483,7 @@ public sealed class HeimdallHost : TestWebApplicationFactory
         }
 
         var response = await client.SendAsync(request);
-        var session = CookieValue(response, ".AspNetCore.Cookies");
+        var session = CookieValue(response, BifrostCookies.Session);
         return new CompletionResult(response, !string.IsNullOrEmpty(session));
     }
 

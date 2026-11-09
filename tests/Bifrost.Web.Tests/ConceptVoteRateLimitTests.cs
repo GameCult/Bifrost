@@ -1,3 +1,4 @@
+using Bifrost.Web.Features.Shared;
 using System.Net;
 using Bifrost.Web.Data;
 using Bifrost.Web.Domain;
@@ -19,7 +20,7 @@ namespace Bifrost.Web.Tests;
 public sealed class ConceptVoteRateLimitTests : IClassFixture<ConceptVoteRateLimitTests.LimitedFactory>
 {
     private const string Site = "https://localhost";
-    private const string CookieName = "bifrost_voter";
+    private const string CookieName = BifrostCookies.Voter;
 
     private readonly LimitedFactory _factory;
 

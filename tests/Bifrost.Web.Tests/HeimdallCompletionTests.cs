@@ -49,6 +49,29 @@ public sealed class HeimdallCompletionTests
     private static void AssertTokenRefused(HeimdallHost host, string rule) =>
         AssertLogged(host, $"Heimdall token refused: {rule}.");
 
+    /// <summary>A __Host- cookie is only deleted by a Set-Cookie that is itself Secure at Path=/; a browser ignores any other.</summary>
+    private static void AssertAttemptCookieCleared(string? header)
+    {
+        Assert.NotNull(header);
+        var attributes = header!.Split(';').Select(x => x.Trim().ToLowerInvariant()).ToArray();
+        Assert.Contains(attributes, x => x.StartsWith("expires=", StringComparison.Ordinal) && x.Contains("1970"));
+        Assert.Contains("secure", attributes);
+        Assert.Contains("path=/", attributes);
+        Assert.DoesNotContain(attributes, x => x.StartsWith("domain", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task A_refused_completion_clears_the_attempt_cookie_with_a_set_cookie_the_browser_honours()
+    {
+        using var host = new HeimdallHost();
+        var attempt = await host.StartAsync();
+
+        var refused = await host.CompleteAsync(attempt.Nonce, "unknown", attempt.Cookie);
+
+        AssertRefusedRedirect(refused);
+        AssertAttemptCookieCleared(HeimdallHost.SetCookieHeader(refused.Response, attempt.CookieName!));
+    }
+
     private static void AssertRefusedRedirect(CompletionResult result)
     {
         Assert.Equal(HttpStatusCode.Redirect, result.Response.StatusCode);
@@ -81,8 +104,7 @@ public sealed class HeimdallCompletionTests
         Assert.Equal(MembershipStatus.Authenticated, account.Membership!.Status);
         Assert.Empty(account.Membership.RoleAssignments);
         var cleared = HeimdallHost.SetCookieHeader(done.Response, attempt.CookieName!);
-        Assert.NotNull(cleared);
-        Assert.Contains("1970", cleared);
+        AssertAttemptCookieCleared(cleared);
 
         var again = await host.CompleteAsync(attempt, code);
 
@@ -526,7 +548,7 @@ public sealed class HeimdallCompletionTests
         Assert.Contains("httponly", attributes);
         Assert.Contains("secure", attributes);
         Assert.Contains("samesite=lax", attributes);
-        Assert.Contains("path=/auth/heimdall", attributes);
+        Assert.Contains("path=/", attributes);
         Assert.Contains("max-age=600", attributes);
         Assert.NotEqual(first.Cookie, second.Cookie);
         Assert.DoesNotContain(first.Nonce, first.Cookie!);
@@ -564,7 +586,7 @@ public sealed class HeimdallCompletionTests
         Assert.Contains("<noscript>", page);
         Assert.Contains("/?auth=heimdall-error", page);
         Assert.DoesNotContain("CANARY", page);
-        Assert.Null(HeimdallHost.CookieValue(response, ".AspNetCore.Cookies"));
+        Assert.Null(HeimdallHost.CookieValue(response, BifrostCookies.Session));
     }
 
     [Theory]
@@ -696,7 +718,7 @@ public sealed class HeimdallCompletionTests
                 "Heimdall completion has no attempt for this browser."),
             ("no attempt field", await host.CompleteAsync(null, host.CodeFor(attempt, accountId), attempt.Cookie),
                 "Heimdall completion has no attempt for this browser."),
-            ("malformed attempt", await host.CompleteAsync("short", "code", attempt.Cookie, "bifrost_heimdall_short"),
+            ("malformed attempt", await host.CompleteAsync("short", "code", attempt.Cookie, BifrostCookies.HeimdallAttemptPrefix + "short"),
                 "Heimdall completion has no attempt for this browser."),
             ("no code", await host.CompleteAsync(attempt.Nonce, null, attempt.Cookie), "Heimdall completion carried no code."),
             ("blank code", await host.CompleteAsync(attempt.Nonce, "  ", attempt.Cookie), "Heimdall completion carried no code."),
@@ -730,7 +752,7 @@ public sealed class HeimdallCompletionTests
         {
             AssertRefusedRedirect(result);
             Assert.Equal(string.Empty, await result.Response.Content.ReadAsStringAsync());
-            Assert.Null(HeimdallHost.CookieValue(result.Response, ".AspNetCore.Cookies"));
+            Assert.Null(HeimdallHost.CookieValue(result.Response, BifrostCookies.Session));
             AssertLogged(host, reason);
             Assert.True(result.Response.Headers.Location!.OriginalString == ErrorRedirect, name);
         }
@@ -1109,7 +1131,7 @@ public sealed class HeimdallCompletionTests
         responses.Add((await host.CompleteAsync(issued, host.CodeFor(issued, accountCanary, wrongSubject))).Response);
         responses.Add((await host.CompleteAsync(issued, host.CodeFor(issued, accountCanary, returnTo: returnToCanary))).Response);
         responses.Add((await host.CompleteAsync(issued.Nonce, codeCanary, cookieCanary)).Response);
-        responses.Add((await host.CompleteAsync(attemptCanary, codeCanary, cookieCanary, "bifrost_heimdall_" + attemptCanary)).Response);
+        responses.Add((await host.CompleteAsync(attemptCanary, codeCanary, cookieCanary, BifrostCookies.HeimdallAttemptPrefix + attemptCanary)).Response);
         responses.Add((await host.CompleteAsync(issued.Nonce, codeCanary, issued.Cookie)).Response);
         using (var client = host.NewClient())
         {
@@ -1188,7 +1210,7 @@ public sealed class HeimdallCompletionTests
         Assert.NotNull(header);
         Assert.StartsWith(name + "=;", header);
         var attributes = header!.Split(';').Select(x => x.Trim().ToLowerInvariant()).ToArray();
-        Assert.Contains("path=/auth/heimdall", attributes);
+        Assert.Contains("path=/", attributes);
         Assert.Contains(attributes, x => x.StartsWith("expires=", StringComparison.Ordinal) && x.Contains("1970"));
         Assert.DoesNotContain(attributes, x => x.StartsWith("max-age", StringComparison.Ordinal));
     }
@@ -1277,7 +1299,7 @@ public sealed class HeimdallCompletionTests
         foreach (var header in deletions)
         {
             var attributes = header.Split(';').Skip(1).Select(x => x.Trim().ToLowerInvariant()).ToArray();
-            Assert.Contains("path=/auth/heimdall", attributes);
+            Assert.Contains("path=/", attributes);
             Assert.DoesNotContain(attributes, x => x.StartsWith("max-age", StringComparison.Ordinal));
         }
 
@@ -1346,7 +1368,7 @@ public sealed class HeimdallCompletionTests
         {
             host.Clock.Advance(TimeSpan.FromSeconds(1));
             var attempt = await host.StartAsync(
-                returnUrl: "/App", cookieHeader: (jar.Count == 0 ? "" : CookieHeader(jar) + "; ") + ".AspNetCore.Cookies=session; x=1");
+                returnUrl: "/App", cookieHeader: (jar.Count == 0 ? "" : CookieHeader(jar) + "; ") + BifrostCookies.Session + "=session; x=1");
             ApplySetCookies(jar, attempt.Response);
             started.Add(attempt);
         }
@@ -1393,7 +1415,7 @@ public sealed class HeimdallCompletionTests
         using var post = new HttpRequestMessage(HttpMethod.Post, action) { Content = new FormUrlEncodedContent(fields) };
         post.Headers.Add("Cookie", $"{attempt.CookieName}={attempt.Cookie}");
         using var response = await client.SendAsync(post);
-        Assert.False(string.IsNullOrEmpty(HeimdallHost.CookieValue(response, ".AspNetCore.Cookies")));
+        Assert.False(string.IsNullOrEmpty(HeimdallHost.CookieValue(response, BifrostCookies.Session)));
     }
 
     [Fact]
