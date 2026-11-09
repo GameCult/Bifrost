@@ -70,7 +70,7 @@ holding that Mind's plaintext from cast, which is the gap commit-reveal removes.
 
 ## Where ballots must never travel
 
-Ballots go to Bifrost as typed documents over the endpoints above, never as room text (chat history is readable by the host
+Ballots go to Bifrost as JSON documents over the endpoints above, never as room text (chat history is readable by the host
 and admins before close). A pinned motion announces only the `announcement` line: phase and times.
 
 ## Close is race-safe
