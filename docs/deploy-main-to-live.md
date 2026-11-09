@@ -94,8 +94,8 @@ Done from outside nginx, with a real browser session, within the window. A 200 o
   failure; an existing session surviving the restart shows Data Protection kept its keys.
 - **Vote read.** The public concept-vote read endpoint answers with the existing tallies, and the tallies equal those
   noted in step 1 (the schema moved; the data must not).
-- **Persona picture.** Open a Persona's page and confirm its picture loads (the case that regressed when the media path
-  was wrong). A broken image here with a healthy `/` is the finding the check exists for.
+- **Persona picture.** Open a Persona's page and confirm its picture loads and comes from the host, not a stale cache. A broken
+  image with a healthy `/` is the finding this check exists for.
 - Member console, work board, motions and members pages load (runbook section 7).
 - The error rate in `journalctl` over five minutes is flat against the lines noted before.
 
