@@ -41,6 +41,8 @@ public sealed class BifrostDbContext(DbContextOptions<BifrostDbContext> options)
 
     public DbSet<Vote> Votes => Set<Vote>();
 
+    public DbSet<SealedBallot> SealedBallots => Set<SealedBallot>();
+
     public DbSet<LedgerEntry> LedgerEntries => Set<LedgerEntry>();
 
     public DbSet<PayoutProposalBatch> PayoutProposalBatches => Set<PayoutProposalBatch>();
@@ -275,6 +277,7 @@ public sealed class BifrostDbContext(DbContextOptions<BifrostDbContext> options)
             entity.Property(x => x.Category).HasConversion<string>();
             entity.Property(x => x.Status).HasConversion<string>();
             entity.Property(x => x.ApprovalThreshold).HasPrecision(6, 3);
+            entity.Property(x => x.Kind).HasConversion<string>();
             entity.HasOne(x => x.Project)
                 .WithMany(x => x.Motions)
                 .HasForeignKey(x => x.ProjectId)
@@ -295,6 +298,18 @@ public sealed class BifrostDbContext(DbContextOptions<BifrostDbContext> options)
                 .HasForeignKey(x => x.MotionId);
             entity.HasOne(x => x.UserAccount)
                 .WithMany(x => x.Votes)
+                .HasForeignKey(x => x.UserAccountId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<SealedBallot>(entity =>
+        {
+            entity.HasIndex(x => new { x.MotionId, x.UserAccountId }).IsUnique();
+            entity.HasOne(x => x.Motion)
+                .WithMany(x => x.SealedBallots)
+                .HasForeignKey(x => x.MotionId);
+            entity.HasOne(x => x.UserAccount)
+                .WithMany()
                 .HasForeignKey(x => x.UserAccountId)
                 .OnDelete(DeleteBehavior.Restrict);
         });

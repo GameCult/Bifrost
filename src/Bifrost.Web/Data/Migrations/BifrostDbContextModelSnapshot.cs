@@ -896,14 +896,28 @@ namespace Bifrost.Web.Data.Migrations
                     b.Property<DateTimeOffset>("ClosesAtUtc")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<string>("Candidates")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTimeOffset?>("CommitClosesAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<DateTimeOffset>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
                     b.Property<Guid>("CreatedByUserAccountId")
                         .HasColumnType("uuid");
 
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasColumnType("text");
+
                     b.Property<DateTimeOffset>("OpensAtUtc")
                         .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("PriorMotionId")
+                        .HasColumnType("uuid");
 
                     b.Property<Guid?>("ProjectId")
                         .HasColumnType("uuid");
@@ -914,6 +928,13 @@ namespace Bifrost.Web.Data.Migrations
 
                     b.Property<DateTimeOffset?>("ResolvedAtUtc")
                         .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ResultDigest")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<int>("Round")
+                        .HasColumnType("integer");
 
                     b.Property<string>("Scope")
                         .IsRequired()
@@ -1412,6 +1433,50 @@ namespace Bifrost.Web.Data.Migrations
                         .IsUnique();
 
                     b.ToTable("VolunteerClaims");
+                });
+
+            modelBuilder.Entity("Bifrost.Web.Domain.SealedBallot", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Commitment")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTimeOffset>("CommittedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("MotionId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("RevealedCandidate")
+                        .HasColumnType("text");
+
+                    b.Property<string>("RevealedReason")
+                        .HasColumnType("text");
+
+                    b.Property<DateTimeOffset?>("RevealedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("Revision")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Salt")
+                        .HasColumnType("text");
+
+                    b.Property<Guid>("UserAccountId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserAccountId");
+
+                    b.HasIndex("MotionId", "UserAccountId")
+                        .IsUnique();
+
+                    b.ToTable("SealedBallots");
                 });
 
             modelBuilder.Entity("Bifrost.Web.Domain.Vote", b =>
@@ -2209,6 +2274,25 @@ namespace Bifrost.Web.Data.Migrations
                     b.Navigation("WorkItem");
                 });
 
+            modelBuilder.Entity("Bifrost.Web.Domain.SealedBallot", b =>
+                {
+                    b.HasOne("Bifrost.Web.Domain.Motion", "Motion")
+                        .WithMany("SealedBallots")
+                        .HasForeignKey("MotionId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("Bifrost.Web.Domain.UserAccount", "UserAccount")
+                        .WithMany()
+                        .HasForeignKey("UserAccountId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Motion");
+
+                    b.Navigation("UserAccount");
+                });
+
             modelBuilder.Entity("Bifrost.Web.Domain.Vote", b =>
                 {
                     b.HasOne("Bifrost.Web.Domain.Motion", "Motion")
@@ -2331,6 +2415,8 @@ namespace Bifrost.Web.Data.Migrations
 
             modelBuilder.Entity("Bifrost.Web.Domain.Motion", b =>
                 {
+                    b.Navigation("SealedBallots");
+
                     b.Navigation("Votes");
                 });
 

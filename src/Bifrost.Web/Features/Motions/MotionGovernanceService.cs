@@ -56,7 +56,7 @@ public sealed class MotionGovernanceService(
             .Include(x => x.Votes)
             .SingleAsync(x => x.Id == motionId, cancellationToken);
 
-        if (motion.Status != MotionStatus.Open)
+        if (motion.Status != MotionStatus.Open || motion.Kind != MotionKind.Standard)
         {
             return;
         }
@@ -102,6 +102,11 @@ public sealed class MotionGovernanceService(
             .Include(x => x.Votes)
             .SingleAsync(x => x.Id == motionId, cancellationToken);
 
+        if (motion.Kind != MotionKind.Standard)
+        {
+            throw new InvalidOperationException("Sealed-ballot motions close only at their deadline.");
+        }
+
         if (!actor.CanModerateMotions && motion.CreatedByUserAccountId != actorUser.Id)
         {
             throw new UnauthorizedAccessException("Only the motion creator or a moderator can close this motion.");
@@ -140,6 +145,7 @@ public sealed class MotionGovernanceService(
             .AsNoTracking()
             .Include(x => x.Project)
             .Include(x => x.Votes)
+            .Where(x => x.Kind == MotionKind.Standard)
             .OrderBy(x => x.ClosesAtUtc)
             .ToListAsync(cancellationToken);
 

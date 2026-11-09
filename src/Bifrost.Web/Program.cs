@@ -121,6 +121,7 @@ builder.Services.AddScoped<MembershipSynchronizationService>();
 builder.Services.AddScoped<BifrostIdentityService>();
 builder.Services.AddScoped<GitHubWebhookService>();
 builder.Services.AddScoped<MotionGovernanceService>();
+builder.Services.AddScoped<SealedBallotService>();
 builder.Services.AddScoped<MotionEveSurfaceService>();
 builder.Services.AddScoped<PatronageService>();
 builder.Services.AddScoped<StripeWebhookService>();
@@ -540,6 +541,42 @@ eveGovernance.MapGet("/surface", async (
         JsonSerializer.Serialize(surface, appJsonSerializerOptions),
         "application/json");
 });
+
+// Sealed-ballot intake. Typed JSON documents posted directly by the voter; no ballot content ever rides in a room message,
+// and no response before close carries another member's ballot.
+var sealedMotions = app.MapGroup("/api/sealed-motions")
+    .RequireAuthorization(ActiveMemberRequirement.PolicyName);
+
+static async Task<IResult> SealedCall(Func<Task<object>> call)
+{
+    try
+    {
+        return Results.Ok(await call());
+    }
+    catch (SealedBallotException error)
+    {
+        return Results.Json(
+            new { error = error.Message },
+            statusCode: error.Failure switch
+            {
+                SealedBallotFailure.Forbidden => StatusCodes.Status403Forbidden,
+                SealedBallotFailure.NotFound => StatusCodes.Status404NotFound,
+                SealedBallotFailure.WrongPhase => StatusCodes.Status409Conflict,
+                _ => StatusCodes.Status400BadRequest
+            });
+    }
+}
+
+sealedMotions.MapPost("", (ICurrentBifrostActorAccessor actors, SealedBallotService service, OpenSealedMotionCommand command, CancellationToken ct) =>
+    SealedCall(async () => await service.OpenAsync(await actors.GetAsync(ct), command, ct)));
+sealedMotions.MapGet("/{id:guid}", (ICurrentBifrostActorAccessor actors, SealedBallotService service, Guid id, CancellationToken ct) =>
+    SealedCall(async () => await service.GetStateAsync(await actors.GetAsync(ct), id, ct)));
+sealedMotions.MapPost("/{id:guid}/commit", (ICurrentBifrostActorAccessor actors, SealedBallotService service, Guid id, SealedCommitRequest body, CancellationToken ct) =>
+    SealedCall(async () => await service.CommitAsync(await actors.GetAsync(ct), id, body.Commitment, ct)));
+sealedMotions.MapPost("/{id:guid}/reveal", (ICurrentBifrostActorAccessor actors, SealedBallotService service, Guid id, SealedBallotDocument body, CancellationToken ct) =>
+    SealedCall(async () => await service.RevealAsync(await actors.GetAsync(ct), id, body, ct)));
+sealedMotions.MapGet("/{id:guid}/result", (ICurrentBifrostActorAccessor actors, SealedBallotService service, Guid id, CancellationToken ct) =>
+    SealedCall(async () => await service.GetResultAsync(await actors.GetAsync(ct), id, ct)));
 
 app.MapGet("/auth/heimdall/complete", (HttpContext httpContext) =>
 {
