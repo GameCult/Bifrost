@@ -16,7 +16,7 @@ env:
 jobs:
   publish:
     name: Build and publish Bifrost image
-    runs-on: ubuntu-latest
+    runs-on: docker
     permissions:
       contents: read
       packages: write
