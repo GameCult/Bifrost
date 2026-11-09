@@ -22,7 +22,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: ghcr.io/gamecult/bifrost:local
+    image: bifrost-web:local
     container_name: bifrost-web
     depends_on:
       postgres:

@@ -56,7 +56,7 @@ It is closer to deployable now, but it is still not a finished internet-facing m
 
 - public app hostname: `bifrost.gamecult.org`
 - infrastructure context: `Yggdrasil`
-- deployment model: GHCR image + Docker Compose behind nginx, with the older systemd path kept as rollback until the container path is boring
+- deployment model: a release directory under `/srv/bifrost/app/releases`, switched by Idunn with a rollback point; no container images are published or pulled
 
 ## Next Build Target
 

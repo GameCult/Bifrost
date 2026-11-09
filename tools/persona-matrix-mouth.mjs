@@ -6,14 +6,21 @@
 // its m.mentions user ids and whether the room is a DM. The /sync position
 // (next_batch) is persisted only when an ack covers it, so a restart before the
 // ack re-delivers instead of losing. Reading wakes nothing: the heartbeat polls
-// with a non-consuming chat_pending_request and decides who runs.
+// with a non-consuming chat_pending_request and decides who runs. An ack also posts this Persona's public
+// m.read receipt per room, at the newest event the ack covers (fire and forget: the ack never waits on it,
+// a failure is logged once and not retried, the room's next ack covers it). Her presence follows her
+// brake: every /sync says online while it is released and offline while it is held, and a round that
+// finds her braked makes one presence PUT to offline first. A brake placed mid long-poll shows at the next
+// round, within syncTimeoutMs plus one PUT; a stopped mouth reads offline after the homeserver's sync timeout.
 // Mouth: a send request becomes one PUT with txnId = request_id (a retry is idempotent), and a room
 // is joined, only while that Persona's brake is released. A v2 send carries the basis of her turn (the
 // newest room event she saw): inside the room gate, one step per room across every Persona, the mouth
 // reads the room's head from Matrix and answers RoomMoved, naming the messages that moved it, instead
 // of the PUT. A v1 send, and a v2 send with no basis, are not checked; both still pass through the gate.
 //
-// Media: an m.image/m.file/m.audio/m.video event is delivered as one typed line (see bodyText), not its bare filename. Nothing is downloaded.
+// Media: an m.image/m.file/m.audio/m.video event is delivered as one typed line (see bodyText), not its bare filename.
+// An m.image event in a delivered message is also fetched, as this Persona and only when an image store is configured
+// (persona-chat-images.mjs): the delivery then carries a reference to the stored file, or the line says why not.
 //
 // Context: Matrix is the record. A delivery's `context` is read from the homeserver when the delivery
 // is built (GET /messages, or the thread's relations for a threaded message), as this Persona's
@@ -34,6 +41,7 @@ import { createSocket } from "node:dgram";
 import { resolve, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import * as docs from "./persona-chat-documents.mjs";
+import { createImageStore, fetchImage } from "./persona-chat-images.mjs";
 
 const API = "/_matrix/client/v3";
 const BRAKE_TYPE = "eureka.control.brake.v1";
@@ -57,12 +65,13 @@ export const movesRoom = (event, selfId) => isLine(event) && event.sender !== se
 //   [image filename="cat.png" mime=image/png size=2048 url=mxc://gamecult.test/abc]
 // A Persona turn is a tool-less text call (it has no way to open a file or see an image), so the mouth names the
 // attachment and fetches nothing. Every field is checked before it is printed; a field that fails is left out.
-// An encrypted attachment names its `file.url` and carries `encrypted`; its key is never read.
+// An encrypted attachment names its `file.url` and carries `encrypted`; its key is never read. `refused` is the
+// fixed-word reason an image was not stored (persona-chat-images `refusals`); it is never sender text.
 const MEDIA_KIND = { "m.image": "image", "m.file": "file", "m.audio": "audio", "m.video": "video" };
 const MXC = /^mxc:\/\/[A-Za-z0-9.:_-]+\/[A-Za-z0-9_-]+$/;
 const MIME = /^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}\/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}$/;
 const FILENAME_BYTES = 255;
-export function bodyText(content, maxBytes) {
+export function bodyText(content, maxBytes, refused = null) {
   const kind = MEDIA_KIND[content?.msgtype];
   if (!kind) return docs.clip(content.body, maxBytes);
   const encrypted = typeof content.file?.url === "string" && typeof content.url !== "string";
@@ -74,6 +83,7 @@ export function bodyText(content, maxBytes) {
   if (Number.isSafeInteger(content.info?.size) && content.info.size >= 0) parts.push(`size=${content.info.size}`);
   if (typeof url === "string" && MXC.test(url)) parts.push(`url=${url}`);
   if (encrypted) parts.push("encrypted");
+  if (refused !== null) parts.push(`refused=${refused}`);
   const line = docs.clip(`[${parts.join(" ")}]`, maxBytes);
   const caption = named && content.body !== filename ? content.body : "";
   return caption === "" ? line : docs.clip(`${line}\n${caption}`, maxBytes);
@@ -97,6 +107,7 @@ export function createRoomGate() {
 export function createMouth({
   persona, homeserver, serverName, rooms, token, fetch: httpFetch = globalThis.fetch, state, brake,
   now = Date.now, log = () => {}, syncTimeoutMs = 30000, maxPending = MAX_PENDING, gate = createRoomGate(), sendTimeoutMs = SEND_TIMEOUT_MS,
+  images = null, // this Persona's image store (createImageStore), or null: images stay the typed text line
 }) {
   if (!persona || !homeserver || !token || !rooms?.length) throw new Error("persona, homeserver, rooms and token are required");
   const say = message => log(redact(String(message), token));
@@ -113,6 +124,7 @@ export function createMouth({
   let batches = []; // { token, maxSeq }: positions awaiting an ack
   let committed = null; // the position that is persisted
   let started = false;
+  let lastPresence = null; // 'online' | 'offline' | null: command-only, suppresses repeat presence PUTs
   const directContent = {}; // the account's m.direct content: user id -> room ids
   const invites = new Map(); // room id -> { inviter, direct }: invitations not yet answered
   const processed = new Set(); // event ids read since the position last advanced
@@ -153,7 +165,6 @@ export function createMouth({
   // released; one received while braked waits for the release. An invitation from any other server is
   // declined. A same-server invitation to a room that is not a DM is not ours to accept and is dropped.
   async function answerInvites() {
-    let free = null;
     for (const [roomId, invite] of [...invites]) {
       try {
         const room = encodeURIComponent(roomId);
@@ -163,8 +174,7 @@ export function createMouth({
         } else if (!invite.direct) {
           invites.delete(roomId);
         } else {
-          free ??= await released();
-          if (!free) continue;
+          if (!(await released())) continue; // read fresh before every join: a brake placed mid-pass stops the next one
           await matrix("POST", `/join/${room}`, {});
           invites.delete(roomId);
           directRooms.add(roomId);
@@ -257,17 +267,39 @@ export function createMouth({
     return lines;
   }
 
+  // The image of one delivered m.image event: { image } (a stored reference) or { refused } (a reason word). With no
+  // store nothing is attempted and nothing is said. The url is the event's own content.url; encrypted events and
+  // anything the checks refuse leave only the text line.
+  async function imageOf(roomId, content) {
+    if (!images || content?.msgtype !== "m.image") return {};
+    if (content.file !== undefined) return { refused: "encrypted" };
+    const got = await fetchImage({ fetch: httpFetch, homeserver, token, mxc: content.url });
+    if (got.refusal) return { refused: got.refusal };
+    try { return { image: images.put(roomId, got.bytes, got.mime) }; } catch (error) {
+      say(`image not stored: ${error?.code ?? "write failed"}`);
+      return { refused: "store-failed" };
+    }
+  }
+
   // One /sync round. Returns the deliveries it made.
   async function syncOnce() {
     if (!started || unjoined()) await start();
+    const free = await released(); // the round's brake read for presence, taken before any early return
+    if (!free && lastPresence !== "offline") {
+      try {
+        await matrix("PUT", `/presence/${encodeURIComponent(selfId)}/status`, { presence: "offline" }, API, AbortSignal.timeout(sendTimeoutMs));
+        lastPresence = "offline";
+      } catch (error) { say(`presence not set: ${error.message}`); }
+    }
     if (pending.length >= maxPending) return []; // unanswered mail is not outrun: the position stays where it is
     const filter = encodeURIComponent(JSON.stringify({ room: { timeline: { limit: CONTEXT } } }));
     const since = cursor === null ? "" : `&since=${encodeURIComponent(cursor)}`;
-    const reply = await matrix("GET", `/sync?timeout=${cursor === null ? 0 : syncTimeoutMs}&filter=${filter}${since}`);
+    const reply = await matrix("GET", `/sync?timeout=${cursor === null ? 0 : syncTimeoutMs}&set_presence=${free ? "online" : "offline"}&filter=${filter}${since}`);
+    if (free) lastPresence = "online";
     const baseline = cursor === null; // first ever sync: history is context, not mail
     for (const event of reply.account_data?.events ?? []) if (event.type === "m.direct") noteDirect(event.content);
     noteInvites(reply.rooms?.invite);
-    await answerInvites();
+    await answerInvites(); // each join re-reads the brake, as send does
     const made = [];
     const round = new Map();
     let truncated = false; // the pending cap was reached inside this round
@@ -283,20 +315,23 @@ export function createMouth({
         if (typeof event.sender !== "string" || event.sender === "" || typeof event.event_id !== "string" || event.event_id === "") continue;
         if (processed.has(event.event_id)) continue; // read already in a round the cap kept from advancing
         const ts = event.origin_server_ts;
-        const entry = { sender: event.sender, text: bodyText(event.content, docs.limits.textBytes), atUnixMs: Number.isSafeInteger(ts) && ts >= 0 ? ts : now() };
+        const atUnixMs = Number.isSafeInteger(ts) && ts >= 0 ? ts : now();
         const deliverable = !baseline && !freshRooms.has(roomId) && event.sender !== selfId;
         if (deliverable && pending.length + made.length >= maxPending) { truncated = true; break rounds; }
         processed.add(event.event_id);
         if (deliverable) {
           const context = await contextFor(roomId, event, round);
+          const { image = null, refused = null } = await imageOf(roomId, event.content);
+          if (refused !== null) say(`image refused: ${refused}`);
           const mentioned = event.content["m.mentions"]?.user_ids;
           made.push({
             seq: ++seqCounter, roomAlias: alias, roomId, eventId: event.event_id, sender: event.sender,
-            senderDisplay: displayNames.get(event.sender) ?? localpart(event.sender), text: entry.text, atUnixMs: entry.atUnixMs,
-            context,
+            senderDisplay: displayNames.get(event.sender) ?? localpart(event.sender), text: bodyText(event.content, docs.limits.textBytes, refused), atUnixMs,
+            context, image,
             mentions: Array.isArray(mentioned) ? mentioned.filter(id => typeof id === "string" && id !== "" && id.length <= 255).slice(0, docs.limits.mentions) : [],
             isDirect: directRooms.has(roomId),
           });
+          if (image) images.hold(image.path, seqCounter);
         }
       }
     }
@@ -323,13 +358,30 @@ export function createMouth({
     batches = batches.filter(b => b.maxSeq > throughSeq);
   }
 
+  // Her m.read receipt, display-only: public, unthreaded, at the newest event each room's ack covers.
+  // Never awaited by the ack; a failure is one log line and nothing else. Posted only while her brake is
+  // released, read fresh when each receipt would go out; a held brake drops it (the next ack covers it).
+  async function readUpTo(newest) {
+    const quiet = message => { try { say(message); } catch { /* a throwing logger must not reject this unawaited call */ } };
+    for (const { roomId, eventId } of newest.values()) {
+      if (!(await released())) { quiet("receipts not posted: brake held"); return; } // no receipt while braked; none is queued
+      try {
+        await matrix("POST", `/rooms/${encodeURIComponent(roomId)}/receipt/m.read/${encodeURIComponent(eventId)}`, {}, API, AbortSignal.timeout(sendTimeoutMs));
+      } catch (error) { quiet(`receipt in ${roomId} not posted: ${error.message}`); }
+    }
+  }
+
   async function ack(throughSeq) {
+    const newest = new Map(); // roomId -> the highest-seq delivery this ack covers
+    for (const d of pending) if (d.seq <= throughSeq && (newest.get(d.roomId)?.seq ?? 0) < d.seq) newest.set(d.roomId, d);
     pending = pending.filter(d => d.seq > throughSeq);
+    images?.acked(throughSeq);
     await commit(pending.length ? pending[0].seq - 1 : seqCounter);
+    readUpTo(newest);
   }
 
   function pendingAfter(afterSeq) {
-    return pending.filter(d => d.seq > afterSeq).map(d => ({ ...d, context: d.context.map(c => ({ ...c })), mentions: [...d.mentions] }));
+    return pending.filter(d => d.seq > afterSeq).map(d => ({ ...d, context: d.context.map(c => ({ ...c })), mentions: [...d.mentions], image: d.image && { ...d.image } }));
   }
 
   // The ids of the messages that moved the room since `basis`, oldest first. Walks the head newest to oldest
@@ -547,7 +599,7 @@ export function roomsFor(env, persona) {
 
 // PERSONAS is the comma-separated list of Persona slugs this process speaks for.
 // Each slug names its credential (matrix-token-<slug>), its cursor directory under
-// STATE_DIRECTORY and its brake at CONTROL_ROOT/<slug>/control.cc.
+// STATE_DIRECTORY, its image store at IMAGE_STORE_ROOT/<slug> (optional) and its brake at CONTROL_ROOT/<slug>/control.cc.
 export async function main(env = process.env) {
   const personas = required(env, "PERSONAS").split(",").map(s => s.trim()).filter(Boolean);
   if (personas.length === 0 || new Set(personas).size !== personas.length || !personas.every(p => SLUG.test(p))) throw new Error("PERSONAS must be distinct slugs");
@@ -563,11 +615,13 @@ export async function main(env = process.env) {
     const roomsByPersona = new Map(personas.map(persona => [persona, roomsFor(env, persona)]));
     const stateRoot = required(env, "STATE_DIRECTORY");
     const controlRoot = env.CONTROL_ROOT ?? "/etc/gamecult/minds";
+    const imageRoot = env.IMAGE_STORE_ROOT ? resolve(env.IMAGE_STORE_ROOT) : null; // unset: chat images stay the typed text line
     const gate = createRoomGate(); // one for every Persona: two Minds in one room take turns
     const mouths = new Map(personas.map(persona => {
       mkdirSync(join(stateRoot, persona), { recursive: true });
       return [persona, createMouth({
         persona, homeserver, serverName, rooms: roomsByPersona.get(persona), token: tokens.get(persona), gate, log: line => log(`${persona}: ${line}`),
+        images: imageRoot ? createImageStore({ root: join(imageRoot, persona), log: line => log(`${persona}: ${line}`) }) : null,
         state: cultcacheState({ runtime, path: join(stateRoot, persona, "cursor.cc") }),
         brake: createBrakeReader({ controlPath: join(controlRoot, persona, "control.cc"), readStore: runtime.readSingleFileStore, decode: runtime.msgpack.decode }),
       })];
