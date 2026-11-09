@@ -46,7 +46,10 @@ naming every failure) unless all of these hold. Environment-variable spelling us
 
 Conditional, only if the feature is switched on: `GitHubApp` settings when `GitHubApp:EnableWebhookSync` is true;
 `Heimdall:PatronSupportIntakeSecret` while `Heimdall:EnablePatronSupportIntake` is true (its default); the Stripe keys
-when `Stripe:EnableCheckout` is true. Also checked at every start, in every environment: the `ConceptVotes` prefix lengths,
+when `Stripe:EnableCheckout` is true. Two of these checks are satisfied by defaults once the one secret is present: Stripe
+needs `SecretKey`, `SuccessUrl` and `CancelUrl`, and the last two default to `https://velvet.gamecult.org/...`
+(`StripeOptions.cs:15,17`); Heimdall intake needs `BaseUrl`, `AppSlug` and the intake secret, and the first two default to
+`https://heimdall.gamecult.org` and `bifrost` (`HeimdallOptions.cs:7,9`). Also checked at every start, in every environment: the `ConceptVotes` prefix lengths,
 permits, windows and `MaxTrackedKeys`.
 
 New since the live release, and not read by the validator:
@@ -138,8 +141,24 @@ Record the time and the output line of each in the deploy record. Stop at the fi
 2. Take and verify the backups (Preconditions 2 and 3), then run the rollback rehearsal (Precondition 4).
 3. Make the env complete: add `Heimdall__AppSecret` and, if the Configuration table found it absent or shorter than 32
    characters, **`ConceptVotes__NetworkTagSecret`** (the target does not start without it) to
-   `/srv/bifrost/env/bifrost.env`: `sudo -n install` the new file at mode 600 owner `bifrost`; keep the old file as
-   `bifrost.env.pre-<UTC>` beside it. Re-run the name-only check after.
+   `/srv/bifrost/env/bifrost.env`, after the timestamped backup, printing nothing. The secret is random, 32 or more
+   characters, and is never echoed, logged or pasted into a chat. For example (`openssl rand -hex 32` gives 64 hex
+   characters and nothing that needs quoting in a systemd `EnvironmentFile`):
+   `sudo -n sh -c 'umask 077; cd /srv/bifrost/env && if grep -q "^ConceptVotes__NetworkTagSecret=" bifrost.env; then echo "ConceptVotes__NetworkTagSecret already set, left unchanged"; else cp -a bifrost.env bifrost.env.pre-<UTC> && { printf "\nConceptVotes__NetworkTagSecret="; openssl rand -hex 32 | tr -d "\n"; printf "\n"; } >> bifrost.env; fi && chown bifrost bifrost.env && chmod 600 bifrost.env'`
+   The guard makes a re-run safe: an existing `ConceptVotes__NetworkTagSecret=` line is never overwritten or duplicated, and the
+   skip message prints no value. (If a duplicate key ever got in, systemd's `EnvironmentFile` takes the last one, so remove
+   the extra line by hand; do not leave two.) A present line shorter than 32 characters is not replaced by this command
+   either: fix it deliberately, with the rotation warning below in mind.
+   (the same, with the value from the operator's own source, for `Heimdall__AppSecret`, which is not generated here).
+   The file ends mode 600, owner `bifrost`, and the backup `bifrost.env.pre-<UTC>` beside it keeps the old content.
+   Re-run the name-only check after, and check the length by count only:
+   `sudo -n awk -F= '$1=="ConceptVotes__NetworkTagSecret"{print length($0)-length($1)-1}' /srv/bifrost/env/bifrost.env` is 32 or more.
+   **Generate it once; do not rotate it casually.** It is the key of the audit `NetworkTag` that `ConceptAppraisal` stores
+   per vote (`src/Bifrost.Web/Data/BifrostDbContext.cs:546`). A different secret does not touch votes, the
+   `(SubjectId, VoterKey)` uniqueness or sign-in, but tags already stored no longer match tags computed for the same
+   network, so `PurgeAsync` (`src/Bifrost.Web/Features/ConceptVotes/ConceptAppraisalService.cs:154`, equality on
+   `NetworkTag`) misses the old rows; only new casts and re-stanced rows carry the new tag. On this first deploy no vote row
+   has a tag from the new code, so nothing is orphaned; after it, treat a change as a purge-affecting event.
 4. Upload the tarball; compare its SHA-256 to the build's.
 5. `sudo -n bash /home/gamecultadmin/deploy-bifrost-alpha.sh <sha40>`. It unpacks into `<UTC>-<sha7>`, writes `REVISION`,
    repoints `current`, restarts. The restart applies both migrations.
@@ -167,6 +186,8 @@ Done from outside nginx, with a real browser session, within the window. A 200 o
   image with a healthy `/` is the finding this check exists for. **Unknown: which app serves that picture.** `AvatarUrl` appears at
   `src/Bifrost.Web/Domain/BifrostModels.cs:261` and `src/Bifrost.Web/Program.cs:192`, so the picture is probably an
   external avatar URL; unverified. Name the serving app and the page before the window, or drop the check.
+- **Checkout page.** Load one Stripe checkout page (start a checkout and stop at the Stripe-hosted page) and confirm it
+  renders with the expected product and amount. Do not pay: no card is entered and no live payment is made.
 - Member console, work board, motions and members pages load (runbook section 7).
 - The error rate over five minutes: the number of lines added to `bifrost.stderr.log` and `bifrost.stdout.log` since the
   baseline in step 1 is small and stops growing; read what was added, not just the count.
