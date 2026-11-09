@@ -357,4 +357,44 @@ public sealed class SealedBallotTests
         Assert.Equal(expected, stored.ResultDigest); // the digest covers the reveal that raced the close
         Assert.Equal(1, await check.AuditEvents.CountAsync(x => x.Action == "sealed.closed"));
     }
+
+    [Fact]
+    public async Task Two_simultaneous_reveals_both_land_while_the_window_is_open()
+    {
+        var name = $"sealed-two-reveals-{Guid.NewGuid():N}";
+        var first = Peer(name, T0);
+        var (ana, motion) = await SeedPeerWorld(first.Db, first.Service);
+        var bo = new UserAccount { DisplayName = "Bo", GitHubLogin = "bo", BifrostIdentity = "bo", NormalizedBifrostIdentity = "BO", NormalizedGitHubLogin = "BO" };
+        bo.Membership = new Membership { UserAccountId = bo.Id, Status = MembershipStatus.Active };
+        first.Db.UserAccounts.Add(bo);
+        await first.Db.SaveChangesAsync();
+        var boActor = new CurrentBifrostActor(true, bo);
+        var boDoc = new SealedBallotDocument(SealedBallotDocument.SchemaId, motion.Id, 1, "Bo", "Mine too.", Salt);
+        await first.Service.CommitAsync(boActor, motion.Id, SealedBallotDocument.Commit(boDoc, bo.Id), default);
+        first.Clock.Now = T0.AddMinutes(90);
+
+        var second = Peer(name, T0.AddMinutes(90));
+        _ = await second.Db.Motions.ToListAsync(); // stale RevealSeq 0, window open
+
+        await first.Service.RevealAsync(ana, motion.Id, new SealedBallotDocument(SealedBallotDocument.SchemaId, motion.Id, 1, "Ana", "Mine.", Salt), default);
+        var receipt = await second.Service.RevealAsync(boActor, motion.Id, boDoc, default); // conflicts on RevealSeq, window still open: must retry, not claim a close
+
+        Assert.True(receipt.Revealed);
+        await using var check = Peer(name, T0.AddHours(4)).Db;
+        Assert.Equal(2, await check.SealedBallots.CountAsync(x => x.RevealedAtUtc != null));
+        Assert.Equal(2, (await check.Motions.AsNoTracking().SingleAsync()).RevealSeq);
+    }
+
+    [Fact]
+    public async Task A_salt_with_a_trailing_newline_is_not_hex()
+    {
+        var rig = new Rig();
+        var a = rig.Member("Ana");
+        var motion = await rig.OpenAsync("Ana", "Bo");
+        await rig.Cast(a, motion.Id, "Ana", "Mine.", Salt + "\n");
+        rig.Clock.Now = T0.AddMinutes(90);
+        var ex = await Assert.ThrowsAsync<SealedBallotException>(() => rig.Reveal(a, motion.Id, "Ana", "Mine.", Salt + "\n"));
+        Assert.Equal(SealedBallotFailure.Invalid, ex.Failure);
+        Assert.Null((await rig.Db.SealedBallots.SingleAsync()).RevealedAtUtc);
+    }
 }

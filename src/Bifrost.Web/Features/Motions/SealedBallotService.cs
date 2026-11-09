@@ -22,8 +22,8 @@ public sealed class SealedBallotService(
     TimeProvider timeProvider)
 {
     public const int MaxReasonLength = 280;
-    private static readonly Regex HexSha256 = new("^[0-9a-f]{64}$", RegexOptions.Compiled);
-    private static readonly Regex HexSalt = new("^[0-9a-f]{32,128}$", RegexOptions.Compiled);
+    private static readonly Regex HexSha256 = new(@"^[0-9a-f]{64}\z", RegexOptions.Compiled);
+    private static readonly Regex HexSalt = new(@"^[0-9a-f]{32,128}\z", RegexOptions.Compiled);
 
     public async Task<SealedMotionState> OpenAsync(
         CurrentBifrostActor actor,
@@ -156,19 +156,37 @@ public sealed class SealedBallotService(
             throw new SealedBallotException(SealedBallotFailure.Invalid, "The ballot does not match the stored commitment.");
         }
 
-        ballot.RevealedCandidate = candidate;
-        ballot.RevealedReason = reason;
-        ballot.Salt = document.Salt;
-        ballot.RevealedAtUtc = now;
-        motion.RevealSeq++;
-        try
+        // RevealSeq and Status are concurrency tokens. A conflict means either the close froze the set (refuse, truthfully) or
+        // another voter's reveal landed first while the window is still open (re-read the row and write again).
+        for (var attempt = 0; ; attempt++)
         {
-            await dbContext.SaveChangesAsync(cancellationToken);
-        }
-        catch (DbUpdateConcurrencyException)
-        {
-            // The close froze the reveal set between the phase check and this write: this reveal is not in it.
-            throw new SealedBallotException(SealedBallotFailure.WrongPhase, "The motion closed; the reveal window is over.");
+            ballot.RevealedCandidate = candidate;
+            ballot.RevealedReason = reason;
+            ballot.Salt = document.Salt;
+            ballot.RevealedAtUtc = now;
+            motion.RevealSeq++;
+            try
+            {
+                await dbContext.SaveChangesAsync(cancellationToken);
+                break;
+            }
+            catch (DbUpdateConcurrencyException error)
+            {
+                foreach (var entry in error.Entries)
+                {
+                    await entry.ReloadAsync(cancellationToken);
+                }
+
+                if (PhaseOf(motion, now) != SealedPhase.Reveal)
+                {
+                    throw new SealedBallotException(SealedBallotFailure.WrongPhase, "The motion closed; the reveal window is over.");
+                }
+
+                if (attempt >= 4)
+                {
+                    throw new SealedBallotException(SealedBallotFailure.WrongPhase, "The reveal is contended; send it again.");
+                }
+            }
         }
 
         await auditTrailService.RecordAsync(
