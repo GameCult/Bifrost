@@ -94,7 +94,11 @@ All must hold before step 1. A missing one means the window is not used.
      `http://127.0.0.1:5081`). Delete the file and the directories afterwards.
    - Strip from that copy every key that could act on or sign in to something real, and every key the scratch run does
      not need: all `Bifrost__Oidc__*`, `Bridge__LocalBridgeToken`, `Bootstrap__AdminGitHubLogins__*`, the GitHub App,
-     Stripe and Heimdall intake and app-secret keys. The rehearsal checks that the process starts and migrates; **there is
+     Stripe and Heimdall intake and app-secret keys. Stripping a key is not enough: startup validation refuses to start
+     when a feature flag is on and its key is missing (`StartupConfigurationValidator.cs:59-62`, `:69-73`, `:75-80`), so
+     set `Heimdall__EnablePatronSupportIntake=false` (it defaults to true and then needs the intake secret),
+     `GitHubApp__EnableWebhookSync=false` and `Stripe__EnableCheckout=false` in the rehearsal env. With them off the
+     process starts without the secrets, and the rehearsal cannot reach Stripe, GitHub or Heimdall. The rehearsal checks that the process starts and migrates; **there is
      no sign-in on 5081**, because the GitHub OAuth app and Heimdall redirect to the public host.
    - start the target release from that file as `bifrost`, with the file loaded by systemd, not by a shell:
      `sudo -n systemd-run --wait --pty -p User=bifrost -p EnvironmentFile=/srv/bifrost/rehearsal/bifrost-rehearsal.env
@@ -184,3 +188,8 @@ Rollback signs members out again (the old release reads the old cookie names); s
 
 It does not deploy, does not add an Idunn recipe, and does not touch `bifrost-watchdog-notice.timer`. The
 Idunn recipe is the owner of making this repeatable; until then each deploy follows this page and the runbook.
+
+**Host facts in this plan that no one re-verified in this revision:** the key-ring file count, modes and dates (lines
+~64, ~82-85), the stderr/stdout line counts and last-write dates (~131), the `bifrost-watchdog-notice.timer` cadence
+and unit names (~118), and that `bifrost` cannot read `/root` (~91) were read from the host on 2026-11-09 by an earlier
+pass or taken from the host's reports; this revision made no host read. Treat each as unverified until checked in the window.
