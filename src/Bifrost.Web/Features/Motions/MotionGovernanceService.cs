@@ -126,7 +126,21 @@ public sealed class MotionGovernanceService(
             ? $"Closed with {votesFor:0.##} for and {votesAgainst:0.##} against at a {motion.ApprovalThreshold:P0} threshold."
             : "Closed without decisive votes.";
 
-        await dbContext.SaveChangesAsync(cancellationToken);
+        try
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException error)
+        {
+            // Status is a concurrency token: another closer won. Adopt its result and record nothing a second time.
+            foreach (var entry in error.Entries)
+            {
+                await entry.ReloadAsync(cancellationToken);
+            }
+
+            return;
+        }
+
         await auditTrailService.RecordAsync(
             actorUser.Id,
             nameof(Motion),
