@@ -1,15 +1,16 @@
 # Deploying main over the live release
 
-Status: **plan, not executed.** Written 2026-11-09 by the heimdall Self run. Nothing here has been run. The deploy
-waits on a root window, a verified database backup and a rehearsed rollback (Preconditions).
+Status: **plan, not executed.** Written 2026-11-09 by the heimdall Self run; revised the same day by the eureka Self run
+against main `55b74275`, from Libby's read of the first draft. Nothing here has been run. The deploy waits on a root
+window, a verified database backup and a rehearsed rollback (Preconditions).
 
 ## What moves
 
 | | Live | Target |
 | --- | --- | --- |
 | Release | `/srv/bifrost/app/releases/20261010043032-67072b2` | a new `<UTC>-<sha7>` directory |
-| Revision | `67072b2` | `244811cb49bf65a2325792882e2d97e11115ca17` (main at writing; re-check) |
-| Distance | | 141 commits; `67072b2` is an ancestor of main |
+| Revision | `67072b2` | `55b74275b0d86cdb0c5db01010380a90fbc2eb69` (main at revision; re-check with `git ls-remote`) |
+| Distance | | 147 commits; `67072b2` is an ancestor of main |
 | Schema | up to the last pre-`AddConceptVotes` migration | + `20261010043937_AddConceptVotes`, + `20261022163159_AddOpenIddict` |
 
 Both migrations only create tables and indexes (`Up` has no `Drop*`, `AlterColumn` or `RenameColumn`). The previous
@@ -17,26 +18,50 @@ binary therefore runs against the new schema, which is what makes the rollback b
 
 The deploy mechanism is `gamecult-ops/scripts/deploy-bifrost-alpha.sh <sha40>` and
 `runbooks/bifrost-alpha-deploy.md`. There is no Idunn recipe for Bifrost; this is a manual, root-window deploy.
-**Bifrost #11** (`__Host-` cookies) is not in main at writing and rides this deploy: merge it first, or the deploy is
-repeated.
+**Bifrost #11** (`__Host-` cookies) and #17 (CI publish workflow deleted) are in main; this page (#15) is docs only and
+changes no code. #11 renames every cookie Bifrost sets (`BifrostCookies.cs`: session, OAuth correlation, antiforgery,
+voter, Heimdall attempt), so **the deploy signs every member out once**, drops sign-ins in flight at the restart, and
+gives each returning anonymous voter a new device cookie. Say so to the members before the window. The data-protection
+key ring is unchanged, so this is the only forced sign-out; the live check below tests it.
 
-## Configuration that changed
+## Configuration
 
-Read against the live `/srv/bifrost/env/bifrost.env` before the window, not during it. Key names only; never paste values
-into a chat, a PR or a log.
+Read against the live `/srv/bifrost/env/bifrost.env` before the window, not during it, by someone who can read it (mode
+600, owner `bifrost`; the eureka Self run's account cannot, so **no key below is marked present or absent here**: the
+column is filled in by the reader). Key names only; never paste values into a chat, a PR or a log. Name-only check:
+`sudo -n cut -d= -f1 /srv/bifrost/env/bifrost.env | sort`.
 
-- **`Heimdall__AppSecret`: new, required for sign-in.** Without it, `HeimdallOptions.IsDiscordConfigured` and
-  `IsPatreonConfigured` are false and Discord and Patreon sign-in stop working (GitHub sign-in is unaffected). The value is
-  Heimdall's app secret for slug `bifrost` (`GC_ACCESS_APP_BIFROST_SHARED_SECRET` on the Heimdall side). Bifrost sends it
-  as `x-heimdall-app-secret`, redacted from logs.
-- **`ConceptVotes__NetworkTagSecret`**: at least 32 characters; keys the anonymous vote network tag. Check
-  `ConceptVoteOptions` for the other `ConceptVotes__*` keys and whether the vote surface refuses to start without it.
+Outside Development and Testing, `StartupConfigurationValidator.Validate()` refuses to start (an `InvalidOperationException`
+naming every failure) unless all of these hold. Environment-variable spelling uses `__` for `:`.
+
+| Key (configuration name) | Rule | Present? |
+| --- | --- | --- |
+| `GitHubOAuth:ClientId`, `GitHubOAuth:ClientSecret` | both non-empty | |
+| `Host:PublicBaseUrl`, `Host:ExpectedHost` | both non-empty | |
+| `AllowedHosts` | non-empty and no `*` (while `Host:RequireStrictHostValidation` is true, its default) | |
+| `ConnectionStrings:Bifrost` | non-empty | |
+| `DataProtection:KeysPath` | non-empty | |
+| **`ConceptVotes:NetworkTagSecret`** | non-empty and **at least 32 characters** (`ConceptVoteOptions.MinNetworkTagSecretLength`); a hard startup failure if missing or short (`StartupConfigurationValidator.cs:104`) | |
+| `ConceptVotes:AllowedOrigins` | each entry exactly `https://host`, no path, wildcard or trailing slash | |
+
+Conditional, only if the feature is switched on: `GitHubApp` settings when `GitHubApp:EnableWebhookSync` is true;
+`Heimdall:PatronSupportIntakeSecret` while `Heimdall:EnablePatronSupportIntake` is true (its default); the Stripe keys
+when `Stripe:EnableCheckout` is true. Also checked at every start, in every environment: the `ConceptVotes` prefix lengths,
+permits, windows and `MaxTrackedKeys`.
+
+New since the live release, and not read by the validator:
+
+- **`Heimdall__AppSecret`**: required for Discord and Patreon sign-in. Without it `HeimdallOptions.IsDiscordConfigured` and
+  `IsPatreonConfigured` are false and those sign-ins stop working (GitHub sign-in is unaffected); startup does not fail,
+  so a missing key shows only at the live check. The value is Heimdall's app secret for slug `bifrost`
+  (`GC_ACCESS_APP_BIFROST_SHARED_SECRET` on the Heimdall side). Bifrost sends it as `x-heimdall-app-secret`, redacted
+  from logs.
 - **`Bifrost__Oidc__*`**: optional. Absent, the OIDC issuer is not mapped and discovery answers 404. Present, it must be
   complete and the key files must exist, or startup stops. Unless the window includes standing up chat sign-in, leave it
   unset. Keys and files: `docs/oidc-issuer.md`.
-- `DataProtection__KeysPath`: unchanged in intent. Data Protection already has a fixed application name (`Bifrost`), so a
-  new release directory does not log members out. Confirm the live env still sets the keys path to a directory the new
-  release can read.
+- `DataProtection:KeysPath` keeps its intent. Data Protection has a fixed application name (`Bifrost`, `Program.cs`), so a
+  new release directory does not log members out; #11's cookie rename does (above). Confirm the live env still points the
+  keys path at the directory below, and that the new release can read it.
 - `Bootstrap__ApplyMigrationsOnStartup=true` stays on, so **the first start applies both migrations**. That is the
   irreversible-looking step; the backup below is for it.
 
@@ -47,40 +72,66 @@ All must hold before step 1. A missing one means the window is not used.
 1. **Root window.** Someone with root on Yggdrasil is present for the whole deploy and the 30 minutes after (installing
    the unit, reading `journalctl`, restoring). The swarm brake is off for Bifrost, or the operator has said so.
 2. **Verified database backup.** `pg_dump -Fc` as in the runbook section 8, taken inside the window, then verified:
-   `pg_restore --list <dump> | head` succeeds, and the dump restores into a scratch database
-   (`createdb bifrost_rehearsal; pg_restore --no-owner -d bifrost_rehearsal <dump>`), where the member count equals the
-   live count. Drop the scratch database afterwards. An unrestored dump is not a backup.
-3. **Env and secrets backup.** The runbook's `bifrost-env-*.tar`, plus the Data Protection key ring directory if it lives
-   outside `/srv/bifrost/env`.
-4. **Rollback rehearsal.** Before the real deploy, on the same host: unpack the old publish (or keep the live release
-   directory untouched, which is the plan) and prove the previous release starts against a database that already has the
-   two migrations: start it on a spare port against the scratch database from step 2 after applying the new migrations
-   to it (`dotnet ef database update` from the target revision, or one start of the target with the flag on). The
-   previous release must answer `/` with 200. This is the claim that the rollback is a symlink move; it is checked, not
-   assumed.
+   `pg_restore --list <dump> | head` succeeds, and the dump restores into a scratch database, where the member count
+   equals the live count. The `bifrost` database role has no CREATEDB, so create and drop the scratch database as the
+   superuser: `sudo -n -u postgres createdb -O bifrost bifrost_rehearsal`, then
+   `sudo -n -u postgres pg_restore --no-owner --role=bifrost -d bifrost_rehearsal <dump>`, and at the end
+   `sudo -n -u postgres dropdb bifrost_rehearsal`. An unrestored dump is not a backup.
+3. **Env, secrets and key-ring backup.** The runbook's `bifrost-env-*.tar`, plus **`/srv/bifrost/data-protection-keys`**,
+   which lives outside `/srv/bifrost/env` and is not in that tar (one key file at writing, mode 600, owner `bifrost`).
+   Losing it signs everyone out and breaks every protected cookie and token; `cp -a` it beside the env backup and
+   record its file list.
+4. **Rollback rehearsal.** Before the real deploy, on the same host. There is no `dotnet ef` on the host and this plan
+   does not use it: the target applies its own migrations at start. Rehearse by starting the target once, then the
+   previous release, on the scratch database, from a separate env file that touches nothing live:
+   - a copy of `bifrost.env` at `/root/bifrost-rehearsal.env`, mode 600, with `ConnectionStrings__Bifrost` pointing at
+     `bifrost_rehearsal`, `DataProtection__KeysPath` at a throwaway empty directory (not the live key ring, which the
+     rehearsal must not write), and `ASPNETCORE_URLS` set to a port that is not 5080 (e.g. `http://127.0.0.1:5081`).
+     Delete the file and the directory afterwards.
+   - start the target release from that file as `bifrost`: `sudo -n -u bifrost bash -c 'set -a; . /root/bifrost-rehearsal.env;
+     exec dotnet <target-release>/Bifrost.Web.dll'`. The scratch database now has both migrations. Check it listens and
+     `/` answers 200, then stop it.
+   - start the **previous** release (`/srv/bifrost/app/releases/20261010043032-67072b2`) the same way on another spare
+     port (e.g. 5082) against the same, now migrated, scratch database; `/` must answer 200. This is the claim that the
+     rollback is a symlink move; it is checked, not assumed.
+   - Unverified here: whether a rehearsal start with the live integration keys (GitHub App webhook sync, Stripe, Heimdall
+     intake) in the copied file can act on the live services. Strip or switch off those keys in the rehearsal file before
+     starting.
 5. **Artifact.** Published per runbook section 3: `git merge-base --is-ancestor <sha> origin/main` exits 0, publish from a
    detached worktree, tar, upload. Record the tarball's SHA-256 on both ends. Build and test on Yggdrasil's verify path,
    not a workstation.
-6. **Env diff done.** The `Heimdall__AppSecret` line is in `bifrost.env` (mode 600, owner `bifrost`) and Heimdall holds the
-   same value. Nothing from the diff in "Configuration that changed" is left unresolved.
-7. **Quiet.** No motion closing and no known vote in flight inside the window. Check the motions page.
+6. **Env diff done.** Every row of the Configuration table is marked present by the reader, `ConceptVotes__NetworkTagSecret`
+   included and at least 32 characters (a count, not the value), and the `Heimdall__AppSecret` line is in `bifrost.env`
+   (mode 600, owner `bifrost`) with Heimdall holding the same value. Nothing in "Configuration" is left unresolved.
+7. **Quiet.** No motion closing and no known vote in flight inside the window. Check the motions page. Members told that
+   everyone is signed out once (see "What moves").
+8. **Watchdog.** `bifrost-watchdog-notice.timer` fires every minute and its service DMs the owner Idunn's operator
+   incidents (`systemctl cat bifrost-watchdog-notice.service`). A deliberate restart or rollback that Idunn counts as an
+   incident can page the owner during the window; tell them first. Leave the timer running: it is not part of the
+   deploy and must not be stopped or edited.
 
 ## Steps, in order
 
 Record the time and the output line of each in the deploy record. Stop at the first failure and go to Rollback.
 
 1. Note the live state: `readlink -f /srv/bifrost/app/current` (expect `.../20261010043032-67072b2`),
-   `systemctl is-active bifrost.service`, the member count, the open motion count. This is the "before" the live check
-   compares to.
-2. Take and verify the backups (Preconditions 2 and 3).
-3. Add `Heimdall__AppSecret` (and any other new key) to `/srv/bifrost/env/bifrost.env`: `sudo -n install` the new file at
-   mode 600 owner `bifrost`; keep the old file as `bifrost.env.pre-<UTC>` beside it.
+   `systemctl is-active bifrost.service`, the member count, the open motion count, and the **log baseline**: the service
+   writes to files, not the journal (`StandardOutput=append:`), so `journalctl -u bifrost.service` shows only systemd's
+   own lines. Record `wc -l /srv/bifrost/log/bifrost.stdout.log /srv/bifrost/log/bifrost.stderr.log` (at 2026-11-09
+   11:55Z: 4838 and 44925 lines; stderr last written 2026-10-18, stdout 2026-11-06) so the live check counts only the
+   lines written after the restart. This is the "before" the live check compares to.
+2. Take and verify the backups (Preconditions 2 and 3), then run the rollback rehearsal (Precondition 4).
+3. Make the env complete: add `Heimdall__AppSecret` and, if the Configuration table found it absent or shorter than 32
+   characters, **`ConceptVotes__NetworkTagSecret`** (the target does not start without it) to
+   `/srv/bifrost/env/bifrost.env`: `sudo -n install` the new file at mode 600 owner `bifrost`; keep the old file as
+   `bifrost.env.pre-<UTC>` beside it. Re-run the name-only check after.
 4. Upload the tarball; compare its SHA-256 to the build's.
 5. `sudo -n bash /home/gamecultadmin/deploy-bifrost-alpha.sh <sha40>`. It unpacks into `<UTC>-<sha7>`, writes `REVISION`,
    repoints `current`, restarts. The restart applies both migrations.
-6. Watch the start: `journalctl -u bifrost.service -n 100 --no-pager` until the host reports listening on
-   `127.0.0.1:5080`; no `Failed executing DbCommand`, no `Heimdall ... refused` at start. A start that loops is a
-   failure: roll back, do not wait.
+6. Watch the start in the real logs: `tail -n +<baseline+1> /srv/bifrost/log/bifrost.stdout.log` and the same for
+   `bifrost.stderr.log`, until the host reports listening on `127.0.0.1:5080`; no `Failed executing DbCommand`, no
+   `Bifrost startup configuration is incomplete`, no `Heimdall ... refused` at start. `journalctl -u bifrost.service -n 50
+   --no-pager` shows only start, stop and restart events. A start that loops is a failure: roll back, do not wait.
 7. Live check (next section).
 8. Record the deploy in `gamecult-ops` `inventory.md` (Bifrost alpha live state): release directory, full sha, date.
 
@@ -89,19 +140,23 @@ Record the time and the output line of each in the deploy record. Stop at the fi
 Done from outside nginx, with a real browser session, within the window. A 200 on `/` is not a check.
 
 - `cat /srv/bifrost/app/current/REVISION` is the target sha; `systemctl is-active bifrost.service` is `active`.
+- **Cookies (#11).** After the first sign-in, the browser's cookie list shows the `__Host-bifrost_*` names, each Secure with
+  Path `/` and no Domain, and no old `bifrost_*` name is set again. The old sessions are gone by design.
 - **Login.** Sign in with GitHub; then with Discord (exercises `Heimdall__AppSecret`: the start must reach Heimdall and
   return to `/auth/heimdall/callback`). A Discord or Patreon sign-in that comes back refused or loops is the new-secret
-  failure; an existing session surviving the restart shows Data Protection kept its keys.
+  failure. Data Protection having kept its keys shows as no `key ... was not found` line (name not verified) in the stderr log
+  after the restart; the old sessions do not survive either way (see "What moves").
 - **Vote read.** The public concept-vote read endpoint answers with the existing tallies, and the tallies equal those
   noted in step 1 (the schema moved; the data must not).
 - **Persona picture.** Open a Persona's page and confirm its picture loads and comes from the host, not a stale cache. A broken
   image with a healthy `/` is the finding this check exists for.
 - Member console, work board, motions and members pages load (runbook section 7).
-- The error rate in `journalctl` over five minutes is flat against the lines noted before.
+- The error rate over five minutes: the number of lines added to `bifrost.stderr.log` and `bifrost.stdout.log` since the
+  baseline in step 1 is small and stops growing; read what was added, not just the count.
 
 ## Rollback
 
-Trigger: the start loops or migrates with errors, any live check fails, or the root window closes with a doubt open.
+Rollback signs members out again (the old release reads the old cookie names); say so if it happens. Trigger: the start loops or migrates with errors, any live check fails, or the root window closes with a doubt open.
 
 1. `sudo -n ln -sfn /srv/bifrost/app/releases/20261010043032-67072b2 /srv/bifrost/app/current && sudo -n chown -h
    bifrost:bifrost /srv/bifrost/app/current && sudo -n systemctl restart bifrost.service`.
@@ -114,5 +169,5 @@ Trigger: the start loops or migrates with errors, any live check fails, or the r
 
 ## What this plan does not do
 
-It does not deploy, does not add an Idunn recipe, and does not decide whether Bifrost #11 merges first (it should). The
+It does not deploy, does not add an Idunn recipe, and does not touch `bifrost-watchdog-notice.timer`. The
 Idunn recipe is the owner of making this repeatable; until then each deploy follows this page and the runbook.
