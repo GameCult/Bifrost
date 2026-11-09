@@ -470,8 +470,9 @@ public static class HeimdallAttemptCookie
     };
 
     /// <summary>
-    /// The options a deletion carries: only the attempt cookie's Path, which a cookie is matched on. It carries no
-    /// Max-Age, which would take precedence over the expiry Delete writes and leave the emptied cookie alive.
+    /// The options a deletion carries: the attempt cookie's Path, which a cookie is matched on, and Secure, without
+    /// which a browser ignores a Set-Cookie for a __Host- name. It carries no Max-Age, which would take precedence
+    /// over the expiry Delete writes and leave the emptied cookie alive.
     /// </summary>
-    public static CookieOptions DeleteOptions() => new() { Path = BifrostCookies.Path };
+    public static CookieOptions DeleteOptions() => new() { Path = BifrostCookies.Path, Secure = true };
 }

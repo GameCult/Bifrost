@@ -84,11 +84,10 @@ public sealed class CookieHardeningTests(CookieHardeningTests.OAuthConfiguredFac
             Assert.DoesNotContain(attributes, x => x.StartsWith("domain", StringComparison.Ordinal));
         }
 
+        // A browser ignores a __Host- Set-Cookie that lacks Secure, a deletion included.
+        Assert.All(headers, header => Assert.Contains("secure", header!.Split(';').Select(x => x.Trim().ToLowerInvariant())));
         Assert.All(headers.Take(2), header =>
-        {
-            Assert.Contains("secure", header!.Split(';').Select(x => x.Trim().ToLowerInvariant()));
-            Assert.Contains("httponly", header!.Split(';').Select(x => x.Trim().ToLowerInvariant()));
-        });
+            Assert.Contains("httponly", header!.Split(';').Select(x => x.Trim().ToLowerInvariant())));
     }
 
     private static void AssertHostOnly(string? name, CookieSecurePolicy secure, string? path, string? domain)

@@ -49,6 +49,29 @@ public sealed class HeimdallCompletionTests
     private static void AssertTokenRefused(HeimdallHost host, string rule) =>
         AssertLogged(host, $"Heimdall token refused: {rule}.");
 
+    /// <summary>A __Host- cookie is only deleted by a Set-Cookie that is itself Secure at Path=/; a browser ignores any other.</summary>
+    private static void AssertAttemptCookieCleared(string? header)
+    {
+        Assert.NotNull(header);
+        var attributes = header!.Split(';').Select(x => x.Trim().ToLowerInvariant()).ToArray();
+        Assert.Contains(attributes, x => x.StartsWith("expires=", StringComparison.Ordinal) && x.Contains("1970"));
+        Assert.Contains("secure", attributes);
+        Assert.Contains("path=/", attributes);
+        Assert.DoesNotContain(attributes, x => x.StartsWith("domain", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task A_refused_completion_clears_the_attempt_cookie_with_a_set_cookie_the_browser_honours()
+    {
+        using var host = new HeimdallHost();
+        var attempt = await host.StartAsync();
+
+        var refused = await host.CompleteAsync(attempt.Nonce, "unknown", attempt.Cookie);
+
+        AssertRefusedRedirect(refused);
+        AssertAttemptCookieCleared(HeimdallHost.SetCookieHeader(refused.Response, attempt.CookieName!));
+    }
+
     private static void AssertRefusedRedirect(CompletionResult result)
     {
         Assert.Equal(HttpStatusCode.Redirect, result.Response.StatusCode);
@@ -81,8 +104,7 @@ public sealed class HeimdallCompletionTests
         Assert.Equal(MembershipStatus.Authenticated, account.Membership!.Status);
         Assert.Empty(account.Membership.RoleAssignments);
         var cleared = HeimdallHost.SetCookieHeader(done.Response, attempt.CookieName!);
-        Assert.NotNull(cleared);
-        Assert.Contains("1970", cleared);
+        AssertAttemptCookieCleared(cleared);
 
         var again = await host.CompleteAsync(attempt, code);
 
