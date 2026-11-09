@@ -692,11 +692,68 @@ public sealed class Motion
 
     public string ResolutionNote { get; set; } = string.Empty;
 
+    public MotionKind Kind { get; set; } = MotionKind.Standard;
+
+    // Sealed-ballot motions only: commitments are accepted until this instant, reveals from then until ClosesAtUtc.
+    public DateTimeOffset? CommitClosesAtUtc { get; set; }
+
+    // Sealed-ballot motions only: candidate names, one per line.
+    public string Candidates { get; set; } = string.Empty;
+
+    // Sealed-ballot motions only: Delphi round number and the motion whose result this round answers.
+    public int Round { get; set; } = 1;
+
+    public Guid? PriorMotionId { get; set; }
+
+    // Sealed-ballot motions only: bumped by every accepted reveal. A concurrency token, so a reveal and the close cannot both
+    // succeed on the same row version: the close freezes exactly the reveals it counted.
+    public int RevealSeq { get; set; }
+
+    // Sealed-ballot motions only: SHA-256 over the sorted commitments, written once at finalization.
+    public string ResultDigest { get; set; } = string.Empty;
+
     public Project? Project { get; set; }
 
     public UserAccount CreatedByUserAccount { get; set; } = null!;
 
     public ICollection<Vote> Votes { get; set; } = [];
+
+    public ICollection<SealedBallot> SealedBallots { get; set; } = [];
+}
+
+public enum MotionKind
+{
+    Standard,
+    SealedBallot
+}
+
+public sealed class SealedBallot
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+
+    public Guid MotionId { get; set; }
+
+    public Guid UserAccountId { get; set; }
+
+    // Hex SHA-256 of the canonical ballot document; the only ballot-derived value stored before the reveal step.
+    public string Commitment { get; set; } = string.Empty;
+
+    public int Revision { get; set; } = 1;
+
+    public DateTimeOffset CommittedAtUtc { get; set; }
+
+    // Reveal step. Held unread by every code path until the motion is Closed.
+    public string? RevealedCandidate { get; set; }
+
+    public string? RevealedReason { get; set; }
+
+    public string? Salt { get; set; }
+
+    public DateTimeOffset? RevealedAtUtc { get; set; }
+
+    public Motion Motion { get; set; } = null!;
+
+    public UserAccount UserAccount { get; set; } = null!;
 }
 
 public sealed class Vote

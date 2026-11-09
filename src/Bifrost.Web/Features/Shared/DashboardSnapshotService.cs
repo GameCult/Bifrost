@@ -29,6 +29,7 @@ public sealed class DashboardSnapshotService(BifrostDbContext dbContext, TimePro
         var openMotions = await dbContext.Motions
             .AsNoTracking()
             .Include(x => x.Votes)
+            .Where(x => x.Kind == MotionKind.Standard)
             .OrderBy(x => x.ClosesAtUtc)
             .Take(5)
             .Select(x => new DashboardMotion(
