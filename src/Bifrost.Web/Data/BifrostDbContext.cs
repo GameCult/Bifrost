@@ -278,6 +278,7 @@ public sealed class BifrostDbContext(DbContextOptions<BifrostDbContext> options)
             entity.Property(x => x.Status).HasConversion<string>();
             entity.Property(x => x.ApprovalThreshold).HasPrecision(6, 3);
             entity.Property(x => x.Kind).HasConversion<string>();
+            entity.Property(x => x.Status).IsConcurrencyToken();
             entity.HasOne(x => x.Project)
                 .WithMany(x => x.Motions)
                 .HasForeignKey(x => x.ProjectId)

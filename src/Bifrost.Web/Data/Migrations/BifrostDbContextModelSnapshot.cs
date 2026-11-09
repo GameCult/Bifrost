@@ -941,6 +941,7 @@ namespace Bifrost.Web.Data.Migrations
                         .HasColumnType("text");
 
                     b.Property<string>("Status")
+                        .IsConcurrencyToken()
                         .IsRequired()
                         .HasColumnType("text");
 

@@ -122,6 +122,7 @@ builder.Services.AddScoped<BifrostIdentityService>();
 builder.Services.AddScoped<GitHubWebhookService>();
 builder.Services.AddScoped<MotionGovernanceService>();
 builder.Services.AddScoped<SealedBallotService>();
+builder.Services.AddHostedService<SealedBallotCloser>();
 builder.Services.AddScoped<MotionEveSurfaceService>();
 builder.Services.AddScoped<PatronageService>();
 builder.Services.AddScoped<StripeWebhookService>();
@@ -547,16 +548,17 @@ eveGovernance.MapGet("/surface", async (
 var sealedMotions = app.MapGroup("/api/sealed-motions")
     .RequireAuthorization(ActiveMemberRequirement.PolicyName);
 
-static async Task<IResult> SealedCall(Func<Task<object>> call)
+async Task<IResult> SealedCall(Func<Task<object>> call)
 {
     try
     {
-        return Results.Ok(await call());
+        return Results.Text(JsonSerializer.Serialize(await call(), appJsonSerializerOptions), "application/json");
     }
     catch (SealedBallotException error)
     {
-        return Results.Json(
-            new { error = error.Message },
+        return Results.Text(
+            JsonSerializer.Serialize(new { error = error.Message }, appJsonSerializerOptions),
+            "application/json",
             statusCode: error.Failure switch
             {
                 SealedBallotFailure.Forbidden => StatusCodes.Status403Forbidden,

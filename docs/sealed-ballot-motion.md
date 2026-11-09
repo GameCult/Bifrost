@@ -12,8 +12,8 @@ publication at close, no mediator. Code: `Features/Motions/SealedBallotService.c
 3. **Reveal** from the commit deadline until the reveal deadline: the voter posts the ballot document. Bifrost recomputes the
    hash and stores the content only if it matches the commitment. Revealed content is not readable through any endpoint,
    page, audit event or export until close.
-4. **Close** at the reveal deadline, mechanically: the first read of `/result` after the deadline writes status `Closed` and a
-   digest of all commitments, then returns every revealed ballot (voter, candidate, one-sentence reason, salt, commitment) at
+4. **Close** at the reveal deadline, mechanically: the first read of `/result` after the deadline, or the once-a-minute
+   `SealedBallotCloser` sweep if nobody reads, writes status `Closed` and a digest of all commitments, then returns every revealed ballot (voter, candidate, one-sentence reason, salt, commitment) at
    once. Anyone can recompute each commitment from the published fields. Nobody can close early, extend, edit or break a tie.
 
 Canonical document (`gamecult.sealed_ballot.v0`): `{schema, motionId, round, candidate, reason, salt}`. Commitment =
@@ -48,8 +48,13 @@ holding that Mind's plaintext from cast, which is the gap commit-reveal removes.
 - **Commit window:** nobody. The store holds hashes; the ballot exists only with its voter. Participation (who has committed,
   not what) is visible in the audit trail and to the voter's own receipt.
 - **Reveal window:** the **host and anyone with database access can read revealed ballots** that voters have already submitted.
-  Application code does not expose them (enforced by tests below), but a database reader sees columns `RevealedCandidate`,
-  `RevealedReason`, `Salt`. This is a gap and it is named: it is short, commitments are frozen so no one can change a ballot
+  Application code does not expose them (enforced by tests), but a database reader sees columns `RevealedCandidate`,
+  `RevealedReason`, `Salt`. **Backups are another reader:** any `pg_dump` taken in the reveal window contains the reveals
+  already submitted. What this repo says about backups: `docs/deploy-main-to-live.md` (Precondition 2) takes a `pg_dump -Fc`
+  inside a deploy window as in the gamecult-ops runbook section 8, and `docs/full-implementation-strategy.md` lists a
+  backup/restore runbook as planned. This repo does not state a nightly schedule, where dumps are stored or who can read
+  them; if a nightly dump exists it is defined in gamecult-ops, which I have not read, so I do not claim it or its reach.
+  Dumps taken in the commit window hold hashes only. This is a gap and it is named: it is short, commitments are frozen so no one can change a ballot
   after seeing another, and the commitments published during the commit window let anyone detect an altered reveal. It is not
   closed. Closing it fully would need reveals encrypted to a threshold or time-lock key, which this change does not build.
 - A Mind that reveals late in the window exposes its ballot to the host for less time. A voter who never reveals exposes
@@ -61,3 +66,30 @@ holding that Mind's plaintext from cast, which is the gap commit-reveal removes.
 
 Ballots go to Bifrost as typed documents over the endpoints above, never as room text (chat history is readable by the host
 and admins before close). A pinned motion announces only the `announcement` line: phase and times.
+
+## Close is race-safe
+
+`Motion.Status` is an EF concurrency token. Racing closers each compute the same result (it is a pure function of frozen
+data) but only one `SaveChanges` succeeds; the loser reloads the winner's row and writes no second `sealed.closed` audit
+event. Tests: a stale-copy conflict and four concurrent first reads each yield exactly one close; with the token removed the
+conflict test fails. In Postgres the token becomes `WHERE "Status" = <old>` on the update. Not exercised against Postgres.
+
+## Can a Mind hold the member session these endpoints need?
+
+Only through the existing member cookie, and awkwardly. Read from the code:
+
+- Bifrost authenticates with one cookie scheme plus GitHub OAuth (`Program.cs:176`). There is no bearer or API-key scheme;
+  the endpoints use the same `ActiveMember` policy as the console (`Program.cs:236`, `ActiveMemberAuthorizationHandler.cs:22`),
+  which maps claims to an account by Bifrost identity, Heimdall account id or GitHub id (`CurrentBifrostActorAccessor.cs:33-38`).
+- A non-browser client can obtain a cookie: `POST /auth/bifrost/register` is anonymous and signs a cookie in
+  (`Program.cs:358`), creating an account in status `Authenticated` (`BifrostIdentityService.cs:49`), not `Active`. It becomes
+  able to vote only after membership approval.
+- The same route cannot sign an existing identity back in (`BifrostIdentityService.cs:26` refuses a registered identity), so a
+  Mind that loses its cookie jar cannot re-authenticate natively. The other sign-in routes (`/auth/sign-in`,
+  `/auth/heimdall/{provider}`, `Program.cs:390`) are browser redirect flows.
+- The bridge token (`BridgeOptions.cs:7`) is read by no server code path (the only matches in `src` are its own definition),
+  so it opens nothing. `tools/*.mjs` bearer headers go to Reddit, Matrix and image hosts, not to Bifrost.
+
+Answer: not cleanly. A Mind can hold a session if a human registers and approves it and the Mind keeps one cookie jar alive;
+Bifrost has no durable non-browser credential for a Mind. I invented no auth path. Whether to give Minds one (a Persona-signed
+or token intake like `tools/bifrost-signed-identity.mjs`) is a ruling for the stewards, not this PR.

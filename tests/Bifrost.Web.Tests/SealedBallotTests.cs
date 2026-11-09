@@ -213,4 +213,59 @@ public sealed class SealedBallotTests
         Assert.Empty(rig.Db.Votes);
         await Assert.ThrowsAsync<InvalidOperationException>(() => standard.CloseMotionAsync(rig.Moderator, motion.Id, default));
     }
+
+    [Fact]
+    public async Task Racing_closers_close_once_and_the_loser_adopts_the_winners_result()
+    {
+        var clock = new Clock(T0);
+        var name = $"sealed-race-{Guid.NewGuid():N}";
+        BifrostDbContext NewDb() => new(new DbContextOptionsBuilder<BifrostDbContext>().UseInMemoryDatabase(name).Options);
+        SealedBallotService NewService(BifrostDbContext db) => new(db, new AuditTrailService(db, clock), clock);
+
+        await using var seed = NewDb();
+        var user = new UserAccount { DisplayName = "Ana", GitHubLogin = "ana", BifrostIdentity = "ana", NormalizedBifrostIdentity = "ANA", NormalizedGitHubLogin = "ANA" };
+        user.Membership = new Membership { UserAccountId = user.Id, Status = MembershipStatus.Active, CanModerateMotions = true };
+        seed.UserAccounts.Add(user);
+        await seed.SaveChangesAsync();
+        var actor = new CurrentBifrostActor(true, user);
+        var motion = await NewService(seed).OpenAsync(actor,
+            new OpenSealedMotionCommand("t", "s", ["Ana", "Bo"], T0.AddHours(1), T0.AddHours(2)), default);
+        clock.Now = T0.AddHours(3);
+
+        await using var first = NewDb();
+        await using var second = NewDb();
+        _ = await second.Motions.ToListAsync(); // second now holds a stale, still-Open copy
+
+        var winner = await NewService(first).GetResultAsync(actor, motion.Id, default);
+        var loser = await NewService(second).GetResultAsync(actor, motion.Id, default); // would finalize again; the token refuses it
+
+        Assert.Equal(winner.CommitmentDigest, loser.CommitmentDigest);
+        await using var check = NewDb();
+        Assert.Equal(1, await check.AuditEvents.CountAsync(x => x.Action == "sealed.closed"));
+
+        // Genuinely concurrent first reads on fresh contexts also close exactly once.
+        var other = await NewService(check).OpenAsync(actor,
+            new OpenSealedMotionCommand("t2", "s", ["Ana", "Bo"], T0.AddHours(4), T0.AddHours(5)), default);
+        clock.Now = T0.AddHours(6);
+        await Task.WhenAll(Enumerable.Range(0, 4).Select(async _ =>
+        {
+            await using var db = NewDb();
+            await NewService(db).GetResultAsync(actor, other.Id, default);
+        }));
+        await using var after = NewDb();
+        Assert.Equal(1, await after.AuditEvents.CountAsync(x => x.Action == "sealed.closed" && x.EntityId == other.Id.ToString()));
+    }
+
+    [Fact]
+    public async Task The_sweep_closes_a_due_motion_nobody_read()
+    {
+        var rig = new Rig();
+        var motion = await rig.OpenAsync("Ana", "Bo");
+        Assert.Equal(0, await rig.Service.FinalizeDueAsync(default));
+        rig.Clock.Now = T0.AddHours(3);
+        Assert.Equal(1, await rig.Service.FinalizeDueAsync(default));
+        Assert.Equal(MotionStatus.Closed, (await rig.Db.Motions.SingleAsync(x => x.Id == motion.Id)).Status);
+        Assert.Equal(0, await rig.Service.FinalizeDueAsync(default));
+        Assert.Equal(1, await rig.Db.AuditEvents.CountAsync(x => x.Action == "sealed.closed"));
+    }
 }

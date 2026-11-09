@@ -5,6 +5,9 @@ using Bifrost.Web.Data;
 using Bifrost.Web.Domain;
 using Bifrost.Web.Features.Shared;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 
 namespace Bifrost.Web.Features.Motions;
 
@@ -244,6 +247,10 @@ public sealed class SealedBallotService(
         : now >= motion.CommitClosesAtUtc ? SealedPhase.Reveal
         : SealedPhase.Commit;
 
+    /// <summary>
+    /// Closes the motion once. Motion.Status is a concurrency token, so of two racing closers exactly one SaveChanges wins;
+    /// the loser reloads the winner's result and writes nothing (no second audit event).
+    /// </summary>
     private async Task FinalizeAsync(Motion motion, List<SealedBallot> ballots, DateTimeOffset now, CancellationToken cancellationToken)
     {
         var lines = ballots.OrderBy(x => x.UserAccountId)
@@ -252,11 +259,40 @@ public sealed class SealedBallotService(
         motion.Status = MotionStatus.Closed;
         motion.ResolvedAtUtc = now;
         motion.ResolutionNote = $"Sealed ballots published: {ballots.Count(x => x.RevealedAtUtc != null)} revealed, {ballots.Count(x => x.RevealedAtUtc == null)} committed but unrevealed.";
-        await dbContext.SaveChangesAsync(cancellationToken);
+        try
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException error)
+        {
+            foreach (var entry in error.Entries)
+            {
+                await entry.ReloadAsync(cancellationToken);
+            }
+
+            return;
+        }
+
         await auditTrailService.RecordAsync(
             null, nameof(Motion), motion.Id, "sealed.closed",
             $"Closed sealed-ballot motion {motion.Title}; commitment digest {motion.ResultDigest}.",
             cancellationToken);
+    }
+
+    /// <summary>Closes every sealed-ballot motion whose deadline has passed, so a motion nobody reads still closes.</summary>
+    public async Task<int> FinalizeDueAsync(CancellationToken cancellationToken)
+    {
+        var now = timeProvider.GetUtcNow();
+        var due = await dbContext.Motions
+            .Where(x => x.Kind == MotionKind.SealedBallot && x.Status == MotionStatus.Open && x.ClosesAtUtc <= now)
+            .ToListAsync(cancellationToken);
+        foreach (var motion in due)
+        {
+            var ballots = await dbContext.SealedBallots.Where(x => x.MotionId == motion.Id).ToListAsync(cancellationToken);
+            await FinalizeAsync(motion, ballots, now, cancellationToken);
+        }
+
+        return due.Count;
     }
 
     private SealedMotionState BuildState(Motion motion, DateTimeOffset now, SealedBallotReceipt? own, Guid voterId)
@@ -337,3 +373,25 @@ public sealed record SealedMotionResult(
     IReadOnlyList<RevealedBallot> Ballots, IReadOnlyList<AbstainedMember> Unrevealed, IReadOnlyList<AbstainedMember> NonVoters,
     string CommitmentDigest);
 public sealed record SealedCommitRequest(string Commitment);
+
+/// <summary>Sweeps due sealed-ballot motions once a minute. Reads also close on demand; this covers a motion nobody reads.</summary>
+public sealed class SealedBallotCloser(IServiceScopeFactory scopes, ILogger<SealedBallotCloser> logger) : BackgroundService
+{
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromMinutes(1));
+        do
+        {
+            try
+            {
+                using var scope = scopes.CreateScope();
+                await scope.ServiceProvider.GetRequiredService<SealedBallotService>().FinalizeDueAsync(stoppingToken);
+            }
+            catch (Exception error) when (error is not OperationCanceledException)
+            {
+                logger.LogWarning(error, "Sealed-ballot close sweep failed; retrying next tick.");
+            }
+        }
+        while (await timer.WaitForNextTickAsync(stoppingToken));
+    }
+}
