@@ -182,8 +182,19 @@ public sealed class MindIntakeService(
             throw new SealedBallotException(SealedBallotFailure.WrongPhase, "That nonce was already used.");
         }
 
-        var cutoff = now - 2 * Skew;
-        dbContext.MindNonces.RemoveRange(await dbContext.MindNonces.Where(x => x.SeenAtUtc < cutoff).ToListAsync(cancellationToken));
+        // Pruning is housekeeping and runs apart from the write that spends the nonce: two requests can load and delete the same
+        // expired rows, and the loser's concurrency exception must never fail a valid request.
+        try
+        {
+            var cutoff = now - 2 * Skew;
+            dbContext.MindNonces.RemoveRange(await dbContext.MindNonces.Where(x => x.SeenAtUtc < cutoff).ToListAsync(cancellationToken));
+            await dbContext.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateException)
+        {
+            dbContext.ChangeTracker.Clear();
+        }
+
         dbContext.MindNonces.Add(new MindNonce { PersonaId = persona, Nonce = envelope.Nonce!, SeenAtUtc = now });
         try
         {

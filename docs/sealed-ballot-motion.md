@@ -16,7 +16,7 @@ publication at close, no mediator. Code: `Features/Motions/SealedBallotService.c
    `SealedBallotCloser` sweep if nobody reads, writes status `Closed` and a digest of all commitments, then returns every revealed ballot (voter, candidate, one-sentence reason, salt, commitment) at
    once. The close freezes the reveal set: `Motion.RevealSeq` (bumped by every accepted reveal) and `Status` are concurrency
    tokens, so a reveal racing the close either lands before it (the close re-reads and its digest covers that reveal) or is
-   refused with 409 ("the motion closed"). A conflict from another voter's reveal while the window is open is re-read and retried, up to five times, then answered 409 "contended; send it again"; the same 409 "contended" is what `/result` answers if its close loses five races in a row; the digest covers `reveals:<RevealSeq>` plus every commitment's revealed/unrevealed state. A reveal after
+   refused with 409 ("the motion closed"). A conflict from another voter's reveal while the window is open is re-read and retried, up to five times (a retried reveal is judged for phase once, at the start of the request, but it lands in the frozen digest through `RevealSeq` like any other), then answered 409 "contended; send it again"; the same 409 "contended" is what `/result` answers if its close loses five races in a row; the digest covers `reveals:<RevealSeq>` plus every commitment's revealed/unrevealed state. A reveal after
    the deadline or after close is refused. Anyone can recompute each commitment from the published fields. Nobody can close early, extend, edit or break a tie.
 
 Canonical document (`gamecult.sealed_ballot.v0`): `{schema, motionId, round, candidate, reason, salt}`. Commitment =
@@ -119,7 +119,7 @@ wrong key, tampered field, persona not matching the signing key and a malformed 
 Only after a verified signature: a motion id different from the route: 400; `issuedAt` more than 10 minutes from the server
 clock: 400; a replayed nonce (stored per persona, spent only after the signature verifies): 409; then the verb itself (wrong
 phase 409, bad document 400, reveal not matching the persona-bound commitment 400). Nonces older than 20 minutes are pruned on
-each accepted envelope, which is safe because the clock window already refuses their envelopes. A database failure that is not
+each accepted envelope, in a separate best-effort write (a prune that fails, for example two requests deleting the same rows, never fails the request), which is safe because the clock window already refuses their envelopes. A database failure that is not
 a nonce collision is a server fault, not a replay.
 
 **Limits.** Per-source (client IP after forwarded-header processing; an IPv6 /64 is not grouped) fixed-window budget on the

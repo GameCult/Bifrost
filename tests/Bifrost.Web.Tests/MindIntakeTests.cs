@@ -373,4 +373,41 @@ public sealed class MindIntakeTests(TestWebApplicationFactory factory) : IClassF
 
         await Assert.ThrowsAsync<DbUpdateException>(() => service.HandleAsync(motion, Sign(key, "mindx", "commit", motion, commitment: new string('a', 64)), default));
     }
+
+    private sealed class FailOnNonceDelete : SaveChangesInterceptor
+    {
+        public override ValueTask<InterceptionResult<int>> SavingChangesAsync(DbContextEventData e, InterceptionResult<int> r, CancellationToken ct = default) =>
+            e.Context!.ChangeTracker.Entries<MindNonce>().Any(x => x.State == EntityState.Deleted)
+                ? throw new DbUpdateConcurrencyException("the other request deleted these rows first")
+                : ValueTask.FromResult(r);
+    }
+
+    [Fact]
+    public async Task A_prune_that_loses_a_race_never_fails_a_valid_request()
+    {
+        var clock = TimeProvider.System;
+        await using var db = new BifrostDbContext(new DbContextOptionsBuilder<BifrostDbContext>()
+            .UseInMemoryDatabase($"intake-prune-{Guid.NewGuid():N}").AddInterceptors(new FailOnNonceDelete()).Options);
+        var key = Key.New();
+        var user = new UserAccount { DisplayName = "m", GitHubLogin = "m", BifrostIdentity = "m", NormalizedBifrostIdentity = "M", NormalizedGitHubLogin = "M" };
+        user.Membership = new Domain.Membership { UserAccountId = user.Id, Status = MembershipStatus.Active };
+        var now = DateTimeOffset.UtcNow;
+        var motion = new Motion
+        {
+            CreatedByUserAccountId = user.Id, Scope = MotionScope.Management, Kind = MotionKind.SealedBallot, Title = "t", Summary = "s", Candidates = "Ana\nBo",
+            OpensAtUtc = now, CommitClosesAtUtc = now.AddHours(1), ClosesAtUtc = now.AddHours(2), CreatedAtUtc = now
+        };
+        db.UserAccounts.Add(user);
+        db.Motions.Add(motion);
+        db.MindKeys.Add(new MindKey { PersonaId = "mindx", UserAccountId = user.Id, PublicKey = key.Public, RegisteredAtUtc = now });
+        db.MindNonces.Add(new MindNonce { PersonaId = "mindx", Nonce = "expired-nonce-expired-1", SeenAtUtc = now.AddHours(-2) });
+        await db.SaveChangesAsync();
+        var audit = new AuditTrailService(db, clock);
+        var service = new MindIntakeService(db, new SealedBallotService(db, audit, clock), audit, clock);
+
+        var receipt = await service.HandleAsync(motion.Id, Sign(key, "mindx", "commit", motion.Id, commitment: new string('a', 64)), default);
+
+        Assert.Equal(new string('a', 64), receipt.Commitment);
+        Assert.Equal(1, await db.MindNonces.CountAsync(x => x.Nonce != "expired-nonce-expired-1")); // the nonce was still spent
+    }
 }
