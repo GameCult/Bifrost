@@ -60,8 +60,9 @@ New since the live release, and not read by the validator:
   complete and the key files must exist, or startup stops. Unless the window includes standing up chat sign-in, leave it
   unset. Keys and files: `docs/oidc-issuer.md`.
 - `DataProtection:KeysPath` keeps its intent. Data Protection has a fixed application name (`Bifrost`, `Program.cs`), so a
-  new release directory does not log members out; #11's cookie rename does (above). Confirm the live env still points the
-  keys path at the directory below, and that the new release can read it.
+  new release directory does not log members out; #11's cookie rename does (above). The live env points the keys path at
+  `/srv/bifrost/.aspnet/DataProtection-Keys` (read 2026-11-09); confirm that again in the window, and that the new release
+  reads it.
 - `Bootstrap__ApplyMigrationsOnStartup=true` stays on, so **the first start applies both migrations**. That is the
   irreversible-looking step; the backup below is for it.
 
@@ -77,26 +78,35 @@ All must hold before step 1. A missing one means the window is not used.
    superuser: `sudo -n -u postgres createdb -O bifrost bifrost_rehearsal`, then
    `sudo -n -u postgres pg_restore --no-owner --role=bifrost -d bifrost_rehearsal <dump>`, and at the end
    `sudo -n -u postgres dropdb bifrost_rehearsal`. An unrestored dump is not a backup.
-3. **Env, secrets and key-ring backup.** The runbook's `bifrost-env-*.tar`, plus **`/srv/bifrost/data-protection-keys`**,
-   which lives outside `/srv/bifrost/env` and is not in that tar (one key file at writing, mode 600, owner `bifrost`).
-   Losing it signs everyone out and breaks every protected cookie and token; `cp -a` it beside the env backup and
-   record its file list.
+3. **Env, secrets and key-ring backup.** The runbook's `bifrost-env-*.tar`, plus the live ring
+   **`/srv/bifrost/.aspnet/DataProtection-Keys`** (read from the host 2026-11-09: `DataProtection__KeysPath` in
+   `bifrost.env` names it; three key files at that reading, modes 600, owner `bifrost`, dated 2026-04-22, 2026-07-22 and
+   2026-10-20). It lives outside `/srv/bifrost/env` and is not in that tar. `/srv/bifrost/data-protection-keys` holds one
+   older key (2026-07-15) that no setting points at: it is not the ring, and is left alone. Losing the ring signs
+   everyone out and breaks every protected cookie and token; `cp -a` it beside the env backup and record its file list.
 4. **Rollback rehearsal.** Before the real deploy, on the same host. There is no `dotnet ef` on the host and this plan
    does not use it: the target applies its own migrations at start. Rehearse by starting the target once, then the
    previous release, on the scratch database, from a separate env file that touches nothing live:
-   - a copy of `bifrost.env` at `/root/bifrost-rehearsal.env`, mode 600, with `ConnectionStrings__Bifrost` pointing at
-     `bifrost_rehearsal`, `DataProtection__KeysPath` at a throwaway empty directory (not the live key ring, which the
-     rehearsal must not write), and `ASPNETCORE_URLS` set to a port that is not 5080 (e.g. `http://127.0.0.1:5081`).
-     Delete the file and the directory afterwards.
-   - start the target release from that file as `bifrost`: `sudo -n -u bifrost bash -c 'set -a; . /root/bifrost-rehearsal.env;
-     exec dotnet <target-release>/Bifrost.Web.dll'`. The scratch database now has both migrations. Check it listens and
-     `/` answers 200, then stop it.
+   - a copy of `bifrost.env` at `/srv/bifrost/rehearsal/bifrost-rehearsal.env` (directory and file owned by `bifrost`,
+     modes 700 and 600; nothing under `/root`, which `bifrost` cannot read), with `ConnectionStrings__Bifrost` pointing at
+     `bifrost_rehearsal`, `DataProtection__KeysPath` at a throwaway empty directory in the same place (not the live key
+     ring, which the rehearsal must not write), and `ASPNETCORE_URLS` set to a port that is not 5080 (e.g.
+     `http://127.0.0.1:5081`). Delete the file and the directories afterwards.
+   - Strip from that copy every key that could act on or sign in to something real, and every key the scratch run does
+     not need: all `Bifrost__Oidc__*`, `Bridge__LocalBridgeToken`, `Bootstrap__AdminGitHubLogins__*`, the GitHub App,
+     Stripe and Heimdall intake and app-secret keys. The rehearsal checks that the process starts and migrates; **there is
+     no sign-in on 5081**, because the GitHub OAuth app and Heimdall redirect to the public host.
+   - start the target release from that file as `bifrost`, with the file loaded by systemd, not by a shell:
+     `sudo -n systemd-run --wait --pty -p User=bifrost -p EnvironmentFile=/srv/bifrost/rehearsal/bifrost-rehearsal.env
+     -p WorkingDirectory=<target-release> /usr/bin/dotnet <target-release>/Bifrost.Web.dll` (detached with `--unit
+     bifrost-rehearsal` and no `--wait`/`--pty` if the check runs from another shell; stop it with
+     `systemctl stop bifrost-rehearsal`). The scratch database now has both migrations. Check it listens and that
+     `curl -s -o /dev/null -w '%{http_code}' -H 'Host: <Host:ExpectedHost of the live env>' http://127.0.0.1:5081/readyz`
+     answers 200 (the app validates the host, so a bare request to `127.0.0.1` is refused), then stop it.
    - start the **previous** release (`/srv/bifrost/app/releases/20261010043032-67072b2`) the same way on another spare
-     port (e.g. 5082) against the same, now migrated, scratch database; `/` must answer 200. This is the claim that the
+     port (e.g. 5082) against the same, now migrated, scratch database, with the same `Host:` header; `/readyz` must answer
+     200. This is the claim that the
      rollback is a symlink move; it is checked, not assumed.
-   - Unverified here: whether a rehearsal start with the live integration keys (GitHub App webhook sync, Stripe, Heimdall
-     intake) in the copied file can act on the live services. Strip or switch off those keys in the rehearsal file before
-     starting.
 5. **Artifact.** Published per runbook section 3: `git merge-base --is-ancestor <sha> origin/main` exits 0, publish from a
    detached worktree, tar, upload. Record the tarball's SHA-256 on both ends. Build and test on Yggdrasil's verify path,
    not a workstation.
@@ -105,8 +115,9 @@ All must hold before step 1. A missing one means the window is not used.
    (mode 600, owner `bifrost`) with Heimdall holding the same value. Nothing in "Configuration" is left unresolved.
 7. **Quiet.** No motion closing and no known vote in flight inside the window. Check the motions page. Members told that
    everyone is signed out once (see "What moves").
-8. **Watchdog.** `bifrost-watchdog-notice.timer` fires every minute and its service DMs the owner Idunn's operator
-   incidents (`systemctl cat bifrost-watchdog-notice.service`). A deliberate restart or rollback that Idunn counts as an
+8. **Watchdog.** `bifrost-watchdog-notice.timer` fires one minute after boot and one minute after each run
+   (`OnBootSec=1min`, `OnUnitActiveSec=1min`; read 2026-11-09), and the oneshot `bifrost-watchdog-notice.service`, run as
+   `bifrost-notice`, DMs the owner Idunn's operator incidents (`systemctl cat bifrost-watchdog-notice.service`). A deliberate restart or rollback that Idunn counts as an
    incident can page the owner during the window; tell them first. Leave the timer running: it is not part of the
    deploy and must not be stopped or edited.
 
@@ -149,7 +160,9 @@ Done from outside nginx, with a real browser session, within the window. A 200 o
 - **Vote read.** The public concept-vote read endpoint answers with the existing tallies, and the tallies equal those
   noted in step 1 (the schema moved; the data must not).
 - **Persona picture.** Open a Persona's page and confirm its picture loads and comes from the host, not a stale cache. A broken
-  image with a healthy `/` is the finding this check exists for.
+  image with a healthy `/` is the finding this check exists for. **Unknown: which app serves that picture.** Nothing in
+  `src/Bifrost.Web` serves a Persona image (a grep of the project at this revision finds none); name the serving app and
+  the page before the window, or drop the check.
 - Member console, work board, motions and members pages load (runbook section 7).
 - The error rate over five minutes: the number of lines added to `bifrost.stderr.log` and `bifrost.stdout.log` since the
   baseline in step 1 is small and stops growing; read what was added, not just the count.
