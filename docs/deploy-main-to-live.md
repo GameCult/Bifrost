@@ -164,9 +164,9 @@ Done from outside nginx, with a real browser session, within the window. A 200 o
 - **Vote read.** The public concept-vote read endpoint answers with the existing tallies, and the tallies equal those
   noted in step 1 (the schema moved; the data must not).
 - **Persona picture.** Open a Persona's page and confirm its picture loads and comes from the host, not a stale cache. A broken
-  image with a healthy `/` is the finding this check exists for. **Unknown: which app serves that picture.** Nothing in
-  `src/Bifrost.Web` serves a Persona image (a grep of the project at this revision finds none); name the serving app and
-  the page before the window, or drop the check.
+  image with a healthy `/` is the finding this check exists for. **Unknown: which app serves that picture.** `AvatarUrl` appears at
+  `src/Bifrost.Web/Domain/BifrostModels.cs:261` and `src/Bifrost.Web/Program.cs:192`, so the picture is probably an
+  external avatar URL; unverified. Name the serving app and the page before the window, or drop the check.
 - Member console, work board, motions and members pages load (runbook section 7).
 - The error rate over five minutes: the number of lines added to `bifrost.stderr.log` and `bifrost.stdout.log` since the
   baseline in step 1 is small and stops growing; read what was added, not just the count.
@@ -190,6 +190,10 @@ It does not deploy, does not add an Idunn recipe, and does not touch `bifrost-wa
 Idunn recipe is the owner of making this repeatable; until then each deploy follows this page and the runbook.
 
 **Host facts in this plan that no one re-verified in this revision:** the key-ring file count, modes and dates (lines
-~64, ~82-85), the stderr/stdout line counts and last-write dates (~131), the `bifrost-watchdog-notice.timer` cadence
-and unit names (~118), and that `bifrost` cannot read `/root` (~91) were read from the host on 2026-11-09 by an earlier
-pass or taken from the host's reports; this revision made no host read. Treat each as unverified until checked in the window.
+~64, ~82-85), the stderr/stdout line counts and last-write dates (~135-136), the `bifrost-watchdog-notice.timer`
+cadence and unit names (~122-124), and that `bifrost` cannot read `/root` (~91) were read from the host on 2026-11-09 by
+an earlier pass or taken from the host's reports; this revision made no host read. The body also states these as fact
+without a host check in this revision, and they are unverified too: the `bifrost` database role has no CREATEDB (~77),
+there is no `dotnet ef` on the host (~87), logs go to files via `StandardOutput=append:` and the journal shows only
+systemd's own lines (~134-136, 148-149), the script path `/home/gamecultadmin/deploy-bifrost-alpha.sh` (~144), and that
+no Idunn recipe exists for Bifrost (~20). Treat each as unverified until checked in the window.
