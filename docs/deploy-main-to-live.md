@@ -144,7 +144,11 @@ Record the time and the output line of each in the deploy record. Stop at the fi
    `/srv/bifrost/env/bifrost.env`, after the timestamped backup, printing nothing. The secret is random, 32 or more
    characters, and is never echoed, logged or pasted into a chat. For example (`openssl rand -hex 32` gives 64 hex
    characters and nothing that needs quoting in a systemd `EnvironmentFile`):
-   `sudo -n sh -c 'umask 077; cd /srv/bifrost/env && cp -a bifrost.env bifrost.env.pre-<UTC> && { printf "\nConceptVotes__NetworkTagSecret="; openssl rand -hex 32 | tr -d "\n"; printf "\n"; } >> bifrost.env && chown bifrost bifrost.env && chmod 600 bifrost.env'`
+   `sudo -n sh -c 'umask 077; cd /srv/bifrost/env && if grep -q "^ConceptVotes__NetworkTagSecret=" bifrost.env; then echo "ConceptVotes__NetworkTagSecret already set, left unchanged"; else cp -a bifrost.env bifrost.env.pre-<UTC> && { printf "\nConceptVotes__NetworkTagSecret="; openssl rand -hex 32 | tr -d "\n"; printf "\n"; } >> bifrost.env; fi && chown bifrost bifrost.env && chmod 600 bifrost.env'`
+   The guard makes a re-run safe: an existing `ConceptVotes__NetworkTagSecret=` line is never overwritten or duplicated, and the
+   skip message prints no value. (If a duplicate key ever got in, systemd's `EnvironmentFile` takes the last one, so remove
+   the extra line by hand; do not leave two.) A present line shorter than 32 characters is not replaced by this command
+   either: fix it deliberately, with the rotation warning below in mind.
    (the same, with the value from the operator's own source, for `Heimdall__AppSecret`, which is not generated here).
    The file ends mode 600, owner `bifrost`, and the backup `bifrost.env.pre-<UTC>` beside it keeps the old content.
    Re-run the name-only check after, and check the length by count only:
