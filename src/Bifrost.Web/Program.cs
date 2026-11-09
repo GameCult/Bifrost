@@ -122,6 +122,9 @@ builder.Services.AddScoped<BifrostIdentityService>();
 builder.Services.AddScoped<GitHubWebhookService>();
 builder.Services.AddScoped<MotionGovernanceService>();
 builder.Services.AddScoped<SealedBallotService>();
+builder.Services.AddScoped<MindIntakeService>();
+builder.Services.AddOptions<MindIntakeOptions>().BindConfiguration(MindIntakeOptions.SectionName);
+builder.Services.AddSingleton<MindIntakeRateLimit>(); // TimeProvider and options resolve from the container
 builder.Services.AddHostedService<SealedBallotCloser>();
 builder.Services.AddScoped<MotionEveSurfaceService>();
 builder.Services.AddScoped<PatronageService>();
@@ -562,6 +565,7 @@ async Task<IResult> SealedCall(Func<Task<object>> call)
             statusCode: error.Failure switch
             {
                 SealedBallotFailure.Forbidden => StatusCodes.Status403Forbidden,
+                SealedBallotFailure.Unauthorized => StatusCodes.Status401Unauthorized,
                 SealedBallotFailure.NotFound => StatusCodes.Status404NotFound,
                 SealedBallotFailure.WrongPhase => StatusCodes.Status409Conflict,
                 _ => StatusCodes.Status400BadRequest
@@ -579,6 +583,63 @@ sealedMotions.MapPost("/{id:guid}/reveal", (ICurrentBifrostActorAccessor actors,
     SealedCall(async () => await service.RevealAsync(await actors.GetAsync(ct), id, body, ct)));
 sealedMotions.MapGet("/{id:guid}/result", (ICurrentBifrostActorAccessor actors, SealedBallotService service, Guid id, CancellationToken ct) =>
     SealedCall(async () => await service.GetResultAsync(await actors.GetAsync(ct), id, ct)));
+
+sealedMotions.MapPost("/mind-keys", (ICurrentBifrostActorAccessor actors, MindIntakeService service, RegisterMindKeyRequest body, CancellationToken ct) =>
+    SealedCall(async () => await service.RegisterKeyAsync(await actors.GetAsync(ct), body.Persona, body.UserAccountId, body.PublicKey, ct)));
+sealedMotions.MapGet("/mind-keys", (ICurrentBifrostActorAccessor actors, MindIntakeService service, CancellationToken ct) =>
+    SealedCall(async () => await service.ListKeysAsync(await actors.GetAsync(ct), ct)));
+sealedMotions.MapDelete("/mind-keys/{keyId:guid}", (ICurrentBifrostActorAccessor actors, MindIntakeService service, Guid keyId, CancellationToken ct) =>
+    SealedCall(async () =>
+    {
+        await service.RevokeKeyAsync(await actors.GetAsync(ct), keyId, ct);
+        return new { revoked = keyId };
+    }));
+
+// Signed Mind intake: the Ed25519 signature is the credential. No session, no cookie; the verified envelope runs the same
+// SealedBallotService verbs as a member cast.
+app.MapPost("/api/sealed-motions/{id:guid}/mind", async (
+    HttpContext http, MindIntakeService service, MindIntakeRateLimit limiter, IOptions<MindIntakeOptions> limits, Guid id, CancellationToken ct) =>
+{
+    // Per-source permit and a hard body cap, both before any parsing or database work.
+    if (limiter.Spend(http.Connection.RemoteIpAddress?.ToString() ?? "unknown") is { } denied)
+    {
+        http.Response.Headers.RetryAfter = Math.Ceiling(denied.RetryAfter.TotalSeconds).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        return Results.Text("{\"error\":\"Too many requests.\"}", "application/json", statusCode: StatusCodes.Status429TooManyRequests);
+    }
+
+    var max = limits.Value.MaxBodyBytes;
+    if (http.Request.ContentLength > max)
+    {
+        return Results.Text("{\"error\":\"Envelope too large.\"}", "application/json", statusCode: StatusCodes.Status413PayloadTooLarge);
+    }
+
+    var buffer = new byte[max + 1];
+    var read = 0;
+    int n;
+    while (read < buffer.Length && (n = await http.Request.Body.ReadAsync(buffer.AsMemory(read), ct)) > 0)
+    {
+        read += n;
+    }
+
+    if (read > max)
+    {
+        return Results.Text("{\"error\":\"Envelope too large.\"}", "application/json", statusCode: StatusCodes.Status413PayloadTooLarge);
+    }
+
+    MindEnvelope? envelope;
+    try
+    {
+        envelope = JsonSerializer.Deserialize<MindEnvelope>(buffer.AsSpan(0, read), new JsonSerializerOptions(JsonSerializerDefaults.Web));
+    }
+    catch (JsonException)
+    {
+        envelope = null;
+    }
+
+    return envelope is null
+        ? Results.Text("{\"error\":\"The envelope is malformed.\"}", "application/json", statusCode: StatusCodes.Status400BadRequest)
+        : await SealedCall(async () => await service.HandleAsync(id, envelope, ct));
+}).AllowAnonymous();
 
 app.MapGet("/auth/heimdall/complete", (HttpContext httpContext) =>
 {

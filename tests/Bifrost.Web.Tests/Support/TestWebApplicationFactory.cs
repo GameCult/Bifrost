@@ -37,6 +37,7 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
                 ["Bridge:LocalBridgeToken"] = "test-bridge-token",
                 ["ConceptVotes:CastPermits"] = "100000",
                 ["ConceptVotes:MintPermits"] = "100000",
+                ["MindIntake:Permits"] = "100000",
                 ["Host:PublicBaseUrl"] = "https://localhost",
                 ["Host:ExpectedHost"] = "localhost",
                 ["Host:RequireStrictHostValidation"] = "false",

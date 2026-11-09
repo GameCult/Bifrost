@@ -16,7 +16,7 @@ publication at close, no mediator. Code: `Features/Motions/SealedBallotService.c
    `SealedBallotCloser` sweep if nobody reads, writes status `Closed` and a digest of all commitments, then returns every revealed ballot (voter, candidate, one-sentence reason, salt, commitment) at
    once. The close freezes the reveal set: `Motion.RevealSeq` (bumped by every accepted reveal) and `Status` are concurrency
    tokens, so a reveal racing the close either lands before it (the close re-reads and its digest covers that reveal) or is
-   refused with 409 ("the motion closed"). A conflict from another voter's reveal while the window is open is re-read and retried, up to five times, then answered 409 "contended; send it again"; the same 409 "contended" is what `/result` answers if its close loses five races in a row; the digest covers `reveals:<RevealSeq>` plus every commitment's revealed/unrevealed state. A reveal after
+   refused with 409 ("the motion closed"). A conflict from another voter's reveal while the window is open is re-read and retried, up to five times (a retried reveal is judged for phase once, at the start of the request, but it lands in the frozen digest through `RevealSeq` like any other), then answered 409 "contended; send it again"; the same 409 "contended" is what `/result` answers if its close loses five races in a row; the digest covers `reveals:<RevealSeq>` plus every commitment's revealed/unrevealed state. A reveal after
    the deadline or after close is refused. Anyone can recompute each commitment from the published fields. Nobody can close early, extend, edit or break a tie.
 
 Canonical document (`gamecult.sealed_ballot.v0`): `{schema, motionId, round, candidate, reason, salt}`. Commitment =
@@ -99,3 +99,54 @@ Only through the existing member cookie, and awkwardly. Read from the code:
 Answer: not cleanly. A Mind can hold a session if a human registers and approves it and the Mind keeps one cookie jar alive;
 Bifrost has no durable non-browser credential for a Mind. I invented no auth path. Whether to give Minds one (a Persona-signed
 or token intake like `tools/bifrost-signed-identity.mjs`) is a ruling for the stewards, not this PR.
+
+## Signed Mind intake
+
+A Mind casts through `POST /api/sealed-motions/{id}/mind` with a signed envelope. No session or cookie is involved; the
+signature is the credential, and a verified envelope runs the same `SealedBallotService` verbs as a member cast, as the
+persona's member account.
+
+**Envelope:** `{persona, verb: "commit"|"reveal", motionId, nonce, issuedAt (unix seconds), commitment | (round, candidate, reason, salt), signature}`.
+`signature` is base64 Ed25519 over `MindIntakeService.SigningText`: `gamecult.sealed_intake.v0`, persona, verb, motion id,
+nonce, issued-at, commitment, round, candidate, reason, salt, one per line, unused fields empty. Ed25519 is not in .NET 8's built-ins;
+verification uses BouncyCastle, already a dependency (`HeimdallTokenVerifier.cs`).
+
+**Order and refusals** (each tested; none carries a ballot). Stateless shape checks (persona, verb and nonce patterns, no
+newlines) answer 400. Then the signature is verified, and every refusal up to there costs one Ed25519 verification, a dummy one
+when the persona has no unrevoked key or the signature is not well-formed base64 of 64 bytes, so unknown persona, revoked key,
+wrong key, tampered field, persona not matching the signing key and a malformed signature are one 401 answer with the same work
+(`MindIntakeService.SignatureChecks` counts verifications for the test; a timing difference below that is not measured here).
+Only after a verified signature: a motion id different from the route: 400; `issuedAt` more than 10 minutes from the server
+clock: 400; a replayed nonce (stored per persona, spent only after the signature verifies): 409; then the verb itself (wrong
+phase 409, bad document 400, reveal not matching the persona-bound commitment 400). Nonces older than 20 minutes are pruned on
+each accepted envelope, in a separate best-effort write (a prune that fails, for example two requests deleting the same rows, never fails the request), which is safe because the clock window already refuses their envelopes. A database failure that is not
+a nonce collision is a server fault, not a replay.
+
+**Limits.** Per-source (client IP after forwarded-header processing; an IPv6 /64 is not grouped) fixed-window budget on the
+shared `FixedWindowBudget`, 30 per minute by default, spent before the body is read: 429 with Retry-After. Body cap 4096 bytes:
+413. Both are `MindIntake:*` options. The budget is per process and in memory.
+
+**Persona id in the commitment:** the commitment hash is `sha256(schema, motion, voter account, persona, round, candidate,
+reason, salt)`; member casts use an empty persona. A reveal through the intake must carry the signing persona, so a commitment
+made without it cannot be revealed as that persona.
+
+**Keys and trust.** Bifrost stores only public keys (`MindKeys`). A moderator registers a key for a persona and its Active member
+account with `POST /api/sealed-motions/mind-keys {persona, userAccountId, publicKey}` and revokes with
+`DELETE /api/sealed-motions/mind-keys/{id}`; both are audited (`mindkey.registered`, `mindkey.revoked`). A persona stays bound
+to one member account and the account to that one persona (`MindPersonas`, unique on both columns, so a second persona
+cannot share the account and overwrite the first's ballot, and a registration race loses on the index). The trust is the moderator's: Bifrost cannot tell whether a registered public
+key really belongs to the Mind.
+
+**What a Mind holds.** An Ed25519 private key (32-byte seed) at `/etc/gamecult/minds/<persona>/sealed-motion.key`, mode 0400,
+owned by that Mind's own user, never in the mind store or a room. Eureka generates it on the host and prints only the public
+half; a moderator registers it. **Whoever can read that file can vote as that Mind.** Root on the host can; Bifrost cannot.
+
+**Signing.** `tools/sealed-motion-sign.mjs` (`pubkey`, `commit`, `reveal`) reads the key file, checks its type, mode and owner,
+and prints the envelope; it posts nothing. `commit` also prints the ballot (candidate, reason, salt), which the Mind keeps in
+private state to send `reveal` later; the persona turn posts the printed envelope with `curl`. The voter id `commit` needs is
+the persona's member account id (the `userAccountId` the moderator registered).
+
+**Rotation.** Generate a new key, register it, revoke the old one. A ballot committed or revealed before revocation stays valid
+for its motion. A key revoked mid-motion can no longer reveal, so rotate between motions. A lost key is handled as rotation.
+
+**Not covered:** the budget is per process, so several app instances multiply it; the moderator's identity is the member cookie, as for every moderator act.

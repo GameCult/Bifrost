@@ -126,7 +126,8 @@ public sealed class SealedBallotService(
         CurrentBifrostActor actor,
         Guid motionId,
         SealedBallotDocument document,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string persona = "")
     {
         var user = RequireMember(actor);
         var motion = await LoadAsync(motionId, cancellationToken);
@@ -142,7 +143,7 @@ public sealed class SealedBallotService(
 
         var reason = (document.Reason ?? string.Empty).Trim();
         var candidate = (document.Candidate ?? string.Empty).Trim();
-        if (document.Schema != SealedBallotDocument.SchemaId || document.MotionId != motionId || document.Round != motion.Round ||
+        if (document.Schema != SealedBallotDocument.SchemaId || document.MotionId != motionId || (document.Persona ?? string.Empty) != persona || document.Round != motion.Round ||
             !CandidatesOf(motion).Contains(candidate, StringComparer.Ordinal) ||
             reason.Length is 0 or > MaxReasonLength || reason.Contains('\n') || reason.Contains('\r') ||
             !HexSalt.IsMatch(document.Salt ?? string.Empty))
@@ -366,7 +367,7 @@ public sealed class SealedBallotService(
 
 public enum SealedPhase { Commit, Reveal, Closed }
 
-public enum SealedBallotFailure { Forbidden, NotFound, WrongPhase, Invalid }
+public enum SealedBallotFailure { Forbidden, NotFound, WrongPhase, Invalid, Unauthorized }
 
 public sealed class SealedBallotException(SealedBallotFailure failure, string message) : Exception(message)
 {
@@ -375,15 +376,15 @@ public sealed class SealedBallotException(SealedBallotFailure failure, string me
 
 /// <summary>
 /// The typed ballot document, schema <c>gamecult.sealed_ballot.v0</c>. A Delphi second round is another motion carrying this
-/// same type with a higher Round. The commitment binds the voter's account id, so a commitment cannot be replayed by another member.
+/// same type with a higher Round. The commitment binds the voter's account id and, for a Mind casting through the signed intake, its persona id (empty for member casts), so a commitment cannot be replayed by another member or persona.
 /// </summary>
-public sealed record SealedBallotDocument(string Schema, Guid MotionId, int Round, string Candidate, string Reason, string Salt)
+public sealed record SealedBallotDocument(string Schema, Guid MotionId, int Round, string Candidate, string Reason, string Salt, string Persona = "")
 {
     public const string SchemaId = "gamecult.sealed_ballot.v0";
 
     public static string Commit(SealedBallotDocument d, Guid voterUserAccountId) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
-            $"{SchemaId}\n{d.MotionId:D}\n{voterUserAccountId:D}\n{d.Round}\n{d.Candidate}\n{d.Reason}\n{d.Salt}"))).ToLowerInvariant();
+            $"{SchemaId}\n{d.MotionId:D}\n{voterUserAccountId:D}\n{d.Persona}\n{d.Round}\n{d.Candidate}\n{d.Reason}\n{d.Salt}"))).ToLowerInvariant();
 }
 
 public sealed record OpenSealedMotionCommand(

@@ -135,7 +135,7 @@ public sealed class SealedBallotTests
         while (!Directory.Exists(Path.Combine(root, "src", "Bifrost.Web"))) root = Path.GetDirectoryName(root)!;
         var offenders = Directory.EnumerateFiles(Path.Combine(root, "src", "Bifrost.Web"), "*.cs", SearchOption.AllDirectories)
             .Where(f => !f.Contains($"{Path.DirectorySeparatorChar}Migrations{Path.DirectorySeparatorChar}"))
-            .Where(f => !f.EndsWith("SealedBallotService.cs") && !f.EndsWith("BifrostModels.cs"))
+            .Where(f => !f.EndsWith("SealedBallotService.cs") && !f.EndsWith("MindIntakeService.cs") && !f.EndsWith("BifrostModels.cs"))
             .Where(f => File.ReadAllText(f) is var s && (s.Contains("RevealedCandidate") || s.Contains("RevealedReason") || s.Contains(".Salt")))
             .ToList();
         Assert.Empty(offenders);
@@ -396,5 +396,39 @@ public sealed class SealedBallotTests
         var ex = await Assert.ThrowsAsync<SealedBallotException>(() => rig.Reveal(a, motion.Id, "Ana", "Mine.", Salt + "\n"));
         Assert.Equal(SealedBallotFailure.Invalid, ex.Failure);
         Assert.Null((await rig.Db.SealedBallots.SingleAsync()).RevealedAtUtc);
+    }
+
+    // Moves RevealSeq from another context just before every save, so each attempt of a reveal loses its race.
+    private sealed class LoseEveryRevealRace(string name, Guid motionId) : SaveChangesInterceptor
+    {
+        public override async ValueTask<InterceptionResult<int>> SavingChangesAsync(DbContextEventData eventData, InterceptionResult<int> result, CancellationToken cancellationToken = default)
+        {
+            if (eventData.Context!.ChangeTracker.Entries<SealedBallot>().Any(e => e.State == EntityState.Modified))
+            {
+                await using var other = new BifrostDbContext(new DbContextOptionsBuilder<BifrostDbContext>().UseInMemoryDatabase(name).Options);
+                (await other.Motions.SingleAsync(x => x.Id == motionId)).RevealSeq++;
+                await other.SaveChangesAsync();
+            }
+
+            return result;
+        }
+    }
+
+    [Fact]
+    public async Task Five_lost_reveal_races_answer_contended_and_record_nothing()
+    {
+        var name = $"sealed-contended-{Guid.NewGuid():N}";
+        var seeder = Peer(name, T0);
+        var (actor, motion) = await SeedPeerWorld(seeder.Db, seeder.Service);
+        var revealer = Peer(name, T0.AddMinutes(90), new LoseEveryRevealRace(name, motion.Id));
+
+        var ex = await Assert.ThrowsAsync<SealedBallotException>(() =>
+            revealer.Service.RevealAsync(actor, motion.Id, new SealedBallotDocument(SealedBallotDocument.SchemaId, motion.Id, 1, "Ana", "Mine.", Salt), default));
+
+        Assert.Equal(SealedBallotFailure.WrongPhase, ex.Failure);
+        Assert.Contains("contended", ex.Message);
+        await using var check = Peer(name, T0.AddMinutes(90)).Db;
+        Assert.Null((await check.SealedBallots.AsNoTracking().SingleAsync()).RevealedAtUtc);
+        Assert.Equal(5, (await check.Motions.AsNoTracking().SingleAsync()).RevealSeq); // five rival writes, none of them this reveal
     }
 }

@@ -43,6 +43,12 @@ public sealed class BifrostDbContext(DbContextOptions<BifrostDbContext> options)
 
     public DbSet<SealedBallot> SealedBallots => Set<SealedBallot>();
 
+    public DbSet<MindKey> MindKeys => Set<MindKey>();
+
+    public DbSet<MindNonce> MindNonces => Set<MindNonce>();
+
+    public DbSet<MindPersona> MindPersonas => Set<MindPersona>();
+
     public DbSet<LedgerEntry> LedgerEntries => Set<LedgerEntry>();
 
     public DbSet<PayoutProposalBatch> PayoutProposalBatches => Set<PayoutProposalBatch>();
@@ -314,6 +320,22 @@ public sealed class BifrostDbContext(DbContextOptions<BifrostDbContext> options)
                 .WithMany()
                 .HasForeignKey(x => x.UserAccountId)
                 .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<MindKey>(entity =>
+        {
+            entity.HasIndex(x => new { x.PersonaId, x.PublicKey }).IsUnique();
+        });
+
+        modelBuilder.Entity<MindPersona>(entity =>
+        {
+            entity.HasIndex(x => x.PersonaId).IsUnique();
+            entity.HasIndex(x => x.UserAccountId).IsUnique();
+        });
+
+        modelBuilder.Entity<MindNonce>(entity =>
+        {
+            entity.HasIndex(x => new { x.PersonaId, x.Nonce }).IsUnique();
         });
 
         modelBuilder.Entity<LedgerEntry>(entity =>
