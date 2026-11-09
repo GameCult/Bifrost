@@ -20,8 +20,33 @@ public sealed class MindIntakeService(
     TimeProvider timeProvider)
 {
     public const string Domain = "gamecult.sealed_intake.v0";
-    private static readonly Regex PersonaPattern = new("^[a-z0-9][a-z0-9-]{0,31}$", RegexOptions.Compiled);
-    private static readonly Regex NoncePattern = new("^[A-Za-z0-9_-]{16,64}$", RegexOptions.Compiled);
+    public static readonly TimeSpan Skew = TimeSpan.FromMinutes(10);
+
+    // Diagnostics: every Ed25519 verification the intake performs, real or dummy. A refusal that skips the verify is a timing tell.
+    public static long SignatureChecks;
+
+    // A valid signature by a throwaway key over a different message: verifying it does the full work and fails at the end.
+    private static readonly (byte[] Public, byte[] Signature, byte[] Message) Dummy = MakeDummy();
+
+    private static (byte[], byte[], byte[]) MakeDummy()
+    {
+        var secret = new byte[32];
+        System.Security.Cryptography.RandomNumberGenerator.Fill(secret);
+        var pub = new byte[32];
+        Ed25519.GeneratePublicKey(secret, 0, pub, 0);
+        var message = Encoding.UTF8.GetBytes("dummy");
+        var sig = new byte[64];
+        Ed25519.Sign(secret, 0, pub, 0, null, message, 0, message.Length, sig, 0);
+        return (pub, sig, Encoding.UTF8.GetBytes("not the dummy message"));
+    }
+
+    private static bool Verify(byte[] signature, byte[] publicKey, byte[] message)
+    {
+        Interlocked.Increment(ref SignatureChecks);
+        return Ed25519.Verify(signature, 0, publicKey, 0, message, 0, message.Length);
+    }
+    private static readonly Regex PersonaPattern = new(@"^[a-z0-9][a-z0-9-]{0,31}\z", RegexOptions.Compiled);
+    private static readonly Regex NoncePattern = new(@"^[A-Za-z0-9_-]{16,64}\z", RegexOptions.Compiled);
 
     public async Task<MindKeyView> RegisterKeyAsync(
         CurrentBifrostActor actor, string persona, Guid userAccountId, string publicKey, CancellationToken cancellationToken)
@@ -44,10 +69,12 @@ public sealed class MindIntakeService(
             throw new SealedBallotException(SealedBallotFailure.Invalid, "The persona's member account must exist and be Active.");
         }
 
-        var bound = await dbContext.MindKeys.Where(x => x.PersonaId == persona).Select(x => (Guid?)x.UserAccountId).FirstOrDefaultAsync(cancellationToken);
-        if (bound is { } other && other != userAccountId)
+        // One persona <-> one account, both ways (a shared account would let one persona overwrite the other's commit).
+        // The unique indexes on MindPersonas are the arbiter; these reads only give a plain error before them.
+        var binding = await dbContext.MindPersonas.SingleOrDefaultAsync(x => x.PersonaId == persona || x.UserAccountId == userAccountId, cancellationToken);
+        if (binding is not null && (binding.PersonaId != persona || binding.UserAccountId != userAccountId))
         {
-            throw new SealedBallotException(SealedBallotFailure.Invalid, "That persona is already bound to a different member account.");
+            throw new SealedBallotException(SealedBallotFailure.Invalid, "That persona or member account is already bound to a different account or persona.");
         }
 
         if (await dbContext.MindKeys.AnyAsync(x => x.PersonaId == persona && x.PublicKey == publicKey, cancellationToken))
@@ -61,7 +88,21 @@ public sealed class MindIntakeService(
             RegisteredByUserAccountId = moderator.Id, RegisteredAtUtc = timeProvider.GetUtcNow()
         };
         dbContext.MindKeys.Add(key);
-        await dbContext.SaveChangesAsync(cancellationToken);
+        if (binding is null)
+        {
+            dbContext.MindPersonas.Add(new MindPersona { PersonaId = persona, UserAccountId = userAccountId });
+        }
+
+        try
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateException) when (binding is null)
+        {
+            // Lost a registration race on the unique persona/account indexes.
+            throw new SealedBallotException(SealedBallotFailure.Invalid, "That persona or member account is already bound to a different account or persona.");
+        }
+
         await auditTrailService.RecordAsync(moderator.Id, nameof(MindKey), key.Id, "mindkey.registered",
             $"Registered a key for persona {persona} (member account {userAccountId}).", cancellationToken);
         return View(key);
@@ -101,37 +142,63 @@ public sealed class MindIntakeService(
             throw new SealedBallotException(SealedBallotFailure.Invalid, "The envelope is malformed.");
         }
 
-        if (envelope.MotionId != routeMotionId)
-        {
-            throw new SealedBallotException(SealedBallotFailure.Invalid, "The envelope was signed for a different motion.");
-        }
-
+        // Signature first. Every path below that can tell a caller anything about state comes after a verified signature, and
+        // every refusal before it costs one Ed25519 verification (a dummy one when there is no key or no usable signature).
         var keys = await dbContext.MindKeys.AsNoTracking().Where(x => x.PersonaId == persona && x.RevokedAtUtc == null).ToListAsync(cancellationToken);
         var message = Encoding.UTF8.GetBytes(SigningText(envelope));
-        var signature = Convert.TryFromBase64String(envelope.Signature ?? string.Empty, new byte[64], out var written) && written == 64
-            ? Convert.FromBase64String(envelope.Signature!) : null;
-        var signer = signature is null ? null : keys.FirstOrDefault(k =>
-            TryKey(k.PublicKey, out var pub) && Ed25519.Verify(signature, 0, pub, 0, message, 0, message.Length));
+        var raw = new byte[64];
+        var wellFormed = Convert.TryFromBase64String(envelope.Signature ?? string.Empty, raw, out var written) && written == 64;
+        MindKey? signer = null;
+        if (!wellFormed || keys.Count == 0)
+        {
+            _ = Verify(Dummy.Signature, Dummy.Public, Dummy.Message);
+        }
+        else
+        {
+            signer = keys.FirstOrDefault(k => TryKey(k.PublicKey, out var pub) && Verify(raw, pub, message));
+        }
+
         if (signer is null)
         {
             // One answer for unknown persona, revoked key, wrong key and bad signature: nothing to probe.
             throw new SealedBallotException(SealedBallotFailure.Unauthorized, "The envelope is not signed by a registered key for that persona.");
         }
 
-        // Spend the nonce only after the signature verifies, so an unsigned caller cannot burn a persona's nonces.
+        if (envelope.MotionId != routeMotionId)
+        {
+            throw new SealedBallotException(SealedBallotFailure.Invalid, "The envelope was signed for a different motion.");
+        }
+
+        var now = timeProvider.GetUtcNow();
+        if (Math.Abs((now - DateTimeOffset.FromUnixTimeSeconds(Math.Clamp(envelope.IssuedAt, 0, 253402300799))).TotalSeconds) > Skew.TotalSeconds)
+        {
+            throw new SealedBallotException(SealedBallotFailure.Invalid, "The envelope is outside the accepted clock window.");
+        }
+
+        // Spend the nonce only after the signature verifies, so an unsigned caller cannot burn a persona's nonces. Nonces older
+        // than twice the skew can no longer pass the window above, so they are pruned here.
         if (await dbContext.MindNonces.AnyAsync(x => x.PersonaId == persona && x.Nonce == envelope.Nonce, cancellationToken))
         {
             throw new SealedBallotException(SealedBallotFailure.WrongPhase, "That nonce was already used.");
         }
 
-        dbContext.MindNonces.Add(new MindNonce { PersonaId = persona, Nonce = envelope.Nonce!, SeenAtUtc = timeProvider.GetUtcNow() });
+        var cutoff = now - 2 * Skew;
+        dbContext.MindNonces.RemoveRange(await dbContext.MindNonces.Where(x => x.SeenAtUtc < cutoff).ToListAsync(cancellationToken));
+        dbContext.MindNonces.Add(new MindNonce { PersonaId = persona, Nonce = envelope.Nonce!, SeenAtUtc = now });
         try
         {
             await dbContext.SaveChangesAsync(cancellationToken);
         }
         catch (DbUpdateException)
         {
-            throw new SealedBallotException(SealedBallotFailure.WrongPhase, "That nonce was already used.");
+            // A replay only if the nonce is now there (the unique index lost a race); any other write failure is a fault, not a replay.
+            dbContext.ChangeTracker.Clear();
+            if (await dbContext.MindNonces.AnyAsync(x => x.PersonaId == persona && x.Nonce == envelope.Nonce, cancellationToken))
+            {
+                throw new SealedBallotException(SealedBallotFailure.WrongPhase, "That nonce was already used.");
+            }
+
+            throw;
         }
 
         var account = await dbContext.UserAccounts.AsNoTracking()
@@ -151,7 +218,7 @@ public sealed class MindIntakeService(
 
     /// <summary>The exact text a Mind signs: every field, fixed order, newline separated, unused fields empty.</summary>
     public static string SigningText(MindEnvelope e) =>
-        string.Join('\n', Domain, e.Persona, e.Verb, e.MotionId.ToString("D"), e.Nonce, e.Commitment ?? "", e.Round, e.Candidate ?? "", e.Reason ?? "", e.Salt ?? "");
+        string.Join('\n', Domain, e.Persona, e.Verb, e.MotionId.ToString("D"), e.Nonce, e.IssuedAt, e.Commitment ?? "", e.Round, e.Candidate ?? "", e.Reason ?? "", e.Salt ?? "");
 
     private static bool TryKey(string base64, out byte[] key)
     {
@@ -169,9 +236,31 @@ public sealed class MindIntakeService(
 
 /// <summary>A signed Mind verb. <c>Signature</c> is base64 Ed25519 over <see cref="MindIntakeService.SigningText"/>.</summary>
 public sealed record MindEnvelope(
-    string Persona, string Verb, Guid MotionId, string Nonce,
+    string Persona, string Verb, Guid MotionId, string Nonce, long IssuedAt,
     string? Commitment, int Round, string? Candidate, string? Reason, string? Salt, string Signature);
 
 public sealed record MindKeyView(Guid Id, string Persona, Guid UserAccountId, string PublicKey, DateTimeOffset RegisteredAtUtc, DateTimeOffset? RevokedAtUtc);
 
 public sealed record RegisterMindKeyRequest(string Persona, Guid UserAccountId, string PublicKey);
+
+/// <summary>Limits on the anonymous signed-intake endpoint (section "MindIntake").</summary>
+public sealed class MindIntakeOptions
+{
+    public const string SectionName = "MindIntake";
+
+    public int Permits { get; init; } = 30;
+
+    public TimeSpan Window { get; init; } = TimeSpan.FromMinutes(1);
+
+    public int MaxTrackedKeys { get; init; } = 10_000;
+
+    public int MaxBodyBytes { get; init; } = 4096;
+}
+
+/// <summary>Per-source permit budget for the intake, on the shared <see cref="FixedWindowBudget"/>. Spent before the body is read.</summary>
+public sealed class MindIntakeRateLimit(Microsoft.Extensions.Options.IOptions<MindIntakeOptions> options, TimeProvider clock)
+{
+    private readonly FixedWindowBudget budget = new(options.Value.Permits, options.Value.Window, options.Value.MaxTrackedKeys, clock);
+
+    public BudgetDenial? Spend(string source) => budget.Spend(source);
+}

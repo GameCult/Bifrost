@@ -31,6 +31,18 @@ namespace Bifrost.Web.Data.Migrations
             migrationBuilder.CreateIndex(name: "IX_MindKeys_PersonaId_PublicKey", table: "MindKeys", columns: new[] { "PersonaId", "PublicKey" }, unique: true);
 
             migrationBuilder.CreateTable(
+                name: "MindPersonas",
+                columns: table => new
+                {
+                    Id = table.Column<Guid>(type: "uuid", nullable: false),
+                    PersonaId = table.Column<string>(type: "text", nullable: false),
+                    UserAccountId = table.Column<Guid>(type: "uuid", nullable: false)
+                },
+                constraints: table => table.PrimaryKey("PK_MindPersonas", x => x.Id));
+            migrationBuilder.CreateIndex(name: "IX_MindPersonas_PersonaId", table: "MindPersonas", column: "PersonaId", unique: true);
+            migrationBuilder.CreateIndex(name: "IX_MindPersonas_UserAccountId", table: "MindPersonas", column: "UserAccountId", unique: true);
+
+            migrationBuilder.CreateTable(
                 name: "MindNonces",
                 columns: table => new
                 {
@@ -46,6 +58,7 @@ namespace Bifrost.Web.Data.Migrations
         protected override void Down(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.DropTable(name: "MindNonces");
+            migrationBuilder.DropTable(name: "MindPersonas");
             migrationBuilder.DropTable(name: "MindKeys");
         }
     }

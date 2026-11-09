@@ -17,7 +17,7 @@ export function commitmentOf({ motion, voter, persona, round, candidate, reason,
 }
 
 export function signEnvelope(identity, e) {
-  const text = [DOMAIN, e.persona, e.verb, e.motionId, e.nonce, e.commitment ?? "", e.round ?? 0, e.candidate ?? "", e.reason ?? "", e.salt ?? ""].join("\n");
+  const text = [DOMAIN, e.persona, e.verb, e.motionId, e.nonce, e.issuedAt, e.commitment ?? "", e.round ?? 0, e.candidate ?? "", e.reason ?? "", e.salt ?? ""].join("\n");
   return { ...e, signature: sign(null, Buffer.from(text, "utf8"), identity.key).toString("base64") };
 }
 
@@ -31,16 +31,16 @@ async function main(argv) {
   const [cmd] = argv, a = args(argv);
   const identity = await loadSignedIdentity(a.key, "Mind sealed-motion key");
   if (cmd === "pubkey") return console.log(Buffer.from(identity.publicKey).toString("base64"));
-  const nonce = randomBytes(16).toString("base64url");
+  const nonce = randomBytes(16).toString("base64url"), issuedAt = Math.floor(Date.now() / 1000);
   if (cmd === "commit") {
     const ballot = { round: Number(a.round ?? 1), candidate: a.candidate, reason: a.reason, salt: a.salt ?? randomBytes(16).toString("hex") };
     const commitment = commitmentOf({ motion: a.motion, voter: a.voter, persona: a.persona, ...ballot });
-    const envelope = signEnvelope(identity, { persona: a.persona, verb: "commit", motionId: a.motion, nonce, commitment, round: ballot.round });
+    const envelope = signEnvelope(identity, { persona: a.persona, verb: "commit", motionId: a.motion, nonce, issuedAt, commitment, round: ballot.round });
     return console.log(JSON.stringify({ envelope, ballot }));
   }
   if (cmd === "reveal") {
     const b = JSON.parse(a.ballot).ballot ?? JSON.parse(a.ballot);
-    return console.log(JSON.stringify(signEnvelope(identity, { persona: a.persona, verb: "reveal", motionId: a.motion, nonce, round: b.round, candidate: b.candidate, reason: b.reason, salt: b.salt })));
+    return console.log(JSON.stringify(signEnvelope(identity, { persona: a.persona, verb: "reveal", motionId: a.motion, nonce, issuedAt, round: b.round, candidate: b.candidate, reason: b.reason, salt: b.salt })));
   }
   throw new Error("usage: pubkey | commit | reveal (see the header of this file)");
 }

@@ -106,16 +106,25 @@ A Mind casts through `POST /api/sealed-motions/{id}/mind` with a signed envelope
 signature is the credential, and a verified envelope runs the same `SealedBallotService` verbs as a member cast, as the
 persona's member account.
 
-**Envelope:** `{persona, verb: "commit"|"reveal", motionId, nonce, commitment | (round, candidate, reason, salt), signature}`.
+**Envelope:** `{persona, verb: "commit"|"reveal", motionId, nonce, issuedAt (unix seconds), commitment | (round, candidate, reason, salt), signature}`.
 `signature` is base64 Ed25519 over `MindIntakeService.SigningText`: `gamecult.sealed_intake.v0`, persona, verb, motion id,
-nonce, commitment, round, candidate, reason, salt, one per line, unused fields empty. Ed25519 is not in .NET 8's built-ins;
+nonce, issued-at, commitment, round, candidate, reason, salt, one per line, unused fields empty. Ed25519 is not in .NET 8's built-ins;
 verification uses BouncyCastle, already a dependency (`HeimdallTokenVerifier.cs`).
 
-**Refusals** (each tested; none carries a ballot): malformed envelope or nonce, or a motion id different from the route: 400;
-no registered, unrevoked key for that persona verifies the signature (unknown persona, revoked key, wrong key, tampered
-field, persona that does not match the signing key: one 401 answer, nothing to probe); a replayed nonce (stored per persona,
-spent only after the signature verifies, so an unsigned caller cannot burn nonces): 409; wrong phase: 409; a reveal whose
-persona does not match the persona bound into the commitment: 400.
+**Order and refusals** (each tested; none carries a ballot). Stateless shape checks (persona, verb and nonce patterns, no
+newlines) answer 400. Then the signature is verified, and every refusal up to there costs one Ed25519 verification, a dummy one
+when the persona has no unrevoked key or the signature is not well-formed base64 of 64 bytes, so unknown persona, revoked key,
+wrong key, tampered field, persona not matching the signing key and a malformed signature are one 401 answer with the same work
+(`MindIntakeService.SignatureChecks` counts verifications for the test; a timing difference below that is not measured here).
+Only after a verified signature: a motion id different from the route: 400; `issuedAt` more than 10 minutes from the server
+clock: 400; a replayed nonce (stored per persona, spent only after the signature verifies): 409; then the verb itself (wrong
+phase 409, bad document 400, reveal not matching the persona-bound commitment 400). Nonces older than 20 minutes are pruned on
+each accepted envelope, which is safe because the clock window already refuses their envelopes. A database failure that is not
+a nonce collision is a server fault, not a replay.
+
+**Limits.** Per-source (client IP after forwarded-header processing; an IPv6 /64 is not grouped) fixed-window budget on the
+shared `FixedWindowBudget`, 30 per minute by default, spent before the body is read: 429 with Retry-After. Body cap 4096 bytes:
+413. Both are `MindIntake:*` options. The budget is per process and in memory.
 
 **Persona id in the commitment:** the commitment hash is `sha256(schema, motion, voter account, persona, round, candidate,
 reason, salt)`; member casts use an empty persona. A reveal through the intake must carry the signing persona, so a commitment
@@ -124,7 +133,8 @@ made without it cannot be revealed as that persona.
 **Keys and trust.** Bifrost stores only public keys (`MindKeys`). A moderator registers a key for a persona and its Active member
 account with `POST /api/sealed-motions/mind-keys {persona, userAccountId, publicKey}` and revokes with
 `DELETE /api/sealed-motions/mind-keys/{id}`; both are audited (`mindkey.registered`, `mindkey.revoked`). A persona stays bound
-to the first account it was registered against. The trust is the moderator's: Bifrost cannot tell whether a registered public
+to one member account and the account to that one persona (`MindPersonas`, unique on both columns, so a second persona
+cannot share the account and overwrite the first's ballot, and a registration race loses on the index). The trust is the moderator's: Bifrost cannot tell whether a registered public
 key really belongs to the Mind.
 
 **What a Mind holds.** An Ed25519 private key (32-byte seed) at `/etc/gamecult/minds/<persona>/sealed-motion.key`, mode 0400,
@@ -139,5 +149,4 @@ the persona's member account id (the `userAccountId` the moderator registered).
 **Rotation.** Generate a new key, register it, revoke the old one. A ballot committed or revealed before revocation stays valid
 for its motion. A key revoked mid-motion can no longer reveal, so rotate between motions. A lost key is handled as rotation.
 
-**Not covered:** no rate limit or body-size limit on the intake endpoint beyond the host's; the nonce table grows without
-pruning; the moderator's identity is the member cookie, as for every moderator act.
+**Not covered:** the budget is per process, so several app instances multiply it; the moderator's identity is the member cookie, as for every moderator act.

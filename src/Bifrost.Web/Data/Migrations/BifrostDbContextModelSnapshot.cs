@@ -1477,6 +1477,30 @@ namespace Bifrost.Web.Data.Migrations
                     b.ToTable("MindKeys");
                 });
 
+            modelBuilder.Entity("Bifrost.Web.Domain.MindPersona", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("PersonaId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<Guid>("UserAccountId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("PersonaId")
+                        .IsUnique();
+
+                    b.HasIndex("UserAccountId")
+                        .IsUnique();
+
+                    b.ToTable("MindPersonas");
+                });
+
             modelBuilder.Entity("Bifrost.Web.Domain.MindNonce", b =>
                 {
                     b.Property<Guid>("Id")

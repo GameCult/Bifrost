@@ -1187,3 +1187,13 @@ public sealed class MindNonce
 
     public DateTimeOffset SeenAtUtc { get; set; }
 }
+
+/// <summary>The one member account a persona votes as. Unique on both columns: a persona has one account and an account one persona.</summary>
+public sealed class MindPersona
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+
+    public string PersonaId { get; set; } = string.Empty;
+
+    public Guid UserAccountId { get; set; }
+}

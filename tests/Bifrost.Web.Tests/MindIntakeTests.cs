@@ -5,6 +5,9 @@ using System.Text.Json;
 using Bifrost.Web.Data;
 using Bifrost.Web.Domain;
 using Bifrost.Web.Features.Motions;
+using Bifrost.Web.Features.Shared;
+using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.Extensions.Configuration;
 using Bifrost.Web.Tests.Support;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
@@ -92,9 +95,9 @@ public sealed class MindIntakeTests(TestWebApplicationFactory factory) : IClassF
     }
 
     private static MindEnvelope Sign(Key key, string persona, string verb, Guid motion, string? nonce = null, string? commitment = null,
-        string? candidate = null, string? reason = null, string? salt = null)
+        string? candidate = null, string? reason = null, string? salt = null, long? issuedAt = null)
     {
-        var e = new MindEnvelope(persona, verb, motion, nonce ?? Guid.NewGuid().ToString("N"), commitment, 1, candidate, reason, salt, "");
+        var e = new MindEnvelope(persona, verb, motion, nonce ?? Guid.NewGuid().ToString("N"), issuedAt ?? DateTimeOffset.UtcNow.ToUnixTimeSeconds(), commitment, 1, candidate, reason, salt, "");
         var signer = new Ed25519Signer();
         signer.Init(true, key.Private);
         var bytes = System.Text.Encoding.UTF8.GetBytes(MindIntakeService.SigningText(e));
@@ -260,5 +263,114 @@ public sealed class MindIntakeTests(TestWebApplicationFactory factory) : IClassF
             Assert.Equal(expected, (await db.SealedBallots.SingleAsync(x => x.MotionId == w.CommitMotion)).Commitment);
         }
         finally { File.Delete(keyFile); }
+    }
+
+    [Fact]
+    public async Task Every_refusal_before_a_verified_signature_costs_one_signature_check_and_reveals_nothing_about_state()
+    {
+        var w = await WorldAsync();
+        var anon = Anonymous();
+        long Checks() => Interlocked.Read(ref MindIntakeService.SignatureChecks);
+        MindEnvelope Reveal(Key k, string persona) => Sign(k, persona, "reveal", w.RevealMotion, candidate: "Bo", reason: Reason, salt: Salt);
+
+        var before = Checks();
+        await Refused(await Post(anon, w.RevealMotion, Reveal(w.Key, "nobody")), HttpStatusCode.Unauthorized); // unknown persona
+        Assert.True(Checks() > before, "unknown persona skipped the verification");
+
+        before = Checks();
+        await Refused(await Post(anon, w.RevealMotion, Reveal(w.Key, w.Persona) with { Signature = "not-base64!" }), HttpStatusCode.Unauthorized); // malformed signature
+        Assert.True(Checks() > before, "malformed signature skipped the verification");
+
+        // Route/motion mismatch and a stale clock are answered 400 only to a caller whose signature verified; an unsigned one gets the 401.
+        var wrongRoute = Reveal(w.Key, w.Persona);
+        await Refused(await Post(anon, w.CommitMotion, wrongRoute with { Signature = Convert.ToBase64String(new byte[64]) }), HttpStatusCode.Unauthorized);
+        await Refused(await Post(anon, w.CommitMotion, wrongRoute), HttpStatusCode.BadRequest);
+
+        Assert.Equal(HttpStatusCode.OK, (await w.Moderator.DeleteAsync($"/api/sealed-motions/mind-keys/{w.KeyId}")).StatusCode);
+        before = Checks();
+        await Refused(await Post(anon, w.RevealMotion, Reveal(w.Key, w.Persona)), HttpStatusCode.Unauthorized); // revoked
+        Assert.True(Checks() > before, "revoked key skipped the verification");
+    }
+
+    [Fact]
+    public async Task A_stale_envelope_is_refused_and_old_nonces_are_pruned()
+    {
+        var w = await WorldAsync();
+        var anon = Anonymous();
+        var old = DateTimeOffset.UtcNow.AddHours(-1);
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
+            db.MindNonces.Add(new MindNonce { PersonaId = w.Persona, Nonce = "old-nonce-old-nonce-1234", SeenAtUtc = old });
+            await db.SaveChangesAsync();
+        }
+
+        await Refused(await Post(anon, w.RevealMotion, Sign(w.Key, w.Persona, "reveal", w.RevealMotion, candidate: "Bo", reason: Reason, salt: Salt,
+            issuedAt: DateTimeOffset.UtcNow.AddHours(-1).ToUnixTimeSeconds())), HttpStatusCode.BadRequest);
+        Assert.Equal(HttpStatusCode.OK, (await Post(anon, w.RevealMotion, Sign(w.Key, w.Persona, "reveal", w.RevealMotion, candidate: "Bo", reason: Reason, salt: Salt))).StatusCode);
+
+        using var check = factory.Services.CreateScope().ServiceProvider.GetRequiredService<BifrostDbContext>();
+        Assert.DoesNotContain(check.MindNonces, x => x.Nonce == "old-nonce-old-nonce-1234");
+        Assert.Single(check.MindNonces.Where(x => x.PersonaId == w.Persona));
+    }
+
+    [Fact]
+    public async Task The_endpoint_caps_the_body_and_rate_limits_per_source()
+    {
+        var w = await WorldAsync();
+        var big = new StringContent(new string('x', 10_000), System.Text.Encoding.UTF8, "application/json");
+        Assert.Equal(HttpStatusCode.RequestEntityTooLarge, (await Anonymous().PostAsync($"/api/sealed-motions/{w.RevealMotion}/mind", big)).StatusCode);
+
+        using var limited = factory.WithWebHostBuilder(b => b.ConfigureAppConfiguration((_, c) => c.AddInMemoryCollection(new Dictionary<string, string?> { ["MindIntake:Permits"] = "3" })));
+        var client = limited.CreateClient();
+        client.DefaultRequestHeaders.Add("X-Test-Anonymous", "true");
+        var codes = new List<HttpStatusCode>();
+        for (var i = 0; i < 5; i++)
+        {
+            codes.Add((await Post(client, w.RevealMotion, Sign(Key.New(), w.Persona, "reveal", w.RevealMotion))).StatusCode);
+        }
+
+        Assert.Equal([HttpStatusCode.Unauthorized, HttpStatusCode.Unauthorized, HttpStatusCode.Unauthorized, HttpStatusCode.TooManyRequests, HttpStatusCode.TooManyRequests], codes);
+    }
+
+    [Fact]
+    public async Task One_account_cannot_carry_two_personas_and_the_bindings_are_unique_in_the_model()
+    {
+        var w = await WorldAsync();
+        var second = await w.Moderator.PostAsJsonAsync("/api/sealed-motions/mind-keys", new { persona = w.Persona + "b", userAccountId = w.Account, publicKey = Key.New().Public });
+        Assert.Equal(HttpStatusCode.BadRequest, second.StatusCode);
+
+        using var db = factory.Services.CreateScope().ServiceProvider.GetRequiredService<BifrostDbContext>();
+        var type = db.Model.FindEntityType(typeof(MindPersona))!;
+        Assert.Contains(type.GetIndexes(), i => i.IsUnique && i.Properties.Single().Name == nameof(MindPersona.PersonaId));
+        Assert.Contains(type.GetIndexes(), i => i.IsUnique && i.Properties.Single().Name == nameof(MindPersona.UserAccountId));
+        Assert.Contains(db.Model.FindEntityType(typeof(MindNonce))!.GetIndexes(), i => i.IsUnique && i.Properties.Count == 2);
+    }
+
+    private sealed class ThrowOnNonce : SaveChangesInterceptor
+    {
+        public override ValueTask<InterceptionResult<int>> SavingChangesAsync(DbContextEventData e, InterceptionResult<int> r, CancellationToken ct = default) =>
+            e.Context!.ChangeTracker.Entries<MindNonce>().Any(x => x.State == EntityState.Added)
+                ? throw new DbUpdateException("disk fault")
+                : ValueTask.FromResult(r);
+    }
+
+    [Fact]
+    public async Task A_write_failure_that_is_not_a_nonce_collision_is_not_reported_as_a_replay()
+    {
+        var clock = TimeProvider.System;
+        await using var db = new BifrostDbContext(new DbContextOptionsBuilder<BifrostDbContext>()
+            .UseInMemoryDatabase($"intake-fault-{Guid.NewGuid():N}").AddInterceptors(new ThrowOnNonce()).Options);
+        var key = Key.New();
+        var user = new UserAccount { DisplayName = "m", GitHubLogin = "m", BifrostIdentity = "m", NormalizedBifrostIdentity = "M", NormalizedGitHubLogin = "M" };
+        user.Membership = new Domain.Membership { UserAccountId = user.Id, Status = MembershipStatus.Active };
+        db.UserAccounts.Add(user);
+        db.MindKeys.Add(new MindKey { PersonaId = "mindx", UserAccountId = user.Id, PublicKey = key.Public, RegisteredAtUtc = DateTimeOffset.UtcNow });
+        await db.SaveChangesAsync();
+        var audit = new AuditTrailService(db, clock);
+        var service = new MindIntakeService(db, new SealedBallotService(db, audit, clock), audit, clock);
+        var motion = Guid.NewGuid();
+
+        await Assert.ThrowsAsync<DbUpdateException>(() => service.HandleAsync(motion, Sign(key, "mindx", "commit", motion, commitment: new string('a', 64)), default));
     }
 }
