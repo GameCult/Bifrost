@@ -1440,6 +1440,68 @@ namespace Bifrost.Web.Data.Migrations
                     b.ToTable("VolunteerClaims");
                 });
 
+            modelBuilder.Entity("Bifrost.Web.Domain.MindKey", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("PersonaId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("PublicKey")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<Guid>("RegisteredByUserAccountId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("RegisteredAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("RevokedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("RevokedByUserAccountId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("UserAccountId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("PersonaId", "PublicKey")
+                        .IsUnique();
+
+                    b.ToTable("MindKeys");
+                });
+
+            modelBuilder.Entity("Bifrost.Web.Domain.MindNonce", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Nonce")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("PersonaId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTimeOffset>("SeenAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("PersonaId", "Nonce")
+                        .IsUnique();
+
+                    b.ToTable("MindNonces");
+                });
+
             modelBuilder.Entity("Bifrost.Web.Domain.SealedBallot", b =>
                 {
                     b.Property<Guid>("Id")

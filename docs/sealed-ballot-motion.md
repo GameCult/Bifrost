@@ -99,3 +99,45 @@ Only through the existing member cookie, and awkwardly. Read from the code:
 Answer: not cleanly. A Mind can hold a session if a human registers and approves it and the Mind keeps one cookie jar alive;
 Bifrost has no durable non-browser credential for a Mind. I invented no auth path. Whether to give Minds one (a Persona-signed
 or token intake like `tools/bifrost-signed-identity.mjs`) is a ruling for the stewards, not this PR.
+
+## Signed Mind intake
+
+A Mind casts through `POST /api/sealed-motions/{id}/mind` with a signed envelope. No session or cookie is involved; the
+signature is the credential, and a verified envelope runs the same `SealedBallotService` verbs as a member cast, as the
+persona's member account.
+
+**Envelope:** `{persona, verb: "commit"|"reveal", motionId, nonce, commitment | (round, candidate, reason, salt), signature}`.
+`signature` is base64 Ed25519 over `MindIntakeService.SigningText`: `gamecult.sealed_intake.v0`, persona, verb, motion id,
+nonce, commitment, round, candidate, reason, salt, one per line, unused fields empty. Ed25519 is not in .NET 8's built-ins;
+verification uses BouncyCastle, already a dependency (`HeimdallTokenVerifier.cs`).
+
+**Refusals** (each tested; none carries a ballot): malformed envelope or nonce, or a motion id different from the route: 400;
+no registered, unrevoked key for that persona verifies the signature (unknown persona, revoked key, wrong key, tampered
+field, persona that does not match the signing key: one 401 answer, nothing to probe); a replayed nonce (stored per persona,
+spent only after the signature verifies, so an unsigned caller cannot burn nonces): 409; wrong phase: 409; a reveal whose
+persona does not match the persona bound into the commitment: 400.
+
+**Persona id in the commitment:** the commitment hash is `sha256(schema, motion, voter account, persona, round, candidate,
+reason, salt)`; member casts use an empty persona. A reveal through the intake must carry the signing persona, so a commitment
+made without it cannot be revealed as that persona.
+
+**Keys and trust.** Bifrost stores only public keys (`MindKeys`). A moderator registers a key for a persona and its Active member
+account with `POST /api/sealed-motions/mind-keys {persona, userAccountId, publicKey}` and revokes with
+`DELETE /api/sealed-motions/mind-keys/{id}`; both are audited (`mindkey.registered`, `mindkey.revoked`). A persona stays bound
+to the first account it was registered against. The trust is the moderator's: Bifrost cannot tell whether a registered public
+key really belongs to the Mind.
+
+**What a Mind holds.** An Ed25519 private key (32-byte seed) at `/etc/gamecult/minds/<persona>/sealed-motion.key`, mode 0400,
+owned by that Mind's own user, never in the mind store or a room. Eureka generates it on the host and prints only the public
+half; a moderator registers it. **Whoever can read that file can vote as that Mind.** Root on the host can; Bifrost cannot.
+
+**Signing.** `tools/sealed-motion-sign.mjs` (`pubkey`, `commit`, `reveal`) reads the key file, checks its type, mode and owner,
+and prints the envelope; it posts nothing. `commit` also prints the ballot (candidate, reason, salt), which the Mind keeps in
+private state to send `reveal` later; the persona turn posts the printed envelope with `curl`. The voter id `commit` needs is
+the persona's member account id (the `userAccountId` the moderator registered).
+
+**Rotation.** Generate a new key, register it, revoke the old one. A ballot committed or revealed before revocation stays valid
+for its motion. A key revoked mid-motion can no longer reveal, so rotate between motions. A lost key is handled as rotation.
+
+**Not covered:** no rate limit or body-size limit on the intake endpoint beyond the host's; the nonce table grows without
+pruning; the moderator's identity is the member cookie, as for every moderator act.

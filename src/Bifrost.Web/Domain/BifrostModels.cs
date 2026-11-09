@@ -1153,3 +1153,37 @@ public sealed class AuditEvent
 
     public UserAccount? ActorUserAccount { get; set; }
 }
+
+/// <summary>A Mind's registered Ed25519 public key. Bifrost never holds a private key.</summary>
+public sealed class MindKey
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+
+    public string PersonaId { get; set; } = string.Empty;
+
+    // The member account this persona votes as; fixed by the first registration for the persona.
+    public Guid UserAccountId { get; set; }
+
+    // Base64 of the 32-byte public key.
+    public string PublicKey { get; set; } = string.Empty;
+
+    public Guid RegisteredByUserAccountId { get; set; }
+
+    public DateTimeOffset RegisteredAtUtc { get; set; }
+
+    public DateTimeOffset? RevokedAtUtc { get; set; }
+
+    public Guid? RevokedByUserAccountId { get; set; }
+}
+
+/// <summary>A nonce already spent by a persona; a verified envelope with a seen nonce is refused as a replay.</summary>
+public sealed class MindNonce
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+
+    public string PersonaId { get; set; } = string.Empty;
+
+    public string Nonce { get; set; } = string.Empty;
+
+    public DateTimeOffset SeenAtUtc { get; set; }
+}

@@ -122,6 +122,7 @@ builder.Services.AddScoped<BifrostIdentityService>();
 builder.Services.AddScoped<GitHubWebhookService>();
 builder.Services.AddScoped<MotionGovernanceService>();
 builder.Services.AddScoped<SealedBallotService>();
+builder.Services.AddScoped<MindIntakeService>();
 builder.Services.AddHostedService<SealedBallotCloser>();
 builder.Services.AddScoped<MotionEveSurfaceService>();
 builder.Services.AddScoped<PatronageService>();
@@ -562,6 +563,7 @@ async Task<IResult> SealedCall(Func<Task<object>> call)
             statusCode: error.Failure switch
             {
                 SealedBallotFailure.Forbidden => StatusCodes.Status403Forbidden,
+                SealedBallotFailure.Unauthorized => StatusCodes.Status401Unauthorized,
                 SealedBallotFailure.NotFound => StatusCodes.Status404NotFound,
                 SealedBallotFailure.WrongPhase => StatusCodes.Status409Conflict,
                 _ => StatusCodes.Status400BadRequest
@@ -579,6 +581,22 @@ sealedMotions.MapPost("/{id:guid}/reveal", (ICurrentBifrostActorAccessor actors,
     SealedCall(async () => await service.RevealAsync(await actors.GetAsync(ct), id, body, ct)));
 sealedMotions.MapGet("/{id:guid}/result", (ICurrentBifrostActorAccessor actors, SealedBallotService service, Guid id, CancellationToken ct) =>
     SealedCall(async () => await service.GetResultAsync(await actors.GetAsync(ct), id, ct)));
+
+sealedMotions.MapPost("/mind-keys", (ICurrentBifrostActorAccessor actors, MindIntakeService service, RegisterMindKeyRequest body, CancellationToken ct) =>
+    SealedCall(async () => await service.RegisterKeyAsync(await actors.GetAsync(ct), body.Persona, body.UserAccountId, body.PublicKey, ct)));
+sealedMotions.MapGet("/mind-keys", (ICurrentBifrostActorAccessor actors, MindIntakeService service, CancellationToken ct) =>
+    SealedCall(async () => await service.ListKeysAsync(await actors.GetAsync(ct), ct)));
+sealedMotions.MapDelete("/mind-keys/{keyId:guid}", (ICurrentBifrostActorAccessor actors, MindIntakeService service, Guid keyId, CancellationToken ct) =>
+    SealedCall(async () =>
+    {
+        await service.RevokeKeyAsync(await actors.GetAsync(ct), keyId, ct);
+        return new { revoked = keyId };
+    }));
+
+// Signed Mind intake: the Ed25519 signature is the credential. No session, no cookie; the verified envelope runs the same
+// SealedBallotService verbs as a member cast.
+app.MapPost("/api/sealed-motions/{id:guid}/mind", (MindIntakeService service, Guid id, MindEnvelope envelope, CancellationToken ct) =>
+    SealedCall(async () => await service.HandleAsync(id, envelope, ct))).AllowAnonymous();
 
 app.MapGet("/auth/heimdall/complete", (HttpContext httpContext) =>
 {
