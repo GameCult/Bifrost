@@ -160,7 +160,17 @@ public sealed class SealedBallotService(
         ballot.RevealedReason = reason;
         ballot.Salt = document.Salt;
         ballot.RevealedAtUtc = now;
-        await dbContext.SaveChangesAsync(cancellationToken);
+        motion.RevealSeq++;
+        try
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            // The close froze the reveal set between the phase check and this write: this reveal is not in it.
+            throw new SealedBallotException(SealedBallotFailure.WrongPhase, "The motion closed; the reveal window is over.");
+        }
+
         await auditTrailService.RecordAsync(
             user.Id, nameof(Motion), motionId, "sealed.revealed",
             $"{actor.DisplayName} submitted a reveal for commitment {ballot.Commitment}; content stays sealed until close.",
@@ -201,15 +211,26 @@ public sealed class SealedBallotService(
             throw new SealedBallotException(SealedBallotFailure.WrongPhase, "Ballots stay sealed until the motion closes.");
         }
 
-        var ballots = await dbContext.SealedBallots
-            .Include(x => x.UserAccount).ThenInclude(x => x.MemberProfile)
-            .Where(x => x.MotionId == motionId)
-            .ToListAsync(cancellationToken);
+        // Freeze: the close counts the reveals it read and succeeds only if no reveal landed since (RevealSeq is a concurrency
+        // token); a conflict re-reads and retries, so the digest always covers exactly the set that is published.
+        for (var attempt = 0; motion.Status == MotionStatus.Open && attempt < 5; attempt++)
+        {
+            var frozen = await dbContext.SealedBallots.AsNoTracking().Where(x => x.MotionId == motionId).ToListAsync(cancellationToken);
+            if (await FinalizeAsync(motion, frozen, now, cancellationToken))
+            {
+                break;
+            }
+        }
 
         if (motion.Status == MotionStatus.Open)
         {
-            await FinalizeAsync(motion, ballots, now, cancellationToken);
+            throw new SealedBallotException(SealedBallotFailure.WrongPhase, "The close is contended; read again.");
         }
+
+        var ballots = await dbContext.SealedBallots.AsNoTracking()
+            .Include(x => x.UserAccount).ThenInclude(x => x.MemberProfile)
+            .Where(x => x.MotionId == motionId)
+            .ToListAsync(cancellationToken);
 
         var revealed = ballots.Where(x => x.RevealedAtUtc != null).OrderBy(x => x.Id).ToList();
         var tally = CandidatesOf(motion)
@@ -251,10 +272,11 @@ public sealed class SealedBallotService(
     /// Closes the motion once. Motion.Status is a concurrency token, so of two racing closers exactly one SaveChanges wins;
     /// the loser reloads the winner's result and writes nothing (no second audit event).
     /// </summary>
-    private async Task FinalizeAsync(Motion motion, List<SealedBallot> ballots, DateTimeOffset now, CancellationToken cancellationToken)
+    private async Task<bool> FinalizeAsync(Motion motion, List<SealedBallot> ballots, DateTimeOffset now, CancellationToken cancellationToken)
     {
         var lines = ballots.OrderBy(x => x.UserAccountId)
-            .Select(x => $"{x.UserAccountId:D}:{x.Commitment}:{(x.RevealedAtUtc != null ? "revealed" : "unrevealed")}");
+            .Select(x => $"{x.UserAccountId:D}:{x.Commitment}:{(x.RevealedAtUtc != null ? "revealed" : "unrevealed")}")
+            .Prepend($"reveals:{motion.RevealSeq}");
         motion.ResultDigest = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join('\n', lines)))).ToLowerInvariant();
         motion.Status = MotionStatus.Closed;
         motion.ResolvedAtUtc = now;
@@ -270,13 +292,14 @@ public sealed class SealedBallotService(
                 await entry.ReloadAsync(cancellationToken);
             }
 
-            return;
+            return motion.Status != MotionStatus.Open;
         }
 
         await auditTrailService.RecordAsync(
             null, nameof(Motion), motion.Id, "sealed.closed",
             $"Closed sealed-ballot motion {motion.Title}; commitment digest {motion.ResultDigest}.",
             cancellationToken);
+        return true;
     }
 
     /// <summary>Closes every sealed-ballot motion whose deadline has passed, so a motion nobody reads still closes.</summary>
@@ -288,7 +311,7 @@ public sealed class SealedBallotService(
             .ToListAsync(cancellationToken);
         foreach (var motion in due)
         {
-            var ballots = await dbContext.SealedBallots.Where(x => x.MotionId == motion.Id).ToListAsync(cancellationToken);
+            var ballots = await dbContext.SealedBallots.AsNoTracking().Where(x => x.MotionId == motion.Id).ToListAsync(cancellationToken);
             await FinalizeAsync(motion, ballots, now, cancellationToken);
         }
 

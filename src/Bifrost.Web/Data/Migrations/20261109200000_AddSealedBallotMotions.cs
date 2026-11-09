@@ -19,6 +19,7 @@ namespace Bifrost.Web.Data.Migrations
             migrationBuilder.AddColumn<string>(name: "Kind", table: "Motions", type: "text", nullable: false, defaultValue: "Standard");
             migrationBuilder.AddColumn<Guid>(name: "PriorMotionId", table: "Motions", type: "uuid", nullable: true);
             migrationBuilder.AddColumn<string>(name: "ResultDigest", table: "Motions", type: "text", nullable: false, defaultValue: "");
+            migrationBuilder.AddColumn<int>(name: "RevealSeq", table: "Motions", type: "integer", nullable: false, defaultValue: 0);
             migrationBuilder.AddColumn<int>(name: "Round", table: "Motions", type: "integer", nullable: false, defaultValue: 1);
 
             migrationBuilder.CreateTable(
@@ -50,7 +51,7 @@ namespace Bifrost.Web.Data.Migrations
         protected override void Down(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.DropTable(name: "SealedBallots");
-            foreach (var column in new[] { "Candidates", "CommitClosesAtUtc", "Kind", "PriorMotionId", "ResultDigest", "Round" })
+            foreach (var column in new[] { "Candidates", "CommitClosesAtUtc", "Kind", "PriorMotionId", "ResultDigest", "RevealSeq", "Round" })
             {
                 migrationBuilder.DropColumn(name: column, table: "Motions");
             }

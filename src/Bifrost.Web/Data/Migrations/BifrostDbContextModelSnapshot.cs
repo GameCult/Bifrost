@@ -929,6 +929,10 @@ namespace Bifrost.Web.Data.Migrations
                     b.Property<DateTimeOffset?>("ResolvedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<int>("RevealSeq")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer");
+
                     b.Property<string>("ResultDigest")
                         .IsRequired()
                         .HasColumnType("text");

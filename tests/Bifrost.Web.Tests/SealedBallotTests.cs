@@ -4,6 +4,9 @@ using Bifrost.Web.Domain;
 using Bifrost.Web.Features.Motions;
 using Bifrost.Web.Features.Shared;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace Bifrost.Web.Tests;
 
@@ -267,5 +270,91 @@ public sealed class SealedBallotTests
         Assert.Equal(MotionStatus.Closed, (await rig.Db.Motions.SingleAsync(x => x.Id == motion.Id)).Status);
         Assert.Equal(0, await rig.Service.FinalizeDueAsync(default));
         Assert.Equal(1, await rig.Db.AuditEvents.CountAsync(x => x.Action == "sealed.closed"));
+    }
+
+    // Runs a callback once, just before the first save that closes a motion: the window between the close reading its ballots and writing.
+    private sealed class BeforeCloseSave(Func<Task> action) : SaveChangesInterceptor
+    {
+        private bool _done;
+
+        public override async ValueTask<InterceptionResult<int>> SavingChangesAsync(DbContextEventData eventData, InterceptionResult<int> result, CancellationToken cancellationToken = default)
+        {
+            if (!_done && eventData.Context!.ChangeTracker.Entries<Motion>().Any(e => e.State == EntityState.Modified && e.Entity.Status == MotionStatus.Closed))
+            {
+                _done = true;
+                await action();
+            }
+
+            return result;
+        }
+    }
+
+    private static (BifrostDbContext Db, Clock Clock, SealedBallotService Service) Peer(string name, DateTimeOffset at, IInterceptor? interceptor = null)
+    {
+        var clock = new Clock(at);
+        var options = new DbContextOptionsBuilder<BifrostDbContext>().UseInMemoryDatabase(name);
+        if (interceptor is not null) options.AddInterceptors(interceptor);
+        var db = new BifrostDbContext(options.Options);
+        return (db, clock, new SealedBallotService(db, new AuditTrailService(db, clock), clock));
+    }
+
+    private static async Task<(CurrentBifrostActor Actor, SealedMotionState Motion)> SeedPeerWorld(BifrostDbContext db, SealedBallotService service)
+    {
+        var user = new UserAccount { DisplayName = "Ana", GitHubLogin = "ana", BifrostIdentity = "ana", NormalizedBifrostIdentity = "ANA", NormalizedGitHubLogin = "ANA" };
+        user.Membership = new Membership { UserAccountId = user.Id, Status = MembershipStatus.Active, CanModerateMotions = true };
+        db.UserAccounts.Add(user);
+        await db.SaveChangesAsync();
+        var actor = new CurrentBifrostActor(true, user);
+        var motion = await service.OpenAsync(actor, new OpenSealedMotionCommand("t", "s", ["Ana", "Bo"], T0.AddHours(1), T0.AddHours(2)), default);
+        var doc = new SealedBallotDocument(SealedBallotDocument.SchemaId, motion.Id, 1, "Ana", "Mine.", Salt);
+        await service.CommitAsync(actor, motion.Id, SealedBallotDocument.Commit(doc, user.Id), default);
+        return (actor, motion);
+    }
+
+    [Fact]
+    public async Task A_reveal_that_loses_the_race_to_the_close_is_refused_and_is_not_in_the_frozen_set()
+    {
+        var name = $"sealed-freeze-a-{Guid.NewGuid():N}";
+        var closer = Peer(name, T0);
+        var (actor, motion) = await SeedPeerWorld(closer.Db, closer.Service);
+        closer.Clock.Now = T0.AddMinutes(90);
+        var revealer = Peer(name, T0.AddMinutes(90)); // its clock still says "reveal window"
+        _ = await revealer.Db.Motions.ToListAsync();   // and it holds a stale, Open copy of the motion
+
+        closer.Clock.Now = T0.AddHours(3);
+        var result = await closer.Service.GetResultAsync(actor, motion.Id, default);
+        Assert.Empty(result.Ballots);
+
+        var ex = await Assert.ThrowsAsync<SealedBallotException>(() =>
+            revealer.Service.RevealAsync(actor, motion.Id, new SealedBallotDocument(SealedBallotDocument.SchemaId, motion.Id, 1, "Ana", "Mine.", Salt), default));
+        Assert.Equal(SealedBallotFailure.WrongPhase, ex.Failure);
+
+        await using var check = Peer(name, T0.AddHours(4)).Db;
+        Assert.Null((await check.SealedBallots.AsNoTracking().SingleAsync()).RevealedAtUtc);
+        Assert.Equal(result.CommitmentDigest, (await check.Motions.AsNoTracking().SingleAsync()).ResultDigest);
+    }
+
+    [Fact]
+    public async Task A_close_that_read_before_a_reveal_landed_retries_and_the_digest_covers_that_reveal()
+    {
+        var name = $"sealed-freeze-b-{Guid.NewGuid():N}";
+        var revealer = Peer(name, T0);
+        var (actor, motion) = await SeedPeerWorld(revealer.Db, revealer.Service);
+        revealer.Clock.Now = T0.AddMinutes(90);
+        var doc = new SealedBallotDocument(SealedBallotDocument.SchemaId, motion.Id, 1, "Ana", "Mine.", Salt);
+        // The reveal lands after the close read its ballots and before the close wrote.
+        var closer = Peer(name, T0.AddHours(3), new BeforeCloseSave(() => revealer.Service.RevealAsync(actor, motion.Id, doc, default)));
+
+        var result = await closer.Service.GetResultAsync(actor, motion.Id, default);
+
+        Assert.Single(result.Ballots);
+        Assert.Empty(result.Unrevealed);
+        await using var check = Peer(name, T0.AddHours(4)).Db;
+        var stored = await check.Motions.AsNoTracking().SingleAsync();
+        Assert.Equal(1, stored.RevealSeq);
+        var ballot = await check.SealedBallots.AsNoTracking().SingleAsync();
+        var expected = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"reveals:1\n{ballot.UserAccountId:D}:{ballot.Commitment}:revealed"))).ToLowerInvariant();
+        Assert.Equal(expected, stored.ResultDigest); // the digest covers the reveal that raced the close
+        Assert.Equal(1, await check.AuditEvents.CountAsync(x => x.Action == "sealed.closed"));
     }
 }

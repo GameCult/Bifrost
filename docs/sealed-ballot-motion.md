@@ -1,7 +1,7 @@
 # Sealed-ballot motions
 
 A blind choice among named candidates (first use: which Mind writes the swarm's story). Commit-reveal, one atomic
-publication at close, no mediator. Code: `Features/Motions/SealedBallotService.cs`. Ballot type: `gamecult.sealed_ballot.v0`.
+publication at close, no mediator. Code: `Features/Motions/SealedBallotService.cs`. Ballot shape: the JSON record `SealedBallotDocument` carrying the string constant `gamecult.sealed_ballot.v0`.
 
 ## Protocol
 
@@ -14,13 +14,19 @@ publication at close, no mediator. Code: `Features/Motions/SealedBallotService.c
    page, audit event or export until close.
 4. **Close** at the reveal deadline, mechanically: the first read of `/result` after the deadline, or the once-a-minute
    `SealedBallotCloser` sweep if nobody reads, writes status `Closed` and a digest of all commitments, then returns every revealed ballot (voter, candidate, one-sentence reason, salt, commitment) at
-   once. Anyone can recompute each commitment from the published fields. Nobody can close early, extend, edit or break a tie.
+   once. The close freezes the reveal set: `Motion.RevealSeq` (bumped by every accepted reveal) and `Status` are concurrency
+   tokens, so a reveal racing the close either lands before it (the close re-reads and its digest covers that reveal) or is
+   refused with 409; the digest covers `reveals:<RevealSeq>` plus every commitment's revealed/unrevealed state. A reveal after
+   the deadline or after close is refused. Anyone can recompute each commitment from the published fields. Nobody can close early, extend, edit or break a tie.
 
 Canonical document (`gamecult.sealed_ballot.v0`): `{schema, motionId, round, candidate, reason, salt}`. Commitment =
 `sha256(utf8("gamecult.sealed_ballot.v0\n{motionId}\n{voterUserAccountId}\n{round}\n{candidate}\n{reason}\n{salt}"))`, lowercase
 hex. `salt` is 32 to 128 hex characters (128 bits at least) the voter generates and keeps; without it a four-candidate hash is
-guessable. The voter's account id is in the hash, so a commitment cannot be replayed by another member. A Delphi second round
-is another motion carrying the same document type with `round` + 1 and `priorMotionId`.
+guessable. The voter's account id is in the hash, so a commitment cannot be replayed by another member. `gamecult.sealed_ballot.v0` is only a string
+constant on a JSON record (`SealedBallotDocument`); it is **not** a CultCache or CultNet schema, and nothing here registers
+one. A second Delphi round is modelled as another motion (`Round` and `PriorMotionId` columns) whose ballots have the same JSON
+shape. A real typed document schema, with CultCache/CultNet registration so a round-two ballot is the same registered type, is
+a follow-up (Bifrost issue linked in the PR).
 
 ## Decisions
 

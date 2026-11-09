@@ -705,6 +705,10 @@ public sealed class Motion
 
     public Guid? PriorMotionId { get; set; }
 
+    // Sealed-ballot motions only: bumped by every accepted reveal. A concurrency token, so a reveal and the close cannot both
+    // succeed on the same row version: the close freezes exactly the reveals it counted.
+    public int RevealSeq { get; set; }
+
     // Sealed-ballot motions only: SHA-256 over the sorted commitments, written once at finalization.
     public string ResultDigest { get; set; } = string.Empty;
 
