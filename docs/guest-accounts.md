@@ -4,7 +4,8 @@ Status: **design, nothing implemented.** Written for `eureka-body:follow_up:bifr
 `eureka-body:ruling:guest-arrival-bifrost` (Meta: guests need no Matrix account of their own; they get a GameCult
 account through Bifrost with a guest role, and move to member, user or patron on the same account seamlessly),
 building on `eureka-body:ruling:bifrost-owns-accounts-invite-only`. I could not `view` either ruling from the
-Heimdall mind, so their text here is the follow-up brief's wording; check it against the rulings. First guest:
+Heimdall mind, so their text here is the follow-up brief's wording. Eureka's review (PR comment, 2026-11-07) checked
+it against the rulings and found guest-arrival matches; the conflicts it found are folded in below. First guest:
 sletz (Faust developer). Aqua decides on `#aquasynth` access, so the first grant list is hers to name.
 
 Read at Bifrost `bf8ff62` (`src/Bifrost.Web/Domain/BifrostModels.cs`, `Features/Membership`, `Features/Heimdall`,
@@ -125,6 +126,12 @@ Rooms are Matrix rooms in chat, not Bifrost objects. Bifrost owns the decision, 
 
 `RoomRef` is a room id or alias as chat names it. Aqua's `#aquasynth` is the first one if she says yes.
 
+**Scope (per `guest-room-moderation-ruled`, `guest-room-authority-ruled`).** Project rooms are public-join and
+hand-moderated by the steward, with Eureka as backstop, so a guest who can reach a public room needs no grant. A
+grant exists only for a room its steward chooses to keep closed, and its grantor is that room's steward, not a
+platform admin (the invite itself is still issued by a platform admin; `GrantedByUserAccountId` records the
+steward). Room entry for public rooms is not Bifrost's decision.
+
 The grant has to reach Matrix to mean anything. Today Bifrost's only Matrix writer is the Persona mouth, with
 per-Persona access tokens (`docs/bridge.md`), and it holds no admin or invite right.
 
@@ -132,9 +139,19 @@ Gap (largest in this doc): something must perform "invite this Matrix user to th
 them" on revoke or expiry. Candidates: a Bifrost-owned bot user that is a member with invite power in the granted
 rooms (reuses the Matrix client API, no Synapse admin credential), or the Synapse admin API. I recommend the bot
 user: narrower credential, and the room's power levels remain the real gate. Until it exists, the grant is a
-record, a human invites the guest by hand, and the receipt says `delivered_by: manual`. Rooms for guests must be
-invite-only; a guest who can reach a public room needs no grant, and that is a chat configuration fact I have not
-verified.
+record, a human invites the guest by hand, and the receipt says `delivered_by: manual`. Whether the closed rooms a
+steward keeps are invite-only in Synapse is a chat configuration fact I have not verified.
+
+What Matrix takes from the Bifrost account is exactly this effector: invite or remove on a grant, and the power
+level the effector sets on invite. Role never enters OIDC, so Matrix reads no role from the issuer
+(`bifrost-owns-accounts-invite-only`: grants flow from the account through the effector, not through claims).
+
+**Guest DMs (`guest-dms-ruled`) conflict, open.** The mouth declines invites from other servers and accepts
+same-server DM invites (`tools/persona-matrix-mouth.mjs` `answerInvites`). The ruling's decline-for-now assumed
+federated guests; a Bifrost guest is a local `@sletz:<server>`, so the mouth would accept their DM. Either the mouth
+declines DMs from role `guest` (using the account document below), or the ruling is revisited. That is Eureka's and
+the ruling's owner's call, not this doc's; until it is made, the mouth's behaviour is the ruling's opposite for local
+guests.
 
 Second gap: a guest has a full Matrix account once MAS provisions the localpart, so Matrix itself will let them
 create rooms or DM unless Synapse's room-creation and invite settings (`room_list_publication_rules`,
@@ -205,16 +222,31 @@ Bifrost" (`docs/oidc-issuer.md`) and chat does not need it. Publish a typed Cult
 | field | type | note |
 |---|---|---|
 | `account_id` | uuid | OIDC `sub`; never changes. |
-| `identity` | string | `NormalizedBifrostIdentity`; the Matrix localpart, so Matrix user id is `@<identity>:<server>` (server name per MAS config, not verified here). |
+| `identity` | string | `NormalizedBifrostIdentity`; the Matrix localpart. |
+| `matrix_id` | string | the full mxid `@<identity>:<server>`, server name taken from MAS config at publish time so no reader assumes it. The lookup key for a Persona, which holds the Matrix sender id and not the account uuid. |
 | `display_name` | string | blank once erased. |
 | `role` | `guest` \| `user` \| `patron` \| `member` | the field Personas read. |
 | `status` | `authenticated` \| `pending_approval` \| `active` \| `suspended` \| `left` \| `erased` | |
 | `role_since` | UTC ms | from the latest `AccountRoleReceipt`. |
 | `rooms` | list of room refs | only for `guest`: the live grants. Others get rooms by estate. |
 
-A Persona deciding how to treat someone looks up `identity` from the Matrix sender and reads `role`. A sender with
-no document is not a Bifrost account (a bridge ghost or an unlinked user) and is `unknown`, never defaulted to
-`guest` or `user`. Bifrost does not decide Persona behavior; it states the role.
+Contract the document carries, not left to each reader:
+
+- **Lookup.** The document is queryable by `matrix_id`.
+- **Absence is `unknown`.** A sender with no document is not a Bifrost account (a bridge ghost or an unlinked user).
+  Readers must treat it as `unknown`, never default it to `guest`, `user` or `member`. This reverses today's Persona
+  reading (everyone unlisted is `member`), which narrows to the Bifrost `member` role.
+- **Status gates the role.** Only `status = active` yields a usable role; `suspended`, `left`, `erased`,
+  `authenticated` and `pending_approval` yield none.
+- **Not Bifrost accounts.** Operator, the Persona's own id and Minds are typed by the reader's config, which takes
+  precedence over the document. Minds are not Bifrost accounts and must not fall to `unknown`.
+- **Freshness.** A reader loads the document when it builds each turn, never once at start, so a role change
+  applies from the next message; past messages keep the role they were read under. `role_since` lets a trace say
+  which role was read. Publisher bound: a role or status change is published within 30 seconds, the same bound the
+  OIDC reconciler already keeps for a non-`active` subject. No publisher exists, so this is the requirement it is
+  built to, not a measurement.
+
+Bifrost does not decide Persona behavior; it states the role.
 
 No such publisher or witness exists; Bifrost has no `.cc` export for accounts today.
 
@@ -250,6 +282,8 @@ No such publisher or witness exists; Bifrost has no `.cc` export for accounts to
 2. **Bearer link or provider-bound invite?** Recommendation: bearer, single use, seven days, optional
    `ExpectedProvider`. Confidence: medium; this is a trust call about how sletz will be sent the link.
 3. **Which Heimdall provider will sletz sign in with?** Needed before the lists are aligned.
-4. **Do guests get a `member_id` for the answer collector?** Default no.
+4. **Do guests get a `member_id` for the answer collector?** Default no. Eureka agrees from the chat side: the
+   Persona turn is not the collector, and presence in a room is the room's decision (Heimdall PR #6 owns the
+   collector).
 5. **Does promotion to member join the Members estate immediately**, or does the charter's notice and snapshot
    rule apply to the roll? The charter text is a proposal, not in force.
