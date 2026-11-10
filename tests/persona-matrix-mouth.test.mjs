@@ -18,8 +18,8 @@ const ROOMS = { [`#swarm:${HS_NAME}`]: "!swarm:gamecult.test", [`#operator:${HS_
 const SELF = `@eureka:${HS_NAME}`;
 
 const message = (id, sender, body, ts) => ({ type: "m.room.message", event_id: id, sender, origin_server_ts: ts, content: { msgtype: "m.text", body } });
-// The one write a braked round makes by design; an online presence PUT or any other write is not exempt.
-const offlinePresence = r => r.method === "PUT" && r.path.includes("/presence/") && r.body?.presence === "offline";
+// The one write a round makes by design: her presence state (any state; the brake and the grace decide which).
+const offlinePresence = r => r.method === "PUT" && r.path.includes("/presence/");
 const tick = () => new Promise(r => setImmediate(r));
 
 // A fake Matrix client-server API: just the endpoints the mouth uses.
@@ -953,7 +953,8 @@ test("image_delivery: a store that cannot write leaves the line and a nil image,
   } finally { await hs.close(); }
 });
 
-// Read receipts and presence: her ack posts her m.read; her brake sets her presence.
+// Read receipts and presence: Huginn's chat_read report posts her m.read; an ack posts nothing; her presence follows a
+// turn and her brake.
 const A = "!swarm:gamecult.test", B = "!operator:gamecult.test";
 const receiptScript = since => since === null ? { next_batch: "b0", ...joined({}) } : since === "b0" ? {
   next_batch: "b1",
@@ -970,78 +971,240 @@ const withMail = async (hs, overrides) => {
   return mouth;
 };
 const receiptsOf = hs => hs.receipts().map(r => [r.path.split("/rooms/")[1].split("/receipt/")[0], r.path.split("/m.read/")[1], r.auth, r.body]);
+const presencesOf = hs => hs.presencePuts().map(r => r.body.presence);
+const syncsOf = hs => hs.seen.filter(r => r.path.endsWith("/sync")).map(r => r.query.get("set_presence"));
+const reportRead = (mouth, roomAlias, eventId, persona = "eureka") => mouth.read({ persona, roomAlias, eventId, atUnixMs: 1 });
 
-test("an ack posts one m.read per room at the newest covered event, as that Persona", async () => {
+test("delivery, pending and an ack post no receipt: she has not read what the model has not seen", async () => {
   const hs = await fakeHomeserver({ sync: receiptScript });
   const mouth = await withMail(hs);
-  await mouth.ack(2);
-  await until(() => hs.receipts().length >= 1);
-  await new Promise(r => setTimeout(r, 20));
-  assert.deepEqual(receiptsOf(hs), [[A, "$a2", `Bearer ${TOKEN}`, {}]], "room A at its second event; room B untouched");
+  for (const after of [0, 1, 2, 3]) mouth.pendingAfter(after);
   await mouth.ack(3);
-  await until(() => hs.receipts().length >= 2);
+  await new Promise(r => setTimeout(r, 30));
+  assert.deepEqual(hs.receipts(), [], "mail handed to her queue, polled and acked: still no m.read");
+  assert.equal(mouth.pendingCount, 0);
+});
+
+test("a read report posts m.read at exactly that event id, as that Persona", async () => {
+  const hs = await fakeHomeserver({ sync: receiptScript });
+  const mouth = await withMail(hs);
+  assert.equal(await reportRead(mouth, A, "$a1"), null);
+  assert.deepEqual(receiptsOf(hs), [[A, "$a1", `Bearer ${TOKEN}`, {}]], "the reported event, not the newest in the room");
+  assert.equal(await reportRead(mouth, B, "$b1"), null);
   assert.deepEqual(receiptsOf(hs).slice(1), [[B, "$b1", `Bearer ${TOKEN}`, {}]]);
   assert.equal(hs.receipts().length, 2);
 });
 
-test("pending posts no receipt", async () => {
+test("a read report for an event the mouth never delivered, or in another room, posts nothing", async () => {
   const hs = await fakeHomeserver({ sync: receiptScript });
   const mouth = await withMail(hs);
-  for (const after of [0, 1, 2, 3]) mouth.pendingAfter(after);
-  await new Promise(r => setTimeout(r, 20));
+  assert.equal(await reportRead(mouth, A, "$made-up"), "UnknownEvent");
+  assert.equal(await reportRead(mouth, B, "$a1"), "RoomMismatch");
   assert.deepEqual(hs.receipts(), []);
 });
 
-test("a failed receipt leaves the ack whole", async () => {
-  const hs = await fakeHomeserver({ sync: receiptScript, failReceipts: true });
-  const lines = [];
-  const state = memoryState();
-  const mouth = await withMail(hs, { state, log: l => lines.push(l) });
-  const saves = [];
-  const save = state.save;
-  state.save = async v => { saves.push(v); return save(v); };
-  await mouth.ack(3);
-  await until(() => lines.some(l => l.includes("receipt in")));
-  assert.equal(mouth.pendingCount, 0);
-  assert.equal(state.box.value.nextBatch, "b1", "the cursor committed");
-  assert.ok(saves.length >= 1, "state.save called");
-  const failures = lines.filter(l => l.startsWith("receipt in "));
-  assert.equal(failures.length, 2, "one line per room, nothing retried");
-  assert.ok(failures.every(l => l.includes("not posted") && !l.includes(TOKEN)));
-  await new Promise(r => setTimeout(r, 20));
-  assert.equal(hs.receipts().length, 2, "no retry");
-});
-
-test("the ack does not wait for the receipt", async () => {
-  let release;
-  const hs = await fakeHomeserver({ sync: receiptScript, deferReceipts: new Promise(r => { release = r; }) });
-  const mouth = await withMail(hs);
-  const outcome = await Promise.race([mouth.ack(3).then(() => "acked"), new Promise(r => setTimeout(() => r("waited on the receipt"), 500))]);
-  assert.equal(outcome, "acked", "the ack resolves while the receipt response is held open");
-  assert.equal(mouth.pendingCount, 0);
-  release();
-  await until(() => hs.receipts().length >= 2);
-});
-
-test("presence follows the brake: online while released, offline and one PUT on the transition", async () => {
-  let open = true;
+test("a read report never moves her receipt backward or repeats it in a room", async () => {
   const hs = await fakeHomeserver({ sync: receiptScript });
-  const mouth = mouthFor(hs, { brake: async () => open });
-  const syncs = () => hs.seen.filter(r => r.path.endsWith("/sync")).map(r => r.query.get("set_presence"));
-  await mouth.syncOnce(); await mouth.syncOnce();
-  assert.deepEqual(syncs(), ["online", "online"]);
-  assert.equal(hs.presencePuts().length, 0, "released: no PUT");
-  open = false;
-  await mouth.syncOnce(); await mouth.syncOnce(); await mouth.syncOnce();
-  assert.deepEqual(syncs().slice(2), ["offline", "offline", "offline"]);
-  assert.deepEqual(hs.presencePuts().map(r => [r.path, r.body]), [[`/_matrix/client/v3/presence/${SELF}/status`, { presence: "offline" }]], "exactly one PUT");
-  assert.equal(hs.presencePuts()[0].rawPath, `/_matrix/client/v3/presence/${encodeURIComponent(SELF)}/status`, "the user id is percent-encoded on the wire");
+  const mouth = await withMail(hs);
+  assert.equal(await reportRead(mouth, A, "$a2"), null);
+  assert.equal(await reportRead(mouth, A, "$a1"), "Behind");
+  assert.equal(await reportRead(mouth, A, "$a2"), "Behind");
+  assert.equal(hs.receipts().length, 1);
+});
+
+test("a read report posts nothing while braked, and nothing is queued for the release", async () => {
+  let open = false;
+  const hs = await fakeHomeserver({ sync: receiptScript });
+  const lines = [];
+  const mouth = await withMail(hs, { brake: async () => open, log: l => lines.push(l) });
+  assert.equal(await reportRead(mouth, A, "$a1"), "Brake");
+  assert.ok(lines.some(l => l.includes("receipt not posted: brake held")));
   open = true;
   await mouth.syncOnce();
-  assert.equal(syncs().at(-1), "online");
-  open = false;
+  await new Promise(r => setTimeout(r, 20));
+  assert.deepEqual(hs.receipts(), []);
+  assert.equal(await reportRead(mouth, A, "$a1"), null, "a fresh report after the release posts");
+});
+
+test("a read report names her persona: another persona's report posts nothing", async () => {
+  const hs = await fakeHomeserver({ sync: receiptScript });
+  const mouth = await withMail(hs);
+  assert.equal(await reportRead(mouth, A, "$a1", "someone-else"), "PersonaMismatch");
+  assert.deepEqual(hs.receipts(), []);
+});
+
+test("the receipt goes to the delivered room id, not to the alias the report named", async () => {
+  const hs = await fakeHomeserver({ sync: receiptScript });
+  const mouth = await withMail(hs);
+  assert.equal(await reportRead(mouth, `#swarm:${HS_NAME}`, "$a1"), null);
+  assert.deepEqual(receiptsOf(hs), [[A, "$a1", `Bearer ${TOKEN}`, {}]]);
+});
+
+test("concurrent reports for one room are judged in arrival order: the newer lands and the older is behind", async () => {
+  const hs = await fakeHomeserver({ sync: receiptScript });
+  const mouth = await withMail(hs);
+  const [newer, older] = await Promise.all([reportRead(mouth, A, "$a2"), reportRead(mouth, A, "$a1")]);
+  assert.deepEqual([newer, older], [null, "Behind"]);
+  assert.deepEqual(receiptsOf(hs).map(r => r[1]), ["$a2"], "never a1 after a2");
+  const [first, second] = await Promise.all([reportRead(mouth, B, "$b1"), reportRead(mouth, B, "$b1")]);
+  assert.deepEqual([first, second], [null, "Behind"], "the same event twice posts once");
+});
+
+test("a failed receipt leaves the last landed receipt in place: an older event is still behind", async () => {
+  let receiptCalls = 0;
+  const hs = await fakeHomeserver({ sync: receiptScript });
+  const fetch = (url, init) => String(url).includes("/receipt/") && ++receiptCalls === 2 ? Promise.resolve(new Response("{}", { status: 500 })) : hs.fetch(url, init);
+  const mouth = await withMail(hs, { fetch });
+  assert.equal(await reportRead(mouth, A, "$a1"), null);
+  assert.equal(await reportRead(mouth, A, "$a2"), "Failed");
+  assert.equal(await reportRead(mouth, A, "$a1"), "Behind", "a1 landed; the failure of a2 does not reopen the room to a backward post");
+  assert.equal(await reportRead(mouth, A, "$a2"), null, "a2 itself can still land");
+  assert.deepEqual(receiptsOf(hs).map(r => r[1]), ["$a1", "$a2"]);
+});
+
+test("a brake placed after the first brake read stops the receipt and no present state is PUT while braked", async () => {
+  let used = 0, allowed = Infinity;
+  const hs = await fakeHomeserver({ sync: receiptScript });
+  const mouth = await withMail(hs, { brake: async () => used++ < allowed });
+  used = 0; allowed = 1; // read() sees it released once; every read after that finds it held
+  assert.equal(await reportRead(mouth, A, "$a1"), "Brake");
+  assert.deepEqual(hs.receipts(), [], "the receipt re-reads the brake after the presence write");
+  assert.ok(!presencesOf(hs).includes("online"), "online is never PUT on a stale brake read");
+  assert.equal(presencesOf(hs).at(-1), "offline");
+});
+test("a slow presence write after a send holds no other send in the room", async () => {
+  const hs = await fakeHomeserver({ sync: receiptScript });
+  const fetch = (url, init) => String(url).includes("/presence/") && init?.method === "PUT"
+    ? new Promise((_, reject) => init.signal.addEventListener("abort", () => reject(new Error("aborted")))) : hs.fetch(url, init);
+  const mouth = await withMail(hs, { fetch, sendTimeoutMs: 400 });
+  const send = id => mouth.send({ requestId: id, persona: "eureka", roomAlias: `#swarm:${HS_NAME}`, text: id });
+  void send("s1"); // its presence write hangs
+  const second = await Promise.race([send("s2").then(r => r.refusal), new Promise(r => setTimeout(() => r("held behind the first send's presence write"), 150))]);
+  assert.equal(second, null);
+});
+
+test("the grace ends exactly at its boundary: one millisecond inside is online, the boundary is unavailable", async () => {
+  let t = 9_000_000;
+  const hs = await fakeHomeserver({ sync: receiptScript });
+  const mouth = await withMail(hs, { now: () => t, presenceGraceMs: 60_000 });
+  await mouth.ack(3); // touched at t
+  t += 59_999;
   await mouth.syncOnce();
-  assert.equal(hs.presencePuts().length, 2, "a second transition PUTs once more");
+  assert.equal(syncsOf(hs).at(-1), "online");
+  t += 1;
+  await mouth.syncOnce();
+  assert.equal(syncsOf(hs).at(-1), "unavailable");
+});
+
+test("the state a poll carries is fixed before the poll: a grace that passes while it is open is PUT next round", async () => {
+  let t = 3_000_000;
+  const hs = await fakeHomeserver({ sync: receiptScript });
+  const fetch = async (url, init) => { const res = await hs.fetch(url, init); if (String(url).includes("/sync")) t += 100_000; return res; };
+  const mouth = mouthFor(hs, { now: () => t, presenceGraceMs: 60_000, fetch });
+  await mouth.ack(0); // a turn: online
+  await mouth.syncOnce();
+  assert.equal(syncsOf(hs).at(-1), "online");
+  await mouth.syncOnce();
+  assert.deepEqual(presencesOf(hs), ["online", "unavailable"], "the homeserver was told online by the poll; the next round must tell it unavailable");
+});
+
+test("a failed receipt is logged once, not retried, and the next report for the room posts", async () => {
+  const hs = await fakeHomeserver({ sync: receiptScript, failReceipts: true });
+  const lines = [];
+  const mouth = await withMail(hs, { log: l => lines.push(l) });
+  assert.equal(await reportRead(mouth, A, "$a1"), "Failed");
+  const failures = lines.filter(l => l.startsWith("receipt in "));
+  assert.equal(failures.length, 1);
+  assert.ok(failures[0].includes("not posted") && !failures[0].includes(TOKEN));
+  await new Promise(r => setTimeout(r, 20));
+  assert.equal(hs.receipts().length, 1, "no retry");
+  assert.equal(await reportRead(mouth, A, "$a1"), "Failed", "the claim was released: the room is not stuck behind a failed post");
+});
+
+test("a receipt that never answers is abandoned after sendTimeoutMs", async () => {
+  const hs = await fakeHomeserver({ sync: receiptScript, deferReceipts: new Promise(() => {}) });
+  const lines = [];
+  const mouth = await withMail(hs, { sendTimeoutMs: 40, log: l => lines.push(l) });
+  assert.equal(await reportRead(mouth, A, "$a1"), "Failed");
+  assert.ok(lines.some(l => l.startsWith("receipt in ") && l.includes("not posted")));
+  assert.equal(await reportRead(mouth, B, "$b1"), "Failed", "the next room's receipt went out after the first was abandoned");
+  assert.equal(hs.receipts().length, 2);
+});
+
+test("a throwing logger on a failed receipt causes no unhandled rejection", async () => {
+  const hs = await fakeHomeserver({ sync: receiptScript, failReceipts: true });
+  const mouth = await withMail(hs, { log: () => { throw new Error("logger down"); } });
+  const rejected = [];
+  const note = e => rejected.push(e);
+  process.on("unhandledRejection", note);
+  try {
+    await reportRead(mouth, A, "$a1").catch(() => {});
+    await new Promise(r => setTimeout(r, 50));
+  } finally { process.off("unhandledRejection", note); }
+  assert.deepEqual(rejected, []);
+});
+
+test("the receipt path is percent-encoded on the wire", async () => {
+  const ROOM = "!od d/room:gamecult.test", EVENT = "$ev/with+odd:chars";
+  const hs = await fakeHomeserver({ sync: since => since === null ? { next_batch: "b0" } : { next_batch: "b1", account_data: { events: [{ type: "m.direct", content: { [`@meta:${HS_NAME}`]: [ROOM] } }] }, ...joined({ [ROOM]: { timeline: { events: [message(EVENT, `@meta:${HS_NAME}`, "x", 9)] } } }) } });
+  const mouth = mouthFor(hs);
+  await mouth.syncOnce(); await mouth.syncOnce();
+  assert.equal(await reportRead(mouth, ROOM, EVENT), null);
+  assert.equal(hs.receipts()[0].rawPath, `/_matrix/client/v3/rooms/${encodeURIComponent(ROOM)}/receipt/m.read/${encodeURIComponent(EVENT)}`);
+});
+
+test("presence: unavailable while released and idle, online through a turn, unavailable after the grace", async () => {
+  let t = 1_000_000;
+  const hs = await fakeHomeserver({ sync: receiptScript });
+  const mouth = await withMail(hs, { now: () => t, presenceGraceMs: 60_000 });
+  assert.deepEqual(syncsOf(hs), ["unavailable", "unavailable"], "mail alone does not make her present");
+  assert.deepEqual(presencesOf(hs), ["unavailable"], "one PUT, not one per round");
+  await reportRead(mouth, A, "$a1");
+  assert.deepEqual(presencesOf(hs), ["unavailable", "online"], "the report puts her online at once, not at the next poll");
+  t += 59_000;
+  await mouth.syncOnce();
+  assert.equal(syncsOf(hs).at(-1), "online", "inside the grace");
+  t += 2_000;
+  await mouth.syncOnce();
+  assert.equal(syncsOf(hs).at(-1), "unavailable", "past the grace");
+  assert.deepEqual(presencesOf(hs), ["unavailable", "online", "unavailable"]);
+});
+
+test("a send or an ack within the grace keeps her online", async () => {
+  let t = 5_000_000;
+  const hs = await fakeHomeserver({ sync: receiptScript });
+  const mouth = await withMail(hs, { now: () => t, presenceGraceMs: 60_000 });
+  await mouth.ack(3);
+  await mouth.syncOnce();
+  assert.equal(syncsOf(hs).at(-1), "online", "an ack is a sign of a turn");
+  t += 61_000;
+  await mouth.syncOnce();
+  assert.equal(syncsOf(hs).at(-1), "unavailable");
+  const sent = await mouth.send({ requestId: "p1", persona: "eureka", roomAlias: `#swarm:${HS_NAME}`, text: "hi" });
+  assert.equal(sent.refusal, null);
+  await mouth.syncOnce();
+  assert.equal(syncsOf(hs).at(-1), "online", "a send is a sign of a turn");
+});
+
+test("presence under the brake is offline whatever the turn: one PUT on the transition, and a report cannot lift it", async () => {
+  let open = true;
+  const hs = await fakeHomeserver({ sync: receiptScript });
+  const mouth = await withMail(hs, { brake: async () => open });
+  await reportRead(mouth, A, "$a1");
+  await mouth.syncOnce();
+  assert.equal(syncsOf(hs).at(-1), "online");
+  open = false;
+  await mouth.syncOnce(); await mouth.syncOnce(); await mouth.syncOnce();
+  assert.deepEqual(syncsOf(hs).slice(-3), ["offline", "offline", "offline"]);
+  assert.equal(presencesOf(hs).at(-1), "offline");
+  assert.equal(presencesOf(hs).filter(p => p === "offline").length, 1, "exactly one offline PUT");
+  assert.equal(hs.presencePuts().at(-1).rawPath, `/_matrix/client/v3/presence/${encodeURIComponent(SELF)}/status`, "the user id is percent-encoded on the wire");
+  assert.equal(await reportRead(mouth, B, "$b1"), "Brake");
+  await mouth.syncOnce();
+  assert.equal(syncsOf(hs).at(-1), "offline");
+  open = true;
+  await mouth.syncOnce();
+  assert.equal(syncsOf(hs).at(-1), "online", "still inside the grace of the earlier report");
 });
 
 test("the first braked round of a fresh mouth PUTs offline once; a failed PUT is tried again next round", async () => {
@@ -1063,15 +1226,14 @@ test("two Personas on one homeserver: receipts and presence carry only her own b
   const a = await withMail(hs, { persona: "pa", token: "tokA" });
   let bOpen = false;
   const b = await withMail(hs, { persona: "pb", token: "tokB", brake: async () => bOpen });
-  await a.ack(3);
-  await b.syncOnce();
-  await until(() => hs.receipts().length >= 2);
-  assert.ok(hs.receipts().every(r => r.auth === "Bearer tokA"), "only A acked");
+  await reportRead(a, A, "$a1", "pa");
+  assert.equal(await reportRead(b, A, "$a1", "pb"), "Brake");
+  assert.ok(hs.receipts().every(r => r.auth === "Bearer tokA"), "only A read");
   bOpen = true; // her receipts go out only while released
-  await b.ack(3);
-  await until(() => hs.receipts().length >= 4);
+  assert.equal(await reportRead(b, A, "$a1", "pb"), null);
   assert.deepEqual([...new Set(hs.receipts().map(r => r.auth))].sort(), ["Bearer tokA", "Bearer tokB"]);
-  assert.ok(hs.presencePuts().length >= 1 && hs.presencePuts().every(r => r.path.endsWith(`/presence/${BOB}/status`) && r.auth === "Bearer tokB"));
+  assert.ok(hs.presencePuts().some(r => r.path.endsWith(`/presence/${BOB}/status`) && r.auth === "Bearer tokB"));
+  assert.ok(hs.presencePuts().filter(r => r.path.endsWith(`/presence/${BOB}/status`)).every(r => r.auth === "Bearer tokB"));
 });
 
 // ---- review fixes ------------------------------------------------------------------
@@ -1087,59 +1249,6 @@ test("a brake placed during the long-poll stops the join the poll's invite asks 
   assert.equal(hs.seen.filter(r => r.path.endsWith("/account_data/m.direct") && r.method === "PUT").length, 0, "no m.direct write");
 });
 
-test("no m.read receipt while braked: the ack proceeds, nothing is queued", async () => {
-  let open = true;
-  const hs = await fakeHomeserver({ sync: receiptScript });
-  const lines = [];
-  const state = memoryState();
-  const mouth = await withMail(hs, { brake: async () => open, state, log: l => lines.push(l) });
-  open = false;
-  await mouth.ack(3);
-  await until(() => lines.some(l => l.includes("receipts not posted")));
-  assert.equal(mouth.pendingCount, 0);
-  assert.equal(state.box.value.nextBatch, "b1", "the cursor committed");
-  assert.equal(lines.filter(l => l.includes("receipts not posted")).length, 1, "one line");
-  open = true;
-  await mouth.syncOnce();
-  await new Promise(r => setTimeout(r, 20));
-  assert.deepEqual(hs.receipts(), [], "released again: nothing deferred is posted");
-});
-
-test("the receipt path is percent-encoded on the wire", async () => {
-  const ROOM = "!od d/room:gamecult.test", EVENT = "$ev/with+odd:chars";
-  const hs = await fakeHomeserver({ sync: since => since === null ? { next_batch: "b0" } : { next_batch: "b1", account_data: { events: [{ type: "m.direct", content: { [`@meta:${HS_NAME}`]: [ROOM] } }] }, ...joined({ [ROOM]: { timeline: { events: [message(EVENT, `@meta:${HS_NAME}`, "x", 9)] } } }) } });
-  const mouth = mouthFor(hs);
-  await mouth.syncOnce(); await mouth.syncOnce();
-  await mouth.ack(1);
-  await until(() => hs.receipts().length >= 1);
-  assert.equal(hs.receipts()[0].rawPath, `/_matrix/client/v3/rooms/${encodeURIComponent(ROOM)}/receipt/m.read/${encodeURIComponent(EVENT)}`);
-});
-
-test("a receipt that never answers is abandoned after sendTimeoutMs", async () => {
-  const hs = await fakeHomeserver({ sync: receiptScript, deferReceipts: new Promise(() => {}) });
-  const lines = [];
-  const mouth = await withMail(hs, { sendTimeoutMs: 40, log: l => lines.push(l) });
-  await mouth.ack(3);
-  await until(() => lines.length >= 1);
-  await new Promise(r => setTimeout(r, 150));
-  assert.ok(lines.some(l => l.startsWith("receipt in ") && l.includes("not posted")), "abandoned and logged");
-  assert.equal(hs.receipts().length, 2, "the next room's receipt went out after the first was abandoned");
-});
-
-test("a throwing logger on a failed receipt causes no unhandled rejection", async () => {
-  const hs = await fakeHomeserver({ sync: receiptScript, failReceipts: true });
-  const mouth = await withMail(hs, { log: () => { throw new Error("logger down"); } });
-  const rejected = [];
-  const note = e => rejected.push(e);
-  process.on("unhandledRejection", note);
-  try {
-    await mouth.ack(3);
-    await until(() => hs.receipts().length >= 2);
-    await new Promise(r => setTimeout(r, 50));
-  } finally { process.off("unhandledRejection", note); }
-  assert.deepEqual(rejected, []);
-});
-
 test("a full backlog still sets presence from the brake", async () => {
   let open = true;
   const hs = await fakeHomeserver({ sync: receiptScript });
@@ -1150,7 +1259,7 @@ test("a full backlog still sets presence from the brake", async () => {
   open = false;
   assert.deepEqual(await mouth.syncOnce(), [], "backlog full: no /sync");
   assert.equal(hs.seen.filter(r => r.path.endsWith("/sync")).length, syncsBefore);
-  assert.deepEqual(hs.presencePuts().map(r => r.body), [{ presence: "offline" }]);
+  assert.deepEqual(hs.presencePuts().map(r => r.body), [{ presence: "unavailable" }, { presence: "offline" }]);
 });
 
 test("a brake placed during the first of two joins stops the second join and its m.direct write", async () => {
@@ -1166,4 +1275,31 @@ test("a brake placed during the first of two joins stops the second join and its
   open = true;
   await mouth.syncOnce();
   assert.deepEqual(joinsOf(hs), [DMROOM, DM2], "the second waits for the release");
+});
+
+test("chat_read round-trips and refuses a malformed tuple", () => {
+  const tuple = docs.readTuple({ persona: "eureka", roomAlias: "#swarm:gamecult.test", eventId: "$e1", atUnixMs: 12 });
+  assert.deepEqual(tuple, ["eureka", "#swarm:gamecult.test", "$e1", 12]);
+  assert.deepEqual(docs.parseRead(tuple), { persona: "eureka", roomAlias: "#swarm:gamecult.test", eventId: "$e1", atUnixMs: 12 });
+  assert.throws(() => docs.parseRead(["eureka", "#r", "", 1]), /event_id/);
+  assert.throws(() => docs.parseRead(["eureka", "#r", "$e", -1]), /at_unix_ms/);
+  assert.throws(() => docs.parseRead(["eureka", "#r", "$e"]));
+});
+
+test("a read report that throws does not wedge the room: the next report still posts and nothing is left unhandled", async () => {
+  const hs = await fakeHomeserver({ sync: receiptScript });
+  let boom = false;
+  const fetch = (url, init) => boom && String(url).includes("/presence/") ? Promise.reject(new Error("net")) : hs.fetch(url, init);
+  const mouth = await withMail(hs, { fetch, log: line => { if (boom && line.startsWith("presence not set")) throw new Error("logger down"); } }); // the presence failure and a throwing logger make run() reject
+  const unhandled = [], note = error => unhandled.push(String(error));
+  process.on("unhandledRejection", note);
+  try {
+    boom = true;
+    await assert.rejects(reportRead(mouth, A, "$a1"), /logger down/);
+    boom = false;
+    assert.equal(await reportRead(mouth, A, "$a2"), null, "the room's next report is judged and posted");
+    await new Promise(resolve => setTimeout(resolve, 50));
+  } finally { process.off("unhandledRejection", note); }
+  assert.deepEqual(unhandled, [], "no rejection escapes the tail's cleanup");
+  assert.equal(hs.receipts().length, 1);
 });
