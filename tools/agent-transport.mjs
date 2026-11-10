@@ -41,7 +41,7 @@ const {
 const {
   CultNetDocumentRegistry,
   defineCultNetDocumentBinding,
-} = cultNetRequire("cultnet-ts");
+} = cultNetRequire("@gamecult/cultnet-ts");
 const { encode, decode } = cultNetRequire("@msgpack/msgpack");
 
 function resolveFirstExisting(label, candidates) {

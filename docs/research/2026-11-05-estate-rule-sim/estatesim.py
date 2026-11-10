@@ -580,3 +580,51 @@ def buyer_runs(amount, n, seeds, W, live, overrides=()):
     wb = stake_weight("Patrons", euros=amount, overrides=overrides)
     return [influence_cap(wb, sum(stake_weight("Patrons", euros=x, overrides=overrides) for x in stake_ladder(n, s)),
                           W, ESTATES.index("Patrons"), live) for s in range(seeds)]
+
+
+# ---------------------------------------------------------------- contribution credit (SPEC section 5d)
+#
+# Credit is tallied per person from receipts (hours or credited changes, one linear unit each) and capped per
+# person. The tally and the half-influence cap are the ones above (council_share, influence_cap). Credit is
+# measured here as a candidate weight source only; this module never turns it into a vote.
+
+CREDIT_SEED = 20261106
+CREDIT_ESTATE = "Members"      # PLACEHOLDER: where contribution credit would weigh; the hours channel above lives here
+
+
+def credit_weight(credit, cap=None):
+    """One person's weight from credit: linear in receipts, min(credit, cap). One function for every person,
+    a Meta-sized contributor included; there is no per-person exemption or schedule."""
+    return credit if cap is None else min(credit, cap)
+
+
+def credit_ladder(n, s):
+    """Seed s's n ordinary members' credit (hours): Pareto(PARETO_ALPHA) from PARETO_XM (prior section 4's
+    contribution curve; the scale is PLACEHOLDER)."""
+    return pareto_ladder(n, random.Random(CREDIT_SEED + 1000 * n + s))
+
+
+def credit_cap_value(ladder, mult):
+    """Per-person cap as a multiple of the ordinary members' median credit (None = no cap)."""
+    if mult is None:
+        return None
+    xs = sorted(ladder)
+    return mult * xs[len(xs) // 2]
+
+
+def credit_run(phi, n, s, W, live, cap_mult=None, k=1):
+    """Half-cap result for a contributor holding fraction `phi` of the estate's TOTAL raw credit, against n
+    ordinary members (seed s), the credit split evenly over k identities. Returns dict: the usual
+    influence_cap fields for ONE identity (`one`), the joint share (`joint_x`), `evaded` iff the joint
+    council share is >= HALF while no identity's is, and `w_total`."""
+    e = ESTATES.index(CREDIT_ESTATE)
+    lad = credit_ladder(n, s)
+    cap = credit_cap_value(lad, cap_mult)
+    rest = sum(credit_weight(x, cap) for x in lad)
+    big = phi / (1 - phi) * sum(lad)
+    wi = credit_weight(big / k, cap)
+    tot = k * wi
+    one = influence_cap(wi, rest + tot - wi, W, e, live)
+    joint = council_share(tot, rest, W, e, live)[1]
+    return dict(one=one, joint_x=joint, binds=one["binds"], joint_binds=joint >= HALF - EPS,
+                evaded=joint >= HALF - EPS and not one["binds"], w_total=tot, rest=rest, cap=cap)

@@ -6,7 +6,7 @@ import { providerHealthIdentity, signProviderHealth } from "./bifrost-feedback-i
 
 const root=resolve(import.meta.dirname,".."),projects=resolve(root,".."),cult=resolve(process.env.VOIDBOT_CULTLIB_ROOT||resolve(projects,"CultLib"));
 const require=createRequire(resolve(cult,"packages","cultnet-ts","package.json"));
-const {encodeCultNetMessageForWire,encodeRudpPacket}=require("cultnet-ts"),{encode}=require("@msgpack/msgpack");
+const {encodeCultNetMessageForWire,encodeRudpPacket}=require("@gamecult/cultnet-ts"),{encode}=require("@msgpack/msgpack");
 const protocol="cultnet.transport.rudp.v0",schema="idunn.signed_daemon_health.v1",sourceRuntimeId="bifrost-persona-feedback";
 export const signedHealthSourceRole="daemon-health-publisher";
 const states=new Set(["active","warming","degraded","failed"]),reasons=new Set(["ready","starting","readiness-degraded","unavailable"]);

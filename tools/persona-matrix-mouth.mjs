@@ -615,7 +615,7 @@ export function cultcacheState({ runtime, path }) {
 
 export function loadRuntime(cultRoot) {
   const at = name => createRequire(resolve(cultRoot, "packages", name, "package.json"));
-  const cc = at("cultcache-ts")("@gamecult/cultcache-ts"), cn = at("cultnet-ts")("cultnet-ts"), mp = at("cultnet-ts")("@msgpack/msgpack");
+  const cc = at("cultcache-ts")("@gamecult/cultcache-ts"), cn = at("cultnet-ts")("@gamecult/cultnet-ts"), mp = at("cultnet-ts")("@msgpack/msgpack");
   return { CultCache: cc.CultCache, SingleFileMessagePackBackingStore: cc.SingleFileMessagePackBackingStore, defineDocumentType: cc.defineDocumentType, readSingleFileStore: cc.readSingleFileStore, cultnet: cn, msgpack: mp };
 }
 
