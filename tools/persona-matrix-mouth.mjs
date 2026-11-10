@@ -409,9 +409,9 @@ export function createMouth({
       readThrough.set(known.roomId, { seq: known.seq, eventId });
       return null;
     };
-    const tail = (readTails.get(known.roomId) ?? Promise.resolve()).then(run);
+    const tail = (readTails.get(known.roomId) ?? Promise.resolve()).then(run, run); // a report that threw must not wedge the room's later ones
     readTails.set(known.roomId, tail);
-    tail.then(() => { if (readTails.get(known.roomId) === tail) readTails.delete(known.roomId); });
+    tail.then(() => { if (readTails.get(known.roomId) === tail) readTails.delete(known.roomId); }, () => { if (readTails.get(known.roomId) === tail) readTails.delete(known.roomId); });
     return tail;
   }
 

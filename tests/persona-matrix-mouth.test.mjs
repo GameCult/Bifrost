@@ -1285,3 +1285,21 @@ test("chat_read round-trips and refuses a malformed tuple", () => {
   assert.throws(() => docs.parseRead(["eureka", "#r", "$e", -1]), /at_unix_ms/);
   assert.throws(() => docs.parseRead(["eureka", "#r", "$e"]));
 });
+
+test("a read report that throws does not wedge the room: the next report still posts and nothing is left unhandled", async () => {
+  const hs = await fakeHomeserver({ sync: receiptScript });
+  let boom = false;
+  const fetch = (url, init) => boom && String(url).includes("/presence/") ? Promise.reject(new Error("net")) : hs.fetch(url, init);
+  const mouth = await withMail(hs, { fetch, log: line => { if (boom && line.startsWith("presence not set")) throw new Error("logger down"); } }); // the presence failure and a throwing logger make run() reject
+  const unhandled = [], note = error => unhandled.push(String(error));
+  process.on("unhandledRejection", note);
+  try {
+    boom = true;
+    await assert.rejects(reportRead(mouth, A, "$a1"), /logger down/);
+    boom = false;
+    assert.equal(await reportRead(mouth, A, "$a2"), null, "the room's next report is judged and posted");
+    await new Promise(resolve => setTimeout(resolve, 50));
+  } finally { process.off("unhandledRejection", note); }
+  assert.deepEqual(unhandled, [], "no rejection escapes the tail's cleanup");
+  assert.equal(hs.receipts().length, 1);
+});
