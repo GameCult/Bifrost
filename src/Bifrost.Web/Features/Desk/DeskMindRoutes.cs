@@ -26,7 +26,7 @@ public sealed class DeskMindRoutes
 
     // One pass of percent-decoding. Uri.UnescapeDataString is not used: it leaves a bad escape in place and turns
     // bytes that are not UTF-8 into U+FFFD instead of failing.
-    private static bool TryDecode(string raw, out string decoded)
+    internal static bool TryDecode(string raw, out string decoded)
     {
         decoded = string.Empty;
         var bytes = new List<byte>(raw.Length);

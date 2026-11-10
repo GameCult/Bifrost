@@ -11,6 +11,15 @@ public sealed class DeskOptions
 
     public DeskAttributionOptions Attribution { get; init; } = new();
 
+    // The one origin allowed to call /api/desk from a browser (exactly this, no credentials).
+    public string AllowedOrigin { get; init; } = string.Empty;
+
+    // The cap on an answer body, in bytes, judged before it is parsed.
+    public int MaxBodyBytes { get; init; } = 16 * 1024;
+
+    // What an `unavailable` document tells the client to wait.
+    public int RetryAfterSeconds { get; init; } = 30;
+
     public bool IsConfigured => Minds.Count > 0;
 }
 

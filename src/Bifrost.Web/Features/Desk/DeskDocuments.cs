@@ -21,7 +21,11 @@ public static class DeskSchemas
 public static class DeskJson
 {
     // Defaults write nulls, which map-mode needs ("every key written").
-    public static readonly JsonSerializerOptions Options = new();
+    public static readonly JsonSerializerOptions Options = new()
+    {
+        // The documents are not HTML: keep apostrophes and non-ASCII text as written.
+        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+    };
 }
 
 public sealed record AnswerObject(
@@ -94,6 +98,18 @@ public sealed record DeskAnswerDocument(
     [property: JsonPropertyName("authority")] string Authority,
     [property: JsonPropertyName("request_id")] string RequestId);
 
+public sealed record ForkRecord(
+    [property: JsonPropertyName("schemaVersion")] string SchemaVersion,
+    [property: JsonPropertyName("fork_id")] string ForkId,
+    [property: JsonPropertyName("options_hash")] string OptionsHash,
+    [property: JsonPropertyName("counted_answer_id")] string? CountedAnswerId,
+    [property: JsonPropertyName("answers")] DeskAnswerDocument[] Answers);
+
+public sealed record ForkEntry(
+    [property: JsonPropertyName("schemaVersion")] string SchemaVersion,
+    [property: JsonPropertyName("card")] ForkCard Card,
+    [property: JsonPropertyName("record")] ForkRecord Record);
+
 public sealed record AnswerResult(
     [property: JsonPropertyName("schemaVersion")] string SchemaVersion,
     [property: JsonPropertyName("answer")] DeskAnswerDocument Answer,
@@ -125,6 +141,8 @@ public static class DeskRefusals
         [RequestInvalid] = (400, "request_invalid: the request does not satisfy its document"),
         [RequestIdConflict] = (409, "request_id_conflict: this request_id was used for a different body"),
     };
+
+    public static bool IsKnown(string code) => Table.ContainsKey(code);
 
     public static int StatusOf(string code) => Table[code].Status;
 

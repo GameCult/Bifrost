@@ -121,11 +121,33 @@ public sealed class StartupConfigurationValidator(
 
     // Checked in every environment: a bad Mind list or decider id would otherwise pass startup and misroute or
     // mis-attribute answers. Account existence is a request-time question, not a startup one.
-    private static void ValidateDesk(DeskOptions desk, List<string> failures)
+    private void ValidateDesk(DeskOptions desk, List<string> failures)
     {
         if (!desk.IsConfigured)
         {
+            if (configuration.GetSection(DeskOptions.SectionName).Exists())
+            {
+                failures.Add("Desk:Minds must list at least one Mind when the Desk section exists.");
+            }
+
             return;
+        }
+
+        if (!Uri.TryCreate(desk.AllowedOrigin, UriKind.Absolute, out var origin) ||
+            origin.Scheme is not ("http" or "https") ||
+            !string.Equals(desk.AllowedOrigin, origin.GetLeftPart(UriPartial.Authority), StringComparison.Ordinal))
+        {
+            failures.Add("Desk:AllowedOrigin must be one http(s) origin: scheme, host and optional port, no path.");
+        }
+
+        if (desk.MaxBodyBytes < 1)
+        {
+            failures.Add("Desk:MaxBodyBytes must be at least 1.");
+        }
+
+        if (desk.RetryAfterSeconds < 1)
+        {
+            failures.Add("Desk:RetryAfterSeconds must be at least 1.");
         }
 
         var ids = new HashSet<string>(StringComparer.Ordinal);

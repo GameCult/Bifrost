@@ -14,6 +14,7 @@ public sealed class DeskOptionsTests
 
     private static Dictionary<string, string?> Good() => new()
     {
+        ["Desk:AllowedOrigin"] = "https://chat.gamecult.org",
         ["Desk:Minds:0:Id"] = "gamecult-chat",
         ["Desk:Minds:0:Socket"] = "/run/huginn/huginn-gamecult-chat.sock",
         ["Desk:Minds:0:Deciders:0"] = Alice,

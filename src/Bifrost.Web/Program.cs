@@ -7,6 +7,7 @@ using Bifrost.Web.Data;
 using Bifrost.Web.Domain;
 using Bifrost.Web.Features.Bridge;
 using Bifrost.Web.Features.ConceptVotes;
+using Bifrost.Web.Features.Desk;
 using Bifrost.Web.Features.GitHub;
 using Bifrost.Web.Features.Heimdall;
 using Bifrost.Web.Features.Membership;
@@ -256,6 +257,13 @@ if (oidcOptions is not null)
     builder.Services.AddBifrostOidc(oidcOptions);
 }
 
+// The desk is mapped only when the Desk section exists, and a configured desk needs its credential and door ports.
+var deskConfigured = builder.Configuration.GetSection(DeskOptions.SectionName).Exists();
+if (deskConfigured)
+{
+    builder.Services.AddBifrostDesk();
+}
+
 var app = builder.Build();
 var appJsonSerializerOptions = CreateAppJsonSerializerOptions();
 
@@ -301,6 +309,11 @@ app.MapConceptTallyExport();
 if (oidcOptions is not null)
 {
     app.MapBifrostOidc();
+}
+
+if (deskConfigured)
+{
+    app.MapDesk();
 }
 
 app.MapPost("/github/webhooks", async (
