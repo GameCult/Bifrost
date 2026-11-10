@@ -16,12 +16,20 @@ export const kinds = Object.freeze({
   sendRequestV2: "gamecult.persona.chat_send_request.v2",
   sendReceiptV2: "gamecult.persona.chat_send_receipt.v2",
   refusal: "gamecult.persona.chat_refusal.v1",
+  openDirectRequest: "gamecult.persona.chat_open_direct_request.v1",
+  openDirectReceipt: "gamecult.persona.chat_open_direct_receipt.v1",
 });
 
 export const refusals = Object.freeze(["Brake", "PersonaMismatch", "UnknownRoom", "EmptyText", "SendFailed", "UnknownPersona"]);
 
 // RoomMoved exists only in the v2 receipt: the v1 tuple, a v1 parse and the typed refusal document do not know it.
 export const refusalsV2 = Object.freeze([...refusals, "RoomMoved"]);
+
+// The typed refusal document also answers a request of a kind this mouth does not serve (no Persona is known then).
+const refusalDocument = Object.freeze([...refusals, "UnknownKind"]);
+
+// One outcome word per open-direct receipt. room_id and event_id are present exactly for Opened and Existing.
+export const directOutcomes = Object.freeze(["Opened", "Existing", "Brake", "PersonaMismatch", "UnknownPersona", "EmptyText", "ForeignUser", "NotAPerson", "NoSuchUser", "InvitePending", "Declined", "DailyLimit", "SendFailed"]);
 
 const maxTextBytes = 4000;
 export const maxNewer = 50;
@@ -119,13 +127,39 @@ export function parseSendReceiptV2(t) {
 
 // A typed refusal for a request that names a Persona the mouth does not serve.
 export function refusalTuple({ persona, refusal }) {
-  if (!refusals.includes(refusal)) throw new Error(`unknown refusal ${refusal}`);
+  if (!refusalDocument.includes(refusal)) throw new Error(`unknown refusal ${refusal}`);
   return [text(persona, "persona"), refusal];
 }
 export function parseRefusal(t) {
   const [persona, refusal] = tuple(t, 2, "chat_refusal");
-  if (!refusals.includes(refusal)) throw new Error(`unknown refusal ${String(refusal)}`);
+  if (!refusalDocument.includes(refusal)) throw new Error(`unknown refusal ${String(refusal)}`);
   return { persona: text(persona, "persona"), refusal };
+}
+
+// A Persona asks her mouth to open a direct room with one person and say a first line there. user_id is a Matrix user id.
+export function openDirectRequestTuple({ requestId, persona, userId, text: body }) {
+  return [text(requestId, "request_id"), text(persona, "persona"), text(userId, "user_id"), String(body)];
+}
+export function parseOpenDirectRequest(t) {
+  const [requestId, persona, userId, body] = tuple(t, 4, "chat_open_direct_request");
+  if (typeof body !== "string") throw new Error("chat_open_direct_request text must be a string");
+  if (Buffer.byteLength(body, "utf8") > maxTextBytes) throw new Error("chat_open_direct_request text is over the byte bound");
+  return { requestId: text(requestId, "request_id"), persona: text(persona, "persona"), userId: text(userId, "user_id"), text: body };
+}
+
+function checkDirectReceipt(outcome, roomId, eventId) {
+  if (!directOutcomes.includes(outcome)) throw new Error(`unknown open-direct outcome ${String(outcome)}`);
+  const placed = outcome === "Opened" || outcome === "Existing";
+  if (placed !== (roomId !== null && eventId !== null) || (!placed && (roomId !== null || eventId !== null))) throw new Error("room_id and event_id are present exactly for Opened and Existing");
+}
+export function openDirectReceiptTuple({ requestId, outcome, roomId = null, eventId = null }) {
+  checkDirectReceipt(outcome, roomId, eventId);
+  return [text(requestId, "request_id"), outcome, roomId === null ? null : text(roomId, "room_id"), eventId === null ? null : text(eventId, "event_id")];
+}
+export function parseOpenDirectReceipt(t) {
+  const [requestId, outcome, roomId, eventId] = tuple(t, 4, "chat_open_direct_receipt");
+  checkDirectReceipt(outcome, roomId, eventId);
+  return { requestId: text(requestId, "request_id"), outcome, roomId: roomId === null ? null : text(roomId, "room_id"), eventId: eventId === null ? null : text(eventId, "event_id") };
 }
 
 export function deliveryTuple(d) {
@@ -190,10 +224,11 @@ export function envelope({ kind, recordKey, payload, sourceRuntimeId, sourceAgen
   };
 }
 
+// allowedKinds null: any kind passes (the caller answers a kind it does not serve).
 export function checkEnvelope(message, allowedKinds) {
   const d = message?.document;
   if (message?.schemaVersion !== "cultnet.document_put_raw.v0" || !d) throw new Error("not a document_put_raw message");
-  if (!allowedKinds.includes(d.schemaId)) throw new Error(`document kind ${String(d.schemaId)} is not accepted here`);
+  if (allowedKinds !== null && !allowedKinds.includes(d.schemaId)) throw new Error(`document kind ${String(d.schemaId)} is not accepted here`);
   if (d.payloadEncoding !== "messagepack") throw new Error("chat documents are MessagePack");
   if (!Array.isArray(d.tags) || d.tags.length !== 1 || d.tags[0] !== "cultnet.transport.rudp.v0") throw new Error("chat document tags substituted authority");
   return d;
