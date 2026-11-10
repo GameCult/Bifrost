@@ -101,5 +101,25 @@ public sealed class DeskMindRoutesTests
         Assert.Equal("/s/A", routes.Resolve("A")!.Socket);
     }
 
+    [Fact]
+    public void A_decoding_failure_is_a_miss_even_when_the_failure_spells_a_configured_id()
+    {
+        var replacement = char.ConvertFromUtf32(0xFFFD);
+        var e = char.ConvertFromUtf32(0xE9);
+        var routes = new DeskMindRoutes([
+            new DeskMindOptions { Id = replacement, Socket = "/s/replacement" },
+            new DeskMindOptions { Id = e, Socket = "/s/e-acute" },
+            new DeskMindOptions { Id = "a%zz", Socket = "/s/bad-escape" },
+            new DeskMindOptions { Id = "100%", Socket = "/s/trailing" },
+        ]);
+
+        Assert.Null(routes.Resolve("%ff"));                                          // not UTF-8, not U+FFFD
+        Assert.Null(routes.Resolve(char.ConvertFromUtf32(0xC3) + char.ConvertFromUtf32(0xA9))); // UTF-8 bytes as raw chars
+        Assert.Null(routes.Resolve("a%zz"));
+        Assert.Null(routes.Resolve("100%"));
+        Assert.Equal("/s/replacement", routes.Resolve("%ef%bf%bd")!.Socket);          // the real encoding still resolves
+        Assert.Equal("/s/e-acute", routes.Resolve("%c3%a9")!.Socket);
+    }
+
     private static string Short(string value) => value.Length > 40 ? value[..40] + "..." : value;
 }
