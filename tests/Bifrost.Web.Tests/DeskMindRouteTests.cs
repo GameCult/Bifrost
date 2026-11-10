@@ -28,7 +28,7 @@ public sealed class DeskMindRouteTests
         var cases = DeskVectors.Rows("transport", "mindRoutes", "cases").ToList();
         Assert.Equal(57, cases.Count);
 
-        foreach (var row in cases.Where(r => (string)r["route"]! == "answer"))
+        foreach (var row in cases)
         {
             var name = (string)row["name"]!;
             var (reply, factory) = await RunAsync(row);
@@ -78,11 +78,6 @@ public sealed class DeskMindRouteTests
         {
             var first = cases[(string)pair![0]!];
             var second = cases[(string)pair[1]!];
-            if ((string)first["route"]! != "answer" || (string)second["route"]! != "answer")
-            {
-                continue;
-            }
-
             var (a, fa) = await RunAsync(first);
             var (b, fb) = await RunAsync(second);
             using (fa)

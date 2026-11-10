@@ -3,7 +3,7 @@ using Bifrost.Web.Features.Desk;
 
 namespace Bifrost.Web.Tests.Support;
 
-public sealed record DeskDoorCall(string Kind, string Socket, DeskDoorContext Context, byte[]? Body, string? ForkId);
+public sealed record DeskDoorCall(string Kind, string Socket, DeskDoorContext Context, byte[]? Body, string? ForkId, DeskListRequest? List = null);
 
 // The door as a test double: it records every call, holds the forks each socket's Mind holds, and by default stores
 // an answer to a held fork as Counted. A test may script the outcome or make the door fail before or after storing.
@@ -26,6 +26,25 @@ public sealed class FakeDeskDoor : IDeskDoor
     public bool ThrowAfterStore { get; set; }
 
     public bool ThrowOnRead { get; set; }
+
+    public Func<string, DeskListRequest, DeskListOutcome>? ListScript { get; set; }
+
+    public Task<DeskListOutcome> ListAsync(
+        string socket, DeskDoorContext context, DeskListRequest request, CancellationToken cancellationToken)
+    {
+        lock (gate)
+        {
+            Calls.Add(new DeskDoorCall("list", socket, context, null, null, request));
+        }
+
+        if (Down)
+        {
+            throw new IOException("huginn is down");
+        }
+
+        return Task.FromResult(ListScript?.Invoke(socket, request)
+            ?? new DeskListOutcome.Listed(new ForkList("gamecult.fork.list.v0", request.Mind, "s1", 0, 0, [], null)));
+    }
 
     public Task<DeskAnswerOutcome> AnswerAsync(
         string socket, DeskDoorContext context, ReadOnlyMemory<byte> body, CancellationToken cancellationToken)

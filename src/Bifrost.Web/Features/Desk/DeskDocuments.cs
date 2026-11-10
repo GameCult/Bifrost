@@ -110,6 +110,15 @@ public sealed record ForkEntry(
     [property: JsonPropertyName("card")] ForkCard Card,
     [property: JsonPropertyName("record")] ForkRecord Record);
 
+public sealed record ForkList(
+    [property: JsonPropertyName("schemaVersion")] string SchemaVersion,
+    [property: JsonPropertyName("mind")] string Mind,
+    [property: JsonPropertyName("stamp")] string Stamp,
+    [property: JsonPropertyName("open_count")] int OpenCount,
+    [property: JsonPropertyName("recorded_count")] int RecordedCount,
+    [property: JsonPropertyName("forks")] ForkEntry[] Forks,
+    [property: JsonPropertyName("next_cursor")] string? NextCursor);
+
 public sealed record AnswerResult(
     [property: JsonPropertyName("schemaVersion")] string SchemaVersion,
     [property: JsonPropertyName("answer")] DeskAnswerDocument Answer,

@@ -12,16 +12,17 @@ public sealed class DeskAuthCaseTests
         var cases = DeskVectors.Rows("transport", "authCases").ToList();
         Assert.Equal(22, cases.Count);
 
-        foreach (var row in cases.Where(r => (string)r["route"]! == "answer"))
+        foreach (var row in cases)
         {
             using var factory = new DeskWebApplicationFactory();
             DeskReplay.HoldVectorForks(factory.Door);
             factory.Door.Down = (bool)row["huginn_down"]!;
             var token = await DeskReplay.TokenAsync(factory, row["token"]);
 
+            var route = (string)row["route"]!;
             var reply = await factory.SendAsync(
-                "POST", DeskReplay.Target("answer", "gamecult-chat", DeskReplay.ChatFork),
-                DeskReplay.AnswerBody(DeskReplay.ChatFork), token);
+                route == "answer" ? "POST" : "GET", DeskReplay.Target(route, "gamecult-chat", DeskReplay.ChatFork),
+                route == "answer" ? DeskReplay.AnswerBody(DeskReplay.ChatFork) : null, token);
 
             var name = (string)row["name"]!;
             var expect = (string)row["expect"]!;

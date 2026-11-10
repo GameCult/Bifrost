@@ -35,12 +35,27 @@ public abstract record DeskReadOutcome
     public sealed record NotFound(string Code) : DeskReadOutcome;
 }
 
+// The list request the desk's query string stands for. Mind is the route's, resolved against the configured list.
+public sealed record DeskListRequest(string Mind, string? Status, string? Cursor, int Limit);
+
+public abstract record DeskListOutcome
+{
+    public sealed record Listed(ForkList List) : DeskListOutcome;
+
+    public sealed record NotListed(string Code) : DeskListOutcome;
+}
+
 public interface IDeskDoor
 {
     // The body is exactly the bytes the client sent. Any exception means the outcome is not confirmed.
     Task<DeskAnswerOutcome> AnswerAsync(
         string socket, DeskDoorContext context, ReadOnlyMemory<byte> body, CancellationToken cancellationToken);
 
+    // The entry for one fork, its card built and hashed by Huginn.
     Task<DeskReadOutcome> ReadAsync(
         string socket, DeskDoorContext context, string forkId, CancellationToken cancellationToken);
+
+    // A page of entries, the counts and the stamp, as Huginn projects them for this viewer.
+    Task<DeskListOutcome> ListAsync(
+        string socket, DeskDoorContext context, DeskListRequest request, CancellationToken cancellationToken);
 }

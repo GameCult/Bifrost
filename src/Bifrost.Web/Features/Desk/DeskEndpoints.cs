@@ -95,8 +95,10 @@ public static class DeskEndpoints
             return;
         }
 
-        // 6. The body's shape. The bytes read are the bytes forwarded.
+        // 6. The request's shape. An answer's bytes are the bytes forwarded; list and read judge their query.
         byte[] body = [];
+        DeskListRequest? listRequest = null;
+        var forkId = string.Empty;
         if (route.Kind == DeskRouteKind.Answer)
         {
             var read = await ReadBodyAsync(http.Request, desk.MaxBodyBytes, cancellationToken);
@@ -110,6 +112,13 @@ public static class DeskEndpoints
             }
 
             body = read!;
+        }
+        else if (route.Kind == DeskRouteKind.Read
+                     ? !DeskQuery.TryRead(route.RawQuery, route.RawFork!, out forkId)
+                     : !DeskQuery.TryList(route.RawQuery, string.Empty, out listRequest))
+        {
+            await WriteRefusalAsync(http, DeskRefusals.RequestInvalid);
+            return;
         }
 
         // 7. The {mind} lookup: a miss is the same document as an unknown fork.
@@ -125,35 +134,80 @@ public static class DeskEndpoints
         var context = new DeskDoorContext(subject, desk.Attribution.AuthorityOf(subject), mind.Deciders);
         try
         {
-            var outcome = await door.AnswerAsync(mind.Socket, context, body, cancellationToken);
-            switch (outcome)
+            switch (route.Kind)
             {
-                case DeskAnswerOutcome.NotStored(var code) when DoorMayRefuse(code):
-                    await WriteRefusalAsync(http, code);
-                    return;
-                case DeskAnswerOutcome.Answered(var result) when DeskStatus.Of(result) is { } status:
-                    if (string.Equals(result.Answer.Code, DeskStatus.StaleFork, StringComparison.Ordinal))
+                case DeskRouteKind.List:
+                    var listed = await door.ListAsync(mind.Socket, context, listRequest! with { Mind = mind.Id }, cancellationToken);
+                    if (listed is DeskListOutcome.Listed(var list))
                     {
-                        var current = await door.ReadAsync(mind.Socket, context, result.Answer.ForkId, cancellationToken);
-                        if (current is not DeskReadOutcome.Found(var entry))
-                        {
-                            await WriteUnavailableAsync(http, desk);
-                            return;
-                        }
-
-                        result = result with { Card = entry.Card };
+                        await WriteJsonAsync(http, 200, list);
+                    }
+                    else if (listed is DeskListOutcome.NotListed(var listCode) && DoorMayRefuse(listCode))
+                    {
+                        await WriteRefusalAsync(http, listCode);
+                    }
+                    else
+                    {
+                        await WriteUnavailableAsync(http, desk);
                     }
 
-                    await WriteJsonAsync(http, status, result);
+                    return;
+                case DeskRouteKind.Read:
+                    var found = await door.ReadAsync(mind.Socket, context, forkId, cancellationToken);
+                    if (found is DeskReadOutcome.Found(var entry))
+                    {
+                        await WriteJsonAsync(http, 200, entry);
+                    }
+                    else if (found is DeskReadOutcome.NotFound(var readCode) && DoorMayRefuse(readCode))
+                    {
+                        await WriteRefusalAsync(http, readCode);
+                    }
+                    else
+                    {
+                        await WriteUnavailableAsync(http, desk);
+                    }
+
                     return;
                 default:
-                    await WriteUnavailableAsync(http, desk);
+                    await AnswerAsync(http, door, mind, context, body, desk);
                     return;
             }
         }
         catch (Exception) when (!cancellationToken.IsCancellationRequested)
         {
             await WriteUnavailableAsync(http, desk);
+        }
+    }
+
+    private static async Task AnswerAsync(
+        HttpContext http, IDeskDoor door, DeskMindOptions mind, DeskDoorContext context, byte[] body, DeskOptions desk)
+    {
+        var cancellationToken = http.RequestAborted;
+        var outcome = await door.AnswerAsync(mind.Socket, context, body, cancellationToken);
+        switch (outcome)
+        {
+            case DeskAnswerOutcome.NotStored(var code) when DoorMayRefuse(code):
+                await WriteRefusalAsync(http, code);
+                return;
+            case DeskAnswerOutcome.Answered(var result) when DeskStatus.Of(result) is { } status:
+                // A stale_fork answer, fresh or replayed, carries the CURRENT card: nothing is stored for it.
+                if (string.Equals(result.Answer.Code, DeskStatus.StaleFork, StringComparison.Ordinal))
+                {
+                    var current = await door.ReadAsync(mind.Socket, context, result.Answer.ForkId, cancellationToken);
+                    if (current is not DeskReadOutcome.Found(var entry))
+                    {
+                        await WriteUnavailableAsync(http, desk);
+                        return;
+                    }
+
+                    result = result with { Card = entry.Card };
+                }
+
+                await WriteJsonAsync(http, status, result);
+                return;
+            default:
+                await WriteUnavailableAsync(http, desk);
+                return;
         }
     }
 
@@ -231,20 +285,24 @@ public static class DeskStatus
 
 public enum DeskRouteKind
 {
+    List,
+    Read,
     Answer,
 }
 
-public sealed record DeskRoute(DeskRouteKind Kind, string RawMind)
+public sealed record DeskRoute(DeskRouteKind Kind, string RawMind, string? RawFork, string RawQuery)
 {
     // The raw request target against the three routes. Segments stay percent-encoded: {mind} is decoded once, by
     // the resolver, and nothing here normalises a dot segment. Any other shape is not a desk route.
     public static DeskRoute? Parse(string method, string rawTarget)
     {
         var path = rawTarget;
-        var query = path.IndexOf('?');
-        if (query >= 0)
+        var query = string.Empty;
+        var split = path.IndexOf('?');
+        if (split >= 0)
         {
-            path = path[..query];
+            query = path[(split + 1)..];
+            path = path[..split];
         }
 
         if (!path.StartsWith(DeskEndpoints.RoutePrefix + "/", StringComparison.Ordinal))
@@ -253,10 +311,91 @@ public sealed record DeskRoute(DeskRouteKind Kind, string RawMind)
         }
 
         var segments = path[(DeskEndpoints.RoutePrefix.Length + 1)..].Split('/');
-        return method switch
+        return (method, segments) switch
         {
-            "POST" when segments is [var mind, "answers"] => new DeskRoute(DeskRouteKind.Answer, mind),
+            ("GET", [var mind, "forks"]) => new DeskRoute(DeskRouteKind.List, mind, null, query),
+            ("GET", [var mind, "forks", var fork]) => new DeskRoute(DeskRouteKind.Read, mind, fork, query),
+            ("POST", [var mind, "answers"]) => new DeskRoute(DeskRouteKind.Answer, mind, null, query),
             _ => null,
         };
+    }
+}
+
+// The list and read requests the query string and path stand for (fork-card.md, List and Read). Nothing in a
+// query sets a decider, an answerer or a Mind; an unknown key, a repeated key or a bad value is request_invalid.
+public static class DeskQuery
+{
+    public const int MaxLimit = 50;
+
+    public static bool TryList(string rawQuery, string mind, out DeskListRequest request)
+    {
+        request = new DeskListRequest(mind, null, null, MaxLimit);
+        if (!TryPairs(rawQuery, out var pairs))
+        {
+            return false;
+        }
+
+        string? status = null, cursor = null;
+        var limit = MaxLimit;
+        foreach (var (key, value) in pairs)
+        {
+            switch (key)
+            {
+                case "status" when value is "open" or "recorded":
+                    status = value;
+                    break;
+                case "status" when value.Length == 0:
+                    break;
+                case "cursor" when IsCursor(value):
+                    cursor = value;
+                    break;
+                case "cursor" when value.Length == 0:
+                    break;
+                case "limit" when int.TryParse(value, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var n) && n <= MaxLimit:
+                    limit = n;
+                    break;
+                default:
+                    return false;
+            }
+        }
+
+        request = new DeskListRequest(mind, status, cursor, limit);
+        return true;
+    }
+
+    // The read request has no query at all.
+    public static bool TryRead(string rawQuery, string rawFork, out string forkId)
+    {
+        forkId = string.Empty;
+        return rawQuery.Length == 0 && DeskMindRoutes.TryDecode(rawFork, out forkId) && forkId.Length > 0;
+    }
+
+    // c<N>, N a positive integer without a leading zero.
+    private static bool IsCursor(string value) =>
+        value.Length > 1 && value[0] == 'c' && value[1] is >= '1' and <= '9' && value.Skip(2).All(char.IsAsciiDigit);
+
+    private static bool TryPairs(string rawQuery, out List<(string Key, string Value)> pairs)
+    {
+        pairs = [];
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        if (rawQuery.Length == 0)
+        {
+            return true;
+        }
+
+        foreach (var part in rawQuery.Split('&'))
+        {
+            var eq = part.IndexOf('=');
+            var rawKey = eq < 0 ? part : part[..eq];
+            var rawValue = eq < 0 ? string.Empty : part[(eq + 1)..];
+            if (!DeskMindRoutes.TryDecode(rawKey, out var key) || !DeskMindRoutes.TryDecode(rawValue, out var value) || !seen.Add(key))
+            {
+                return false;
+            }
+
+            pairs.Add((key, value));
+        }
+
+        return true;
     }
 }
