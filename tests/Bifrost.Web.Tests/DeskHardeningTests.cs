@@ -109,6 +109,23 @@ public sealed class DeskHardeningTests
         }
     }
 
+    // A declared length over the cap is refused on the header alone, before any byte is read.
+    [Fact]
+    public async Task A_declared_length_over_the_cap_is_refused_before_reading()
+    {
+        var bare = DeskReplay.AnswerBody(DeskReplay.ChatFork);
+        var config = DeskWebApplicationFactory.DefaultConfiguration();
+        config["Desk:MaxBodyBytes"] = bare.Length.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        using var factory = await ArrangeAsync(config);
+
+        var reply = await factory.SendAsync(
+            "POST", DeskReplay.Target("answer", Chat, null), bare, Token(factory),
+            configure: http => http.Request.ContentLength = bare.Length + 1);
+
+        Assert.Equal("body_invalid", Code(reply));
+        Assert.Empty(factory.Door.Calls);
+    }
+
     // (c) The wait an `unavailable` names is the configured one, in the document and in the header.
     [Fact]
     public async Task Retry_after_comes_from_configuration_in_the_document_and_the_header()
