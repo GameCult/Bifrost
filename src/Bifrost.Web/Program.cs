@@ -293,6 +293,7 @@ app.MapGet("/readyz", async (ReadinessService readinessService, CancellationToke
 }).AllowAnonymous();
 
 app.MapConceptTallyExport();
+app.MapConceptRankedExport();
 
 if (oidcOptions is not null)
 {
