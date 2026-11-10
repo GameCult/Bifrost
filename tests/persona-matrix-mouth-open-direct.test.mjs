@@ -15,6 +15,7 @@ const ALIAS = `#swarm:${HS}`;
 async function homeserver({ people = [META, `@nova:${HS}`], now = () => 1000, failInvite: initialFailInvite = false } = {}) {
   const config = { failInvite: initialFailInvite };
   const rooms = new Map(); // room id -> { events }
+  const stateReads = [];
   const log = []; // every write, in order, as "METHOD path"
   let counter = 0;
   const direct = { value: null };
@@ -41,6 +42,7 @@ async function homeserver({ people = [META, `@nova:${HS}`], now = () => 1000, fa
       if (path.startsWith("/directory/room/")) return reply(200, { room_id: PROJECT });
       if (path.startsWith("/profile/")) return people.includes(path.slice("/profile/".length)) ? reply(200, { displayname: "x" }) : reply(404, { errcode: "M_NOT_FOUND" });
       const state = path.match(/^\/rooms\/(.+)\/state$/);
+      if (state) stateReads.push(state[1]);
       if (state) return rooms.has(state[1]) ? reply(200, rooms.get(state[1]).events) : reply(403, {});
       if (req.method === "POST" && path === "/createRoom") {
         write();
@@ -67,7 +69,7 @@ async function homeserver({ people = [META, `@nova:${HS}`], now = () => 1000, fa
   });
   await new Promise(ok => server.listen(0, "127.0.0.1", ok));
   return {
-    url: `http://127.0.0.1:${server.address().port}`, rooms, log, direct,
+    url: `http://127.0.0.1:${server.address().port}`, rooms, log, direct, stateReads,
     set failInvite(v) { config.failInvite = v; },
     seedDm(id, user, membership, { encrypted = false, created = 5, marker } = {}) {
       rooms.set(id, { events: [{ type: "m.room.create", state_key: "", origin_server_ts: created, content: { creator: ME, ...(marker ? { "org.gamecult.open_request": marker } : {}) } }] });
@@ -163,7 +165,7 @@ test("the brake is read fresh before createRoom, before the invite and before th
       }
       const writes = events.filter(e => e.startsWith("write"));
       for (let i = 0; i < events.length; i++) if (events[i].startsWith("write")) assert.equal(events[i - 1], "free", `free=${free}: ${events[i]} was not immediately preceded by a released brake read`);
-      if (free >= 5) assert.equal(writes.length, 3);
+      assert.equal(writes.length, Math.min(3, free - 1), `free=${free}: reads 2, 3 and 4 each gate exactly the createRoom, the invite and the line`);
     } finally { await hs.close(); }
   }
 });
@@ -271,5 +273,72 @@ test("a homeserver failure answers SendFailed and writes nothing the brake or a 
   try {
     const m = mouthFor(hs, { homeserver: "http://127.0.0.1:9" });
     assert.equal(outcome(await ask(m, "r1")), "SendFailed");
+  } finally { await hs.close(); }
+});
+
+test("two requests for one person at once make one room: opens for a person run one at a time", async () => {
+  const hs = await homeserver();
+  try {
+    const m = mouthFor(hs);
+    const answers = await Promise.all([ask(m, "a"), ask(m, "b")]);
+    assert.equal(hs.writes(/createRoom/).length, 1);
+    assert.deepEqual(answers.map(outcome).sort(), ["InvitePending", "Opened"]);
+    const other = await Promise.all([ask(m, "c", `@nova:${HS}`), ask(m, "d", META)]);
+    assert.equal(other[0].outcome, "Opened", "another person is not held behind");
+  } finally { await hs.close(); }
+});
+
+test("a decline stands in an encrypted room too, and a pending invite there is still pending: no new room, no line", async () => {
+  for (const [membership, expected] of [["leave", "Declined"], ["invite", "InvitePending"]]) {
+    const hs = await homeserver();
+    try {
+      hs.seedDm("!enc:gamecult.org", META, membership, { encrypted: true });
+      assert.equal(outcome(await ask(mouthFor(hs), "r1")), expected);
+      assert.deepEqual(hs.log, []);
+    } finally { await hs.close(); }
+  }
+});
+
+test("the not-E2EE notice reaches the person even when the first line was held back: a later line into the room this path made carries it once", async () => {
+  const hs = await homeserver();
+  try {
+    let reads = 0;
+    const m = mouthFor(hs, { brake: async () => ++reads <= 3 }); // top, createRoom, invite: then the brake is held before the line
+    assert.equal(outcome(await ask(m, "r1")), "Brake");
+    const roomId = [...hs.rooms.keys()][0];
+    assert.equal(hs.rooms.get(roomId).sent, undefined, "the invite went out, the line did not");
+    hs.set(roomId, META, "join");
+    const answer = await ask(mouthFor(hs), "r2", META, "second");
+    assert.deepEqual([answer.outcome, answer.roomId], ["Existing", roomId]);
+    assert.match(hs.rooms.get(roomId).sent.get("r2").body.body, /^This room is not end-to-end encrypted.*\n\nsecond$/s);
+    await ask(mouthFor(hs), "r3", META, "third"); // another process: the notice is repeated at worst once, never lost
+    const sameProcess = mouthFor(hs);
+    await ask(sameProcess, "r4", META, "fourth");
+    await ask(sameProcess, "r5", META, "fifth");
+    assert.equal(hs.rooms.get(roomId).sent.get("r5").body.body, "fifth", "once the notice went out in this process it is not repeated");
+  } finally { await hs.close(); }
+});
+
+test("the lookup finds a DM only: a group room with the person is not one, and project rooms are never scanned", async () => {
+  const hs = await homeserver();
+  try {
+    hs.seedDm("!group:gamecult.org", META, "join");
+    hs.set("!group:gamecult.org", `@third:${HS}`, "join"); // three members
+    const r = await ask(mouthFor(hs), "r1");
+    assert.equal(r.outcome, "Opened");
+    assert.notEqual(r.roomId, "!group:gamecult.org");
+    assert.equal(hs.rooms.get("!group:gamecult.org").sent, undefined);
+    assert.ok(!hs.stateReads.includes("!project:gamecult.org"), "a configured project room is not read as a DM candidate");
+  } finally { await hs.close(); }
+});
+
+test("another Mind this process serves is not a person, even before that Mind's own mouth has started", async () => {
+  const hs = await homeserver();
+  try {
+    const nova = `@nova:${HS}`;
+    let asked = null;
+    const m = mouthFor(hs, { isServed: async id => { asked = id; return id === nova; } });
+    assert.equal(outcome(await ask(m, "r1", nova)), "NotAPerson");
+    assert.equal(asked, nova);
   } finally { await hs.close(); }
 });

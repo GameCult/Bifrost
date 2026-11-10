@@ -117,7 +117,7 @@ export function createMouth({
   now = Date.now, log = () => {}, syncTimeoutMs = 30000, maxPending = MAX_PENDING, gate = createRoomGate(), sendTimeoutMs = SEND_TIMEOUT_MS,
   presenceGraceMs = PRESENCE_GRACE_MS,
   images = null, // this Persona's image store (createImageStore), or null: images stay the typed text line
-  isServed = () => false, // whether a Matrix user id is an account this process speaks for: a Mind is not a person to open a DM with
+  isServed = async () => false, // (async) whether a Matrix user id is an account this process speaks for: a Mind is not a person to open a DM with
 }) {
   if (!persona || !homeserver || !token || !rooms?.length) throw new Error("persona, homeserver, rooms and token are required");
   const say = message => log(redact(String(message), token));
@@ -142,6 +142,8 @@ export function createMouth({
   const directContent = {}; // the account's m.direct content: user id -> room ids
   const invites = new Map(); // room id -> { inviter, direct }: invitations not yet answered
   const processed = new Set(); // event ids read since the position last advanced
+  const noticed = new Set(); // rooms this mouth created where the not-E2EE first line has gone out
+  const personTails = new Map(); // person's user id -> the open in flight: opens for one person run one at a time
   const openedOn = new Map(); // person's user id -> the UTC day this process last created a room for them: one creation per person per day
 
   async function matrix(method, path, body, prefix = API, signal) {
@@ -501,16 +503,28 @@ export function createMouth({
   }
 
   // The first line of an open: the invite is the ask and the room is not end-to-end encrypted, and the line says so.
-  async function putLine(roomId, requestId, text, first) {
+  // Every line into a room this path created carries the notice until one has gone out (a restart repeats it once at worst).
+  async function putLine(roomId, requestId, text, made) {
     return gate.run(roomId, async () => {
       if (!(await released())) return null;
-      const body = first ? `${NOT_E2EE}\n\n${text}` : text;
-      return (await matrix("PUT", `/rooms/${encodeURIComponent(roomId)}/send/m.room.message/${encodeURIComponent(requestId)}`, { msgtype: "m.text", body }, API, AbortSignal.timeout(sendTimeoutMs))).event_id;
+      const body = made && !noticed.has(roomId) ? `${NOT_E2EE}\n\n${text}` : text;
+      const sent = (await matrix("PUT", `/rooms/${encodeURIComponent(roomId)}/send/m.room.message/${encodeURIComponent(requestId)}`, { msgtype: "m.text", body }, API, AbortSignal.timeout(sendTimeoutMs))).event_id;
+      if (made) noticed.add(roomId);
+      return sent;
     });
   }
 
   // A Persona's request for a direct room with one person. One outcome word and, for Opened and Existing, the room and the line's event.
-  async function openDirect({ requestId, persona: asked, userId, text }) {
+  function openDirect(request) {
+    const key = typeof request.userId === "string" ? request.userId : "";
+    const run = () => openDirectNow(request);
+    const tail = (personTails.get(key) ?? Promise.resolve()).then(run, run);
+    personTails.set(key, tail);
+    const done = () => { if (personTails.get(key) === tail) personTails.delete(key); };
+    tail.then(done, done);
+    return tail;
+  }
+  async function openDirectNow({ requestId, persona: asked, userId, text }) {
     const answer = (outcome, roomId = null, eventId = null) => { say(`open direct ${requestId}: ${outcome}${roomId ? ` ${roomId}` : ""}`); return { requestId, outcome, roomId, eventId }; };
     if (asked !== persona) return answer("PersonaMismatch");
     if (!(await released())) return answer("Brake");
@@ -518,23 +532,23 @@ export function createMouth({
     try {
       if (!started || unjoined()) await start();
       if (!serverName || typeof userId !== "string" || userId.slice(userId.indexOf(":") + 1) !== serverName) return answer("ForeignUser");
-      if (userId === selfId || isServed(userId)) return answer("NotAPerson");
+      if (userId === selfId || await isServed(userId)) return answer("NotAPerson");
       try { await matrix("GET", `/profile/${encodeURIComponent(userId)}`); } catch (error) {
         if (/ 404 /.test(error.message)) return answer("NoSuchUser");
         throw error;
       }
       const rooms = await directsWith(userId);
-      const usable = rooms.filter(r => !r.encrypted);
+      const usable = rooms.filter(r => !r.encrypted); // a line is never sent into an encrypted room
       const resumed = usable.find(r => r.marker === requestId); // a repeat of this very request after a crash
       const live = resumed ?? usable.find(r => r.theirs === "join");
       if (live) {
-        const eventId = await putLine(live.roomId, requestId, text, resumed !== undefined);
+        const eventId = await putLine(live.roomId, requestId, text, live.marker !== null);
         return eventId === null ? answer("Brake") : answer(resumed ? "Opened" : "Existing", live.roomId, eventId);
       }
-      const latest = usable.find(r => r.theirs !== null);
+      const latest = rooms.find(r => ["invite", "leave", "ban"].includes(r.theirs)); // an invite or a decline stands in an encrypted room too
       if (latest?.theirs === "invite") return answer("InvitePending");
       if (latest) return answer("Declined"); // left or banned, and nothing newer: only the person reopens it, by inviting her
-      let roomId = usable.find(r => r.theirs === null)?.roomId ?? null; // made earlier, the invite never went out
+      let roomId = usable.find(r => r.theirs === null && r.marker !== null)?.roomId ?? null; // made here earlier, the invite never went out
       if (roomId === null) {
         if (openedOn.get(userId) === dayOf(now())) return answer("DailyLimit");
         if (!(await released())) return answer("Brake");
@@ -655,7 +669,7 @@ export async function startChatEndpoint({ mouths, runtime, port, connectionKey, 
       const document = docs.checkEnvelope(message, null);
       if (!served.includes(document.schemaId)) { // a kind this mouth does not serve is answered, loudly, and logged: never dropped
         log(`chat endpoint refused a request of an unknown kind: ${String(document.schemaId).slice(0, 120)}`);
-        const who = typeof document.sourceAgentId === "string" && document.sourceAgentId !== "" ? document.sourceAgentId : "unknown";
+        const who = typeof document.sourceAgentId === "string" && SLUG.test(document.sourceAgentId) ? document.sourceAgentId : "unknown";
         return respond(peer, who, docs.kinds.refusal, who, docs.refusalTuple({ persona: who, refusal: "UnknownKind" }));
       }
       const tuple = msgpack.decode(document.payload);
@@ -770,7 +784,7 @@ export async function main(env = process.env) {
     const mouths = new Map(personas.map(persona => {
       mkdirSync(join(stateRoot, persona), { recursive: true });
       return [persona, createMouth({
-        persona, homeserver, serverName, rooms: roomsByPersona.get(persona), token: tokens.get(persona), gate, isServed: id => [...mouths.values()].some(m => m.userId === id), log: line => log(`${persona}: ${line}`),
+        persona, homeserver, serverName, rooms: roomsByPersona.get(persona), token: tokens.get(persona), gate, isServed: async id => { await Promise.all([...mouths.values()].map(m => m.start().catch(() => {}))); return [...mouths.values()].some(m => m.userId === id); }, log: line => log(`${persona}: ${line}`),
         images: imageRoot ? createImageStore({ root: join(imageRoot, persona), log: line => log(`${persona}: ${line}`) }) : null,
         state: cultcacheState({ runtime, path: join(stateRoot, persona, "cursor.cc") }),
         brake: createBrakeReader({ controlPath: join(controlRoot, persona, "control.cc"), readStore: runtime.readSingleFileStore, decode: runtime.msgpack.decode }),
