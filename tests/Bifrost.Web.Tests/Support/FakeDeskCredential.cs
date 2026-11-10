@@ -13,8 +13,20 @@ public sealed class FakeDeskCredential : IDeskCredential
     public static string Encode(string? subject, string? audience, IEnumerable<string> scopes) =>
         JsonSerializer.Serialize(new { sub = subject, aud = audience, scopes });
 
+    // The port fails (its key source is down), instead of answering.
+    public bool Throws { get; set; }
+
+    // Runs when a request reaches the port, after the host's own middleware: a test breaks what comes next.
+    public Action<HttpContext>? OnAuthenticate { get; set; }
+
     public ValueTask<DeskToken?> AuthenticateAsync(HttpContext context, CancellationToken cancellationToken)
     {
+        if (Throws)
+        {
+            throw new InvalidOperationException("the credential port is down");
+        }
+
+        OnAuthenticate?.Invoke(context);
         if (!context.Request.Headers.TryGetValue(Header, out var raw))
         {
             return ValueTask.FromResult<DeskToken?>(null);

@@ -27,6 +27,8 @@ public sealed class FakeDeskDoor : IDeskDoor
 
     public bool ThrowOnRead { get; set; }
 
+    public Func<string, string, DeskReadOutcome>? ReadScript { get; set; }
+
     public Func<string, DeskListRequest, DeskListOutcome>? ListScript { get; set; }
 
     public Task<DeskListOutcome> ListAsync(
@@ -90,6 +92,11 @@ public sealed class FakeDeskDoor : IDeskDoor
             throw new IOException("huginn is down");
         }
 
+        if (ReadScript is not null)
+        {
+            return Task.FromResult(ReadScript(socket, forkId));
+        }
+
         return Task.FromResult<DeskReadOutcome>(Forks.TryGetValue((socket, forkId), out var entry)
             ? new DeskReadOutcome.Found(entry)
             : new DeskReadOutcome.NotFound(DeskRefusals.ForkUnknown));
@@ -111,7 +118,7 @@ public sealed class FakeDeskDoor : IDeskDoor
                 DeskSchemas.DeskAnswer, "n1", forkId, "Counted", null, null, null,
                 (string)request["options_hash"]!, (string?)answer?["choice"], (string?)answer?["note"],
                 (string)request["answered_at"]!, "2026-11-12T19:02:05Z", false,
-                context.Subject, context.Attribution, (string)request["request_id"]!),
+                context.Subject, context.Authority, (string)request["request_id"]!),
             null,
             "n1"));
     }

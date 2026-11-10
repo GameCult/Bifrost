@@ -15,9 +15,11 @@ public interface IDeskCredential
     ValueTask<DeskToken?> AuthenticateAsync(HttpContext context, CancellationToken cancellationToken);
 }
 
-// Sent with every door call, built by Bifrost alone: the verified account, its attribution, and the decider list
-// configured for the route's Mind. Nothing in the request sets any of it.
-public sealed record DeskDoorContext(string Subject, string Attribution, IReadOnlyList<string> Deciders);
+// The envelope sent with every answer, read and list call (fork-card.md M5), under the contract's names, built by
+// Bifrost alone: the route's configured Mind id, the verified account's authority (Operator, Steward or Member),
+// the account id, and the admin-set decider list of that Mind (1 to 64 unique ids). Nothing in the request sets any
+// of it, and Huginn keeps no copy of the list.
+public sealed record DeskDoorContext(string Mind, string Authority, string Subject, IReadOnlyList<string> Deciders);
 
 public abstract record DeskAnswerOutcome
 {

@@ -124,8 +124,9 @@ public sealed class DeskAnswerTests
             Assert.Equal(200, reply.Status);
             var call = Assert.Single(factory.Door.Calls);
             Assert.Equal(DeskWebApplicationFactory.Steward, call.Context.Subject);
-            Assert.Equal("Steward", call.Context.Attribution);
-            Assert.Equal([DeskWebApplicationFactory.Alice, DeskWebApplicationFactory.Steward], call.Context.Deciders);
+            Assert.Equal("Steward", call.Context.Authority);
+            Assert.Equal("nibu", call.Context.Mind);
+            Assert.Equal(DeskWebApplicationFactory.DecidersOf("nibu"), call.Context.Deciders);
         }
     }
 

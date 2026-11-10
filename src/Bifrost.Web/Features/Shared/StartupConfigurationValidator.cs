@@ -151,6 +151,7 @@ public sealed class StartupConfigurationValidator(
         }
 
         var ids = new HashSet<string>(StringComparer.Ordinal);
+        var sockets = new HashSet<string>(StringComparer.Ordinal);
         for (var i = 0; i < desk.Minds.Count; i++)
         {
             var mind = desk.Minds[i];
@@ -166,6 +167,15 @@ public sealed class StartupConfigurationValidator(
             if (!Path.IsPathFullyQualified(mind.Socket))
             {
                 failures.Add($"Desk:Minds:{i}:Socket must be an absolute path.");
+            }
+            else if (!sockets.Add(mind.Socket))
+            {
+                failures.Add($"Desk:Minds:{i}:Socket repeats an earlier Mind's socket.");
+            }
+
+            if (mind.Deciders.Count is < 1 or > DeskMindOptions.MaxDeciders)
+            {
+                failures.Add($"Desk:Minds:{i}:Deciders must hold 1 to {DeskMindOptions.MaxDeciders} account ids.");
             }
 
             var deciders = new HashSet<string>(StringComparer.Ordinal);

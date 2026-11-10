@@ -9,7 +9,7 @@ public sealed class DeskScenarioTests
 {
     private static readonly string Socket = DeskWebApplicationFactory.SocketOf("gamecult-chat");
 
-    private static readonly string[] ConfiguredDeciders = [DeskWebApplicationFactory.Alice, DeskWebApplicationFactory.Steward];
+    private static readonly string[] ConfiguredDeciders = DeskWebApplicationFactory.DecidersOf("gamecult-chat");
 
     // Replays every answer step of every scenario. The door is scripted from the vector's response; what Bifrost
     // must produce by itself (edge refusals, unavailable, the attached card) is compared with the vector.
@@ -101,7 +101,8 @@ public sealed class DeskScenarioTests
                     var call = Assert.Single(door.Calls.Where(c => c.Kind == "answer"));
                     Assert.Equal(body, call.Body);
                     Assert.Equal(answerer, call.Context.Subject);
-                    Assert.Equal((string)server["authority"]!, call.Context.Attribution);
+                    Assert.Equal((string)server["authority"]!, call.Context.Authority);
+                    Assert.Equal("gamecult-chat", call.Context.Mind);
                     Assert.Equal(ConfiguredDeciders, call.Context.Deciders);
                     Assert.Equal(Socket, call.Socket);
                 }

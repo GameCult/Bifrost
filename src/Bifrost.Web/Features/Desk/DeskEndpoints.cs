@@ -73,7 +73,18 @@ public static class DeskEndpoints
         }
 
         // 2-4. Bearer, audience, scope.
-        var token = await credential.AuthenticateAsync(http, cancellationToken);
+        DeskToken? token;
+        try
+        {
+            token = await credential.AuthenticateAsync(http, cancellationToken);
+        }
+        catch (Exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            // The bearer could not be judged: neither a pass nor a refusal of the caller.
+            await WriteUnavailableAsync(http, desk);
+            return;
+        }
+
         if (token is null || !string.Equals(token.Audience, Audience, StringComparison.Ordinal))
         {
             await WriteRefusalAsync(http, DeskRefusals.Unauthenticated);
@@ -88,7 +99,17 @@ public static class DeskEndpoints
         }
 
         // 5. Active membership, re-read now; the body has not been touched.
-        var accountId = await OidcEndpoints.ActiveMemberIdAsync(db, token.Subject, cancellationToken);
+        Guid? accountId;
+        try
+        {
+            accountId = await OidcEndpoints.ActiveMemberIdAsync(db, token.Subject, cancellationToken);
+        }
+        catch (Exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            await WriteUnavailableAsync(http, desk);
+            return;
+        }
+
         if (accountId is null)
         {
             await WriteRefusalAsync(http, DeskRefusals.Forbidden);
@@ -129,9 +150,15 @@ public static class DeskEndpoints
             return;
         }
 
-        // 8-10. The door.
+        // 8-10. The door. A decider list outside 1..64 unique ids is a configuration fault: nothing is sent.
+        if (!DeskMindOptions.DecidersWithinBounds(mind.Deciders))
+        {
+            await WriteUnavailableAsync(http, desk);
+            return;
+        }
+
         var subject = accountId.Value.ToString("D");
-        var context = new DeskDoorContext(subject, desk.Attribution.AuthorityOf(subject), mind.Deciders);
+        var context = new DeskDoorContext(mind.Id, desk.Attribution.AuthorityOf(subject), subject, mind.Deciders.ToArray());
         try
         {
             switch (route.Kind)

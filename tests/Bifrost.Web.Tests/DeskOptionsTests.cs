@@ -20,6 +20,7 @@ public sealed class DeskOptionsTests
         ["Desk:Minds:0:Deciders:0"] = Alice,
         ["Desk:Minds:1:Id"] = "nibu",
         ["Desk:Minds:1:Socket"] = "/run/huginn/huginn-nibu.sock",
+        ["Desk:Minds:1:Deciders:0"] = Bob,
         ["Desk:Attribution:Operator"] = Alice,
         ["Desk:Attribution:Stewards:0"] = Bob,
     };
@@ -59,7 +60,7 @@ public sealed class DeskOptionsTests
 
         Assert.Equal(["gamecult-chat", "nibu"], options.Minds.Select(m => m.Id));
         Assert.Equal([Alice], options.Minds[0].Deciders);
-        Assert.Empty(options.Minds[1].Deciders);
+        Assert.Equal([Bob], options.Minds[1].Deciders);
         Validate(Good());
     }
 
@@ -156,6 +157,47 @@ public sealed class DeskOptionsTests
         var repeated = Good();
         repeated["Desk:Attribution:Stewards:1"] = Bob;
         Refused(repeated, "Desk:Attribution:Stewards repeats");
+    }
+
+    private static string Id(int n) => new Guid(n, 0, 0, new byte[8]).ToString("D");
+
+    private static Dictionary<string, string?> WithDeciders(int count)
+    {
+        var values = Good();
+        for (var i = 0; i < count; i++)
+        {
+            values[$"Desk:Minds:0:Deciders:{i}"] = Id(i + 1);
+        }
+
+        if (count == 0)
+        {
+            values.Remove("Desk:Minds:0:Deciders:0");
+        }
+
+        return values;
+    }
+
+    [Fact]
+    public void Startup_takes_one_to_64_deciders_per_mind()
+    {
+        Validate(WithDeciders(1));
+        Validate(WithDeciders(64));
+        Refused(WithDeciders(65), "Desk:Minds:0:Deciders must hold 1 to 64");
+        Refused(WithDeciders(0), "Desk:Minds:0:Deciders must hold 1 to 64");
+
+        // The bound is per Mind: the second Mind is judged on its own list.
+        var second = Good();
+        second.Remove("Desk:Minds:1:Deciders:0");
+        Refused(second, "Desk:Minds:1:Deciders must hold 1 to 64");
+    }
+
+    [Fact]
+    public void Startup_refuses_two_minds_sharing_one_socket()
+    {
+        var values = Good();
+        values["Desk:Minds:1:Socket"] = values["Desk:Minds:0:Socket"];
+
+        Refused(values, "Desk:Minds:1:Socket repeats an earlier Mind's socket");
     }
 
     [Fact]

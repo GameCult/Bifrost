@@ -164,6 +164,6 @@ public sealed class DeskReadTests
 
         Assert.Equal("body_unknown_field", (string?)JsonNode.Parse(named.Body)!["code"]);
         Assert.Equal(["list", "read", "answer"], factory.Door.Calls.Select(c => c.Kind).ToArray());
-        Assert.All(factory.Door.Calls, c => Assert.Equal([DeskWebApplicationFactory.Alice, DeskWebApplicationFactory.Steward], c.Context.Deciders));
+        Assert.All(factory.Door.Calls, c => Assert.Equal(DeskWebApplicationFactory.DecidersOf("nibu"), c.Context.Deciders));
     }
 }

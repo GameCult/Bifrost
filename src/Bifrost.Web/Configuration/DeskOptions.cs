@@ -30,8 +30,15 @@ public sealed class DeskMindOptions
     // The full path of this Mind's socket on the peer-checked door. Bifrost only connects to it.
     public string Socket { get; init; } = string.Empty;
 
-    // Accounts that may answer this Mind's forks. Sent to Huginn on every call; no request sets or extends it.
+    // Accounts that may answer this Mind's forks. Sent to Huginn with every call; no request sets or extends it.
     public List<string> Deciders { get; init; } = [];
+
+    // Huginn's bound on the list a call carries (fork-card.md: one to 64 ids).
+    public const int MaxDeciders = 64;
+
+    // One to 64 ids, none repeated. The startup validator and the request path both ask this one question.
+    public static bool DecidersWithinBounds(IReadOnlyCollection<string> deciders) =>
+        deciders.Count is >= 1 and <= MaxDeciders && deciders.Distinct(StringComparer.Ordinal).Count() == deciders.Count;
 }
 
 // The authority a stamped answer carries (fork-card.md: Operator, Steward or Member), from configuration because

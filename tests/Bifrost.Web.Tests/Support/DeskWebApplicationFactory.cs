@@ -35,6 +35,9 @@ public sealed class DeskWebApplicationFactory : TestWebApplicationFactory
 
     public FakeDeskDoor Door { get; } = new();
 
+    public FakeDeskCredential Credential { get; } = new();
+
+
     public static Dictionary<string, string?> DefaultConfiguration()
     {
         var values = new Dictionary<string, string?>
@@ -49,13 +52,22 @@ public sealed class DeskWebApplicationFactory : TestWebApplicationFactory
         {
             values[$"Desk:Minds:{i}:Id"] = mind.Key;
             values[$"Desk:Minds:{i}:Socket"] = SocketOf(mind.Key);
-            values[$"Desk:Minds:{i}:Deciders:0"] = Alice;
-            values[$"Desk:Minds:{i}:Deciders:1"] = Steward;
+            var deciders = DecidersOf(mind.Key);
+            for (var d = 0; d < deciders.Length; d++)
+            {
+                values[$"Desk:Minds:{i}:Deciders:{d}"] = deciders[d];
+            }
+
             i++;
         }
 
         return values;
     }
+
+    // A distinct list per Mind (different members, order and length), so a door context that carries another
+    // Mind's list cannot pass for the route Mind's.
+    public static string[] DecidersOf(string mindId) =>
+        mindId == "nibu" ? [Steward, Alice, Member] : [Alice, Steward];
 
     public static string SocketOf(string mindId) =>
         "/run/huginn/" + (string)DeskVectors.Root["transport"]!["mindRoutes"]!["minds"]![mindId]!;
@@ -75,7 +87,7 @@ public sealed class DeskWebApplicationFactory : TestWebApplicationFactory
         {
             builder.ConfigureServices(services =>
             {
-                services.AddSingleton<IDeskCredential, FakeDeskCredential>();
+                services.AddSingleton<IDeskCredential>(Credential);
                 services.AddSingleton<IDeskDoor>(Door);
             });
         }
