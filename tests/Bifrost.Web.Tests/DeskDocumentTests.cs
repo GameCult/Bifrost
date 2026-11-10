@@ -56,7 +56,7 @@ public sealed class DeskDocumentTests
     public void Cards_round_trip_with_their_spelling()
     {
         var rows = DeskVectors.Rows("card", "valid").ToList();
-        Assert.Equal(4, rows.Count);
+        Assert.Equal(5, rows.Count);
         foreach (var row in rows)
         {
             var message = row["message"]!;

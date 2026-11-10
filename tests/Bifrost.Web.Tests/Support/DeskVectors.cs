@@ -3,12 +3,12 @@ using System.Text.Json.Nodes;
 
 namespace Bifrost.Web.Tests.Support;
 
-// CultLib's fork-card vectors, vendored at commit 6231ecad5dc72dc75d858958fb8ec66c771a3b5e.
+// CultLib's fork-card vectors, vendored at commit 89755b08b5dd4bf72ed8e5907b5ff4717e51da12.
 public static class DeskVectors
 {
-    public const string SourceCommit = "6231ecad5dc72dc75d858958fb8ec66c771a3b5e";
+    public const string SourceCommit = "89755b08b5dd4bf72ed8e5907b5ff4717e51da12";
 
-    public const string FileSha256 = "bf9444fbea753ce218b58989a896ff622927cedde376d1188526f9b8645d3588";
+    public const string FileSha256 = "3387debd16059621202b706761519231e7ad52d0d4bd071a32b80c0d916e42fa";
 
     public static string Path => System.IO.Path.Combine(AppContext.BaseDirectory, "Fixtures", "fork-card-vectors.json");
 
