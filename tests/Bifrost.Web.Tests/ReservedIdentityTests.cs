@@ -90,6 +90,71 @@ public sealed class ReservedIdentityTests
         Assert.Equal("meta-3", account.NormalizedBifrostIdentity);
     }
 
+    // The whole set, so dropping or misspelling any one name fails here.
+    public static IEnumerable<object[]> EveryReservedName() =>
+        new[]
+        {
+            "admin", "aqua", "deru", "eureka", "heimdall", "ivixey", "kiko", "libby", "meta", "nibu", "unnie", "void", "weksa",
+            "root", "system", "matrix", "synapse", "support", "bot", "mod", "moderator", "postmaster", "gamecult",
+            "bifrost", "idunn", "odin", "huginn", "ratatoskr"
+        }.Select(name => new object[] { name });
+
+    [Fact]
+    public void The_reserved_set_is_exactly_the_28_named_names()
+    {
+        Assert.Equal(28, EveryReservedName().Count());
+        Assert.All(EveryReservedName().Select(x => (string)x[0]), name => Assert.True(BifrostIdentityService.IsReserved(name), name));
+    }
+
+    [Theory]
+    [MemberData(nameof(EveryReservedName))]
+    public async Task Every_reserved_name_is_refused_by_native_register(string name)
+    {
+        var service = NewService(out var db);
+
+        var ex = await Assert.ThrowsAsync<BifrostIdentityException>(() => service.RegisterNativeAsync(name, null, default));
+
+        Assert.Equal("That Bifrost identity is reserved.", ex.Message);
+        Assert.Empty(db.UserAccounts);
+    }
+
+    [Theory]
+    [MemberData(nameof(EveryReservedName))]
+    public async Task Every_reserved_name_takes_a_suffix_as_a_derived_identity(string name)
+    {
+        var service = NewService(out _);
+        var account = new UserAccount { DisplayName = name };
+
+        await service.EnsureIdentityAsync(account, name, default);
+
+        Assert.Equal($"{name}-2", account.NormalizedBifrostIdentity);
+    }
+
+    [Theory]
+    [InlineData("Meta")]
+    [InlineData("mETA")]
+    [InlineData("RATATOSKR")]
+    [InlineData("Postmaster")]
+    public void Matching_is_case_insensitive_on_the_set_itself(string mixedCase)
+    {
+        Assert.True(BifrostIdentityService.IsReserved(mixedCase));
+    }
+
+    [Theory]
+    [InlineData("MeTa")]
+    [InlineData("RATATOSKR")]
+    [InlineData("  Moderator  ")]
+    public async Task Mixed_case_input_is_refused_by_register_and_suffixed_when_derived(string input)
+    {
+        var service = NewService(out var db);
+        await Assert.ThrowsAsync<BifrostIdentityException>(() => service.RegisterNativeAsync(input, null, default));
+        Assert.Empty(db.UserAccounts);
+
+        var account = new UserAccount { DisplayName = input };
+        await service.EnsureIdentityAsync(account, input, default);
+        Assert.Equal(input.Trim().ToLowerInvariant() + "-2", account.NormalizedBifrostIdentity);
+    }
+
     [Fact]
     public async Task An_ordinary_derived_identity_is_unchanged()
     {
