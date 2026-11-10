@@ -18,6 +18,11 @@ public sealed partial class BifrostIdentityService(
         CancellationToken cancellationToken)
     {
         var normalizedIdentity = NormalizeIdentity(identity);
+        if (IsReserved(normalizedIdentity))
+        {
+            throw new BifrostIdentityException("That Bifrost identity is reserved.");
+        }
+
         var exists = await dbContext.UserAccounts.AnyAsync(
             x => x.NormalizedBifrostIdentity == normalizedIdentity,
             cancellationToken);
@@ -69,7 +74,9 @@ public sealed partial class BifrostIdentityService(
 
         var normalizedBase = NormalizeCandidate(preferredIdentity);
         var normalizedIdentity = normalizedBase;
-        for (var suffix = 2; await IdentityExistsAsync(userAccount.Id, normalizedIdentity, cancellationToken); suffix++)
+        for (var suffix = 2;
+             IsReserved(normalizedIdentity) || await IdentityExistsAsync(userAccount.Id, normalizedIdentity, cancellationToken);
+             suffix++)
         {
             normalizedIdentity = $"{normalizedBase}-{suffix}";
         }
@@ -103,6 +110,20 @@ public sealed partial class BifrostIdentityService(
         var identity = new ClaimsIdentity(claims, CookieAuthenticationDefaults.AuthenticationScheme);
         return new ClaimsPrincipal(identity);
     }
+
+    // Matrix localparts that already belong to someone else, and system names. The identity becomes the Matrix
+    // localpart at SSO, so a new account must never mint one of these. Applied to the normalized identity when an
+    // account is created (native register refuses, a derived identity takes the next free suffix); lookups of
+    // existing accounts go through NormalizeIdentity and are untouched. There is no exemption path: Minds and
+    // other known holders do not sign in through Bifrost identities.
+    private static readonly HashSet<string> ReservedIdentities = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "admin", "aqua", "deru", "eureka", "heimdall", "ivixey", "kiko", "libby", "meta", "nibu", "unnie", "void", "weksa",
+        "root", "system", "matrix", "synapse", "support", "bot", "mod", "moderator", "postmaster", "gamecult",
+        "bifrost", "idunn", "odin", "huginn", "ratatoskr"
+    };
+
+    public static bool IsReserved(string normalizedIdentity) => ReservedIdentities.Contains(normalizedIdentity);
 
     public static string NormalizeIdentity(string identity)
     {
