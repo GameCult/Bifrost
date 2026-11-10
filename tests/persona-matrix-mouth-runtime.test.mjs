@@ -438,3 +438,86 @@ test("over the RUDP endpoint: pending and an ack post no receipt, a read report 
     try { client.close(); } catch { /* already closed */ }
   }
 });
+
+// The open-direct pair (v4): the bytes Huginn pins in its crates/mind-body/tests/fixtures/persona-chat-v4/.
+const v4Dir = resolve(root, "tests", "fixtures", "persona-chat-v4");
+const v4Samples = {
+  "gamecult.persona.chat_open_direct_request.v1": { tuple: docs.openDirectRequestTuple({ requestId: "req-1", persona: "eureka", userId: "@meta:gamecult.org", text: "hello Meta" }), parse: docs.parseOpenDirectRequest },
+  "gamecult.persona.chat_open_direct_receipt.v1.opened": { tuple: docs.openDirectReceiptTuple({ requestId: "req-1", outcome: "Opened", roomId: "!dm1:gamecult.org", eventId: "$line1" }), parse: docs.parseOpenDirectReceipt },
+  "gamecult.persona.chat_open_direct_receipt.v1.existing": { tuple: docs.openDirectReceiptTuple({ requestId: "req-2", outcome: "Existing", roomId: "!dm1:gamecult.org", eventId: "$line2" }), parse: docs.parseOpenDirectReceipt },
+  "gamecult.persona.chat_open_direct_receipt.v1.declined": { tuple: docs.openDirectReceiptTuple({ requestId: "req-3", outcome: "Declined" }), parse: docs.parseOpenDirectReceipt },
+  "gamecult.persona.chat_refusal.v1.unknown-kind": { tuple: docs.refusalTuple({ persona: "eureka", refusal: "UnknownKind" }), parse: docs.parseRefusal },
+};
+for (const [name, { tuple, parse }] of Object.entries(v4Samples)) {
+  test(`golden fixture: ${name} is byte-stable and parses back`, async () => {
+    const bytes = Buffer.from(msgpack.encode(tuple));
+    const file = resolve(v4Dir, `${name}.msgpack`);
+    if (process.env.UPDATE_FIXTURES === "1") { await mkdir(v4Dir, { recursive: true }); await writeFile(file, bytes); }
+    assert.deepEqual(bytes, await readFile(file), "wire bytes changed: Huginn decodes these fixtures");
+    assert.deepEqual(parse(msgpack.decode(bytes)), parse(tuple));
+  });
+}
+
+test("the open-direct documents are strict: room and event ids exactly for Opened and Existing, a known outcome, a bounded line", () => {
+  for (const outcome of docs.directOutcomes) {
+    const placed = outcome === "Opened" || outcome === "Existing";
+    assert.doesNotThrow(() => docs.openDirectReceiptTuple(placed ? { requestId: "r", outcome, roomId: "!a:b", eventId: "$e" } : { requestId: "r", outcome }), outcome);
+    assert.throws(() => docs.openDirectReceiptTuple(placed ? { requestId: "r", outcome } : { requestId: "r", outcome, roomId: "!a:b", eventId: "$e" }), /exactly for Opened and Existing/, outcome);
+    assert.throws(() => docs.parseOpenDirectReceipt(["r", outcome, placed ? "!a:b" : null, placed ? null : "$e"]), /exactly for/, `${outcome}: event id alone is half a placement`);
+  }
+  assert.throws(() => docs.openDirectReceiptTuple({ requestId: "r", outcome: "Invented" }), /unknown open-direct outcome/);
+  assert.throws(() => docs.parseOpenDirectRequest(["r", "eureka", "@a:b", "x".repeat(4001)]), /byte bound/);
+  assert.throws(() => docs.parseOpenDirectRequest(["r", "eureka", "", "x"]), /user_id/);
+  assert.throws(() => docs.parseOpenDirectRequest(["r", "eureka", "@a:b"]), /4-field/);
+  assert.throws(() => docs.sendReceiptTuple({ requestId: "r", refusal: "UnknownKind" }), /unknown refusal/, "UnknownKind exists only in the typed refusal document");
+});
+
+test("the RUDP endpoint answers an open-direct request with a receipt for its Persona, refuses another Persona's and answers a request of an unknown kind loudly", async () => {
+  const opened = [];
+  const mouth = { openDirect: async request => { opened.push(request); return { requestId: request.requestId, outcome: "Opened", roomId: "!dm1:gamecult.org", eventId: "$line1" }; } };
+  const key = "connection-key-for-test";
+  const logged = [];
+  const server = await startChatEndpoint({ mouths: new Map([["eureka", mouth]]), runtime, port: 0, connectionKey: key, runtimeId: "mouth-test", log: line => logged.push(line) });
+  const client = dgram.createSocket("udp4");
+  await new Promise(ok => client.bind(0, "127.0.0.1", ok));
+  const connection = new runtime.cultnet.CultNetRudpSocketTransportConnection({
+    runtimeId: "huginn-test", socket: client, mode: "client", remoteHost: "127.0.0.1", remotePort: server.address.port,
+    connectionId: connectionIdFor(key), initialSequence: 1, resendDelayMs: 50, resendPollMs: 10, maxFragmentBytes: 1200,
+  });
+  const replies = [];
+  const waiting = [];
+  connection.on("frame", value => {
+    replies.push(runtime.cultnet.parseCultNetMessage(msgpack.decode(value.payload), "cultnet.schema.v0").document);
+    waiting.splice(0).forEach(w => w());
+  });
+  const nextReply = () => new Promise((ok, fail) => { const t = setTimeout(() => fail(new Error(`no reply; the mouth logged: ${logged.join(" | ")}`)), 5000); waiting.push(() => { clearTimeout(t); ok(replies.at(-1)); }); });
+  const put = (kind, recordKey, tuple, agent = "eureka") => connection.send("schema", msgpack.encode(runtime.cultnet.encodeCultNetMessageForWire(
+    docs.envelope({ kind, recordKey, payload: msgpack.encode(tuple), sourceRuntimeId: "huginn-test", sourceAgentId: agent, sourceRole: "persona-organ" }), "cultnet.schema.v0")));
+  try {
+    connection.connect();
+    for (let i = 0; i < 100 && !connection.connected; i++) await new Promise(r => setTimeout(r, 20));
+    assert.ok(connection.connected);
+    let reply = nextReply();
+    put(docs.kinds.openDirectRequest, "req-1", docs.openDirectRequestTuple({ requestId: "req-1", persona: "eureka", userId: "@meta:gamecult.org", text: "hello" }));
+    let document = await reply;
+    assert.equal(document.schemaId, docs.kinds.openDirectReceipt);
+    assert.deepEqual(docs.parseOpenDirectReceipt(msgpack.decode(document.payload)), { requestId: "req-1", outcome: "Opened", roomId: "!dm1:gamecult.org", eventId: "$line1" });
+    assert.deepEqual(opened, [{ requestId: "req-1", persona: "eureka", userId: "@meta:gamecult.org", text: "hello" }]);
+
+    reply = nextReply();
+    put(docs.kinds.openDirectRequest, "req-2", docs.openDirectRequestTuple({ requestId: "req-2", persona: "other", userId: "@meta:gamecult.org", text: "hello" }), "other");
+    document = await reply;
+    assert.deepEqual(docs.parseOpenDirectReceipt(msgpack.decode(document.payload)), { requestId: "req-2", outcome: "UnknownPersona", roomId: null, eventId: null });
+    assert.equal(opened.length, 1, "nothing reached a mouth for the unlisted Persona");
+
+    reply = nextReply();
+    put("gamecult.persona.chat_invented_request.v9", "req-3", ["x"]);
+    document = await reply;
+    assert.deepEqual([document.schemaId, docs.parseRefusal(msgpack.decode(document.payload))], [docs.kinds.refusal, { persona: "eureka", refusal: "UnknownKind" }], "an unknown kind is answered, typed");
+    assert.ok(logged.some(l => /unknown kind: gamecult\.persona\.chat_invented_request\.v9/.test(l)), "and logged");
+  } finally {
+    server.close();
+    connection.close();
+    try { client.close(); } catch { /* the connection already closed its socket */ }
+  }
+});
