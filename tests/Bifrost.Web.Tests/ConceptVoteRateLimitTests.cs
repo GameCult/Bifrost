@@ -413,6 +413,56 @@ public sealed class ConceptVoteRateLimitTests : IClassFixture<ConceptVoteRateLim
     }
 
     [Fact]
+    public async Task A_signed_in_retract_on_a_full_account_table_is_busy_without_offering_sign_in()
+    {
+        var factory = Capped(4);
+        var collection = await NewSubject();
+        for (var i = 0; i < 4; i++)
+        {
+            var spender = new Client(factory, $"203.0.113.{170 + i}") { Account = ($"73{i:00}", $"retract-spent-{i}") };
+            for (var cast = 0; cast < 3; cast++)
+            {
+                using var ok = await spender.Post(collection, "Up");
+                Assert.Equal(HttpStatusCode.Redirect, ok.StatusCode);
+            }
+        }
+
+        using var fresh = await new Client(factory, "203.0.113.180") { Account = ("7399", "fresh-retractor") }
+            .Post(collection, "Retract");
+
+        Assert.Equal(HttpStatusCode.TooManyRequests, fresh.StatusCode);
+        var body = await fresh.Content.ReadAsStringAsync();
+        Assert.Contains("busy", body);
+        Assert.DoesNotContain("sign in", body, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_spent_cast_budget_says_only_that_voting_is_too_fast_never_offering_sign_in(bool signedIn)
+    {
+        var factory = Capped(1000);
+        var collection = await NewSubject();
+        var voter = new Client(factory, "203.0.113.190")
+        {
+            Account = signedIn ? ("7400", "fast-signed-in") : null
+        };
+        for (var cast = 0; cast < 3; cast++)
+        {
+            using var ok = await voter.Post(collection, "Up");
+            Assert.Equal(HttpStatusCode.Redirect, ok.StatusCode);
+        }
+
+        using var spent = await voter.Post(collection, "Up");
+
+        Assert.Equal(HttpStatusCode.TooManyRequests, spent.StatusCode);
+        var body = await spent.Content.ReadAsStringAsync();
+        Assert.Contains("too fast", body);
+        Assert.DoesNotContain("sign in", body, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("busy", body);
+    }
+
+    [Fact]
     public async Task Posts_to_a_missing_subject_spend_no_budget_and_mint_no_device()
     {
         var collection = await NewSubject();
