@@ -1,20 +1,17 @@
 using System.Globalization;
 using System.Text;
-using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.WebUtilities;
 
 namespace Bifrost.Web.Features.ConceptVotes;
 
 // The opaque cursor of the ranked read: the last row's sort value and key, plus the order and filter it was issued
 // for, so a cursor cannot be replayed under another order or filter. Text "1|order|u|value|key", base64url without
-// padding. Not signed: it names a position in public data and grants nothing. Decoding is strict and canonical (a
+// padding; the length cap only bounds decoding work. Not signed: it names a position in public data and grants nothing. Decoding is strict and canonical (a
 // cursor that does not re-encode to the same text is refused), and every field is re-validated, so no cursor text
 // reaches a query unparsed.
 public sealed record RankCursor(RankOrder Order, bool Unvoted, long Value, string Key)
 {
     public const int MaxLength = 200;
-
-    private static readonly Regex Alphabet = new(@"^[A-Za-z0-9_-]+\z", RegexOptions.CultureInvariant);
 
     public string Encode() =>
         WebEncoders.Base64UrlEncode(Encoding.UTF8.GetBytes(
@@ -23,7 +20,7 @@ public sealed record RankCursor(RankOrder Order, bool Unvoted, long Value, strin
     public static bool TryDecode(string? text, out RankCursor cursor)
     {
         cursor = null!;
-        if (string.IsNullOrEmpty(text) || text.Length > MaxLength || !Alphabet.IsMatch(text))
+        if (string.IsNullOrEmpty(text) || text.Length > MaxLength)
         {
             return false;
         }

@@ -100,6 +100,48 @@ public sealed class ConceptRankedExportTests : IClassFixture<ConceptRankedExport
     }
 
     [Fact]
+    public async Task Ties_break_by_ordinal_key_even_when_keys_hold_hyphens_and_were_registered_out_of_order()
+    {
+        var c = "c" + Guid.NewGuid().ToString("N");
+        string[] ordinal = ["a-b", "a-c", "ab", "b", "b-a"];
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
+            foreach (var key in ordinal.Reverse())
+            {
+                db.ConceptSubjects.Add(new ConceptSubject { Collection = c, Key = key, Title = key, RegisteredAtUtc = Epoch });
+            }
+
+            await db.SaveChangesAsync();
+        }
+
+        var walked = new List<string>();
+        string? cursor = null;
+        do
+        {
+            var body = await GetOk(c, "?limit=1" + (cursor is null ? "" : "&cursor=" + cursor));
+            walked.AddRange(Keys(body));
+            cursor = body.GetProperty("next_cursor").ValueKind == JsonValueKind.Null ? null : body.GetProperty("next_cursor").GetString();
+        }
+        while (cursor is not null && walked.Count < 10);
+
+        Assert.Equal(ordinal, walked);
+        Assert.Equal(ordinal, Keys(await GetOk(c, "?sort=newest")));
+    }
+
+    [Fact]
+    public async Task Unvoted_without_a_client_address_still_pages()
+    {
+        var c = await Seed();
+
+        var first = await GetOk(c, "?unvoted=network&limit=2");
+        var second = await GetOk(c, "?unvoted=network&limit=2&cursor=" + first.GetProperty("next_cursor").GetString());
+
+        Assert.Equal(["bravo", "alpha"], Keys(first));
+        Assert.Equal(["charlie", "delta"], Keys(second));
+    }
+
+    [Fact]
     public async Task A_vote_between_pages_never_repeats_the_cursors_own_row()
     {
         var c = await Seed();

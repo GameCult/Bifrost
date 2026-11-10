@@ -204,15 +204,16 @@ public sealed class ConceptAppraisalService(
     // The ranked read: live subjects of one collection ordered by net (up minus down), total (up plus down) or
     // registration time, largest first, ties by key ascending, so the order is total and a cursor names a position.
     // The cursor is keyset: the next page is whatever sorts after the last row's (value, key), so a vote landing
-    // between pages can move rows but never makes a page repeat the cursor's own row. With a network tag,
-    // subjects whose stored tag equals it are left out ("not yet voted by this network"); the tag is only compared
+    // between pages can move rows but never makes a page repeat the cursor's own row. With unvoted and a client
+    // address, subjects whose stored tag equals the client's are left out (no address filters nothing) ("not yet voted by this network"); the tag is only compared
     // inside the query and is never returned. Null when the collection has no live subject.
     public async Task<RankedPage?> GetRankedAsync(
         string collection,
         RankOrder order,
         int limit,
         RankCursor? after,
-        IPAddress? unvotedBy,
+        bool unvoted,
+        IPAddress? client,
         CancellationToken cancellationToken)
     {
         var live = await dbContext.ConceptSubjects.AsNoTracking()
@@ -232,10 +233,10 @@ public sealed class ConceptAppraisalService(
             .ToListAsync(cancellationToken);
 
         var voted = new HashSet<Guid>();
-        if (unvotedBy is not null)
+        if (unvoted && client is not null)
         {
             var opts = options.Value;
-            var tag = NetworkPrefix.Tag(unvotedBy, opts.IPv4PrefixLength, opts.IPv6PrefixLength, opts.NetworkTagSecret);
+            var tag = NetworkPrefix.Tag(client, opts.IPv4PrefixLength, opts.IPv6PrefixLength, opts.NetworkTagSecret);
             voted = (await dbContext.ConceptAppraisals.AsNoTracking()
                 .Where(x => ids.Contains(x.SubjectId) && x.NetworkTag == tag)
                 .Select(x => x.SubjectId)
@@ -263,7 +264,7 @@ public sealed class ConceptAppraisalService(
 
         var page = rows.Take(limit).ToList();
         var next = rows.Count > limit
-            ? new RankCursor(order, unvotedBy is not null, page[^1].Value, page[^1].Key).Encode()
+            ? new RankCursor(order, unvoted, page[^1].Value, page[^1].Key).Encode()
             : null;
         return new RankedPage(page.Select(r => new RankedSubject(r.Key, r.Title, r.Tally)).ToList(), next);
     }

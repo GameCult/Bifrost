@@ -94,7 +94,7 @@ public static class ConceptTallyExport
             }
 
             var page = await appraisals.GetRankedAsync(
-                collection, order, limit, cursor, unvoted ? http.Connection.RemoteIpAddress : null, cancellationToken);
+                collection, order, limit, cursor, unvoted, http.Connection.RemoteIpAddress, cancellationToken);
             if (page is null)
             {
                 return Results.NotFound();
