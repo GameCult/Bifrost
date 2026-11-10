@@ -132,10 +132,11 @@ test("two clients served at once each get their own answer on their own session"
 });
 
 test("the RUDP endpoint serves pending, ack and send over CultNet, and answers a held brake with a Brake refusal", async () => {
-  const calls = { acks: [], sends: [] };
+  const calls = { acks: [], sends: [], reads: [] };
   const mouth = {
     pendingAfter: after => (after < 7 ? [delivery] : []),
     ack: async through => { calls.acks.push(through); },
+    read: async request => { calls.reads.push(request); return null; },
     send: async request => { calls.sends.push(request); return request.text === "muted" ? { requestId: request.requestId, eventId: null, refusal: "Brake" } : { requestId: request.requestId, eventId: "$sent", refusal: null }; },
   };
   const key = "connection-key-for-test";
@@ -180,6 +181,16 @@ test("the RUDP endpoint serves pending, ack and send over CultNet, and answers a
     document = await reply;
     assert.deepEqual([document.schemaId, docs.parseRefusal(msgpack.decode(document.payload))], [docs.kinds.refusal, { persona: "other", refusal: "UnknownPersona" }], "an ack for an unlisted Persona is refused, typed, and not applied");
     assert.deepEqual(calls.acks, [7]);
+
+    reply = nextReply();
+    put(docs.kinds.read, "other:#operator:gamecult.org", docs.readTuple({ persona: "other", roomAlias: "#operator:gamecult.org", eventId: "$e1", atUnixMs: 5 }));
+    document = await reply;
+    assert.deepEqual([document.schemaId, docs.parseRefusal(msgpack.decode(document.payload))], [docs.kinds.refusal, { persona: "other", refusal: "UnknownPersona" }], "a read report for an unlisted Persona is refused, typed, and not applied");
+    assert.deepEqual(calls.reads, []);
+
+    put(docs.kinds.read, "eureka:#operator:gamecult.org", docs.readTuple({ persona: "eureka", roomAlias: "#operator:gamecult.org", eventId: "$e1", atUnixMs: 5 }));
+    for (let i = 0; i < 100 && calls.reads.length < 1; i++) await new Promise(r => setTimeout(r, 20));
+    assert.deepEqual(calls.reads, [{ persona: "eureka", roomAlias: "#operator:gamecult.org", eventId: "$e1", atUnixMs: 5 }], "her own report reaches her mouth with its persona");
 
     reply = nextReply();
     put(docs.kinds.pendingRequest, "other", docs.pendingRequestTuple({ persona: "other", afterSeq: 0 }));

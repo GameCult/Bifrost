@@ -133,7 +133,8 @@ export function createMouth({
   let lastPresence = null; // 'online' | 'unavailable' | 'offline' | null: command-only, suppresses repeat presence PUTs
   let activeUntil = 0; // her last sign of life in a turn, plus the grace
   const delivered = new Map(); // event id -> { roomId, roomAlias, seq }: what the mouth handed her, newest last, bounded
-  const readThrough = new Map(); // room id -> the highest delivery seq a receipt was posted for
+  const readThrough = new Map(); // room id -> { seq, eventId } of the last receipt that landed
+  const readTails = new Map(); // room id -> the read report in flight: reports for one room run one at a time
   const directContent = {}; // the account's m.direct content: user id -> room ids
   const invites = new Map(); // room id -> { inviter, direct }: invitations not yet answered
   const processed = new Set(); // event ids read since the position last advanced
@@ -294,7 +295,9 @@ export function createMouth({
   const presenceFor = free => !free ? "offline" : now() < activeUntil ? "online" : "unavailable";
   const touch = () => { activeUntil = now() + presenceGraceMs; };
   async function setPresence(free) {
-    const wanted = presenceFor(free);
+    let wanted = presenceFor(free);
+    if (wanted === lastPresence) return;
+    if (wanted !== "offline" && !(await released())) wanted = "offline"; // never PUT a present state on a stale brake read
     if (wanted === lastPresence) return;
     try {
       await matrix("PUT", `/presence/${encodeURIComponent(selfId)}/status`, { presence: wanted }, API, AbortSignal.timeout(sendTimeoutMs));
@@ -310,8 +313,9 @@ export function createMouth({
     if (pending.length >= maxPending) return []; // unanswered mail is not outrun: the position stays where it is
     const filter = encodeURIComponent(JSON.stringify({ room: { timeline: { limit: CONTEXT } } }));
     const since = cursor === null ? "" : `&since=${encodeURIComponent(cursor)}`;
-    const reply = await matrix("GET", `/sync?timeout=${cursor === null ? 0 : syncTimeoutMs}&set_presence=${presenceFor(free)}&filter=${filter}${since}`);
-    if (free) lastPresence = presenceFor(free); // a braked round's offline is only believed once its own PUT lands
+    const stateSent = presenceFor(free); // the state this poll carries, fixed before the poll: the grace may pass while it is open
+    const reply = await matrix("GET", `/sync?timeout=${cursor === null ? 0 : syncTimeoutMs}&set_presence=${stateSent}&filter=${filter}${since}`);
+    if (free) lastPresence = stateSent; // a braked round's offline is only believed once its own PUT lands
     const baseline = cursor === null; // first ever sync: history is context, not mail
     for (const event of reply.account_data?.events ?? []) if (event.type === "m.direct") noteDirect(event.content);
     noteInvites(reply.rooms?.invite);
@@ -378,27 +382,37 @@ export function createMouth({
     batches = batches.filter(b => b.maxSeq > throughSeq);
   }
 
-  // Her m.read receipt, display-only: public, unthreaded, at the event Huginn reports she has taken in. Only an event
-  // this mouth delivered to her, in the room it was delivered for, and only forward of what was already posted in
-  // that room. Posted only while her brake is released, read fresh. Returns the reason nothing was posted, or null.
-  async function read({ roomAlias, eventId }) {
+  // Her m.read receipt, display-only: public, unthreaded, at the event Huginn reports she has taken in. Only for her own
+  // persona, an event this mouth delivered to her, in the room it was delivered for (the receipt goes to the delivered
+  // room id, never to the reported alias), and only forward of the last receipt that landed in that room. Reports for
+  // one room run one at a time, so the order they arrive in is the order they are judged in. Posted only while her
+  // brake is released, read fresh before the presence write and again before the POST. Returns the reason nothing
+  // was posted, or null.
+  function read({ persona: asked, roomAlias, eventId }) {
     const quiet = message => { try { say(message); } catch { /* a throwing logger must not reject a caller that does not await */ } };
+    if (asked !== persona) return Promise.resolve("PersonaMismatch");
     const known = delivered.get(eventId);
-    if (!known) { quiet("read report names an event this mouth never delivered"); return "UnknownEvent"; }
-    if (roomAlias !== known.roomAlias && roomAlias !== known.roomId) { quiet("read report names another room than the delivery"); return "RoomMismatch"; }
-    if ((readThrough.get(known.roomId) ?? 0) >= known.seq) return "Behind";
-    if (!(await released())) { quiet("receipt not posted: brake held"); return "Brake"; } // none is queued
-    readThrough.set(known.roomId, known.seq); // claimed before the POST: a concurrent report for an older event posts nothing
-    touch();
-    await setPresence(true);
-    try {
-      await matrix("POST", `/rooms/${encodeURIComponent(known.roomId)}/receipt/m.read/${encodeURIComponent(eventId)}`, {}, API, AbortSignal.timeout(sendTimeoutMs));
-    } catch (error) {
-      if (readThrough.get(known.roomId) === known.seq) readThrough.delete(known.roomId);
-      quiet(`receipt in ${known.roomId} not posted: ${error.message}`);
-      return "Failed";
-    }
-    return null;
+    if (!known) { quiet("read report names an event this mouth never delivered"); return Promise.resolve("UnknownEvent"); }
+    if (roomAlias !== known.roomAlias && roomAlias !== known.roomId) { quiet("read report names another room than the delivery"); return Promise.resolve("RoomMismatch"); }
+    const run = async () => {
+      if ((readThrough.get(known.roomId)?.seq ?? 0) >= known.seq) return "Behind";
+      if (!(await released())) { quiet("receipt not posted: brake held"); return "Brake"; } // none is queued
+      touch();
+      await setPresence(true);
+      if (!(await released())) { quiet("receipt not posted: brake held"); return "Brake"; }
+      try {
+        await matrix("POST", `/rooms/${encodeURIComponent(known.roomId)}/receipt/m.read/${encodeURIComponent(eventId)}`, {}, API, AbortSignal.timeout(sendTimeoutMs));
+      } catch (error) {
+        quiet(`receipt in ${known.roomId} not posted: ${error.message}`);
+        return "Failed"; // the last receipt that landed stays what it was: a later report for an older event is still Behind
+      }
+      readThrough.set(known.roomId, { seq: known.seq, eventId });
+      return null;
+    };
+    const tail = (readTails.get(known.roomId) ?? Promise.resolve()).then(run);
+    readTails.set(known.roomId, tail);
+    tail.then(() => { if (readTails.get(known.roomId) === tail) readTails.delete(known.roomId); });
+    return tail;
   }
 
   async function ack(throughSeq) {
@@ -435,17 +449,17 @@ export function createMouth({
       if (!started || unjoined()) await start();
       const roomId = joinedAliases.has(roomAlias) ? roomIdByAlias.get(roomAlias) : directRooms.has(roomAlias) ? roomAlias : null;
       if (!roomId) return refuse("UnknownRoom");
-      return await gate.run(roomId, async () => {
+      const result = await gate.run(roomId, async () => {
         if (basis) {
           const newer = await newerThan(roomId, basis);
           if (newer.length > 0) return refuse("RoomMoved", newer);
         }
         if (!(await released())) return refuse("Brake"); // a brake placed during the gate wait or the head read stops this send
         const sent = await matrix("PUT", `/rooms/${encodeURIComponent(roomId)}/send/m.room.message/${encodeURIComponent(requestId)}`, { msgtype: "m.text", body: text }, API, AbortSignal.timeout(sendTimeoutMs));
-        touch();
-        await setPresence(true);
         return { requestId, eventId: sent.event_id, refusal: null, newer: [] };
       });
+      if (result.refusal === null) { touch(); setPresence(true).catch(() => {}); } // outside the room gate and not awaited: a slow presence write holds neither another send nor this receipt
+      return result;
     } catch (error) {
       say(`send failed: ${error.message}`);
       return refuse("SendFailed");

@@ -973,7 +973,7 @@ const withMail = async (hs, overrides) => {
 const receiptsOf = hs => hs.receipts().map(r => [r.path.split("/rooms/")[1].split("/receipt/")[0], r.path.split("/m.read/")[1], r.auth, r.body]);
 const presencesOf = hs => hs.presencePuts().map(r => r.body.presence);
 const syncsOf = hs => hs.seen.filter(r => r.path.endsWith("/sync")).map(r => r.query.get("set_presence"));
-const reportRead = (mouth, roomAlias, eventId) => mouth.read({ roomAlias, eventId, atUnixMs: 1 });
+const reportRead = (mouth, roomAlias, eventId, persona = "eureka") => mouth.read({ persona, roomAlias, eventId, atUnixMs: 1 });
 
 test("delivery, pending and an ack post no receipt: she has not read what the model has not seen", async () => {
   const hs = await fakeHomeserver({ sync: receiptScript });
@@ -1024,6 +1024,88 @@ test("a read report posts nothing while braked, and nothing is queued for the re
   await new Promise(r => setTimeout(r, 20));
   assert.deepEqual(hs.receipts(), []);
   assert.equal(await reportRead(mouth, A, "$a1"), null, "a fresh report after the release posts");
+});
+
+test("a read report names her persona: another persona's report posts nothing", async () => {
+  const hs = await fakeHomeserver({ sync: receiptScript });
+  const mouth = await withMail(hs);
+  assert.equal(await reportRead(mouth, A, "$a1", "someone-else"), "PersonaMismatch");
+  assert.deepEqual(hs.receipts(), []);
+});
+
+test("the receipt goes to the delivered room id, not to the alias the report named", async () => {
+  const hs = await fakeHomeserver({ sync: receiptScript });
+  const mouth = await withMail(hs);
+  assert.equal(await reportRead(mouth, `#swarm:${HS_NAME}`, "$a1"), null);
+  assert.deepEqual(receiptsOf(hs), [[A, "$a1", `Bearer ${TOKEN}`, {}]]);
+});
+
+test("concurrent reports for one room are judged in arrival order: the newer lands and the older is behind", async () => {
+  const hs = await fakeHomeserver({ sync: receiptScript });
+  const mouth = await withMail(hs);
+  const [newer, older] = await Promise.all([reportRead(mouth, A, "$a2"), reportRead(mouth, A, "$a1")]);
+  assert.deepEqual([newer, older], [null, "Behind"]);
+  assert.deepEqual(receiptsOf(hs).map(r => r[1]), ["$a2"], "never a1 after a2");
+  const [first, second] = await Promise.all([reportRead(mouth, B, "$b1"), reportRead(mouth, B, "$b1")]);
+  assert.deepEqual([first, second], [null, "Behind"], "the same event twice posts once");
+});
+
+test("a failed receipt leaves the last landed receipt in place: an older event is still behind", async () => {
+  let receiptCalls = 0;
+  const hs = await fakeHomeserver({ sync: receiptScript });
+  const fetch = (url, init) => String(url).includes("/receipt/") && ++receiptCalls === 2 ? Promise.resolve(new Response("{}", { status: 500 })) : hs.fetch(url, init);
+  const mouth = await withMail(hs, { fetch });
+  assert.equal(await reportRead(mouth, A, "$a1"), null);
+  assert.equal(await reportRead(mouth, A, "$a2"), "Failed");
+  assert.equal(await reportRead(mouth, A, "$a1"), "Behind", "a1 landed; the failure of a2 does not reopen the room to a backward post");
+  assert.equal(await reportRead(mouth, A, "$a2"), null, "a2 itself can still land");
+  assert.deepEqual(receiptsOf(hs).map(r => r[1]), ["$a1", "$a2"]);
+});
+
+test("a brake placed after the first brake read stops the receipt and no present state is PUT while braked", async () => {
+  let used = 0, allowed = Infinity;
+  const hs = await fakeHomeserver({ sync: receiptScript });
+  const mouth = await withMail(hs, { brake: async () => used++ < allowed });
+  used = 0; allowed = 1; // read() sees it released once; every read after that finds it held
+  assert.equal(await reportRead(mouth, A, "$a1"), "Brake");
+  assert.deepEqual(hs.receipts(), [], "the receipt re-reads the brake after the presence write");
+  assert.ok(!presencesOf(hs).includes("online"), "online is never PUT on a stale brake read");
+  assert.equal(presencesOf(hs).at(-1), "offline");
+});
+test("a slow presence write after a send holds no other send in the room", async () => {
+  const hs = await fakeHomeserver({ sync: receiptScript });
+  const fetch = (url, init) => String(url).includes("/presence/") && init?.method === "PUT"
+    ? new Promise((_, reject) => init.signal.addEventListener("abort", () => reject(new Error("aborted")))) : hs.fetch(url, init);
+  const mouth = await withMail(hs, { fetch, sendTimeoutMs: 400 });
+  const send = id => mouth.send({ requestId: id, persona: "eureka", roomAlias: `#swarm:${HS_NAME}`, text: id });
+  void send("s1"); // its presence write hangs
+  const second = await Promise.race([send("s2").then(r => r.refusal), new Promise(r => setTimeout(() => r("held behind the first send's presence write"), 150))]);
+  assert.equal(second, null);
+});
+
+test("the grace ends exactly at its boundary: one millisecond inside is online, the boundary is unavailable", async () => {
+  let t = 9_000_000;
+  const hs = await fakeHomeserver({ sync: receiptScript });
+  const mouth = await withMail(hs, { now: () => t, presenceGraceMs: 60_000 });
+  await mouth.ack(3); // touched at t
+  t += 59_999;
+  await mouth.syncOnce();
+  assert.equal(syncsOf(hs).at(-1), "online");
+  t += 1;
+  await mouth.syncOnce();
+  assert.equal(syncsOf(hs).at(-1), "unavailable");
+});
+
+test("the state a poll carries is fixed before the poll: a grace that passes while it is open is PUT next round", async () => {
+  let t = 3_000_000;
+  const hs = await fakeHomeserver({ sync: receiptScript });
+  const fetch = async (url, init) => { const res = await hs.fetch(url, init); if (String(url).includes("/sync")) t += 100_000; return res; };
+  const mouth = mouthFor(hs, { now: () => t, presenceGraceMs: 60_000, fetch });
+  await mouth.ack(0); // a turn: online
+  await mouth.syncOnce();
+  assert.equal(syncsOf(hs).at(-1), "online");
+  await mouth.syncOnce();
+  assert.deepEqual(presencesOf(hs), ["online", "unavailable"], "the homeserver was told online by the poll; the next round must tell it unavailable");
 });
 
 test("a failed receipt is logged once, not retried, and the next report for the room posts", async () => {
@@ -1144,11 +1226,11 @@ test("two Personas on one homeserver: receipts and presence carry only her own b
   const a = await withMail(hs, { persona: "pa", token: "tokA" });
   let bOpen = false;
   const b = await withMail(hs, { persona: "pb", token: "tokB", brake: async () => bOpen });
-  await reportRead(a, A, "$a1");
-  assert.equal(await reportRead(b, A, "$a1"), "Brake");
+  await reportRead(a, A, "$a1", "pa");
+  assert.equal(await reportRead(b, A, "$a1", "pb"), "Brake");
   assert.ok(hs.receipts().every(r => r.auth === "Bearer tokA"), "only A read");
   bOpen = true; // her receipts go out only while released
-  assert.equal(await reportRead(b, A, "$a1"), null);
+  assert.equal(await reportRead(b, A, "$a1", "pb"), null);
   assert.deepEqual([...new Set(hs.receipts().map(r => r.auth))].sort(), ["Bearer tokA", "Bearer tokB"]);
   assert.ok(hs.presencePuts().some(r => r.path.endsWith(`/presence/${BOB}/status`) && r.auth === "Bearer tokB"));
   assert.ok(hs.presencePuts().filter(r => r.path.endsWith(`/presence/${BOB}/status`)).every(r => r.auth === "Bearer tokB"));
