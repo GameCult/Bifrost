@@ -371,7 +371,7 @@ test("the RUDP endpoint answers a v1 send with the three-field receipt and a v2 
   }
 });
 
-test("over the RUDP endpoint: pending posts no receipt, and an ack never holds up the same peer's next request", async () => {
+test("over the RUDP endpoint: pending and an ack post no receipt, a read report posts one, and it never holds up the same peer's next request", async () => {
   const receipts = [];
   let release;
   const held = new Promise(r => { release = r; });
@@ -410,11 +410,14 @@ test("over the RUDP endpoint: pending posts no receipt, and an ack never holds u
     put(docs.kinds.pendingRequest, "eureka", docs.pendingRequestTuple({ persona: "eureka", afterSeq: 0 }));
     await waitFor(() => replies.length === 1, "pending answered");
     assert.deepEqual(receipts, [], "a pending request posts no receipt");
+    put(docs.kinds.read, "eureka:#r:t", docs.readTuple({ persona: "eureka", roomAlias: "#r:t", eventId: "$m1", atUnixMs: 6 }));
+    await waitFor(() => receipts.length === 1, "the read report posted her receipt");
+    assert.ok(receipts[0].endsWith("/receipt/m.read/%24m1"), "at the reported event");
     put(docs.kinds.ack, "eureka:1", docs.ackTuple({ persona: "eureka", throughSeq: 1 }));
-    await waitFor(() => receipts.length === 1, "the ack posted her receipt");
     put(docs.kinds.pendingRequest, "eureka", docs.pendingRequestTuple({ persona: "eureka", afterSeq: 0 }));
     await waitFor(() => replies.length === 2, "the next request is answered while the receipt response is still held open");
     assert.deepEqual(docs.parsePending(msgpack.decode(replies[1].payload)).deliveries, [], "the ack applied");
+    assert.equal(receipts.length, 1, "the ack posted no receipt of its own");
   } finally {
     release();
     server.close();

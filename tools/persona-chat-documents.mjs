@@ -10,6 +10,7 @@ export const kinds = Object.freeze({
   pendingRequest: "gamecult.persona.chat_pending_request.v1",
   pending: "gamecult.persona.chat_pending.v2",
   ack: "gamecult.persona.chat_ack.v1",
+  read: "gamecult.persona.chat_read.v1",
   sendRequest: "gamecult.persona.chat_send_request.v1",
   sendReceipt: "gamecult.persona.chat_send_receipt.v1",
   sendRequestV2: "gamecult.persona.chat_send_request.v2",
@@ -50,6 +51,16 @@ export function ackTuple({ persona, throughSeq }) {
 export function parseAck(t) {
   const [persona, throughSeq] = tuple(t, 2, "chat_ack");
   return { persona: text(persona, "persona"), throughSeq: seq(throughSeq, "through_seq") };
+}
+
+// Huginn's report that a delivery has gone into the model's input: she has read through this event of this room.
+// at_unix_ms is when the model took it in; the mouth does not trust it for anything but the log.
+export function readTuple({ persona, roomAlias, eventId, atUnixMs }) {
+  return [text(persona, "persona"), text(roomAlias, "room_alias"), text(eventId, "event_id"), seq(atUnixMs, "at_unix_ms")];
+}
+export function parseRead(t) {
+  const [persona, roomAlias, eventId, atUnixMs] = tuple(t, 4, "chat_read");
+  return { persona: text(persona, "persona"), roomAlias: text(roomAlias, "room_alias"), eventId: text(eventId, "event_id"), atUnixMs: seq(atUnixMs, "at_unix_ms") };
 }
 
 export function sendRequestTuple({ requestId, persona, roomAlias, text: body }) {
