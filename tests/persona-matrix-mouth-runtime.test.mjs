@@ -1,6 +1,8 @@
 // The parts of the Matrix mouth that sit on CultLib: the chat_* wire documents, the
 // CultCache cursor and brake stores, and the CultNet RUDP endpoint. Needs the built
-// CultLib TypeScript packages (CULTLIB_ROOT, else ../CultLib), like the other Bifrost tests.
+// CultLib TypeScript packages (CULTLIB_ROOT, else ../CultLib), like the other Bifrost tests. CultLib's dist/ is gitignored:
+// run `npm ci && npm run build:ts` there first. Since CultLib 286a9af the packages are @gamecult/cultcache-ts,
+// @gamecult/cultnet-ts and @gamecult/cultmesh-ts; the directories under packages/ keep their short names.
 import test from "node:test";
 import assert from "node:assert/strict";
 import dgram from "node:dgram";
