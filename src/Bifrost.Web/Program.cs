@@ -76,6 +76,10 @@ builder.Services
     .AddOptions<ConceptVoteOptions>()
     .BindConfiguration(ConceptVoteOptions.SectionName);
 
+builder.Services
+    .AddOptions<DeskOptions>()
+    .BindConfiguration(DeskOptions.SectionName);
+
 builder.Services.AddAntiforgery(options =>
 {
     options.Cookie.Name = BifrostCookies.Antiforgery;

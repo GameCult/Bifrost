@@ -12,7 +12,8 @@ public sealed class StartupConfigurationValidator(
     IOptions<HeimdallOptions> heimdallOptions,
     IOptions<StripeOptions> stripeOptions,
     IOptions<BifrostHostOptions> hostOptions,
-    IOptions<ConceptVoteOptions> conceptVoteOptions)
+    IOptions<ConceptVoteOptions> conceptVoteOptions,
+    IOptions<DeskOptions> deskOptions)
 {
     public void Validate()
     {
@@ -44,6 +45,8 @@ public sealed class StartupConfigurationValidator(
         {
             failures.Add("ConceptVotes:MaxTrackedKeys must be at least 1.");
         }
+
+        ValidateDesk(deskOptions.Value, failures);
 
         if (hostEnvironment.IsDevelopment() || hostEnvironment.IsEnvironment("Testing"))
         {
@@ -115,6 +118,74 @@ public sealed class StartupConfigurationValidator(
 
         Refuse(failures);
     }
+
+    // Checked in every environment: a bad Mind list or decider id would otherwise pass startup and misroute or
+    // mis-attribute answers. Account existence is a request-time question, not a startup one.
+    private static void ValidateDesk(DeskOptions desk, List<string> failures)
+    {
+        if (!desk.IsConfigured)
+        {
+            return;
+        }
+
+        var ids = new HashSet<string>(StringComparer.Ordinal);
+        for (var i = 0; i < desk.Minds.Count; i++)
+        {
+            var mind = desk.Minds[i];
+            if (string.IsNullOrWhiteSpace(mind.Id))
+            {
+                failures.Add($"Desk:Minds:{i}:Id must not be blank.");
+            }
+            else if (!ids.Add(mind.Id))
+            {
+                failures.Add($"Desk:Minds:{i}:Id repeats an earlier Mind id.");
+            }
+
+            if (!Path.IsPathFullyQualified(mind.Socket))
+            {
+                failures.Add($"Desk:Minds:{i}:Socket must be an absolute path.");
+            }
+
+            var deciders = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var decider in mind.Deciders)
+            {
+                if (!IsLowercaseGuid(decider))
+                {
+                    failures.Add($"Desk:Minds:{i}:Deciders entries must be lowercase D-format account ids.");
+                }
+                else if (!deciders.Add(decider))
+                {
+                    failures.Add($"Desk:Minds:{i}:Deciders repeats an account id.");
+                }
+            }
+        }
+
+        var attribution = desk.Attribution;
+        if (!string.IsNullOrEmpty(attribution.Operator) && !IsLowercaseGuid(attribution.Operator))
+        {
+            failures.Add("Desk:Attribution:Operator must be a lowercase D-format account id.");
+        }
+
+        var stewards = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var steward in attribution.Stewards)
+        {
+            if (!IsLowercaseGuid(steward))
+            {
+                failures.Add("Desk:Attribution:Stewards entries must be lowercase D-format account ids.");
+            }
+            else if (!stewards.Add(steward))
+            {
+                failures.Add("Desk:Attribution:Stewards repeats an account id.");
+            }
+            else if (string.Equals(steward, attribution.Operator, StringComparison.Ordinal))
+            {
+                failures.Add("Desk:Attribution:Operator must not also be a steward.");
+            }
+        }
+    }
+
+    private static bool IsLowercaseGuid(string? value) =>
+        Guid.TryParseExact(value, "D", out var guid) && string.Equals(value, guid.ToString("D"), StringComparison.Ordinal);
 
     private static void Refuse(List<string> failures)
     {
