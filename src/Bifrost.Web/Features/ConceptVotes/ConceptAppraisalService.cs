@@ -23,6 +23,18 @@ public sealed record StanceCounts(int Up, int Down);
 
 public sealed record ConceptTally(int Up, int Down, StanceCounts Members);
 
+public enum RankOrder
+{
+    Net,
+    Total,
+    Newest
+}
+
+// One row of the ranked read: counts and the subject's title only, never a voter key, account id or network tag.
+public sealed record RankedSubject(string Key, string Title, ConceptTally Tally);
+
+public sealed record RankedPage(IReadOnlyList<RankedSubject> Items, string? NextCursor);
+
 public sealed record ConceptSubjectView(
     string Collection,
     string Key,
@@ -187,6 +199,73 @@ public sealed class ConceptAppraisalService(
             s => s.Key,
             s => Tally(groups.Where(g => g.SubjectId == s.Id).Select(g => (g.Stance, g.IsMember, g.Count))),
             StringComparer.Ordinal);
+    }
+
+    // The ranked read: live subjects of one collection ordered by net (up minus down), total (up plus down) or
+    // registration time, largest first, ties by key ascending, so the order is total and a cursor names a position.
+    // The cursor is keyset: the next page is whatever sorts after the last row's (value, key), so a vote landing
+    // between pages can move rows but never makes a page repeat the cursor's own row. With a network tag,
+    // subjects whose stored tag equals it are left out ("not yet voted by this network"); the tag is only compared
+    // inside the query and is never returned. Null when the collection has no live subject.
+    public async Task<RankedPage?> GetRankedAsync(
+        string collection,
+        RankOrder order,
+        int limit,
+        RankCursor? after,
+        IPAddress? unvotedBy,
+        CancellationToken cancellationToken)
+    {
+        var live = await dbContext.ConceptSubjects.AsNoTracking()
+            .Where(x => x.Collection == collection && x.RetiredAtUtc == null)
+            .Select(x => new { x.Id, x.Key, x.Title, x.RegisteredAtUtc })
+            .ToListAsync(cancellationToken);
+        if (live.Count == 0)
+        {
+            return null;
+        }
+
+        var ids = live.Select(x => x.Id).ToList();
+        var groups = await dbContext.ConceptAppraisals.AsNoTracking()
+            .Where(x => ids.Contains(x.SubjectId))
+            .GroupBy(x => new { x.SubjectId, x.Stance, IsMember = x.VoterClass == VoterClass.Member })
+            .Select(g => new { g.Key.SubjectId, g.Key.Stance, g.Key.IsMember, Count = g.Count() })
+            .ToListAsync(cancellationToken);
+
+        var voted = new HashSet<Guid>();
+        if (unvotedBy is not null)
+        {
+            var opts = options.Value;
+            var tag = NetworkPrefix.Tag(unvotedBy, opts.IPv4PrefixLength, opts.IPv6PrefixLength, opts.NetworkTagSecret);
+            voted = (await dbContext.ConceptAppraisals.AsNoTracking()
+                .Where(x => ids.Contains(x.SubjectId) && x.NetworkTag == tag)
+                .Select(x => x.SubjectId)
+                .ToListAsync(cancellationToken)).ToHashSet();
+        }
+
+        var rows = live
+            .Where(s => !voted.Contains(s.Id))
+            .Select(s =>
+            {
+                var tally = Tally(groups.Where(g => g.SubjectId == s.Id).Select(g => (g.Stance, g.IsMember, g.Count)));
+                var value = order switch
+                {
+                    RankOrder.Net => (long)tally.Up - tally.Down,
+                    RankOrder.Total => (long)tally.Up + tally.Down,
+                    _ => s.RegisteredAtUtc.UtcTicks
+                };
+                return (Value: value, s.Key, s.Title, Tally: tally);
+            })
+            .Where(r => after is null || r.Value < after.Value || (r.Value == after.Value && string.CompareOrdinal(r.Key, after.Key) > 0))
+            .OrderByDescending(r => r.Value)
+            .ThenBy(r => r.Key, StringComparer.Ordinal)
+            .Take(limit + 1)
+            .ToList();
+
+        var page = rows.Take(limit).ToList();
+        var next = rows.Count > limit
+            ? new RankCursor(order, unvotedBy is not null, page[^1].Value, page[^1].Key).Encode()
+            : null;
+        return new RankedPage(page.Select(r => new RankedSubject(r.Key, r.Title, r.Tally)).ToList(), next);
     }
 
     public async Task<ConceptSubjectView?> GetSubjectAsync(
