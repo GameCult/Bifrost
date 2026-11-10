@@ -168,3 +168,14 @@ public static class DeskUnavailables
         "unavailable: the outcome is not confirmed, try again with the same request_id",
         retryAfterSeconds);
 }
+
+// Notes are returned only to deciders. For everyone else Bifrost nils every note at the door: the key stays written
+// (every key written, nil where absent), so the stripped body is still the contract's shape. Cards, outcomes, codes
+// and counts are untouched; Huginn returns the full record.
+public static class DeskNotes
+{
+    public static ForkEntry Strip(ForkEntry entry) =>
+        entry with { Record = entry.Record with { Answers = [.. entry.Record.Answers.Select(a => a with { Note = null })] } };
+
+    public static ForkList Strip(ForkList list) => list with { Forks = [.. list.Forks.Select(Strip)] };
+}

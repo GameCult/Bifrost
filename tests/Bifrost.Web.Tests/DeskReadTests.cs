@@ -166,4 +166,99 @@ public sealed class DeskReadTests
         Assert.Equal(["list", "read", "answer"], factory.Door.Calls.Select(c => c.Kind).ToArray());
         Assert.All(factory.Door.Calls, c => Assert.Equal(DeskWebApplicationFactory.DecidersOf("nibu"), c.Context.Deciders));
     }
+    private const string Secret = "the decider's own words";
+
+    private static DeskAnswerDocument Doc(string id, string outcome, string? of, string? retracts, string? note) => new(
+        DeskSchemas.DeskAnswer, id, DeskReplay.ChatFork, outcome, of, retracts, null, "h", note == null ? null : "a", note,
+        "2026-11-12T19:00:00Z", "2026-11-12T19:00:01Z", false, DeskWebApplicationFactory.Alice, "Steward", "r-" + id);
+
+    // Counted, Revision, Retraction and Refused documents, every one carrying the decider's note.
+    private static ForkEntry NotedEntry()
+    {
+        var entry = DeskReplay.Entry(DeskReplay.Card(DeskReplay.ChatFork));
+        DeskAnswerDocument[] answers =
+        [
+            Doc("n1", "Counted", null, null, Secret),
+            Doc("n2", "Revision", "n1", null, Secret + " 2"),
+            Doc("n3", "Retraction", null, "n2", Secret + " 3"),
+            Doc("n4", "Refused", null, null, Secret + " 4"),
+        ];
+        return entry with { Record = entry.Record with { CountedAnswerId = "n1", Answers = answers } };
+    }
+
+    private static bool AnyNote(JsonNode? node) => node switch
+    {
+        JsonObject o => o.Any(kv => (kv.Key == "note" && kv.Value is not null) || AnyNote(kv.Value)),
+        JsonArray a => a.Any(AnyNote),
+        _ => false,
+    };
+
+    private static async Task<(string Read, string List)> BodiesAsync(DeskWebApplicationFactory factory, string account)
+    {
+        var entry = NotedEntry();
+        factory.Door.ReadScript = (_, _) => new DeskReadOutcome.Found(entry);
+        factory.Door.ListScript = (_, r) => new DeskListOutcome.Listed(
+            new ForkList("gamecult.fork.list.v0", r.Mind, "s1", 1, 0, [entry, entry], null));
+        var token = factory.Token(account, "bifrost-desk", "desk.read");
+        var read = await factory.SendAsync("GET", DeskReplay.Target("read", "gamecult-chat", DeskReplay.ChatFork), null, token);
+        var list = await factory.SendAsync("GET", DeskReplay.Target("list", "gamecult-chat", null), null, token);
+        Assert.Equal(200, read.Status);
+        Assert.Equal(200, list.Status);
+        return (System.Text.Encoding.UTF8.GetString(read.Body), System.Text.Encoding.UTF8.GetString(list.Body));
+    }
+
+    [Fact]
+    public async Task A_non_decider_reads_and_lists_no_notes_anywhere_and_the_body_keeps_the_contract_shape()
+    {
+        using var factory = new DeskWebApplicationFactory();
+        await factory.EnsureAccountAsync(DeskWebApplicationFactory.Member, true);
+        Assert.DoesNotContain(DeskWebApplicationFactory.Member, DeskWebApplicationFactory.DecidersOf("gamecult-chat"));
+
+        var (read, list) = await BodiesAsync(factory, DeskWebApplicationFactory.Member);
+
+        Assert.DoesNotContain("decider's own words", read);
+        Assert.DoesNotContain("decider's own words", list);
+        Assert.False(AnyNote(JsonNode.Parse(read)));
+        Assert.False(AnyNote(JsonNode.Parse(list)));
+        // Outcomes and cards stay; the key stays written as nil, so the body is still the contract's shape.
+        var expected = JsonSerializer.SerializeToNode(NotedEntry() with
+        {
+            Record = NotedEntry().Record with { Answers = [.. NotedEntry().Record.Answers.Select(a => a with { Note = null })] },
+        }, DeskJson.Options);
+        Assert.True(DeskVectors.SameShape(JsonNode.Parse(read), expected));
+        var answers = JsonNode.Parse(read)!["record"]!["answers"]!.AsArray();
+        Assert.Equal(new[] { "Counted", "Revision", "Retraction", "Refused" }, answers.Select(a => (string)a!["outcome"]!).ToArray());
+        Assert.All(answers, a => Assert.True(a!.AsObject().ContainsKey("note")));
+        Assert.Equal(2, JsonNode.Parse(list)!["forks"]!.AsArray().Count);
+    }
+
+    [Fact]
+    public async Task A_decider_reads_and_lists_the_notes()
+    {
+        using var factory = new DeskWebApplicationFactory();
+        await factory.EnsureAccountAsync(DeskWebApplicationFactory.Alice, true);
+
+        var (read, list) = await BodiesAsync(factory, DeskWebApplicationFactory.Alice);
+
+        Assert.Contains(Secret + " 3", read);
+        Assert.Equal(8, JsonNode.Parse(list)!["forks"]!.AsArray().Sum(f => f!["record"]!["answers"]!.AsArray().Count(a => a!["note"] is not null)));
+        Assert.True(DeskVectors.SameShape(JsonNode.Parse(read), JsonSerializer.SerializeToNode(NotedEntry(), DeskJson.Options)));
+    }
+
+    [Fact]
+    public async Task Decider_status_is_per_mind_the_same_account_is_stripped_where_it_is_not_on_the_list()
+    {
+        using var factory = new DeskWebApplicationFactory();
+        await factory.EnsureAccountAsync(DeskWebApplicationFactory.Member, true);
+        Assert.Contains(DeskWebApplicationFactory.Member, DeskWebApplicationFactory.DecidersOf("nibu"));
+        factory.Door.ListScript = (_, r) => new DeskListOutcome.Listed(
+            new ForkList("gamecult.fork.list.v0", r.Mind, "s1", 1, 0, [NotedEntry()], null));
+        var token = factory.Token(DeskWebApplicationFactory.Member, "bifrost-desk", "desk.read");
+
+        var onNibu = await factory.SendAsync("GET", "/api/desk/nibu/forks", null, token);
+        var onChat = await factory.SendAsync("GET", "/api/desk/gamecult-chat/forks", null, token);
+
+        Assert.True(AnyNote(JsonNode.Parse(onNibu.Body)));
+        Assert.False(AnyNote(JsonNode.Parse(onChat.Body)));
+    }
 }

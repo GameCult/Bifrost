@@ -167,7 +167,7 @@ public static class DeskEndpoints
                     var listed = await door.ListAsync(mind.Socket, context, listRequest! with { Mind = mind.Id }, cancellationToken);
                     if (listed is DeskListOutcome.Listed(var list))
                     {
-                        await WriteJsonAsync(http, 200, list);
+                        await WriteJsonAsync(http, 200, IsDecider(context) ? list : DeskNotes.Strip(list));
                     }
                     else if (listed is DeskListOutcome.NotListed(var listCode) && DoorMayRefuse(listCode))
                     {
@@ -183,7 +183,7 @@ public static class DeskEndpoints
                     var found = await door.ReadAsync(mind.Socket, context, forkId, cancellationToken);
                     if (found is DeskReadOutcome.Found(var entry))
                     {
-                        await WriteJsonAsync(http, 200, entry);
+                        await WriteJsonAsync(http, 200, IsDecider(context) ? entry : DeskNotes.Strip(entry));
                     }
                     else if (found is DeskReadOutcome.NotFound(var readCode) && DoorMayRefuse(readCode))
                     {
@@ -237,6 +237,10 @@ public static class DeskEndpoints
                 return;
         }
     }
+
+    // A note is a decider's own words: only a caller on the admin-set list reads them (visibility ruling c).
+    private static bool IsDecider(DeskDoorContext context) =>
+        context.Deciders.Contains(context.Subject, StringComparer.Ordinal);
 
     // Codes the door may hand back for nothing stored. The three the edge alone judges are never the door's.
     private static bool DoorMayRefuse(string code) =>
