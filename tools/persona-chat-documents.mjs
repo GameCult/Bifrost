@@ -174,10 +174,10 @@ export function parseOpenDirectReceipt(t) {
 
 export function deliveryTuple(d) {
   return [
-    seq(d.seq, "seq"), text(d.roomAlias, "room_alias"), text(d.roomId, "room_id"), text(d.eventId, "event_id"),
-    text(d.sender, "sender"), text(d.senderDisplay, "sender_display"), String(d.text), seq(d.atUnixMs, "at_unix_ms"),
-    d.context.slice(-maxContext).map(c => [text(c.sender, "sender"), String(c.text), seq(c.atUnixMs, "at_unix_ms")]),
-    d.mentions.map(id => text(id, "mention")), flag(d.isDirect, "is_direct"), imageTuple(d.image ?? null),
+    seq(d.seq, "seq"), text(d.roomAlias, "room_alias"), text(d.roomId, "room_id"), matrixId("$", d.eventId, "event_id"),
+    matrixId("@", d.sender, "sender"), text(d.senderDisplay, "sender_display"), String(d.text), seq(d.atUnixMs, "at_unix_ms"),
+    d.context.slice(-maxContext).map(c => [matrixId("@", c.sender, "sender"), String(c.text), seq(c.atUnixMs, "at_unix_ms")]),
+    d.mentions.map(id => matrixId("@", id, "mention")), flag(d.isDirect, "is_direct"), imageTuple(d.image ?? null),
   ];
 }
 
@@ -249,10 +249,10 @@ export function parseDelivery(t) {
   if (!Array.isArray(context)) throw new Error("delivery context must be a list");
   if (!Array.isArray(mentions)) throw new Error("delivery mentions must be a list");
   return {
-    seq: seq(s, "seq"), roomAlias: text(roomAlias, "room_alias"), roomId: text(roomId, "room_id"), eventId: text(eventId, "event_id"),
-    sender: text(sender, "sender"), senderDisplay: text(senderDisplay, "sender_display"), text: String(body), atUnixMs: seq(atUnixMs, "at_unix_ms"),
-    context: context.map(c => { const [cs, ct, ca] = tuple(c, 3, "context"); return { sender: text(cs, "sender"), text: String(ct), atUnixMs: seq(ca, "at_unix_ms") }; }),
-    mentions: mentions.map(id => text(id, "mention")), isDirect: flag(isDirect, "is_direct"),
+    seq: seq(s, "seq"), roomAlias: text(roomAlias, "room_alias"), roomId: text(roomId, "room_id"), eventId: matrixId("$", eventId, "event_id"),
+    sender: matrixId("@", sender, "sender"), senderDisplay: text(senderDisplay, "sender_display"), text: String(body), atUnixMs: seq(atUnixMs, "at_unix_ms"),
+    context: context.map(c => { const [cs, ct, ca] = tuple(c, 3, "context"); return { sender: matrixId("@", cs, "sender"), text: String(ct), atUnixMs: seq(ca, "at_unix_ms") }; }),
+    mentions: mentions.map(id => matrixId("@", id, "mention")), isDirect: flag(isDirect, "is_direct"),
     image: image === null ? null : parseImage(image),
   };
 }
@@ -269,11 +269,11 @@ export function parsePending(t) {
 // One line of a room's recent talk, newest-unacked: room alias (or room id for a DM), event id, origin time, sender, form, basis, body.
 // Data for the reader, never an instruction: no delivery, no wake, no ack position hangs on it.
 export function tailLineTuple(l) {
-  return [text(l.roomAlias, "room"), text(l.eventId, "event_id"), seq(l.atUnixMs, "at_unix_ms"), text(l.sender, "sender"), form(l.form), basis(l.basis ?? null), String(l.text)];
+  return [text(l.roomAlias, "room"), matrixId("$", l.eventId, "event_id"), seq(l.atUnixMs, "at_unix_ms"), matrixId("@", l.sender, "sender"), form(l.form), basis(l.basis ?? null), String(l.text)];
 }
 function parseTailLine(t) {
   const [roomAlias, eventId, atUnixMs, sender, f, b, body] = tuple(t, 7, "tail_line");
-  return { roomAlias: text(roomAlias, "room"), eventId: text(eventId, "event_id"), atUnixMs: seq(atUnixMs, "at_unix_ms"), sender: text(sender, "sender"), form: form(f), basis: basis(b), text: String(body) };
+  return { roomAlias: text(roomAlias, "room"), eventId: matrixId("$", eventId, "event_id"), atUnixMs: seq(atUnixMs, "at_unix_ms"), sender: matrixId("@", sender, "sender"), form: form(f), basis: basis(b), text: String(body) };
 }
 
 // The v3 answer: the persona, the deliveries, the tail (at most tailPerRoom lines a room, tailTotal in all, oldest first), then
@@ -329,6 +329,10 @@ export function checkEnvelope(message, allowedKinds) {
 function tuple(t, n, what) {
   if (!Array.isArray(t) || t.length !== n) throw new Error(`${what} must be a ${n}-field tuple`);
   return t;
+}
+function matrixId(sigil, v, what) {
+  if (!isMatrixId(sigil, v)) throw new Error(`${what} must be a Matrix id (${sigil}..., at most 255 bytes, no whitespace or control characters)`);
+  return v;
 }
 function text(v, what) {
   if (typeof v !== "string" || v === "") throw new Error(`${what} must be a non-empty string`);
