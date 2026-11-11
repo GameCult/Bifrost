@@ -166,7 +166,7 @@ export function createMouth({
     } catch (error) {
       throw new Error(`homeserver unreachable: ${redact(error?.message ?? String(error), token)}`);
     }
-    if (!response.ok) throw new Error(`homeserver answered ${response.status} for ${method} ${path.split("?")[0]}`);
+    if (!response.ok) throw Object.assign(new Error(`homeserver answered ${response.status} for ${method} ${path.split("?")[0]}`), { status: response.status });
     return response.json();
   }
 
@@ -312,11 +312,18 @@ export function createMouth({
   // A pill is an anchor whose href is exactly her matrix.to link; a longer id, an attribute that merely contains one and a quoted reply do not count.
   const pillFor = html => typeof html === "string" && [...html.replace(/<mx-reply>[\s\S]*?<\/mx-reply>/gi, "").matchAll(/<a\s[^>]*?href\s*=\s*(["'])(.*?)\1/gi)].some(([, , href]) => [selfId, encodeURIComponent(selfId)].some(id => href === `https://matrix.to/#/${id}`));
   const authors = new Map(); // `${room id} ${event id}` -> { sender, excerpt, at }: read results, kept TARGET_TTL_MS, bounded; the key holds the room so another room's reply cannot borrow a hit
-  const TARGET_TTL_MS = 60 * 1000; // how long a read of a target (hit or failure) is kept
-  // The quoted text, as a prompt-safe line: nil when the event is redacted (the homeserver strips its content), is not text, or is edited
+  const TARGET_TTL_MS = 60 * 1000; // how long a read of a target is kept: a failure always; a hit only with replyLink (without it a hit is kept until bounded out, as before v4)
+  const REPLY_READS_PER_ROUND = 8; // distinct uncached targets replyToOf may read in one sync round; past it reply_to is nil (the tuple needs a sender, which only a read gives)
+  const KEEP_HIT_MS = 10 * 60 * 1000; // how long transient failures may keep a hit alive after its last good read
+  let replyReads = 0;
+  const cachedTarget = key => {
+    const known = authors.get(key);
+    return known && (now() - known.at < TARGET_TTL_MS || (!replyLink && known.sender !== null)) ? known : null;
+  };
+  // The quoted text, as a single line (invisible and format characters removed; still untrusted text): nil when the event is redacted (the homeserver strips its content), is not text, or is edited
   // (an edit target, or one with an m.replace bundled: the original body is the pre-edit text, which its author replaced), or is nothing but
   // its own reply fallback. Else: the legacy rich-reply fallback (leading "> " lines and the blank line after) is dropped, CR/LF/tab runs
-  // become one space, control characters (C0, DEL, C1) and bidi marks/overrides/isolates are removed, the result is trimmed, then cut to the
+  // become one space, control characters (C0, DEL, C1), format characters (Cf, incl. bidi marks, U+061C, U+200B-200F, U+2060-2064), private use (Co), the tag block U+E0000-E007F and unpaired surrogates are removed, the result is trimmed, then cut to the
   // first 240 code points (not bytes, so no character is split; a combining mark is its own code point) and trimmed again. Computed
   // only when replyLink is on.
   const FALLBACK_LINE = /^>( |$)/;
@@ -333,16 +340,17 @@ export function createMouth({
     }
     const line = bodyText({ ...c, body }, docs.limits.contextBytes)
       .replace(/[\r\n\t\u2028\u2029]+/g, " ")
-      .replace(/[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "")
+      .replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069]|[\p{Cf}\p{Co}\u{E0000}-\u{E007F}]|[\uD800-\uDFFF]/gu, "")
       .trim();
     const cut = [...line].slice(0, docs.limits.replyExcerpt).join("").trimEnd();
     return cut === "" ? null : cut;
   };
   async function targetOf(roomId, eventId) {
     const key = `${roomId} ${eventId}`;
+    const cached = cachedTarget(key);
+    if (cached) return cached; // with replyLink a hit is short too: a later redaction or edit of the target must show at a re-read
     const known = authors.get(key);
-    if (known && now() - known.at < TARGET_TTL_MS) return known; // short for hits too: a later redaction or edit of the target must show at a re-read
-    let sender = null, excerpt = null;
+    let sender = null, excerpt = null, transient = false;
     try {
       const target = await matrix("GET", `/rooms/${encodeURIComponent(roomId)}/event/${encodeURIComponent(eventId)}`, undefined, API, AbortSignal.timeout(sendTimeoutMs));
       if (target?.room_id === undefined || target.room_id === roomId) { // an id from another room is not an answer about this one: no sender, no text
@@ -350,9 +358,13 @@ export function createMouth({
         if (sender !== null) excerpt = excerptOf(target);
       }
     } catch (error) {
+      transient = error.status === undefined || error.status >= 500 || error.status === 429; // network, timeout, 5xx, 429: the answer is unknown; 403, 404 and any other refusal are an answer
       say(`reply target ${eventId} not read: ${error.message}`);
     }
-    const entry = { sender, excerpt, at: now() };
+    const t = now();
+    const entry = sender !== null ? { sender, excerpt, at: t, good: t }
+      : transient && known?.sender != null && t - known.good <= KEEP_HIT_MS ? { ...known, at: t } // a transient failure (network, timeout, 5xx, 429) keeps the earlier hit and renews only its age, for at most KEEP_HIT_MS after the last good read
+      : { sender: null, excerpt: null, at: t }; // any other failure (403, 404, wrong room, no sender), or a hit kept too long, is the failure entry
     authors.set(key, entry);
     if (authors.size > DELIVERED_INDEX) authors.delete(authors.keys().next().value);
     return entry;
@@ -365,6 +377,10 @@ export function createMouth({
     const r = event.content["m.relates_to"]?.["m.in_reply_to"];
     const id = r?.event_id;
     if (typeof id !== "string" || id === "" || event.content["m.relates_to"]["is_falling_back"] === true) return null;
+    if (!cachedTarget(`${roomId} ${id}`)) {
+      if (replyReads >= REPLY_READS_PER_ROUND) { say(`reply target ${id} not read: round cap`); return null; }
+      replyReads++;
+    }
     const { sender, excerpt } = await targetOf(roomId, id);
     return sender === null ? null : { eventId: id, sender, excerpt };
   }
@@ -405,6 +421,7 @@ export function createMouth({
   // One /sync round. Returns the deliveries it made.
   async function syncOnce() {
     if (!started || unjoined()) await start();
+    replyReads = 0;
     const free = await released(); // the round's brake read for presence, taken before any early return
     await setPresence(free);
     if (pending.length >= maxPending) return []; // unanswered mail is not outrun: the position stays where it is

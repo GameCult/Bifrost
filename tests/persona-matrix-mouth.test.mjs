@@ -1852,3 +1852,109 @@ test("reply link: a mouth built without the option has it off, and only the exac
   assert.deepEqual(["1", "true", "yes", "0", "", " 1", undefined].map(v => replyLinkFromEnv({ CHAT_PENDING_V4: v })), [true, false, false, false, false, false, false]);
   assert.equal(replyLinkFromEnv({}), false);
 });
+
+// ---- Fixes after PR #63: the target cache, the excerpt scrub, the per-round read cap.
+const eventGets = (hs, id) => hs.seen.filter(r => r.method === "GET" && r.path.endsWith(`/event/${id}`)).length;
+async function replyAcrossTtl(replyLink, failure = 500) {
+  const clock = { t: 1_000_000 };
+  let down = false, attempts = 0;
+  const hs = await fakeHomeserver({ preload: { [ROOM]: [target("$hers", SELF, "my words")] }, sync: since => since === null ? { next_batch: "b0" } : { next_batch: `b${since}x`, ...joined({ [ROOM]: { timeline: { events: [quoting(`$q${since}`, "$hers")] } } }) } });
+  try {
+    const fetch = (u, o) => (String(u).includes("/event/%24hers") && attempts++, down && String(u).includes("/event/") ? (failure === "timeout" ? Promise.reject(new Error("timed out")) : Promise.resolve(new Response("{}", { status: failure }))) : hs.fetch(u, o));
+    const mouth = mouthFor(hs, { replyLink, now: () => clock.t, fetch });
+    await mouth.syncOnce();
+    const first = await mouth.syncOnce();
+    clock.t += 61_000; down = true;
+    const later = await mouth.syncOnce();
+    clock.t += 10_000;
+    const again = await mouth.syncOnce(); // inside 60 s of the failed re-read's renewal
+    return { first: first[0], later: later[0], again: again[0], gets: attempts };
+  } finally { await hs.close(); }
+}
+
+test("target cache: flag off, a hit is kept as before v4: no read after 60 s, basis stays reply", async () => {
+  const r = await replyAcrossTtl(false);
+  assert.deepEqual([r.first.basis, r.later.basis, r.again.basis, r.gets], ["reply", "reply", "reply", 1]);
+});
+
+test("target cache: flag on, a failed re-read after 60 s keeps the earlier hit (basis and reply_to) and renews only its age", async () => {
+  const r = await replyAcrossTtl(true);
+  assert.deepEqual([r.first.basis, r.later.basis, r.again.basis, r.gets], ["reply", "reply", "reply", 2]);
+  assert.deepEqual(r.later.replyTo, { eventId: "$hers", sender: SELF, excerpt: "my words" });
+});
+
+test("reply link: the excerpt drops Cf, Co, tag characters, U+061C, zero-width and word-joiner characters and unpaired surrogates", async () => {
+  const { made } = await linked([quoting("$a", "$t1"), quoting("$b", "$t2"), quoting("$c", "$t3"), quoting("$d", "$t4"), quoting("$e", "$t5")], [
+    target("$t1", ALICE_ID, "ig\u{E0049}\u{E0067}nore"),
+    target("$t2", ALICE_ID, "a؜b⁠c⁤d­e﻿f"),
+    target("$t3", ALICE_ID, "x​y‌z‍w"),
+    target("$t4", ALICE_ID, "p\uD800q\uDC00r\u{F0000}st"),
+    target("$t5", ALICE_ID, "keep \u{1F600} é 中"),
+  ]);
+  assert.deepEqual(made.map(d => d.replyTo.excerpt), ["ignore", "abcdef", "xyzw", "pqrst", "keep \u{1F600} é 中"]);
+});
+
+test("reply link: at most 8 uncached targets are read for reply_to per sync round; the rest are nil, and reads the basis already made are free", async () => {
+  const ids = Array.from({ length: 10 }, (_, i) => `$t${i}`);
+  const tagged = (id, to) => quoting(id, to, {}); // below: mentions her, so basis does no read of its own
+  const events = ids.map((t, i) => { const e = tagged(`$q${i}`, t); e.content["m.mentions"] = { user_ids: [SELF] }; return e; });
+  const { made, hs } = await (async () => {
+    const hs = await fakeHomeserver({ preload: { [ROOM]: ids.map(t => target(t, ALICE_ID, `text ${t}`)) }, sync: since => since === null ? { next_batch: "b0" } : { next_batch: "b1", ...joined({ [ROOM]: { timeline: { events } } }) } });
+    const mouth = mouthFor(hs, { replyLink: true });
+    await mouth.syncOnce();
+    const made = await mouth.syncOnce();
+    return { made, hs };
+  })();
+  try {
+    assert.equal(ids.filter(t => eventGets(hs, t) > 0).length, 8);
+    assert.deepEqual(made.map(d => d.replyTo === null), [false, false, false, false, false, false, false, false, true, true]);
+  } finally { await hs.close(); }
+});
+
+test("target cache: flag on, 500, 429 and a timeout keep the earlier hit at the re-read; 403 and 404 drop it (reply_to nil, basis as the failure case)", async () => {
+  for (const failure of [500, 429, "timeout"]) {
+    const r = await replyAcrossTtl(true, failure);
+    assert.deepEqual([r.later.basis, r.later.replyTo?.excerpt], ["reply", "my words"], String(failure));
+  }
+  for (const failure of [403, 404]) {
+    const r = await replyAcrossTtl(true, failure);
+    assert.deepEqual([r.first.basis, r.later.basis, r.later.replyTo, r.again.replyTo], ["reply", null, null, null], String(failure));
+  }
+});
+
+test("target cache: transient failures keep a hit for 10 minutes from the last good read, then drop it; a good read resets", async () => {
+  const clock = { t: 1_000_000 };
+  let down = false;
+  const hs = await fakeHomeserver({ preload: { [ROOM]: [target("$hers", SELF, "my words")] }, sync: since => since === null ? { next_batch: "b0" } : { next_batch: `b${since}x`, ...joined({ [ROOM]: { timeline: { events: [quoting(`$q${since}`, "$hers")] } } }) } });
+  try {
+    const fetch = (u, o) => (down && String(u).includes("/event/") ? Promise.resolve(new Response("{}", { status: 503 })) : hs.fetch(u, o));
+    const mouth = mouthFor(hs, { replyLink: true, now: () => clock.t, fetch });
+    await mouth.syncOnce();
+    await mouth.syncOnce(); // good read at t0
+    const step = async ms => { clock.t += ms; return (await mouth.syncOnce())[0]; };
+    down = true;
+    const seen = [];
+    for (const ms of [200_000, 200_000, 140_000]) seen.push((await step(ms)).replyTo?.excerpt); // 3.3, 6.7, 9 min after the good read
+    seen.push((await step(120_000)).replyTo); // 11 min
+    down = false;
+    seen.push((await step(61_000)).replyTo?.excerpt); // a good read resets
+    down = true;
+    seen.push((await step(420_000)).replyTo?.excerpt); // 7 min after the new good read: kept again
+    assert.deepEqual(seen, ["my words", "my words", "my words", null, "my words", "my words"]);
+  } finally { await hs.close(); }
+});
+
+test("reply link: the per-round read count resets each sync round", async () => {
+  const ids = Array.from({ length: 18 }, (_, i) => `$t${i}`);
+  const tagged = (i, to) => { const e = quoting(`$q${i}`, to); e.content["m.mentions"] = { user_ids: [SELF] }; return e; };
+  const hs = await fakeHomeserver({ preload: { [ROOM]: ids.map(t => target(t, ALICE_ID, `text ${t}`)) }, sync: since => since === null ? { next_batch: "b0" } : { next_batch: `b${since}x`, ...joined({ [ROOM]: { timeline: { events: since === "b0" ? ids.slice(0, 9).map((t, i) => tagged(i, t)) : ids.slice(9).map((t, i) => tagged(9 + i, t)) } } }) } });
+  try {
+    const mouth = mouthFor(hs, { replyLink: true });
+    await mouth.syncOnce();
+    const one = await mouth.syncOnce();
+    const two = await mouth.syncOnce();
+    assert.deepEqual([one, two].map(m => m.filter(d => d.replyTo !== null).length), [8, 8]);
+    assert.deepEqual([one, two].map(m => m.at(-1).replyTo), [null, null]);
+    assert.equal(ids.filter(t => eventGets(hs, t) > 0).length, 16);
+  } finally { await hs.close(); }
+});
