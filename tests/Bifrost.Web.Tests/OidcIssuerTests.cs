@@ -224,6 +224,7 @@ public sealed class OidcIssuerTests : IClassFixture<OidcWebApplicationFactory>
         using var factory = new OidcFixedIdentityFactory(ordinary);
         using var client = factory.CreateClient(ClientOptions());
         await RegisterAsync(client, $"cookie-{Guid.NewGuid():N}");
+        await factory.AgreeAsync(factory.FixedAccountId);
         var request = NewRequest();
 
         var final = await DriveAsync(client, request);
@@ -825,6 +826,164 @@ public sealed class OidcIssuerTests : IClassFixture<OidcWebApplicationFactory>
         Assert.Equal(OidcForeignIssuerFactory.PublicBaseUrl, discovery.GetProperty("issuer").GetString());
     }
 
+    // ---- chat needs a live receipt for the notice version in force; nothing else does ----
+
+    private const string ConsentPath = "/auth/bifrost/consent";
+
+    /// <summary>A form post as the consent page's own buttons send it: the site's own Origin, no antiforgery token.</summary>
+    private async Task<HttpResponseMessage> ConsentPostAsync(HttpClient client, string action, string? returnUrl = null)
+    {
+        var fields = new Dictionary<string, string> { ["version"] = Bifrost.Web.Features.Registration.TrainingNotice.Version.ToString() };
+        if (returnUrl is not null)
+        {
+            fields["returnUrl"] = returnUrl;
+        }
+
+        using var message = new HttpRequestMessage(HttpMethod.Post, $"{ConsentPath}/{action}") { Content = new FormUrlEncodedContent(fields) };
+        message.Headers.TryAddWithoutValidation("Origin", Origin.GetLeftPart(UriPartial.Authority));
+        return await client.SendAsync(message);
+    }
+
+    [Theory]
+    [InlineData(ReceiptState.None)]
+    [InlineData(ReceiptState.Withdrawn)]
+    [InlineData(ReceiptState.OtherVersion)]
+    public async Task Chat_authorize_without_a_live_current_receipt_sends_the_member_to_the_consent_page_with_the_request_to_resume(ReceiptState receipt)
+    {
+        var (client, _) = await SignedInAsync(MembershipStatus.Active, "No Agreement", receipt);
+        var request = NewRequest();
+
+        var final = await DriveAsync(client, request);
+
+        Assert.Equal(HttpStatusCode.Redirect, final.StatusCode);
+        var location = final.Headers.Location!.OriginalString;
+        Assert.DoesNotContain("code=", location);
+        Assert.DoesNotContain("error=", location);
+        Assert.StartsWith(ConsentPath + "?returnUrl=", location);
+        var resume = ReturnUrl(final);
+        Assert.StartsWith("/connect/authorize?", resume);
+        Assert.Equal(resume, LocalReturnPath.Parse(resume).Value); // short enough to survive as a local return path
+
+        using var page = await client.GetAsync(location);
+        var html = await page.Content.ReadAsStringAsync();
+        Assert.Equal(HttpStatusCode.OK, page.StatusCode);
+        Assert.Contains("action=\"/auth/bifrost/consent/accept\"", html);
+        Assert.Contains("to speak in a recorded room", html);
+    }
+
+    [Fact]
+    public async Task Agreeing_on_the_consent_page_resumes_the_refused_request_and_chat_works()
+    {
+        var (client, identity) = await SignedInAsync(MembershipStatus.Authenticated, "Late Agreer", ReceiptState.None);
+        var request = NewRequest();
+        var refused = await DriveAsync(client, request);
+        var resume = ReturnUrl(refused);
+
+        using var agreed = await ConsentPostAsync(client, "accept", resume);
+        Assert.Equal(HttpStatusCode.SeeOther, agreed.StatusCode);
+        Assert.Equal(resume, agreed.Headers.Location!.OriginalString);
+
+        using var resumed = await client.GetAsync(resume);
+        var code = AssertRedirectToClient(resumed, request.State)["code"];
+        Assert.NotNull(code);
+        var tokens = await ExchangeAsync(client, request, code!);
+        using var userinfo = await UserInfoAsync(tokens.AccessToken);
+        Assert.Equal(HttpStatusCode.OK, userinfo.StatusCode);
+        Assert.Equal(identity, JsonDocument.Parse(await userinfo.Content.ReadAsStringAsync()).RootElement.GetProperty("preferred_username").GetString());
+    }
+
+    [Theory]
+    [InlineData(ReceiptState.Withdrawn)]
+    [InlineData(ReceiptState.OtherVersion)]
+    public async Task A_code_and_a_token_issued_before_the_agreement_went_stop_working(ReceiptState gone)
+    {
+        var (client, identity) = await SignedInAsync(MembershipStatus.Active, "Soon Silent");
+        var pendingRequest = NewRequest();
+        var pendingCode = await CodeAsync(client, pendingRequest);
+        var tokens = await CompleteFlowAsync(client);
+        using (var before = await UserInfoAsync(tokens.AccessToken))
+        {
+            Assert.Equal(HttpStatusCode.OK, before.StatusCode);
+        }
+
+        await _factory.SetReceiptAsync(identity, gone);
+
+        using var code = await TokenAsync(client, pendingRequest, pendingCode);
+        var codeBody = await code.Content.ReadAsStringAsync();
+        Assert.Equal(HttpStatusCode.BadRequest, code.StatusCode);
+        Assert.Contains("invalid_grant", codeBody);
+        Assert.DoesNotContain("access_token", codeBody);
+
+        using var after = await UserInfoAsync(tokens.AccessToken);
+        var afterBody = await after.Content.ReadAsStringAsync();
+        Assert.Equal(HttpStatusCode.Forbidden, after.StatusCode);
+        Assert.Contains("insufficient_access", string.Join(" ", after.Headers.WwwAuthenticate.Select(x => x.ToString())));
+        Assert.DoesNotContain(identity, afterBody);
+        Assert.DoesNotContain("preferred_username", afterBody);
+    }
+
+    [Fact]
+    public async Task Withdrawing_on_the_consent_page_ends_chat_and_agreeing_again_restores_it()
+    {
+        var (client, _) = await SignedInAsync(MembershipStatus.Active, "Changes Mind");
+        var tokens = await CompleteFlowAsync(client);
+
+        using (var withdrawn = await ConsentPostAsync(client, "withdraw"))
+        {
+            Assert.Equal(HttpStatusCode.SeeOther, withdrawn.StatusCode);
+        }
+
+        using (var silenced = await UserInfoAsync(tokens.AccessToken))
+        {
+            Assert.Equal(HttpStatusCode.Forbidden, silenced.StatusCode);
+        }
+
+        var request = NewRequest();
+        Assert.StartsWith(ConsentPath, (await DriveAsync(client, request)).Headers.Location!.OriginalString);
+
+        using (var again = await ConsentPostAsync(client, "accept"))
+        {
+            Assert.Equal(HttpStatusCode.SeeOther, again.StatusCode);
+        }
+
+        var fresh = await CompleteFlowAsync(client);
+        using var restored = await UserInfoAsync(fresh.AccessToken);
+        Assert.Equal(HttpStatusCode.OK, restored.StatusCode);
+    }
+
+    [Fact]
+    public async Task Without_a_receipt_account_sign_in_the_members_page_and_votes_still_work()
+    {
+        var (client, identity) = await SignedInAsync(MembershipStatus.Active, "Member Only", ReceiptState.None);
+        var accountId = _factory.AccountId(identity);
+
+        foreach (var path in new[] { "/App", "/App/Members", ConsentPath })
+        {
+            using var page = await client.GetAsync(path);
+            Assert.Equal(HttpStatusCode.OK, page.StatusCode);
+        }
+
+        var collection = "c" + Guid.NewGuid().ToString("N");
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<Bifrost.Web.Data.BifrostDbContext>();
+            db.ConceptSubjects.Add(new ConceptSubject { Collection = collection, Key = "alpha", Title = "alpha", RegisteredAtUtc = DateTimeOffset.UtcNow });
+            await db.SaveChangesAsync();
+        }
+
+        using var vote = new HttpRequestMessage(HttpMethod.Post, $"/mill/{collection}/alpha?handler=Up") { Content = new FormUrlEncodedContent([]) };
+        vote.Headers.TryAddWithoutValidation("Origin", Origin.GetLeftPart(UriPartial.Authority));
+        using var voted = await client.SendAsync(vote);
+        Assert.Equal(HttpStatusCode.Redirect, voted.StatusCode);
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<Bifrost.Web.Data.BifrostDbContext>();
+            Assert.Single(db.ConceptAppraisals.AsNoTracking().Where(x => x.Subject!.Collection == collection && x.UserAccountId == accountId));
+        }
+
+        Assert.Empty(_factory.ReceiptsOf(identity)); // none of that wrote an agreement
+    }
+
     // ---- helpers ----
 
     private static WebApplicationFactoryClientOptions ClientOptions() => new()
@@ -836,17 +995,22 @@ public sealed class OidcIssuerTests : IClassFixture<OidcWebApplicationFactory>
 
     private HttpClient NewClient() => _factory.CreateClient(ClientOptions());
 
-    private static async Task<string> RegisterAsync(HttpClient client, string identity)
+    private static async Task<string> RegisterAsync(HttpClient client, string identity, bool agree = true)
     {
-        using var response = await RegistrationKit.RegisterAsync(client, identity);
+        using var response = await RegistrationKit.RegisterAsync(client, identity, agree: agree);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         return identity.ToLowerInvariant();
     }
 
-    private async Task<(HttpClient Client, string Identity)> SignedInAsync(MembershipStatus status, string displayName)
+    private async Task<(HttpClient Client, string Identity)> SignedInAsync(MembershipStatus status, string displayName, ReceiptState receipt = ReceiptState.Current)
     {
         var client = NewClient();
-        var identity = await RegisterAsync(client, $"member-{Guid.NewGuid():N}");
+        var identity = await RegisterAsync(client, $"member-{Guid.NewGuid():N}", agree: receipt != ReceiptState.None);
+        if (receipt is ReceiptState.Withdrawn or ReceiptState.OtherVersion)
+        {
+            await _factory.SetReceiptAsync(identity, receipt);
+        }
+
         await _factory.SetMembershipAsync(identity, status);
         await _factory.SetDisplayNameAsync(identity, displayName);
         return (client, identity);

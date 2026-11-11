@@ -80,10 +80,11 @@ raise the wait or lower the budget; do not add a visual or audio puzzle, which e
 Lives in Bifrost: the account, the receipt and the registration are one transaction, and chat admission is Bifrost's
 decision (`admission-is-bifrost-membership`).
 
-- Consent is optional. Registration succeeds with or without it; a receipt exists only if the person agreed. See
-  `training-notice.md` for why and for what the notice says.
+- Consent is optional at registration. Registration succeeds with or without it; a receipt exists only if the person
+  agreed. It is not optional for chat: the OIDC chat sign-in needs a live receipt for the version in force
+  (`oidc-issuer.md`, Who may sign in). See `training-notice.md` for why and for what the notice says.
 - Notice: `TrainingNotice.Version` (positive integer, no leading zeros, per the version rule in Heimdall's
-  `answer-collector-consent.md`) and `TrainingNotice.Text`, served at `GET /auth/bifrost/notice`. Version 2 is in force.
+  `answer-collector-consent.md`) and `TrainingNotice.Text`, served at `GET /auth/bifrost/notice`. Version 1 is in force, and its text is frozen (a test pins its hash).
   Changing the text is a version bump, never an edit in place. The text states that nothing from Discord is used.
 - Receipt: `ConsentReceipt` (account, notice version, `AcceptedAtUtc`, `WithdrawnAtUtc`). One live (not withdrawn)
   receipt per account and version; withdrawn rows stay as history. At registration an `acceptedNoticeVersion` equal to
@@ -91,7 +92,8 @@ decision (`admission-is-bifrost-membership`).
   nothing; absent means no receipt.
 - Consent page: `GET /auth/bifrost/consent`, for any signed-in account (native, provider, existing). It shows the notice,
   the account's state (no agreement, agreed to the current version, agreed to an older one, withdrawn) and the buttons
-  that apply: Withdraw whenever any receipt is live, Agree whenever none is live for the version in force (so an account
+  that apply (with a `returnUrl` query a refused chat sign-in sends, a local path only, Agree returns the member there):
+  Withdraw whenever any receipt is live, Agree whenever none is live for the version in force (so an account
   on an older version sees both). `POST /auth/bifrost/consent/accept` and `POST /auth/bifrost/consent/withdraw` are form posts refused
   with 403 unless they came from the site itself (the strict `RequestOriginGuard`), before anything is read or written.
   Agree is idempotent; withdraw stamps `WithdrawnAtUtc` once and deletes nothing; agreeing again after a withdrawal writes

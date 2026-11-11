@@ -136,6 +136,39 @@ public sealed class ConsentTests(RegistrationGateFactory factory) : IClassFixtur
     }
 
     [Fact]
+    public async Task The_page_states_what_agreement_is_for_before_the_agree_button()
+    {
+        var identity = NewIdentity();
+        Seed(identity);
+        var html = await PageHtmlAsync(identity);
+
+        var notice = html.IndexOf("to speak in a recorded room", StringComparison.Ordinal);
+        Assert.True(notice >= 0 && html.Contains("Lines you have already spoken stay"), "the notice says what agreement is for and that spoken lines stay");
+        Assert.True(notice < html.IndexOf("action=\"/auth/bifrost/consent/accept\"", StringComparison.Ordinal), "the notice comes before the button that agrees to it");
+    }
+
+    [Fact]
+    public async Task Agreeing_from_a_refused_chat_sign_in_returns_to_the_request_and_a_foreign_path_does_not_survive()
+    {
+        var identity = NewIdentity();
+        Seed(identity);
+        using var client = Client();
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/auth/bifrost/consent?returnUrl=" + Uri.EscapeDataString("/connect/authorize?request_uri=urn%3Aabc"));
+        Sign(request, identity);
+        using var page = await client.SendAsync(request);
+        Assert.Contains("name=\"returnUrl\" value=\"/connect/authorize?request_uri=urn%3Aabc\"", await page.Content.ReadAsStringAsync());
+
+        using var agreed = await PostAsync(client, "accept", identity, new Dictionary<string, string> { ["version"] = TrainingNotice.Version.ToString(), ["returnUrl"] = "/connect/authorize?request_uri=urn%3Aabc" });
+        Assert.Equal(HttpStatusCode.SeeOther, agreed.StatusCode);
+        Assert.Equal("/connect/authorize?request_uri=urn%3Aabc", agreed.Headers.Location!.OriginalString);
+
+        using var foreign = await PostAsync(client, "accept", identity, new Dictionary<string, string> { ["version"] = TrainingNotice.Version.ToString(), ["returnUrl"] = "//evil.example/x" });
+        Assert.Equal(HttpStatusCode.SeeOther, foreign.StatusCode);
+        Assert.Equal("/App", foreign.Headers.Location!.OriginalString);
+    }
+
+    [Fact]
     public async Task Agreement_to_the_current_version_shows_its_time_and_only_the_withdraw_button()
     {
         var identity = NewIdentity();
@@ -151,10 +184,10 @@ public sealed class ConsentTests(RegistrationGateFactory factory) : IClassFixtur
     public async Task Agreement_to_an_older_version_says_it_no_longer_counts_and_offers_both_agree_and_withdraw()
     {
         var identity = NewIdentity();
-        Seed(identity, (1, Agreed, null));
+        Seed(identity, (TrainingNotice.Version - 1, Agreed, null));
         var html = await PageHtmlAsync(identity);
 
-        Assert.Contains($"You agreed to version 1 on 2026-11-01T12:30:05Z; version {TrainingNotice.Version} is in force and your messages are not used until you agree to it", html);
+        Assert.Contains($"You agreed to version {TrainingNotice.Version - 1} on 2026-11-01T12:30:05Z; version {TrainingNotice.Version} is in force; you cannot speak in a recorded room and your messages are not used until you agree to it", html);
         Assert.Contains("action=\"/auth/bifrost/consent/accept\"", html);
         Assert.Contains("action=\"/auth/bifrost/consent/withdraw\"", html);
     }
@@ -163,7 +196,7 @@ public sealed class ConsentTests(RegistrationGateFactory factory) : IClassFixtur
     public async Task A_live_receipt_for_the_version_in_force_outranks_an_older_live_one()
     {
         var identity = NewIdentity();
-        Seed(identity, (1, Agreed, null), (TrainingNotice.Version, Agreed.AddDays(1), null));
+        Seed(identity, (TrainingNotice.Version - 1, Agreed, null), (TrainingNotice.Version, Agreed.AddDays(1), null));
         var html = await PageHtmlAsync(identity);
 
         Assert.Contains($"You agreed to version {TrainingNotice.Version} on 2026-11-02T12:30:05Z", html);
@@ -225,7 +258,7 @@ public sealed class ConsentTests(RegistrationGateFactory factory) : IClassFixtur
     public async Task Withdraw_stamps_every_live_receipt_including_an_older_version()
     {
         var identity = NewIdentity();
-        Seed(identity, (1, Agreed, null), (TrainingNotice.Version, Agreed.AddDays(1), null));
+        Seed(identity, (TrainingNotice.Version - 1, Agreed, null), (TrainingNotice.Version, Agreed.AddDays(1), null));
         using var client = Client();
 
         using var response = await PostAsync(client, "withdraw", identity);
@@ -267,17 +300,18 @@ public sealed class ConsentTests(RegistrationGateFactory factory) : IClassFixtur
     public async Task Accept_next_to_an_older_live_receipt_adds_one_for_the_version_in_force()
     {
         var identity = NewIdentity();
-        Seed(identity, (1, Agreed, null));
+        Seed(identity, (TrainingNotice.Version - 1, Agreed, null));
         using var client = Client();
 
         using var response = await PostAsync(client, "accept", identity);
 
         Assert.Equal(HttpStatusCode.SeeOther, response.StatusCode);
-        Assert.Equal([1, TrainingNotice.Version], Receipts(identity).Select(x => x.NoticeVersion).Order().ToArray());
+        Assert.Equal([TrainingNotice.Version - 1, TrainingNotice.Version], Receipts(identity).Select(x => x.NoticeVersion).Order().ToArray());
     }
 
     [Theory]
-    [InlineData("1")]
+    [InlineData("0")]
+    [InlineData("2")]
     [InlineData("3")]
     [InlineData("abc")]
     [InlineData("")]

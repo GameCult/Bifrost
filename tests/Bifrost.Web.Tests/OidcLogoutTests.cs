@@ -76,6 +76,25 @@ public sealed class OidcLogoutTests
         Assert.Single(factory.Mas.Bodies);
     }
 
+    [Theory]
+    [InlineData(ReceiptState.Withdrawn)]
+    [InlineData(ReceiptState.OtherVersion)]
+    [InlineData(ReceiptState.None)]
+    public async Task An_account_whose_agreement_has_gone_is_logged_out_while_one_that_agreed_is_left_alone(ReceiptState gone)
+    {
+        using var factory = new OidcLogoutFactory();
+        var (silenced, _) = await factory.GrantAsync(MembershipStatus.Active);
+        var (agreed, _) = await factory.GrantAsync(MembershipStatus.Active);
+        await factory.SetReceiptAsync(silenced, gone);
+
+        await factory.Reconciler.ReconcileOnceAsync(CancellationToken.None);
+
+        var token = new JsonWebToken(Assert.Single(factory.Mas.LogoutTokens()));
+        Assert.Equal(factory.AccountId(silenced).ToString("D"), token.Subject);
+        Assert.Equal(0, factory.ValidAuthorizations(factory.AccountId(silenced).ToString("D")));
+        Assert.True(factory.ValidAuthorizations(factory.AccountId(agreed).ToString("D")) > 0);
+    }
+
     [Fact]
     public async Task Two_logouts_for_one_subject_carry_different_jti()
     {

@@ -33,7 +33,8 @@ public static class RegistrationKit
         string identity,
         string? displayName = null,
         string? returnUrl = null,
-        bool anonymous = false)
+        bool anonymous = false,
+        bool agree = true)
     {
         var (challenge, nonce) = await SolveAsync(client);
         return await PostAsync(client, new
@@ -43,7 +44,7 @@ public static class RegistrationKit
             returnUrl,
             challenge,
             nonce,
-            acceptedNoticeVersion = TrainingNotice.Version
+            acceptedNoticeVersion = agree ? TrainingNotice.Version : (int?)null
         }, anonymous);
     }
 

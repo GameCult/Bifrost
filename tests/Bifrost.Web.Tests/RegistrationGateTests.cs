@@ -84,7 +84,7 @@ public sealed class RegistrationGateTests(RegistrationGateFactory factory) : ICl
     [Theory]
     [InlineData(0)]
     [InlineData(-1)]
-    [InlineData(1)]
+    [InlineData(2)]
     [InlineData(3)]
     public async Task A_wrong_notice_version_is_refused_and_creates_nothing(int version)
     {
@@ -234,7 +234,6 @@ public sealed class RegistrationGateTests(RegistrationGateFactory factory) : ICl
         var db = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
         var account = db.UserAccounts.Single(x => x.NormalizedBifrostIdentity == identity);
         var receipt = db.ConsentReceipts.Single(x => x.UserAccountId == account.Id);
-        Assert.Equal(2, receipt.NoticeVersion);
         Assert.Equal(TrainingNotice.Version, receipt.NoticeVersion);
         Assert.Null(receipt.WithdrawnAtUtc);
         Assert.InRange((factory.Time.GetUtcNow() - receipt.AcceptedAtUtc).Duration(), TimeSpan.Zero, TimeSpan.FromSeconds(5));
@@ -247,7 +246,7 @@ public sealed class RegistrationGateTests(RegistrationGateFactory factory) : ICl
 
         var notice = await client.GetFromJsonAsync<JsonElement>("/auth/bifrost/notice");
 
-        Assert.Equal(2, notice.GetProperty("version").GetInt32());
+        Assert.Equal(TrainingNotice.Version, notice.GetProperty("version").GetInt32());
         Assert.Contains("Discord", notice.GetProperty("text").GetString());
     }
 

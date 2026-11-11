@@ -16,6 +16,15 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace Bifrost.Web.Tests.Support;
 
+/// <summary>The consent receipt an account holds, from a consumer's side: current, none, withdrawn, or for a version other than the one in force.</summary>
+public enum ReceiptState
+{
+    Current,
+    None,
+    Withdrawn,
+    OtherVersion
+}
+
 /// <summary>What is wrong with the signing key file a test host is started with.</summary>
 public enum OidcKeyFault
 {
@@ -225,6 +234,48 @@ public class OidcWebApplicationFactory : TestWebApplicationFactory
         await db.SaveChangesAsync();
     }
 
+    /// <summary>Leaves the account with exactly the receipt state a test names: none, or one receipt for the version in force, a withdrawn one, or one for another version.</summary>
+    public async Task SetReceiptAsync(string identity, ReceiptState state)
+    {
+        using var scope = Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
+        var id = db.UserAccounts.Single(x => x.NormalizedBifrostIdentity == identity).Id;
+        db.ConsentReceipts.RemoveRange(db.ConsentReceipts.Where(x => x.UserAccountId == id));
+        await db.SaveChangesAsync();
+        await AddReceiptAsync(db, id, state);
+    }
+
+    public List<ConsentReceipt> ReceiptsOf(string identity)
+    {
+        using var scope = Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
+        return db.ConsentReceipts.AsNoTracking().Where(x => x.UserAccount!.NormalizedBifrostIdentity == identity).ToList();
+    }
+
+    /// <summary>A receipt for an account that exists only as an actor fixture.</summary>
+    public async Task AgreeAsync(Guid accountId)
+    {
+        using var scope = Services.CreateScope();
+        await AddReceiptAsync(scope.ServiceProvider.GetRequiredService<BifrostDbContext>(), accountId, ReceiptState.Current);
+    }
+
+    private static async Task AddReceiptAsync(BifrostDbContext db, Guid accountId, ReceiptState state)
+    {
+        if (state != ReceiptState.None)
+        {
+            var now = DateTimeOffset.UtcNow;
+            db.ConsentReceipts.Add(new ConsentReceipt
+            {
+                UserAccountId = accountId,
+                // Another version stands for a notice that has since been bumped (or, in a future bump, the one before it).
+                NoticeVersion = state == ReceiptState.OtherVersion ? Bifrost.Web.Features.Registration.TrainingNotice.Version - 1 : Bifrost.Web.Features.Registration.TrainingNotice.Version,
+                AcceptedAtUtc = now,
+                WithdrawnAtUtc = state == ReceiptState.Withdrawn ? now : null
+            });
+            await db.SaveChangesAsync();
+        }
+    }
+
     public Guid AccountId(string identity)
     {
         using var scope = Services.CreateScope();
@@ -264,18 +315,20 @@ public sealed class OidcNoIdentityFactory : OidcWebApplicationFactory
 /// </summary>
 public sealed class OidcFixedIdentityFactory(string identity, MembershipStatus status = MembershipStatus.Active) : OidcWebApplicationFactory
 {
+    public Guid FixedAccountId { get; } = Guid.NewGuid();
+
     protected override void ConfigureActors(IServiceCollection services)
     {
         services.RemoveAll<ICurrentBifrostActorAccessor>();
-        services.AddScoped<ICurrentBifrostActorAccessor>(_ => new FixedIdentity(identity, status));
+        services.AddScoped<ICurrentBifrostActorAccessor>(_ => new FixedIdentity(FixedAccountId, identity, status));
     }
 
-    private sealed class FixedIdentity(string identity, MembershipStatus status) : ICurrentBifrostActorAccessor
+    private sealed class FixedIdentity(Guid id, string identity, MembershipStatus status) : ICurrentBifrostActorAccessor
     {
         public Task<CurrentBifrostActor> GetAsync(CancellationToken cancellationToken) =>
             Task.FromResult(new CurrentBifrostActor(true, new UserAccount
             {
-                Id = Guid.NewGuid(),
+                Id = id,
                 BifrostIdentity = identity,
                 NormalizedBifrostIdentity = identity, // as given: the guard, not the fixture, must fold case
                 DisplayName = "Fixed Identity",

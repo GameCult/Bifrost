@@ -20,7 +20,7 @@ public static class ConsentEndpoints
 
     public static void MapConsent(this IEndpointRouteBuilder app)
     {
-        app.MapGet(Path, async (ICurrentBifrostActorAccessor actors, BifrostDbContext db, CancellationToken ct) =>
+        app.MapGet(Path, async (HttpContext http, ICurrentBifrostActorAccessor actors, BifrostDbContext db, CancellationToken ct) =>
         {
             var actor = await actors.GetAsync(ct);
             if (!actor.IsAuthenticated || actor.UserAccount is null)
@@ -28,7 +28,7 @@ public static class ConsentEndpoints
                 return Results.Redirect($"/auth/sign-in?returnUrl={Uri.EscapeDataString(LocalReturnPath.Parse(Path).Value)}");
             }
 
-            return await PageAsync(db, actor.UserAccount.Id, null, StatusCodes.Status200OK, ct);
+            return await PageAsync(db, actor.UserAccount.Id, null, StatusCodes.Status200OK, ct, ReturnPathOf(http.Request.Query["returnUrl"]));
         }).AllowAnonymous();
 
         app.MapPost(Path + "/accept", async (
@@ -53,7 +53,7 @@ public static class ConsentEndpoints
             var form = await ReadFormAsync(http.Request, ct);
             if (form is null || form["version"].ToString() != TrainingNotice.Version.ToString(System.Globalization.CultureInfo.InvariantCulture))
             {
-                return await PageAsync(db, actor.UserAccount.Id, $"Send the version in force, {TrainingNotice.Version}, to agree.", StatusCodes.Status400BadRequest, ct);
+                return await PageAsync(db, actor.UserAccount.Id, $"Send the version in force, {TrainingNotice.Version}, to agree.", StatusCodes.Status400BadRequest, ct, ReturnPathOf(form?["returnUrl"] ?? default));
             }
 
             var accountId = actor.UserAccount.Id;
@@ -77,7 +77,7 @@ public static class ConsentEndpoints
                 }
             }
 
-            return Back();
+            return new SeeOther(ReturnPathOf(form["returnUrl"]) ?? Path);
         }).AllowAnonymous();
 
         app.MapPost(Path + "/withdraw", async (
@@ -133,9 +133,17 @@ public static class ConsentEndpoints
 
     private static IResult Refused() => Results.Text("Cross-site consent changes are refused.", statusCode: StatusCodes.Status403Forbidden);
 
+    /// <summary>Where the consent page sends the member after agreeing: a local path (<see cref="LocalReturnPath"/>) the refused chat authorize names, else the page itself.</summary>
+    internal static string? ReturnPathOf(Microsoft.Extensions.Primitives.StringValues requested) =>
+        requested.ToString() is { Length: > 0 } text ? LocalReturnPath.Parse(text).Value : null;
+
+    /// <summary>The consent page that a refused chat sign-in lands on, carrying the request to resume once the member agrees.</summary>
+    public static string PathFor(string returnPath) => $"{Path}?returnUrl={Uri.EscapeDataString(returnPath)}";
+
     private static IResult Back() => new SeeOther(Path);
 
-    private static Task<bool> HasLiveReceiptAsync(BifrostDbContext db, Guid accountId, CancellationToken ct) =>
+    /// <summary>The one reading of "may speak": a live receipt for the version in force. A receipt for any other version, or a withdrawn one, does not count.</summary>
+    internal static Task<bool> HasLiveReceiptAsync(BifrostDbContext db, Guid accountId, CancellationToken ct) =>
         db.ConsentReceipts.AnyAsync(x => x.UserAccountId == accountId && x.NoticeVersion == TrainingNotice.Version && x.WithdrawnAtUtc == null, ct);
 
     private static async Task<IFormCollection?> ReadFormAsync(HttpRequest request, CancellationToken ct)
@@ -172,10 +180,10 @@ public static class ConsentEndpoints
         }
     }
 
-    private static async Task<IResult> PageAsync(BifrostDbContext db, Guid accountId, string? error, int status, CancellationToken ct)
+    private static async Task<IResult> PageAsync(BifrostDbContext db, Guid accountId, string? error, int status, CancellationToken ct, string? returnPath = null)
     {
         var receipts = await db.ConsentReceipts.AsNoTracking().Where(x => x.UserAccountId == accountId).ToListAsync(ct);
-        return new HtmlPage(ConsentPage.Render(ConsentPage.StateOf(receipts), error), status);
+        return new HtmlPage(ConsentPage.Render(ConsentPage.StateOf(receipts), error, returnPath), status);
     }
 
     private sealed class HtmlPage(string html, int status) : IResult
