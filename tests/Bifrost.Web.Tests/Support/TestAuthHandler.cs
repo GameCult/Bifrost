@@ -21,6 +21,16 @@ public sealed class TestAuthHandler(
             return Task.FromResult(AuthenticateResult.NoResult());
         }
 
+        // A test may sign in as a native account by naming its Bifrost identity; only that claim is sent, so no GitHub claim also matches.
+        if (Request.Headers.TryGetValue("X-Test-Bifrost-Identity", out var nativeIdentity))
+        {
+            var native = new ClaimsIdentity(
+                [new Claim(BifrostClaimTypes.BifrostIdentity, nativeIdentity.ToString())],
+                SchemeName);
+            return Task.FromResult(AuthenticateResult.Success(
+                new AuthenticationTicket(new ClaimsPrincipal(native), SchemeName)));
+        }
+
         // A test may sign in as another account by naming its GitHub id and login.
         var gitHubId = Request.Headers["X-Test-GitHub-Id"].FirstOrDefault() ?? "12345";
         var login = Request.Headers["X-Test-GitHub-Login"].FirstOrDefault() ?? "test-admin";

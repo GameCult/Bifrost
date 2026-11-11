@@ -9,10 +9,11 @@ import { resolve } from "node:path";
 import { buildFeedbackDefinitions } from "../tools/persona-feedback-documents.mjs";
 import { conversationFromDiscordMessage, discordGatewayReady } from "../tools/bifrost-discord-persona-ingress.mjs";
 
-const root=resolve(import.meta.dirname,".."), cult=resolve(root,"..","CultLib");
+import { cultLibRoot } from "./cultlib-root.mjs";
+const root=resolve(import.meta.dirname,".."), cult=cultLibRoot;
 const cr=createRequire(resolve(cult,"packages","cultcache-ts","package.json"));
 const mr=createRequire(resolve(cult,"packages","cultmesh-ts","package.json"));
-const {defineDocumentType}=cr("@gamecult/cultcache-ts"), {CultMesh}=mr("cultmesh-ts"), defs=buildFeedbackDefinitions(defineDocumentType);
+const {defineDocumentType}=cr("@gamecult/cultcache-ts"), {CultMesh}=mr("@gamecult/cultmesh-ts"), defs=buildFeedbackDefinitions(defineDocumentType);
 const nr=createRequire(resolve(cult,"packages","cultnet-ts","package.json")),{decode,encode}=nr("@msgpack/msgpack");
 
 test("Bifrost admits bound feedback as pressure only and exports CultNet",async()=>{

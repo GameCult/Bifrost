@@ -27,11 +27,6 @@ export function crossingReceiptDefinition(defineDocumentTypeInput) {
     contentHash: crossingReceiptSchemaId,
     global: false,
     name: "receiptId",
-    indexes: {
-      commandId: "commandId",
-      crossingKind: "crossingKind",
-      status: "status",
-    },
     schema: { parse: parseCrossingReceipt },
     members: [
       { slot: 1, memberName: "receiptId", typeName: "string", isName: true },

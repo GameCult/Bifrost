@@ -516,6 +516,96 @@ public sealed class ConceptVoteRateLimitTests : IClassFixture<ConceptVoteRateLim
         Assert.Equal(HttpStatusCode.OK, export.StatusCode);
     }
 
+    // The host itself, not the validator alone: Program runs StartupConfigurationValidator on every start, in every
+    // environment. IPv4 is 0-32 and IPv6 is 0-128 inclusive; a length outside its own family is refused by name.
+    [Theory]
+    [InlineData("Development", 33, 56, "ConceptVotes:IPv4PrefixLength")]
+    [InlineData("Development", -1, 56, "ConceptVotes:IPv4PrefixLength")]
+    [InlineData("Development", 32, 129, "ConceptVotes:IPv6PrefixLength")]
+    [InlineData("Development", 32, -1, "ConceptVotes:IPv6PrefixLength")]
+    [InlineData("Testing", 33, 56, "ConceptVotes:IPv4PrefixLength")]
+    [InlineData("Testing", -1, 56, "ConceptVotes:IPv4PrefixLength")]
+    [InlineData("Testing", 32, 129, "ConceptVotes:IPv6PrefixLength")]
+    [InlineData("Testing", 32, -1, "ConceptVotes:IPv6PrefixLength")]
+    [InlineData("Production", 33, 56, "ConceptVotes:IPv4PrefixLength")]
+    [InlineData("Production", -1, 56, "ConceptVotes:IPv4PrefixLength")]
+    [InlineData("Production", 32, 129, "ConceptVotes:IPv6PrefixLength")]
+    [InlineData("Production", 32, -1, "ConceptVotes:IPv6PrefixLength")]
+    public void Host_refuses_to_start_with_a_prefix_length_outside_its_address_family(
+        string environment, int v4, int v6, string key)
+    {
+        using var factory = WithPrefixes(environment, v4, v6);
+
+        var failure = Assert.ThrowsAny<Exception>(() => factory.CreateClient());
+
+        Assert.Contains(key, Messages(failure));
+    }
+
+    // Boundary lengths start in Development and Testing and a cast from a real client address works. Production is
+    // not started here: it additionally demands a database, keys path and secrets this factory does not supply.
+    [Theory]
+    [InlineData("Development", 0, 0)]
+    [InlineData("Development", 32, 128)]
+    [InlineData("Testing", 0, 0)]
+    [InlineData("Testing", 32, 128)]
+    public async Task Boundary_prefix_lengths_start_and_a_cast_from_a_client_address_succeeds(
+        string environment, int v4, int v6)
+    {
+        using var factory = WithPrefixes(environment, v4, v6);
+        var collection = await NewSubject(factory);
+
+        using var v4Cast = await new Client(factory, "203.0.113.200").Post(collection, "Up");
+        using var v6Cast = await new Client(factory, "2001:db8:5::1").Post(collection, "Up");
+
+        Assert.Equal(HttpStatusCode.Redirect, v4Cast.StatusCode);
+        Assert.Equal(HttpStatusCode.Redirect, v6Cast.StatusCode);
+    }
+
+    [Fact]
+    public async Task A_zero_length_prefix_puts_every_address_of_the_family_in_one_bucket()
+    {
+        using var factory = WithPrefixes("Development", 0, 0);
+        var collection = await NewSubject(factory);
+        // One device (one cookie, one mint) arriving from changing addresses: only the cast bucket can refuse it.
+        var device = new Client(factory, "198.51.100.1");
+        for (var i = 0; i < 3; i++)
+        {
+            using var ok = await device.Post(collection, "Up", $"198.51.100.{i + 1}");
+            Assert.Equal(HttpStatusCode.Redirect, ok.StatusCode);
+        }
+
+        using var denied = await device.Post(collection, "Up", "192.0.2.77");
+
+        Assert.Equal(HttpStatusCode.TooManyRequests, denied.StatusCode);
+    }
+
+    private WebApplicationFactory<Program> WithPrefixes(string environment, int v4, int v6) =>
+        _factory.WithWebHostBuilder(b =>
+        {
+            b.UseEnvironment(environment);
+            b.ConfigureAppConfiguration((_, configuration) =>
+                configuration.AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["ConceptVotes:IPv4PrefixLength"] = v4.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    ["ConceptVotes:IPv6PrefixLength"] = v6.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                }));
+        });
+
+    private static string Messages(Exception failure)
+    {
+        var lines = new List<string>();
+        for (var e = failure; e is not null; e = e.InnerException!)
+        {
+            lines.Add(e.Message);
+            if (e.InnerException is null)
+            {
+                break;
+            }
+        }
+
+        return string.Join("\n", lines);
+    }
+
     private WebApplicationFactory<Program> Capped(int maxTrackedKeys) =>
         _factory.WithWebHostBuilder(b => b.ConfigureAppConfiguration((_, configuration) =>
             configuration.AddInMemoryCollection(new Dictionary<string, string?>
@@ -531,10 +621,12 @@ public sealed class ConceptVoteRateLimitTests : IClassFixture<ConceptVoteRateLim
             ? values.FirstOrDefault(x => x.StartsWith(CookieName + "=", StringComparison.Ordinal))
             : null;
 
-    private async Task<string> NewSubject()
+    private Task<string> NewSubject() => NewSubject(_factory);
+
+    private static async Task<string> NewSubject(WebApplicationFactory<Program> factory)
     {
         var collection = "c" + Guid.NewGuid().ToString("N");
-        using var scope = _factory.Services.CreateScope();
+        using var scope = factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
         db.ConceptSubjects.Add(new ConceptSubject
         {

@@ -23,8 +23,10 @@ const defaultPersonaName = "Bifrost";
 const defaultPersonaAvatarUrl =
   "https://raw.githubusercontent.com/GameCult/Bifrost/main/src/Bifrost.Web/wwwroot/img/bifrost-profile.png";
 
+const cultLibRoot = resolve(process.env.VOIDBOT_CULTLIB_ROOT || resolve(projectsRoot, "CultLib"));
+
 const cultCachePackagePath = resolveFirstExisting("CultCache TypeScript runtime", [
-  resolve(projectsRoot, "CultLib", "packages", "cultcache-ts", "package.json"),
+  resolve(cultLibRoot, "packages", "cultcache-ts", "package.json"),
   resolve(projectsRoot, "CultCacheTS", "package.json"),
   resolve(projectsRoot, "CultCacheTS", "node_modules", "cultcache-ts", "package.json"),
 ]);
@@ -59,11 +61,6 @@ const topicDefinition = defineDocumentType({
   schemaVersion: "bifrost.governance.topic.v0",
   schema: { parse: parseTopic },
   name: "id",
-  indexes: {
-    jurisdictionRepoName: "jurisdictionRepoName",
-    jurisdictionAgentIdentity: "jurisdictionAgentIdentity",
-    status: "status",
-  },
   members: [
     { slot: 1, memberName: "id", typeName: "string", isName: true },
     { slot: 2, memberName: "title", typeName: "string" },
@@ -93,11 +90,6 @@ const commentDefinition = defineDocumentType({
   schemaVersion: "bifrost.governance.topic_comment.v0",
   schema: { parse: parseComment },
   name: "id",
-  indexes: {
-    topicId: "topicId",
-    authorId: "authorId",
-    stance: "stance",
-  },
   members: [
     { slot: 1, memberName: "id", typeName: "string", isName: true },
     { slot: 2, memberName: "topicId", typeName: "string", indexAlias: "topicId" },

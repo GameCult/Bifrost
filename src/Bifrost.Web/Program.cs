@@ -7,12 +7,14 @@ using Bifrost.Web.Data;
 using Bifrost.Web.Domain;
 using Bifrost.Web.Features.Bridge;
 using Bifrost.Web.Features.ConceptVotes;
+using Bifrost.Web.Features.Desk;
 using Bifrost.Web.Features.GitHub;
 using Bifrost.Web.Features.Heimdall;
 using Bifrost.Web.Features.Membership;
 using Bifrost.Web.Features.Motions;
 using Bifrost.Web.Features.Oidc;
 using Bifrost.Web.Features.Patronage;
+using Bifrost.Web.Features.Registration;
 using Bifrost.Web.Features.Shared;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
@@ -76,6 +78,10 @@ builder.Services
     .AddOptions<ConceptVoteOptions>()
     .BindConfiguration(ConceptVoteOptions.SectionName);
 
+builder.Services
+    .AddOptions<DeskOptions>()
+    .BindConfiguration(DeskOptions.SectionName);
+
 builder.Services.AddAntiforgery(options =>
 {
     options.Cookie.Name = BifrostCookies.Antiforgery;
@@ -112,6 +118,7 @@ builder.Services.AddHttpContextAccessor();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddScoped<ICurrentBifrostActorAccessor, CurrentBifrostActorAccessor>();
 builder.Services.AddScoped<AuditTrailService>();
+builder.Services.AddScoped<Bifrost.Web.Features.Membership.MembershipSuspensionService>();
 builder.Services.AddScoped<DashboardSnapshotService>();
 builder.Services.AddScoped<BridgeActionService>();
 builder.Services.AddScoped<AgentDispatchRunService>();
@@ -125,6 +132,10 @@ builder.Services.AddScoped<SealedBallotService>();
 builder.Services.AddScoped<MindIntakeService>();
 builder.Services.AddOptions<MindIntakeOptions>().BindConfiguration(MindIntakeOptions.SectionName);
 builder.Services.AddSingleton<MindIntakeRateLimit>(); // TimeProvider and options resolve from the container
+builder.Services.AddOptions<RegistrationOptions>().BindConfiguration(RegistrationOptions.SectionName);
+builder.Services.AddSingleton<RegistrationChallengeService>();
+builder.Services.AddSingleton<RegistrationRateLimit>();
+builder.Services.AddScoped<NativeRegistration>();
 builder.Services.AddHostedService<SealedBallotCloser>();
 builder.Services.AddScoped<MotionEveSurfaceService>();
 builder.Services.AddScoped<PatronageService>();
@@ -252,6 +263,13 @@ if (oidcOptions is not null)
     builder.Services.AddBifrostOidc(oidcOptions);
 }
 
+// The desk is mapped only when the Desk section exists, and a configured desk needs its credential and door ports.
+var deskConfigured = builder.Configuration.GetSection(DeskOptions.SectionName).Exists();
+if (deskConfigured)
+{
+    builder.Services.AddBifrostDesk();
+}
+
 var app = builder.Build();
 var appJsonSerializerOptions = CreateAppJsonSerializerOptions();
 
@@ -273,6 +291,11 @@ if (!app.Environment.IsDevelopment())
 
 app.UseHttpLogging();
 app.UseHttpsRedirection();
+if (oidcOptions is not null)
+{
+    app.UseMiddleware<OidcGuardMiddleware>(); // before authentication: OpenIddict answers /connect/* inside it
+}
+
 app.UseStaticFiles();
 app.UseRouting();
 app.UseConceptTallyCors();
@@ -293,10 +316,16 @@ app.MapGet("/readyz", async (ReadinessService readinessService, CancellationToke
 }).AllowAnonymous();
 
 app.MapConceptTallyExport();
+app.MapConceptRankedExport();
 
 if (oidcOptions is not null)
 {
     app.MapBifrostOidc();
+}
+
+if (deskConfigured)
+{
+    app.MapDesk();
 }
 
 app.MapPost("/github/webhooks", async (
@@ -361,34 +390,172 @@ app.MapGet("/auth/sign-in", async (HttpContext httpContext, IOptions<GitHubOAuth
 app.MapPost("/auth/bifrost/register", async (
     NativeBifrostRegistrationRequest request,
     HttpContext httpContext,
-    BifrostIdentityService bifrostIdentityService,
+    NativeRegistration registration,
+    RegistrationRateLimit rateLimit,
     CancellationToken cancellationToken) =>
 {
+    if (rateLimit.Refuse(httpContext) is { } refused)
+    {
+        return refused;
+    }
+
+    var outcome = await registration.RunAsync(
+        httpContext,
+        new RegistrationAttempt(request.Identity, request.DisplayName, request.Challenge, request.Nonce, request.Waited == true, request.AcceptedNoticeVersion),
+        cancellationToken);
+    if (outcome.Refusal is not null)
+    {
+        return outcome.Refusal;
+    }
+
+    if (outcome.Account is not { } userAccount)
+    {
+        return Results.Text(outcome.Message!, statusCode: outcome.Status);
+    }
+
+    var returnUrl = string.IsNullOrWhiteSpace(request.ReturnUrl) ? "/App" : request.ReturnUrl;
+    return JsonResult(
+        new NativeBifrostRegistrationResponse(
+            userAccount.Id,
+            userAccount.BifrostIdentity,
+            userAccount.DisplayName,
+            userAccount.Membership?.Status.ToString() ?? MembershipStatus.Authenticated.ToString(),
+            returnUrl),
+        appJsonSerializerOptions);
+}).AllowAnonymous();
+
+// GET issues a challenge, so it spends the same per-address budget as /auth/bifrost/challenge.
+app.MapGet("/auth/bifrost/register", (
+    HttpContext httpContext,
+    RegistrationChallengeService challenges,
+    RegistrationRateLimit rateLimit,
+    IOptions<RegistrationOptions> registrationOptions) =>
+{
+    if (rateLimit.Refuse(httpContext) is { } refused)
+    {
+        return refused;
+    }
+
+    var returnPath = LocalReturnPath.Parse(httpContext.Request.Query["returnUrl"].ToString());
+    return RegistrationFormResult(httpContext, challenges, registrationOptions.Value, new RegistrationPageModel(returnPath.Value, "", 0, registrationOptions.Value.Captcha.FallbackWaitSeconds), null, StatusCodes.Status200OK);
+}).AllowAnonymous();
+
+// No antiforgery token or cookie exists for an anonymous visitor, so a cross-site post is refused by origin instead
+// (RequestOriginGuard, the same Fetch Metadata check as the vote page, except that a request with no Origin and no
+// Sec-Fetch-Site and no session cookie passes: text browsers send neither, and there is no session to replace). Without it a foreign page could post here with
+// a challenge of its own and replace the visitor's session cookie with an empty account holding a forged consent.
+// Order: origin, then the general address budget, then the body cap, then the form; a refusal sets no cookie.
+app.MapPost("/auth/bifrost/register/form", async (
+    HttpContext httpContext,
+    NativeRegistration registration,
+    RegistrationChallengeService challenges,
+    RegistrationRateLimit rateLimit,
+    IOptions<BifrostHostOptions> hostOptions,
+    IOptions<RegistrationOptions> registrationOptions,
+    CancellationToken cancellationToken) =>
+{
+    if (!RequestOriginGuard.AllowsFormWithoutFetchMetadata(httpContext.Request, hostOptions.Value))
+    {
+        return Results.Text("Cross-site registration is refused.", statusCode: StatusCodes.Status403Forbidden);
+    }
+
+    if (rateLimit.Refuse(httpContext) is { } refused)
+    {
+        return refused;
+    }
+
+    if (!(httpContext.Request.ContentType ?? "").StartsWith("application/x-www-form-urlencoded", StringComparison.OrdinalIgnoreCase))
+    {
+        return Results.Text("Send the form as application/x-www-form-urlencoded.", statusCode: StatusCodes.Status415UnsupportedMediaType);
+    }
+
+    // The form is a handful of short fields: refuse a big body before reading any of it.
+    const int MaxFormBytes = 16 * 1024;
+    if (httpContext.Request.ContentLength > MaxFormBytes)
+    {
+        return Results.Text("The form is too large.", statusCode: StatusCodes.Status413PayloadTooLarge);
+    }
+
+    if (httpContext.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpMaxRequestBodySizeFeature>() is { IsReadOnly: false } limit)
+    {
+        limit.MaxRequestBodySize = MaxFormBytes;
+    }
+
+    IFormCollection form;
     try
     {
-        var userAccount = await bifrostIdentityService.RegisterNativeAsync(
-            request.Identity,
-            request.DisplayName,
-            cancellationToken);
-        await httpContext.SignInAsync(
-            CookieAuthenticationDefaults.AuthenticationScheme,
-            bifrostIdentityService.BuildPrincipal(userAccount));
-
-        var returnUrl = string.IsNullOrWhiteSpace(request.ReturnUrl) ? "/App" : request.ReturnUrl;
-        return JsonResult(
-            new NativeBifrostRegistrationResponse(
-                userAccount.Id,
-                userAccount.BifrostIdentity,
-                userAccount.DisplayName,
-                userAccount.Membership?.Status.ToString() ?? MembershipStatus.Authenticated.ToString(),
-                returnUrl),
-            appJsonSerializerOptions);
+        form = await httpContext.Request.ReadFormAsync(cancellationToken);
     }
-    catch (BifrostIdentityException error)
+    catch (BadHttpRequestException error) when (error.StatusCode == StatusCodes.Status413PayloadTooLarge)
     {
-        return Results.Text(error.Message, statusCode: StatusCodes.Status400BadRequest);
+        return Results.Text("The form is too large.", statusCode: StatusCodes.Status413PayloadTooLarge);
     }
+    catch (Exception error) when (error is InvalidDataException or BadHttpRequestException)
+    {
+        return Results.Text("The form could not be read.", statusCode: StatusCodes.Status400BadRequest);
+    }
+
+    string Field(string name) => form[name].FirstOrDefault() ?? "";
+    var returnPath = LocalReturnPath.Parse(Field("returnUrl"));
+    // The checkbox is the consent act and is optional: unticked, the posted notice version is ignored and no receipt is made.
+    // Anything but the canonical decimal of the version in force ("02" included) with the box ticked is sent as -1 and refused, never read as "did not agree".
+    int? accepted = Field("consent") != "yes"
+        ? null
+        : Field("acceptedNoticeVersion") == TrainingNotice.Version.ToString(System.Globalization.CultureInfo.InvariantCulture) ? TrainingNotice.Version : -1;
+    var identity = Field("identity");
+    var displayName = Field("displayName");
+    var challenge = Field("challenge");
+
+    var outcome = await registration.RunAsync(
+        httpContext,
+        new RegistrationAttempt(identity, displayName, challenge, Field("nonce"), Field("waited") == "true", accepted),
+        cancellationToken);
+    if (outcome.Refusal is not null)
+    {
+        return outcome.Refusal;
+    }
+
+    if (outcome.Account is not null)
+    {
+        // A Location header takes ASCII only; anything else is not a path worth keeping.
+        var target = returnPath.Value.All(c => c > ' ' && c < '\u007f') ? returnPath.Value : LocalReturnPath.Default.Value;
+        httpContext.Response.Headers.CacheControl = "no-store";
+        httpContext.Response.Headers.Location = target;
+        return Results.StatusCode(StatusCodes.Status303SeeOther);
+    }
+
+    // A refusal that spent nothing and needs only a correction (a taken identity, a too-early time-lock) keeps its
+    // challenge, whose clock must not restart. Any other failure gets a fresh challenge. The consent box always comes back unchecked.
+    var options = registrationOptions.Value;
+    return RegistrationFormResult(
+        httpContext,
+        challenges,
+        options,
+        new RegistrationPageModel(returnPath.Value, "", 0, options.Captcha.FallbackWaitSeconds, Truncate(identity), Truncate(displayName), outcome.Message, outcome.Field),
+        outcome.KeepChallenge && challenges.IsLive(challenge) ? challenge : null,
+        outcome.Status);
+
+    static string Truncate(string text) => text.Length <= 256 ? text : text[..256];
 }).AllowAnonymous();
+
+app.MapGet("/auth/bifrost/challenge", (HttpContext httpContext, RegistrationChallengeService challenges, RegistrationRateLimit rateLimit) =>
+{
+    if (rateLimit.Refuse(httpContext) is { } refused)
+    {
+        return refused;
+    }
+
+    httpContext.Response.Headers.CacheControl = "no-store";
+    var challenge = challenges.Issue();
+    return challenge is null
+        ? Results.Text("Registration is busy; try again shortly.", statusCode: StatusCodes.Status503ServiceUnavailable)
+        : JsonResult(challenge, appJsonSerializerOptions);
+}).AllowAnonymous();
+
+app.MapGet("/auth/bifrost/notice", () =>
+    JsonResult(new { version = TrainingNotice.Version, text = TrainingNotice.Text }, appJsonSerializerOptions)).AllowAnonymous();
+
+app.MapConsent();
 
 app.MapGet("/auth/heimdall/{provider}", async (
     string provider,
@@ -715,6 +882,36 @@ static async Task<IFormCollection?> ReadFormOrNullAsync(HttpRequest request, Can
     }
 }
 
+// Renders the sign-up page with a challenge: the kept one when given, else a fresh one (null when the issuing set is full).
+static IResult RegistrationFormResult(
+    HttpContext httpContext,
+    RegistrationChallengeService challenges,
+    RegistrationOptions options,
+    RegistrationPageModel model,
+    string? keepChallenge,
+    int statusCode)
+{
+    var token = keepChallenge;
+    var difficulty = options.Captcha.Difficulty;
+    if (token is null)
+    {
+        var issued = challenges.Issue();
+        if (issued is null)
+        {
+            return Results.Text("Registration is busy; try again shortly.", statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
+
+        token = issued.Challenge;
+        difficulty = issued.Difficulty;
+    }
+
+    httpContext.Response.Headers.CacheControl = "no-store";
+    return Results.Content(
+        RegistrationPage.Render(model with { Challenge = token, Difficulty = difficulty }),
+        "text/html; charset=utf-8",
+        statusCode: statusCode);
+}
+
 static async Task WriteSignInChooserAsync(HttpContext httpContext, string returnUrl)
 {
     httpContext.Response.ContentType = "text/html; charset=utf-8";
@@ -768,7 +965,11 @@ public partial class Program;
 public sealed record NativeBifrostRegistrationRequest(
     string Identity,
     string? DisplayName,
-    string? ReturnUrl);
+    string? ReturnUrl,
+    string? Challenge,
+    string? Nonce,
+    int? AcceptedNoticeVersion,
+    bool? Waited = null);
 
 public sealed record NativeBifrostRegistrationResponse(
     Guid UserAccountId,

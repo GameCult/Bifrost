@@ -879,6 +879,74 @@ Best multiplier at 1,000,000 EUR by log base and unit (b rows, unit columns):
 |---|---|---|---|---|---|
 | weight | 0.70 | 1.00 | 2.00 | 3.00 | 4.00 |
 
+## E7 contribution-weighted arm: linear credit, per-person cap, the half-influence cap (SPEC section 5d)
+
+Static weight analysis. One contributor holds a fraction phi of the Members estate's total raw credit (receipts: hours or credited changes, one linear unit); 15 and 150 ordinary members hold Pareto(1.16) credit from 10, 40 seeds each. Weight = min(credit, per-person cap), the same function for the contributor and everyone else. The tally and the half cap are E6's: council share x = W x s over the live estates; the cap binds iff x >= .5. Credit is not vote weight anywhere in this module; this table only says how often the half cap would have to act.
+
+**Half cap binds, all four estates: fraction of (weights x roll x seed) by contributor share phi (rows) and per-person credit cap (columns); one identity, k = 1**
+
+| phi | none | 100x median | 20x median | 5x median |
+|---|---|---|---|---|
+| 0.05 | 0.000 | 0.000 | 0.000 | 0.000 |
+| 0.1 | 0.000 | 0.000 | 0.000 | 0.000 |
+| 0.25 | 0.000 | 0.000 | 0.000 | 0.000 |
+| 0.4 | 0.000 | 0.000 | 0.000 | 0.000 |
+| 0.5 | 0.000 | 0.000 | 0.000 | 0.000 |
+| 0.6 | 0.000 | 0.000 | 0.000 | 0.000 |
+| 0.75 | 0.000 | 0.000 | 0.000 | 0.000 |
+| 0.9 | 0.000 | 0.000 | 0.000 | 0.000 |
+
+**Half cap binds, Members + Minds: fraction of (weights x roll x seed) by contributor share phi (rows) and per-person credit cap (columns); one identity, k = 1**
+
+| phi | none | 100x median | 20x median | 5x median |
+|---|---|---|---|---|
+| 0.05 | 0.000 | 0.000 | 0.000 | 0.000 |
+| 0.1 | 0.000 | 0.000 | 0.000 | 0.000 |
+| 0.25 | 0.000 | 0.000 | 0.000 | 0.000 |
+| 0.4 | 0.000 | 0.000 | 0.000 | 0.000 |
+| 0.5 | 0.000 | 0.000 | 0.000 | 0.000 |
+| 0.6 | 0.000 | 0.000 | 0.000 | 0.000 |
+| 0.75 | 0.000 | 0.000 | 0.000 | 0.000 |
+| 0.9 | 0.000 | 0.000 | 0.000 | 0.000 |
+
+**Half cap binds, Members alone: fraction of (weights x roll x seed) by contributor share phi (rows) and per-person credit cap (columns); one identity, k = 1**
+
+| phi | none | 100x median | 20x median | 5x median |
+|---|---|---|---|---|
+| 0.05 | 0.000 | 0.000 | 0.000 | 0.000 |
+| 0.1 | 0.000 | 0.000 | 0.000 | 0.000 |
+| 0.25 | 0.000 | 0.000 | 0.000 | 0.000 |
+| 0.4 | 0.000 | 0.000 | 0.000 | 0.000 |
+| 0.5 | 1.000 | 0.438 | 0.075 | 0.000 |
+| 0.6 | 1.000 | 0.438 | 0.075 | 0.000 |
+| 0.75 | 1.000 | 0.438 | 0.075 | 0.000 |
+| 0.9 | 1.000 | 0.438 | 0.075 | 0.000 |
+
+**Splitting: the contributor's credit split evenly over k identities. Members alone, equal weights, roll 15, mean over seeds. binds = the half cap acts on an identity; joint >= .5 = the combined share would have needed cutting; evaded = joint >= .5 and no identity binds; weight x = total weight / weight at k = 1**
+
+| phi | cap | k=1: binds / joint>=.5 / evaded / weight x | k=2: binds / joint>=.5 / evaded / weight x | k=10: binds / joint>=.5 / evaded / weight x | k=100: binds / joint>=.5 / evaded / weight x |
+|---|---|---|---|---|---|
+| 0.25 | none | 0.00 / 0.00 / 0.00 / 1.00 | 0.00 / 0.00 / 0.00 / 1.00 | 0.00 / 0.00 / 0.00 / 1.00 | 0.00 / 0.00 / 0.00 / 1.00 |
+| 0.25 | 100x median | 0.00 / 0.00 / 0.00 / 1.00 | 0.00 / 0.03 / 0.03 / 1.03 | 0.00 / 0.03 / 0.03 / 1.23 | 0.00 / 0.03 / 0.03 / 1.25 |
+| 0.25 | 20x median | 0.00 / 0.00 / 0.00 / 1.00 | 0.00 / 0.03 / 0.03 / 1.12 | 0.00 / 0.07 / 0.07 / 1.43 | 0.00 / 0.07 / 0.07 / 2.55 |
+| 0.25 | 5x median | 0.00 / 0.00 / 0.00 / 1.00 | 0.00 / 0.00 / 0.00 / 1.75 | 0.00 / 0.12 / 0.12 / 2.87 | 0.00 / 0.12 / 0.12 / 5.46 |
+| 0.5 | none | 1.00 / 1.00 / 0.00 / 1.00 | 0.00 / 1.00 / 1.00 / 1.00 | 0.00 / 1.00 / 1.00 / 1.00 | 0.00 / 1.00 / 1.00 / 1.00 |
+| 0.5 | 100x median | 0.88 / 0.88 / 0.00 / 1.00 | 0.00 / 1.00 / 1.00 / 1.08 | 0.00 / 1.00 / 1.00 / 1.31 | 0.00 / 1.00 / 1.00 / 1.88 |
+| 0.5 | 20x median | 0.15 / 0.15 / 0.00 / 1.00 | 0.00 / 0.80 / 0.80 / 1.50 | 0.00 / 1.00 / 1.00 / 2.35 | 0.00 / 1.00 / 1.00 / 4.73 |
+| 0.5 | 5x median | 0.00 / 0.00 / 0.00 / 1.00 | 0.00 / 0.00 / 0.00 / 2.00 | 0.00 / 1.00 / 1.00 / 6.41 | 0.00 / 1.00 / 1.00 / 11.38 |
+| 0.9 | none | 1.00 / 1.00 / 0.00 / 1.00 | 0.00 / 1.00 / 1.00 / 1.00 | 0.00 / 1.00 / 1.00 / 1.00 | 0.00 / 1.00 / 1.00 / 1.00 |
+| 0.9 | 100x median | 0.88 / 0.88 / 0.00 / 1.00 | 0.00 / 1.00 / 1.00 / 1.93 | 0.00 / 1.00 / 1.00 / 3.58 | 0.00 / 1.00 / 1.00 / 6.50 |
+| 0.9 | 20x median | 0.15 / 0.15 / 0.00 / 1.00 | 0.00 / 0.80 / 0.80 / 2.00 | 0.00 / 1.00 / 1.00 / 9.66 | 0.00 / 1.00 / 1.00 / 21.58 |
+| 0.9 | 5x median | 0.00 / 0.00 / 0.00 / 1.00 | 0.00 / 0.00 / 0.00 / 2.00 | 0.00 / 1.00 / 1.00 / 10.00 | 0.00 / 1.00 / 1.00 / 59.10 |
+
+Evasion rate over the sweep (phi x cap x k in 2, 10, 100 x live set x weights x roll x seed), cases where the joint share needed cutting:
+
+| live estates | joint share >= .5 (k > 1) | of which no identity binds (evaded) |
+|---|---|---|
+| all four estates | 0 | 0 |
+| Members + Minds | 0 | 0 |
+| Members alone | 5942 | 5942 (1.000) |
+
 ## Claim tally over all cells (SPEC section 8)
 
 supported 0, fails 2, undecided 233, n/a 0

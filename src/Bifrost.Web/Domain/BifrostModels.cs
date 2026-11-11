@@ -334,6 +334,9 @@ public sealed class Membership
 
     public MembershipStatus Status { get; set; } = MembershipStatus.Authenticated;
 
+    /// <summary>Why an admin suspended the account; set and cleared only by <c>MembershipSuspensionService</c> and projected only to admins.</summary>
+    public string? SuspensionReason { get; set; }
+
     public bool IsPlatformAdmin { get; set; }
 
     public bool CanManageProjects { get; set; }
@@ -363,7 +366,8 @@ public sealed class Membership
 
 public sealed class RoleAssignment
 {
-    public Guid Id { get; set; } = Guid.NewGuid();
+    // Left empty until saved: a key preset on a row added to an already-saved membership makes EF treat it as existing and fail the save.
+    public Guid Id { get; set; }
 
     public Guid MembershipId { get; set; }
 
@@ -1152,6 +1156,25 @@ public sealed class AuditEvent
     public DateTimeOffset OccurredAtUtc { get; set; }
 
     public UserAccount? ActorUserAccount { get; set; }
+}
+
+/// <summary>
+/// An account's consent to the training notice, recorded with the notice version it accepted. Withdrawal sets
+/// <see cref="WithdrawnAtUtc"/>; the row is never deleted, so what was agreed and when stays answerable.
+/// </summary>
+public sealed class ConsentReceipt
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+
+    public Guid UserAccountId { get; set; }
+
+    public int NoticeVersion { get; set; }
+
+    public DateTimeOffset AcceptedAtUtc { get; set; }
+
+    public DateTimeOffset? WithdrawnAtUtc { get; set; }
+
+    public UserAccount? UserAccount { get; set; }
 }
 
 /// <summary>A Mind's registered Ed25519 public key. Bifrost never holds a private key.</summary>

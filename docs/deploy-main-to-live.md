@@ -75,12 +75,22 @@ All must hold before step 1. A missing one means the window is not used.
 
 1. **Root window.** Someone with root on Yggdrasil is present for the whole deploy and the 30 minutes after (installing
    the unit, reading `journalctl`, restoring). The swarm brake is off for Bifrost, or the operator has said so.
-2. **Verified database backup.** `pg_dump -Fc` as in the runbook section 8, taken inside the window, then verified:
-   `pg_restore --list <dump> | head` succeeds, and the dump restores into a scratch database, where the member count
-   equals the live count. The `bifrost` database role has no CREATEDB, so create and drop the scratch database as the
-   superuser: `sudo -n -u postgres createdb -O bifrost bifrost_rehearsal`, then
-   `sudo -n -u postgres pg_restore --no-owner --role=bifrost -d bifrost_rehearsal <dump>`, and at the end
-   `sudo -n -u postgres dropdb bifrost_rehearsal`. An unrestored dump is not a backup.
+2. **Verified database backup.** `pg_dump -Fc` as in the runbook section 8, taken inside the window to
+   `/srv/bifrost/backups/bifrost-pre-<sha12>-<UTC>.dump`, **root-owned, mode 0600**, then verified. The `postgres` user
+   cannot read that file, so each check says who runs it:
+   - `sudo -n pg_restore --list <dump> | head` succeeds, **as root** (it reads the file and touches no database).
+   - The restore reads a **postgres-readable copy**, never the real dump: with `S=/var/tmp/bifrost-restoretest-<UTC>`, root runs
+     `sudo -n install -d -m 0700 -o postgres -g postgres $S` and
+     `sudo -n install -m 0400 -o postgres -g postgres <dump> $S/restore.dump`. The `bifrost` database role has no
+     CREATEDB, so create and drop the scratch database as the superuser:
+     `sudo -n -u postgres createdb -O bifrost bifrost_restoretest_<UTC>`, then
+     `sudo -n -u postgres pg_restore --no-owner --role=bifrost -d bifrost_restoretest_<UTC> $S/restore.dump`. The scratch
+     member count must equal the live count.
+   - Cleanup, on success and on every stop: `sudo -n -u postgres dropdb bifrost_restoretest_<UTC>`, then
+     `sudo -n sh -c "shred -u $S/restore.dump && rmdir $S"`; readback `test ! -e $S && echo gone` prints `gone`. The real
+     dump stays root-only and is kept.
+
+   An unrestored dump is not a backup.
 3. **Env, secrets and key-ring backup.** The runbook's `bifrost-env-*.tar`, plus the live ring
    **`/srv/bifrost/.aspnet/DataProtection-Keys`** (read from the host 2026-11-09: `DataProtection__KeysPath` in
    `bifrost.env` names it; three key files at that reading, modes 600, owner `bifrost`, dated 2026-04-22, 2026-07-22 and
@@ -217,7 +227,9 @@ Rollback signs members out again (the old release reads the old cookie names); s
 3. Re-run the "before" checks from step 1: revision, `active`, counts equal.
 4. The two new migrations stay applied. They add tables the old release ignores, as rehearsed in Precondition 4.
 5. Only if the schema or data is damaged (not merely new): the runbook section 8 restore, from the verified dump. This is
-   the last resort and needs the same root window.
+   the last resort and needs the same root window. The `postgres` superuser cannot read the root-owned 0600 dump, so make a
+   fresh postgres-readable copy as in Precondition 2 (`$S/restore.dump`, 0400, postgres-owned, new 0700 directory), run
+   `pg_restore` from it, then `shred -u` the copy and `rmdir $S`; readback `test ! -e $S`. The dump itself stays root-only.
 6. Leave the failed release directory for diagnosis; do not delete it in the window.
 
 ## What this plan does not do

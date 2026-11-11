@@ -359,6 +359,11 @@ public sealed class OidcLogoutFactory : OidcWebApplicationFactory
 
     public FakeMasHandler Mas { get; } = new();
 
+    /// <summary>The raw token response and access token of the last <see cref="GrantAsync"/>.</summary>
+    public string LastTokenResponse { get; private set; } = string.Empty;
+
+    public string LastAccessToken { get; private set; } = string.Empty;
+
     public ManualClock Time { get; } = new();
 
     public OidcLogoutReconciler Reconciler => Services.GetServices<IHostedService>().OfType<OidcLogoutReconciler>().Single();
@@ -399,16 +404,24 @@ public sealed class OidcLogoutFactory : OidcWebApplicationFactory
     };
 
     /// <summary>Registers a member, sets <paramref name="status"/>, and completes one authorization-code flow for them.</summary>
-    public async Task<(string Identity, string IdToken)> GrantAsync(MembershipStatus status = MembershipStatus.Active)
+    public async Task<(string Identity, string IdToken)> GrantAsync(MembershipStatus status = MembershipStatus.Active, string? suspensionReason = null)
     {
         using var client = CreateClient(HostClientOptions());
         var identity = $"member-{Guid.NewGuid():N}";
-        using (var register = await client.PostAsJsonAsync("/auth/bifrost/register", new { identity, displayName = identity }))
+        using (var register = await RegistrationKit.RegisterAsync(client, identity))
         {
             Assert.Equal(HttpStatusCode.OK, register.StatusCode);
         }
 
         await SetMembershipAsync(identity, MembershipStatus.Active);
+        if (suspensionReason is not null)
+        {
+            using var scope = Services.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
+            var account = db.UserAccounts.Single(x => x.NormalizedBifrostIdentity == identity);
+            db.Memberships.Single(x => x.UserAccountId == account.Id).SuspensionReason = suspensionReason;
+            await db.SaveChangesAsync();
+        }
 
         var verifier = Base64UrlEncoder.Encode(RandomNumberGenerator.GetBytes(48));
         var state = Base64UrlEncoder.Encode(RandomNumberGenerator.GetBytes(24));
@@ -444,7 +457,10 @@ public sealed class OidcLogoutFactory : OidcWebApplicationFactory
             "Basic", Convert.ToBase64String(Encoding.ASCII.GetBytes($"{OidcTestKit.ClientId}:{Kit.ClientSecret}")));
         using var tokens = await bare.SendAsync(exchange);
         Assert.Equal(HttpStatusCode.OK, tokens.StatusCode);
-        var idToken = (await tokens.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id_token").GetString()!;
+        var body = await tokens.Content.ReadFromJsonAsync<JsonElement>();
+        var idToken = body.GetProperty("id_token").GetString()!;
+        LastTokenResponse = body.GetRawText();
+        LastAccessToken = body.GetProperty("access_token").GetString()!;
 
         if (status != MembershipStatus.Active)
         {

@@ -2,6 +2,8 @@ using System.Security.Claims;
 using Microsoft.AspNetCore;
 using Bifrost.Web.Data;
 using Bifrost.Web.Domain;
+using Bifrost.Web.Features.Membership;
+using Bifrost.Web.Features.Registration;
 using Bifrost.Web.Features.Shared;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Authentication;
@@ -19,8 +21,10 @@ namespace Bifrost.Web.Features.Oidc;
 /// </summary>
 public static class OidcEndpoints
 {
-    public const string NotActiveDescription = "The account is not an active GameCult member.";
+    public const string SuspendedDescription = "The account is suspended.";
     public const string NoIdentityDescription = "The account has no Bifrost identity.";
+    public const string ReservedIdentityDescription = "The account's Bifrost identity is reserved.";
+    public const string ConsentRequiredDescription = "Agreement to the training notice in force is needed to speak in a recorded room.";
 
     private const string OpenIddictScheme = OpenIddictServerAspNetCoreDefaults.AuthenticationScheme;
     private const string IdentityAuthenticationType = "Bifrost.Oidc";
@@ -32,7 +36,7 @@ public static class OidcEndpoints
         app.MapMethods(OidcServiceCollectionExtensions.UserInfoPath, ["GET", "POST"], (Delegate)UserInfoAsync).AllowAnonymous();
     }
 
-    private static async Task<IResult> AuthorizeAsync(HttpContext http, ICurrentBifrostActorAccessor actors)
+    private static async Task<IResult> AuthorizeAsync(HttpContext http, ICurrentBifrostActorAccessor actors, BifrostDbContext db)
     {
         var request = http.GetOpenIddictServerRequest()
             ?? throw new InvalidOperationException("The OpenIddict request could not be retrieved.");
@@ -47,15 +51,29 @@ public static class OidcEndpoints
         }
 
         var actor = await actors.GetAsync(http.RequestAborted);
-        if (actor.UserAccount is null || !actor.IsActiveMember)
+        // Chat tier: any account that is not suspended may sign in to chat. Membership is neither required nor written;
+        // every member or governance surface keeps asking for Active itself (the Active-member policy, IsActiveMember, ActiveMemberIdAsync).
+        if (actor.UserAccount is null)
         {
-            return Deny(Errors.AccessDenied, NotActiveDescription);
+            return Deny(Errors.AccessDenied, NoIdentityDescription);
+        }
+
+        if (actor.Membership?.Status == MembershipStatus.Suspended)
+        {
+            return Deny(Errors.AccessDenied, SuspendedDescription);
         }
 
         var account = actor.UserAccount;
         if (string.IsNullOrWhiteSpace(account.NormalizedBifrostIdentity))
         {
             return Deny(Errors.AccessDenied, NoIdentityDescription);
+        }
+
+        // The identity becomes the Matrix localpart. Creation refuses reserved names (BifrostIdentityService), but a row minted
+        // before that refusal may hold one, and there is no rename path: the issuer never vouches for a Mind's or a system's localpart.
+        if (BifrostIdentityService.IsReserved(account.NormalizedBifrostIdentity))
+        {
+            return Deny(Errors.AccessDenied, ReservedIdentityDescription);
         }
 
         var identity = new ClaimsIdentity(IdentityAuthenticationType, Claims.Name, Claims.Role);
@@ -75,19 +93,27 @@ public static class OidcEndpoints
             _ => [Destinations.AccessToken]
         });
 
+        // Last, so a refusal that no agreement can cure (suspended, no identity, reserved) is never answered with an invitation to agree.
+        // Not an OIDC error: the member is sent to the consent page with this request's resume path, and the parked request
+        // (single use, ten minutes) is still there when they come back, because only an OpenIddict response spends it.
+        if (!await ConsentEndpoints.HasLiveReceiptAsync(db, account.Id, http.RequestAborted))
+        {
+            return Results.Redirect(ConsentEndpoints.PathFor(http.Request.PathBase + http.Request.Path + http.Request.QueryString));
+        }
+
         return Results.SignIn(principal, properties: null, OpenIddictScheme);
     }
 
     private static async Task<IResult> ExchangeAsync(HttpContext http, BifrostDbContext db)
     {
         // Only the authorization code grant is enabled, so OpenIddict has refused every other grant already.
-        // The code's own principal carries the claims chosen at authorize time; membership is read again here,
-        // because the code outlives the authorize decision (a member suspended since gets no tokens).
+        // The code's own principal carries the claims chosen at authorize time; suspension and agreement are read again here,
+        // because the code outlives the authorize decision (an account suspended or withdrawn since gets no tokens).
         var result = await http.AuthenticateAsync(OpenIddictScheme);
         var subject = result.Principal?.GetClaim(Claims.Subject);
-        if (!await IsStillActiveMemberAsync(db, subject, http.RequestAborted))
+        if (await ChatRefusalAsync(db, subject, http.RequestAborted) is { } refusal)
         {
-            return Deny(Errors.InvalidGrant, NotActiveDescription);
+            return Deny(Errors.InvalidGrant, refusal);
         }
 
         return Results.SignIn(result.Principal!, properties: null, OpenIddictScheme);
@@ -101,10 +127,10 @@ public static class OidcEndpoints
             return Results.Challenge(authenticationSchemes: [OpenIddictScheme]);
         }
 
-        // An access token outlives the authorize decision too: a member suspended since is no longer answered.
-        if (!await IsStillActiveMemberAsync(db, result.Principal.GetClaim(Claims.Subject), http.RequestAborted))
+        // An access token outlives the authorize decision too: an account suspended since, or one whose agreement has gone, is no longer answered.
+        if (await ChatRefusalAsync(db, result.Principal.GetClaim(Claims.Subject), http.RequestAborted) is { } refusal)
         {
-            return Deny(Errors.InsufficientAccess, NotActiveDescription);
+            return Deny(Errors.InsufficientAccess, refusal);
         }
 
         var claims = new Dictionary<string, object?> { [Claims.Subject] = result.Principal.GetClaim(Claims.Subject) };
@@ -117,18 +143,41 @@ public static class OidcEndpoints
         return Results.Json(claims);
     }
 
-    /// <summary>The one reading of "this subject is still an Active member", shared by the token and userinfo endpoints and the logout reconciler.</summary>
-    internal static async Task<bool> IsStillActiveMemberAsync(BifrostDbContext db, string? subject, CancellationToken cancellationToken)
+    /// <summary>
+    /// The one reading of "this subject may still chat", shared by the token and userinfo endpoints and the logout reconciler:
+    /// null when they may, else the description of why not. The account exists, its membership is not Suspended (absent, pending
+    /// or Active all chat), and it holds a live receipt for the notice version in force. Re-read on every call.
+    /// </summary>
+    internal static async Task<string?> ChatRefusalAsync(BifrostDbContext db, string? subject, CancellationToken cancellationToken)
     {
         if (!Guid.TryParse(subject, out var accountId))
         {
-            return false;
+            return SuspendedDescription;
         }
 
         var account = await db.UserAccounts.AsNoTracking()
             .Include(x => x.Membership)
             .SingleOrDefaultAsync(x => x.Id == accountId, cancellationToken);
-        return new CurrentBifrostActor(true, account).IsActiveMember;
+        if (account is null || account.Membership?.Status == MembershipStatus.Suspended)
+        {
+            return SuspendedDescription;
+        }
+
+        return await ConsentEndpoints.HasLiveReceiptAsync(db, accountId, cancellationToken) ? null : ConsentRequiredDescription;
+    }
+
+    /// <summary>The account id of the subject when it is an Active member now, else null. The door to the fork desk (cookie surfaces check IsActiveMember); a chat-tier token does not pass it. Re-read on every call.</summary>
+    internal static async Task<Guid?> ActiveMemberIdAsync(BifrostDbContext db, string? subject, CancellationToken cancellationToken)
+    {
+        if (!Guid.TryParse(subject, out var accountId))
+        {
+            return null;
+        }
+
+        var account = await db.UserAccounts.AsNoTracking()
+            .Include(x => x.Membership)
+            .SingleOrDefaultAsync(x => x.Id == accountId, cancellationToken);
+        return new CurrentBifrostActor(true, account).IsActiveMember ? accountId : null;
     }
 
     private static IResult Deny(string error, string description) =>

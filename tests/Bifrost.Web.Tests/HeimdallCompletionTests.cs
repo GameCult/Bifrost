@@ -11,6 +11,7 @@ using Microsoft.AspNetCore.Authentication.OAuth;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.WebUtilities;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -862,6 +863,44 @@ public sealed class HeimdallCompletionTests
             Assert.Null(account);
             AssertLogged(host, "Heimdall did not grant Bifrost member access.");
         }
+    }
+
+    [Fact]
+    public async Task A_suspended_account_stays_suspended_and_gains_no_role_through_a_sign_in_with_the_member_claim()
+    {
+        using var host = new HeimdallHost();
+        var accountId = HeimdallShapes.NewAccountId();
+        Assert.True((await Genuine(host, await host.StartAsync(member: true), accountId, ["member_access"])).SignedIn);
+        await host.Db(async db =>
+        {
+            var account = await db.UserAccounts.Include(x => x.Membership).SingleAsync(x => x.HeimdallAccountId == accountId);
+            account.Membership!.Status = MembershipStatus.Suspended;
+            await db.SaveChangesAsync();
+            return 0;
+        });
+
+        var rolesBefore = (await host.Account(accountId))!.Membership!.RoleAssignments.Count;
+        var again = await Genuine(host, await host.StartAsync(member: true), accountId, ["member_access"]);
+
+        Assert.True(again.SignedIn);
+        var after = (await host.Account(accountId))!.Membership!;
+        Assert.Equal(MembershipStatus.Suspended, after.Status);
+        Assert.Equal(rolesBefore, after.RoleAssignments.Count);
+    }
+
+    [Fact]
+    public async Task A_chat_only_account_that_later_signs_in_with_member_access_becomes_a_member()
+    {
+        using var host = new HeimdallHost();
+        var accountId = HeimdallShapes.NewAccountId();
+        Assert.True((await Genuine(host, await host.StartAsync(member: false), accountId)).SignedIn);
+        Assert.Equal(MembershipStatus.Authenticated, (await host.Account(accountId))!.Membership!.Status);
+
+        Assert.True((await Genuine(host, await host.StartAsync(member: true), accountId, ["member_access"])).SignedIn);
+
+        var account = (await host.Account(accountId))!;
+        Assert.Equal(MembershipStatus.Active, account.Membership!.Status);
+        Assert.Contains(account.Membership.RoleAssignments, x => x.Role == MemberRole.StandardMember);
     }
 
     [Fact]

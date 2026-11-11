@@ -12,19 +12,33 @@ public sealed partial class BifrostIdentityService(
     BifrostDbContext dbContext,
     TimeProvider timeProvider)
 {
-    public async Task<UserAccount> RegisterNativeAsync(
-        string identity,
-        string? displayName,
-        CancellationToken cancellationToken)
+    /// <summary>
+    /// The one rule set for a new native identity: well formed, not reserved, not taken. Returns the normalized identity or
+    /// throws <see cref="BifrostIdentityException"/>. Spends nothing; the unique index at insert stays the race backstop.
+    /// </summary>
+    public async Task<string> CheckAvailableAsync(string identity, CancellationToken cancellationToken)
     {
         var normalizedIdentity = NormalizeIdentity(identity);
-        var exists = await dbContext.UserAccounts.AnyAsync(
-            x => x.NormalizedBifrostIdentity == normalizedIdentity,
-            cancellationToken);
-        if (exists)
+        if (IsReserved(normalizedIdentity))
+        {
+            throw new BifrostIdentityException("That Bifrost identity is reserved.");
+        }
+
+        if (await dbContext.UserAccounts.AnyAsync(x => x.NormalizedBifrostIdentity == normalizedIdentity, cancellationToken))
         {
             throw new BifrostIdentityException("That Bifrost identity is already registered.");
         }
+
+        return normalizedIdentity;
+    }
+
+    public async Task<UserAccount> RegisterNativeAsync(
+        string identity,
+        string? displayName,
+        int? noticeVersion,
+        CancellationToken cancellationToken)
+    {
+        var normalizedIdentity = await CheckAvailableAsync(identity, cancellationToken);
 
         var now = timeProvider.GetUtcNow();
         var publicIdentity = ToPublicIdentity(normalizedIdentity);
@@ -52,9 +66,40 @@ public sealed partial class BifrostIdentityService(
             }
         };
 
+        // One SaveChanges: an account that agreed never exists without its receipt. No version, no receipt.
         dbContext.UserAccounts.Add(userAccount);
-        await dbContext.SaveChangesAsync(cancellationToken);
+        if (noticeVersion is { } agreed)
+        {
+            dbContext.ConsentReceipts.Add(new ConsentReceipt
+            {
+                UserAccount = userAccount,
+                NoticeVersion = agreed,
+                AcceptedAtUtc = now
+            });
+        }
+        try
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateException)
+        {
+            // Only a lost race on the unique index is the caller's mistake; anything else is a fault and propagates.
+            if (!await IdentityTakenAsync(normalizedIdentity))
+            {
+                throw;
+            }
+
+            throw new BifrostIdentityException("That Bifrost identity is already registered.");
+        }
+
         return userAccount;
+    }
+
+    // A lost race on the unique index: the tracked insert is dropped and the identity is read fresh.
+    private async Task<bool> IdentityTakenAsync(string normalizedIdentity)
+    {
+        dbContext.ChangeTracker.Clear();
+        return await dbContext.UserAccounts.AnyAsync(x => x.NormalizedBifrostIdentity == normalizedIdentity);
     }
 
     public async Task EnsureIdentityAsync(
@@ -69,7 +114,9 @@ public sealed partial class BifrostIdentityService(
 
         var normalizedBase = NormalizeCandidate(preferredIdentity);
         var normalizedIdentity = normalizedBase;
-        for (var suffix = 2; await IdentityExistsAsync(userAccount.Id, normalizedIdentity, cancellationToken); suffix++)
+        for (var suffix = 2;
+             IsReserved(normalizedIdentity) || await IdentityExistsAsync(userAccount.Id, normalizedIdentity, cancellationToken);
+             suffix++)
         {
             normalizedIdentity = $"{normalizedBase}-{suffix}";
         }
@@ -103,6 +150,20 @@ public sealed partial class BifrostIdentityService(
         var identity = new ClaimsIdentity(claims, CookieAuthenticationDefaults.AuthenticationScheme);
         return new ClaimsPrincipal(identity);
     }
+
+    // Matrix localparts that already belong to someone else, and system names. The identity becomes the Matrix
+    // localpart at SSO, so a new account must never mint one of these. Applied to the normalized identity when an
+    // account is created (native register refuses, a derived identity takes the next free suffix); lookups of
+    // existing accounts go through NormalizeIdentity and are untouched. There is no exemption path: Minds and
+    // other known holders do not sign in through Bifrost identities.
+    private static readonly HashSet<string> ReservedIdentities = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "admin", "aqua", "deru", "eureka", "heimdall", "ivixey", "kiko", "libby", "meta", "nibu", "unnie", "void", "weksa",
+        "root", "system", "matrix", "synapse", "support", "bot", "mod", "moderator", "postmaster", "gamecult",
+        "bifrost", "idunn", "odin", "huginn", "ratatoskr"
+    };
+
+    public static bool IsReserved(string normalizedIdentity) => ReservedIdentities.Contains(normalizedIdentity);
 
     public static string NormalizeIdentity(string identity)
     {

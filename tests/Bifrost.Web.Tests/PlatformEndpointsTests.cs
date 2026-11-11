@@ -45,16 +45,8 @@ public sealed class PlatformEndpointsTests : IClassFixture<TestWebApplicationFac
     public async Task Bifrost_native_registration_creates_authenticated_identity_without_oauth()
     {
         using var client = _factory.CreateClient();
-        using var request = new HttpRequestMessage(HttpMethod.Post, "/auth/bifrost/register");
-        request.Headers.Add("X-Test-Anonymous", "true");
-        request.Content = JsonContent.Create(new
-        {
-            identity = $"native-{Guid.NewGuid():N}",
-            displayName = "Native Bifrost User",
-            returnUrl = "/App"
-        });
-
-        using var response = await client.SendAsync(request);
+        using var response = await RegistrationKit.RegisterAsync(
+            client, $"native-{Guid.NewGuid():N}", "Native Bifrost User", "/App", anonymous: true);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var payload = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -79,15 +71,8 @@ public sealed class PlatformEndpointsTests : IClassFixture<TestWebApplicationFac
         using var client = _factory.CreateClient();
         var identity = $"native-{Guid.NewGuid():N}";
 
-        using var firstRequest = new HttpRequestMessage(HttpMethod.Post, "/auth/bifrost/register");
-        firstRequest.Headers.Add("X-Test-Anonymous", "true");
-        firstRequest.Content = JsonContent.Create(new { identity, displayName = "First" });
-        using var firstResponse = await client.SendAsync(firstRequest);
-
-        using var secondRequest = new HttpRequestMessage(HttpMethod.Post, "/auth/bifrost/register");
-        secondRequest.Headers.Add("X-Test-Anonymous", "true");
-        secondRequest.Content = JsonContent.Create(new { identity = identity.ToUpperInvariant(), displayName = "Second" });
-        using var secondResponse = await client.SendAsync(secondRequest);
+        using var firstResponse = await RegistrationKit.RegisterAsync(client, identity, "First", anonymous: true);
+        using var secondResponse = await RegistrationKit.RegisterAsync(client, identity.ToUpperInvariant(), "Second", anonymous: true);
 
         Assert.Equal(HttpStatusCode.OK, firstResponse.StatusCode);
         Assert.Equal(HttpStatusCode.BadRequest, secondResponse.StatusCode);

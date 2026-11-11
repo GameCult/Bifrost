@@ -7,6 +7,7 @@ using System.Text.Json;
 using Bifrost.Web.Domain;
 using Bifrost.Web.Features.Shared;
 using Bifrost.Web.Tests.Support;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -19,7 +20,7 @@ namespace Bifrost.Web.Tests;
 public sealed class OidcIssuerTests : IClassFixture<OidcWebApplicationFactory>
 {
     private static readonly Uri Origin = new("https://localhost");
-    private readonly OidcWebApplicationFactory _factory;
+    private OidcWebApplicationFactory _factory;
 
     public OidcIssuerTests(OidcWebApplicationFactory factory) => _factory = factory;
 
@@ -106,20 +107,74 @@ public sealed class OidcIssuerTests : IClassFixture<OidcWebApplicationFactory>
         Assert.Equal("Second Name", second.Claim("name"));
     }
 
-    [Theory]
-    [InlineData(MembershipStatus.Authenticated)]
-    [InlineData(MembershipStatus.PendingApproval)]
-    [InlineData(MembershipStatus.Suspended)]
-    public async Task A_member_who_is_not_active_is_refused_with_access_denied_and_no_code(MembershipStatus status)
+    [Fact]
+    public async Task A_suspended_account_is_refused_with_access_denied_and_no_code()
     {
-        var (client, _) = await SignedInAsync(status, "Not Active");
+        var (client, _) = await SignedInAsync(MembershipStatus.Suspended, "Suspended One");
         var request = NewRequest();
 
         var final = await DriveAsync(client, request);
 
         var redirect = AssertRedirectToClient(final, request.State);
         Assert.Equal("access_denied", redirect["error"]);
-        Assert.Equal(Bifrost.Web.Features.Oidc.OidcEndpoints.NotActiveDescription, redirect["error_description"]);
+        Assert.Equal(Bifrost.Web.Features.Oidc.OidcEndpoints.SuspendedDescription, redirect["error_description"]);
+        Assert.False(redirect.ContainsKey("code"));
+    }
+
+    [Theory]
+    [InlineData(MembershipStatus.Authenticated)]
+    [InlineData(MembershipStatus.PendingApproval)]
+    public async Task A_non_member_gets_a_chat_only_token_and_writes_no_membership_or_vote(MembershipStatus status)
+    {
+        var (client, identity) = await SignedInAsync(status, "Chat Only");
+        var accountId = _factory.AccountId(identity);
+        var before = await _factory.RowCountsAsync();
+
+        var tokens = await CompleteFlowAsync(client);
+
+        var verified = await ValidateIdTokenAsync(tokens.IdToken, tokens.Request.Nonce);
+        Assert.Equal(accountId.ToString("D"), verified.Claim("sub"));
+        Assert.Equal(identity, verified.Claim("preferred_username"));
+
+        // The issuer wrote nothing about membership or votes, and the status is exactly what it was.
+        Assert.Equal(before, await _factory.RowCountsAsync());
+        Assert.Equal(status, await _factory.MembershipStatusAsync(identity));
+        Assert.Equal(0, (await _factory.RowCountsAsync()).Votes);
+
+        // Neither the session that signed in to chat nor its token opens a member or governance surface.
+        foreach (var path in new[] { "/eve/governance/surface", "/api/sealed-motions", "/App" })
+        {
+            using var viaSession = await client.GetAsync(path);
+            Assert.NotEqual(HttpStatusCode.OK, viaSession.StatusCode);
+
+            using var viaToken = new HttpRequestMessage(HttpMethod.Get, path);
+            viaToken.Headers.Authorization = new AuthenticationHeaderValue("Bearer", tokens.AccessToken);
+            using var bearer = await NewClient().SendAsync(viaToken);
+            Assert.NotEqual(HttpStatusCode.OK, bearer.StatusCode);
+        }
+
+        using var desk = new HttpRequestMessage(HttpMethod.Get, "/api/desk/forks");
+        desk.Headers.Authorization = new AuthenticationHeaderValue("Bearer", tokens.AccessToken);
+        using var deskResponse = await NewClient().SendAsync(desk);
+        Assert.NotEqual(HttpStatusCode.OK, deskResponse.StatusCode);
+
+        // Last, because userinfo answers 500 on a .NET 10 runtime (the six known failures), and the rest must still run there.
+        using var userinfo = await UserInfoAsync(tokens.AccessToken);
+        Assert.Equal(HttpStatusCode.OK, userinfo.StatusCode);
+        var info = JsonDocument.Parse(await userinfo.Content.ReadAsStringAsync()).RootElement;
+        Assert.Equal(["name", "preferred_username", "sub"], info.EnumerateObject().Select(x => x.Name).Order().ToArray());
+    }
+
+    [Fact]
+    public async Task A_chat_tier_account_with_a_reserved_identity_is_still_refused()
+    {
+        using var factory = new OidcFixedIdentityFactory("eureka", MembershipStatus.Authenticated);
+        using var client = factory.CreateClient(ClientOptions());
+        await RegisterAsync(client, $"cookie-{Guid.NewGuid():N}");
+        var request = NewRequest();
+
+        var redirect = AssertRedirectToClient(await DriveAsync(client, request), request.State);
+        Assert.Equal("access_denied", redirect["error"]);
         Assert.False(redirect.ContainsKey("code"));
     }
 
@@ -137,6 +192,290 @@ public sealed class OidcIssuerTests : IClassFixture<OidcWebApplicationFactory>
         Assert.Equal("access_denied", redirect["error"]);
         Assert.Equal(Bifrost.Web.Features.Oidc.OidcEndpoints.NoIdentityDescription, redirect["error_description"]);
         Assert.False(redirect.ContainsKey("code"));
+    }
+
+    [Theory]
+    [InlineData("meta")] // an operator's or a Mind's Matrix localpart
+    [InlineData("eureka")]
+    [InlineData("admin")]
+    [InlineData("system")] // a system name
+    [InlineData("Heimdall")] // the row's casing does not matter
+    public async Task An_active_member_whose_identity_is_a_reserved_localpart_gets_no_code(string reserved)
+    {
+        using var factory = new OidcFixedIdentityFactory(reserved);
+        using var client = factory.CreateClient(ClientOptions());
+        await RegisterAsync(client, $"cookie-{Guid.NewGuid():N}"); // any session: the actor is the fixed account
+        var request = NewRequest();
+
+        var final = await DriveAsync(client, request);
+
+        var redirect = AssertRedirectToClient(final, request.State);
+        Assert.Equal("access_denied", redirect["error"]);
+        Assert.Equal(Bifrost.Web.Features.Oidc.OidcEndpoints.ReservedIdentityDescription, redirect["error_description"]);
+        Assert.False(redirect.ContainsKey("code"));
+    }
+
+    [Theory]
+    [InlineData("meta2")] // look-alikes are ordinary names
+    [InlineData("admins")]
+    [InlineData("kiko-fan")]
+    public async Task A_name_that_only_resembles_a_reserved_localpart_is_given_a_code(string ordinary)
+    {
+        using var factory = new OidcFixedIdentityFactory(ordinary);
+        using var client = factory.CreateClient(ClientOptions());
+        await RegisterAsync(client, $"cookie-{Guid.NewGuid():N}");
+        await factory.AgreeAsync(factory.FixedAccountId);
+        var request = NewRequest();
+
+        var final = await DriveAsync(client, request);
+
+        var redirect = AssertRedirectToClient(final, request.State);
+        Assert.True(redirect.ContainsKey("code"));
+        Assert.False(redirect.ContainsKey("error"));
+    }
+
+    private static IReadOnlyDictionary<string, string?> Settings(params (string Key, string Value)[] pairs) =>
+        pairs.ToDictionary(p => $"Bifrost:Oidc:{p.Key}", p => (string?)p.Value);
+
+    [Fact]
+    public async Task A_flood_from_one_address_is_refused_with_429_and_a_retry_after()
+    {
+        using var factory = new OidcSettingsFactory(Settings(("Limits:PerAddressPermits", "5")));
+        using var client = factory.CreateClient(ClientOptions());
+
+        var statuses = new List<HttpStatusCode>();
+        HttpResponseMessage? last = null;
+        for (var i = 0; i < 8; i++)
+        {
+            last?.Dispose();
+            last = await client.GetAsync(NewRequest().Path);
+            statuses.Add(last.StatusCode);
+        }
+
+        Assert.DoesNotContain(HttpStatusCode.TooManyRequests, statuses.Take(5));
+        Assert.All(statuses.Skip(5), status => Assert.Equal(HttpStatusCode.TooManyRequests, status));
+        Assert.True(int.Parse(last!.Headers.GetValues("Retry-After").Single()) >= 1);
+        using var tokenFlood = await client.PostAsync("/connect/token", new FormUrlEncodedContent(new Dictionary<string, string>()));
+        Assert.Equal(HttpStatusCode.TooManyRequests, tokenFlood.StatusCode); // one budget over all three endpoints
+        using var userinfoFlood = await client.GetAsync("/connect/userinfo");
+        Assert.Equal(HttpStatusCode.TooManyRequests, userinfoFlood.StatusCode);
+        last.Dispose();
+    }
+
+    [Fact]
+    public async Task A_flood_naming_the_real_client_does_not_spend_anyone_elses_permits_and_a_trailing_slash_is_no_way_around()
+    {
+        using var factory = new OidcSettingsFactory(Settings(("Limits:PerAddressPermits", "4")));
+        using var client = factory.CreateClient(ClientOptions());
+
+        var statuses = new List<HttpStatusCode>();
+        foreach (var path in new[] { NewRequest().Path, NewRequest().Path, "/connect/authorize/?client_id=x", "/connect/token/", "/connect/userinfo/" })
+        {
+            using var response = await client.GetAsync(path);
+            statuses.Add(response.StatusCode);
+        }
+
+        Assert.Equal(HttpStatusCode.TooManyRequests, statuses[4]); // the slashed forms spend the same budget
+        Assert.DoesNotContain(HttpStatusCode.TooManyRequests, statuses.Take(4));
+    }
+
+    [Theory]
+    [InlineData("/connect/authorize")]
+    [InlineData("/connect/authorize/")]
+    [InlineData("/connect/token/")]
+    [InlineData("/connect/userinfo/")]
+    [InlineData("/CONNECT/Userinfo")]
+    public async Task The_brake_holds_for_every_spelling_of_an_endpoint(string path)
+    {
+        var marker = Path.Combine(Path.GetTempPath(), $"oidc-brake-{Guid.NewGuid():N}");
+        File.WriteAllText(marker, "braked");
+        try
+        {
+            using var factory = new OidcSettingsFactory(Settings(("BrakePath", marker)));
+            using var client = factory.CreateClient(ClientOptions());
+            using var response = await client.GetAsync(path == "/connect/authorize" || path == "/connect/authorize/" ? path + "?client_id=x" : path);
+            Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        }
+        finally
+        {
+            File.Delete(marker);
+        }
+    }
+
+    [Fact]
+    public async Task A_guard_that_cannot_decide_answers_503_and_never_passes_the_request_on()
+    {
+        var reached = false;
+        var options = new Bifrost.Web.Configuration.OidcIssuerOptions();
+        var middleware = new Bifrost.Web.Features.Oidc.OidcGuardMiddleware(
+            _ => { reached = true; return Task.CompletedTask; }, options,
+            new Bifrost.Web.Features.Oidc.OidcRateLimit(options, TimeProvider.System),
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<Bifrost.Web.Features.Oidc.OidcGuardMiddleware>.Instance);
+        var http = new DefaultHttpContext();
+        http.Request.Path = "/connect/authorize";
+        http.Request.QueryString = new QueryString("?client_id=x");
+        http.Response.Body = new MemoryStream();
+
+        await middleware.InvokeAsync(http, System.Reflection.DispatchProxy.Create<OpenIddict.Abstractions.IOpenIddictTokenManager, ThrowingProxy>());
+
+        Assert.False(reached);
+        Assert.Equal(StatusCodes.Status503ServiceUnavailable, http.Response.StatusCode);
+    }
+
+    /// <summary>Every call fails: the row count the guard asks of the token table cannot be answered.</summary>
+    public class ThrowingProxy : System.Reflection.DispatchProxy
+    {
+        protected override object? Invoke(System.Reflection.MethodInfo? targetMethod, object?[]? args) => throw new InvalidOperationException("the token table is down");
+    }
+
+    [Fact]
+    public async Task A_resumed_authorize_request_is_not_refused_by_the_row_cap_but_a_fresh_one_is()
+    {
+        using var factory = new OidcSettingsFactory(Settings(("Limits:MaxTokenRows", "3")));
+        _factory = factory;
+        var (client, _) = await SignedInAsync(MembershipStatus.Active, "Resumer");
+        using var first = await client.GetAsync(NewRequest().Path); // parks one row, answers with a redirect carrying the request_uri
+        var resume = first.Headers.Location!.ToString();
+        Assert.Contains("request_uri", resume);
+
+        using var anonymous = factory.CreateClient(ClientOptions());
+        for (var i = 0; i < 2; i++)
+        {
+            using var filler = await anonymous.GetAsync(NewRequest().Path);
+        }
+
+        using var fresh = await anonymous.GetAsync(NewRequest().Path);
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, fresh.StatusCode);
+        using var resumed = await client.GetAsync(resume);
+        Assert.NotEqual(HttpStatusCode.ServiceUnavailable, resumed.StatusCode);
+    }
+
+    [Fact]
+    public async Task A_mas_flow_fits_the_default_budgets_and_the_window_reopens()
+    {
+        using var factory = new OidcSettingsFactory(Settings(("Limits:PerAddressPermits", "30")));
+        _factory = factory;
+        var (client, identity) = await SignedInAsync(MembershipStatus.Active, "Within Budget");
+
+        var verified = await ValidateIdTokenAsync((await CompleteFlowAsync(client)).IdToken, null);
+        Assert.Equal(identity, verified.Claim("preferred_username"));
+
+        for (var i = 0; i < 40; i++)
+        {
+            using var burst = await client.GetAsync("/connect/userinfo");
+        }
+
+        using var refused = await client.GetAsync("/connect/userinfo");
+        Assert.Equal(HttpStatusCode.TooManyRequests, refused.StatusCode);
+        factory.Clock.Advance(TimeSpan.FromMinutes(1));
+        using var reopened = await client.GetAsync("/connect/userinfo");
+        Assert.NotEqual(HttpStatusCode.TooManyRequests, reopened.StatusCode);
+    }
+
+    [Fact]
+    public async Task The_brake_marker_stops_the_issuer_and_releasing_it_needs_no_restart()
+    {
+        var marker = Path.Combine(Path.GetTempPath(), $"bifrost-oidc-brake-{Guid.NewGuid():N}");
+        using var factory = new OidcSettingsFactory(Settings(("BrakePath", marker)));
+        _factory = factory;
+        var (client, _) = await SignedInAsync(MembershipStatus.Active, "Braked");
+        try
+        {
+            Assert.True((await CompleteFlowAsync(client)).IdToken.Length > 0, "released: the flow passes");
+
+            await File.WriteAllTextAsync(marker, "held");
+            foreach (var path in new[] { NewRequest().Path, "/connect/userinfo" })
+            {
+                using var held = await client.GetAsync(path);
+                Assert.Equal(HttpStatusCode.ServiceUnavailable, held.StatusCode);
+                Assert.True(held.Headers.Contains("Retry-After"));
+            }
+
+            using var token = await client.PostAsync("/connect/token", new FormUrlEncodedContent(new Dictionary<string, string>()));
+            Assert.Equal(HttpStatusCode.ServiceUnavailable, token.StatusCode);
+            using var discovery = await client.GetAsync("/.well-known/openid-configuration");
+            Assert.Equal(HttpStatusCode.OK, discovery.StatusCode); // the brake stops issuing, not the published keys
+
+            File.Delete(marker);
+            Assert.True((await CompleteFlowAsync(client)).IdToken.Length > 0, "released again, same process");
+        }
+        finally
+        {
+            File.Delete(marker);
+        }
+    }
+
+    [Fact]
+    public async Task Anonymous_authorize_requests_cannot_park_more_than_the_row_cap_and_the_prune_gives_the_room_back()
+    {
+        using var factory = new OidcSettingsFactory(Settings(("Limits:MaxTokenRows", "3")));
+        _factory = factory;
+        using var client = factory.CreateClient(ClientOptions());
+
+        var parked = new List<HttpStatusCode>();
+        for (var i = 0; i < 5; i++)
+        {
+            using var response = await client.GetAsync(NewRequest().Path);
+            parked.Add(response.StatusCode);
+        }
+
+        Assert.Equal(3, await factory.TokenRowsAsync());
+        Assert.All(parked.Skip(3), status => Assert.Equal(HttpStatusCode.ServiceUnavailable, status));
+        Assert.All(parked.Take(3), status => Assert.NotEqual(HttpStatusCode.ServiceUnavailable, status));
+
+        factory.Clock.Advance(TimeSpan.FromMinutes(11)); // past the ten-minute parked lifetime
+        await factory.PruneAsync();
+        Assert.Equal(0, await factory.TokenRowsAsync());
+        using var again = await client.GetAsync(NewRequest().Path);
+        Assert.NotEqual(HttpStatusCode.ServiceUnavailable, again.StatusCode);
+    }
+
+    [Fact]
+    public async Task The_prune_removes_expired_rows_and_leaves_a_live_token_alone()
+    {
+        using var factory = new OidcSettingsFactory(Settings());
+        _factory = factory;
+        var (client, _) = await SignedInAsync(MembershipStatus.Active, "Pruned");
+        var tokens = await CompleteFlowAsync(client); // a parked request, a code and an access token existed along the way
+        using (var anonymous = factory.CreateClient(ClientOptions()))
+        {
+            using var parked = await anonymous.GetAsync(NewRequest().Path); // a parked request that will expire
+        }
+
+        var before = await factory.TokenRowsAsync();
+        await factory.PruneAsync();
+        Assert.Equal(before, await factory.TokenRowsAsync()); // nothing has expired yet: nothing goes
+
+        factory.Clock.Advance(TimeSpan.FromMinutes(11)); // parked requests and codes are dead, the access token (an hour) is not
+        await factory.PruneAsync();
+        var after = await factory.TokenRowsAsync();
+        Assert.True(after < before, "expired rows went");
+        Assert.Contains("urn:ietf:params:oauth:token-type:access_token", await factory.TokenTypesAsync()); // the live one, not merely some row
+
+        using var userinfo = new HttpRequestMessage(HttpMethod.Get, "/connect/userinfo");
+        userinfo.Headers.Authorization = new AuthenticationHeaderValue("Bearer", tokens.AccessToken);
+        using var response = await factory.CreateClient(ClientOptions()).SendAsync(userinfo);
+        Assert.NotEqual(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task The_prune_takes_a_revoked_authorization_with_its_tokens_and_touches_no_live_authorization()
+    {
+        using var factory = new OidcSettingsFactory(Settings());
+        _factory = factory;
+        var (revoked, _) = await SignedInAsync(MembershipStatus.Active, "Revoked");
+        await CompleteFlowAsync(revoked);
+        var (live, _) = await SignedInAsync(MembershipStatus.Active, "Live");
+        await CompleteFlowAsync(live);
+        Assert.Equal(2, await factory.AuthorizationRowsAsync());
+        Assert.Equal(6, await factory.TokensOfAuthorizationsAsync()); // a spent code, an access token and an id token each
+        await factory.RevokeFirstAuthorizationAsync();
+
+        factory.Clock.Advance(TimeSpan.FromMinutes(6)); // past the grace for a young row; the access tokens (an hour) are still alive
+        await factory.PruneAsync();
+
+        Assert.Equal(1, await factory.AuthorizationRowsAsync());
+        Assert.Equal(2, await factory.TokenRowsAsync()); // no orphan stays either: the revoked one's tokens went with it; the live one's access and id tokens stayed, spent codes go
     }
 
     [Theory]
@@ -335,11 +674,9 @@ public sealed class OidcIssuerTests : IClassFixture<OidcWebApplicationFactory>
     }
 
     [Theory]
-    [InlineData(MembershipStatus.Authenticated)]
-    [InlineData(MembershipStatus.PendingApproval)]
     [InlineData(MembershipStatus.Suspended)]
     [InlineData(null)]
-    public async Task A_member_no_longer_active_after_authorize_gets_no_tokens(MembershipStatus? status)
+    public async Task An_account_suspended_or_gone_after_authorize_gets_no_tokens(MembershipStatus? status)
     {
         var (client, identity) = await SignedInAsync(MembershipStatus.Active, "Soon Gone");
         var request = NewRequest();
@@ -356,11 +693,9 @@ public sealed class OidcIssuerTests : IClassFixture<OidcWebApplicationFactory>
     }
 
     [Theory]
-    [InlineData(MembershipStatus.Authenticated)]
-    [InlineData(MembershipStatus.PendingApproval)]
     [InlineData(MembershipStatus.Suspended)]
     [InlineData(null)]
-    public async Task Userinfo_refuses_an_access_token_whose_member_is_no_longer_active(MembershipStatus? status)
+    public async Task Userinfo_refuses_an_access_token_whose_account_is_suspended_or_gone(MembershipStatus? status)
     {
         var (client, identity) = await SignedInAsync(MembershipStatus.Active, "Soon Gone");
         var tokens = await CompleteFlowAsync(client);
@@ -491,6 +826,164 @@ public sealed class OidcIssuerTests : IClassFixture<OidcWebApplicationFactory>
         Assert.Equal(OidcForeignIssuerFactory.PublicBaseUrl, discovery.GetProperty("issuer").GetString());
     }
 
+    // ---- chat needs a live receipt for the notice version in force; nothing else does ----
+
+    private const string ConsentPath = "/auth/bifrost/consent";
+
+    /// <summary>A form post as the consent page's own buttons send it: the site's own Origin, no antiforgery token.</summary>
+    private async Task<HttpResponseMessage> ConsentPostAsync(HttpClient client, string action, string? returnUrl = null)
+    {
+        var fields = new Dictionary<string, string> { ["version"] = Bifrost.Web.Features.Registration.TrainingNotice.Version.ToString() };
+        if (returnUrl is not null)
+        {
+            fields["returnUrl"] = returnUrl;
+        }
+
+        using var message = new HttpRequestMessage(HttpMethod.Post, $"{ConsentPath}/{action}") { Content = new FormUrlEncodedContent(fields) };
+        message.Headers.TryAddWithoutValidation("Origin", Origin.GetLeftPart(UriPartial.Authority));
+        return await client.SendAsync(message);
+    }
+
+    [Theory]
+    [InlineData(ReceiptState.None)]
+    [InlineData(ReceiptState.Withdrawn)]
+    [InlineData(ReceiptState.OtherVersion)]
+    public async Task Chat_authorize_without_a_live_current_receipt_sends_the_member_to_the_consent_page_with_the_request_to_resume(ReceiptState receipt)
+    {
+        var (client, _) = await SignedInAsync(MembershipStatus.Active, "No Agreement", receipt);
+        var request = NewRequest();
+
+        var final = await DriveAsync(client, request);
+
+        Assert.Equal(HttpStatusCode.Redirect, final.StatusCode);
+        var location = final.Headers.Location!.OriginalString;
+        Assert.DoesNotContain("code=", location);
+        Assert.DoesNotContain("error=", location);
+        Assert.StartsWith(ConsentPath + "?returnUrl=", location);
+        var resume = ReturnUrl(final);
+        Assert.StartsWith("/connect/authorize?", resume);
+        Assert.Equal(resume, LocalReturnPath.Parse(resume).Value); // short enough to survive as a local return path
+
+        using var page = await client.GetAsync(location);
+        var html = await page.Content.ReadAsStringAsync();
+        Assert.Equal(HttpStatusCode.OK, page.StatusCode);
+        Assert.Contains("action=\"/auth/bifrost/consent/accept\"", html);
+        Assert.Contains("to speak in a recorded room", html);
+    }
+
+    [Fact]
+    public async Task Agreeing_on_the_consent_page_resumes_the_refused_request_and_chat_works()
+    {
+        var (client, identity) = await SignedInAsync(MembershipStatus.Authenticated, "Late Agreer", ReceiptState.None);
+        var request = NewRequest();
+        var refused = await DriveAsync(client, request);
+        var resume = ReturnUrl(refused);
+
+        using var agreed = await ConsentPostAsync(client, "accept", resume);
+        Assert.Equal(HttpStatusCode.SeeOther, agreed.StatusCode);
+        Assert.Equal(resume, agreed.Headers.Location!.OriginalString);
+
+        using var resumed = await client.GetAsync(resume);
+        var code = AssertRedirectToClient(resumed, request.State)["code"];
+        Assert.NotNull(code);
+        var tokens = await ExchangeAsync(client, request, code!);
+        using var userinfo = await UserInfoAsync(tokens.AccessToken);
+        Assert.Equal(HttpStatusCode.OK, userinfo.StatusCode);
+        Assert.Equal(identity, JsonDocument.Parse(await userinfo.Content.ReadAsStringAsync()).RootElement.GetProperty("preferred_username").GetString());
+    }
+
+    [Theory]
+    [InlineData(ReceiptState.Withdrawn)]
+    [InlineData(ReceiptState.OtherVersion)]
+    public async Task A_code_and_a_token_issued_before_the_agreement_went_stop_working(ReceiptState gone)
+    {
+        var (client, identity) = await SignedInAsync(MembershipStatus.Active, "Soon Silent");
+        var pendingRequest = NewRequest();
+        var pendingCode = await CodeAsync(client, pendingRequest);
+        var tokens = await CompleteFlowAsync(client);
+        using (var before = await UserInfoAsync(tokens.AccessToken))
+        {
+            Assert.Equal(HttpStatusCode.OK, before.StatusCode);
+        }
+
+        await _factory.SetReceiptAsync(identity, gone);
+
+        using var code = await TokenAsync(client, pendingRequest, pendingCode);
+        var codeBody = await code.Content.ReadAsStringAsync();
+        Assert.Equal(HttpStatusCode.BadRequest, code.StatusCode);
+        Assert.Contains("invalid_grant", codeBody);
+        Assert.DoesNotContain("access_token", codeBody);
+
+        using var after = await UserInfoAsync(tokens.AccessToken);
+        var afterBody = await after.Content.ReadAsStringAsync();
+        Assert.Equal(HttpStatusCode.Forbidden, after.StatusCode);
+        Assert.Contains("insufficient_access", string.Join(" ", after.Headers.WwwAuthenticate.Select(x => x.ToString())));
+        Assert.DoesNotContain(identity, afterBody);
+        Assert.DoesNotContain("preferred_username", afterBody);
+    }
+
+    [Fact]
+    public async Task Withdrawing_on_the_consent_page_ends_chat_and_agreeing_again_restores_it()
+    {
+        var (client, _) = await SignedInAsync(MembershipStatus.Active, "Changes Mind");
+        var tokens = await CompleteFlowAsync(client);
+
+        using (var withdrawn = await ConsentPostAsync(client, "withdraw"))
+        {
+            Assert.Equal(HttpStatusCode.SeeOther, withdrawn.StatusCode);
+        }
+
+        using (var silenced = await UserInfoAsync(tokens.AccessToken))
+        {
+            Assert.Equal(HttpStatusCode.Forbidden, silenced.StatusCode);
+        }
+
+        var request = NewRequest();
+        Assert.StartsWith(ConsentPath, (await DriveAsync(client, request)).Headers.Location!.OriginalString);
+
+        using (var again = await ConsentPostAsync(client, "accept"))
+        {
+            Assert.Equal(HttpStatusCode.SeeOther, again.StatusCode);
+        }
+
+        var fresh = await CompleteFlowAsync(client);
+        using var restored = await UserInfoAsync(fresh.AccessToken);
+        Assert.Equal(HttpStatusCode.OK, restored.StatusCode);
+    }
+
+    [Fact]
+    public async Task Without_a_receipt_account_sign_in_the_members_page_and_votes_still_work()
+    {
+        var (client, identity) = await SignedInAsync(MembershipStatus.Active, "Member Only", ReceiptState.None);
+        var accountId = _factory.AccountId(identity);
+
+        foreach (var path in new[] { "/App", "/App/Members", ConsentPath })
+        {
+            using var page = await client.GetAsync(path);
+            Assert.Equal(HttpStatusCode.OK, page.StatusCode);
+        }
+
+        var collection = "c" + Guid.NewGuid().ToString("N");
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<Bifrost.Web.Data.BifrostDbContext>();
+            db.ConceptSubjects.Add(new ConceptSubject { Collection = collection, Key = "alpha", Title = "alpha", RegisteredAtUtc = DateTimeOffset.UtcNow });
+            await db.SaveChangesAsync();
+        }
+
+        using var vote = new HttpRequestMessage(HttpMethod.Post, $"/mill/{collection}/alpha?handler=Up") { Content = new FormUrlEncodedContent([]) };
+        vote.Headers.TryAddWithoutValidation("Origin", Origin.GetLeftPart(UriPartial.Authority));
+        using var voted = await client.SendAsync(vote);
+        Assert.Equal(HttpStatusCode.Redirect, voted.StatusCode);
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<Bifrost.Web.Data.BifrostDbContext>();
+            Assert.Single(db.ConceptAppraisals.AsNoTracking().Where(x => x.Subject!.Collection == collection && x.UserAccountId == accountId));
+        }
+
+        Assert.Empty(_factory.ReceiptsOf(identity)); // none of that wrote an agreement
+    }
+
     // ---- helpers ----
 
     private static WebApplicationFactoryClientOptions ClientOptions() => new()
@@ -502,17 +995,22 @@ public sealed class OidcIssuerTests : IClassFixture<OidcWebApplicationFactory>
 
     private HttpClient NewClient() => _factory.CreateClient(ClientOptions());
 
-    private static async Task<string> RegisterAsync(HttpClient client, string identity)
+    private static async Task<string> RegisterAsync(HttpClient client, string identity, bool agree = true)
     {
-        using var response = await client.PostAsJsonAsync("/auth/bifrost/register", new { identity, displayName = identity });
+        using var response = await RegistrationKit.RegisterAsync(client, identity, agree: agree);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         return identity.ToLowerInvariant();
     }
 
-    private async Task<(HttpClient Client, string Identity)> SignedInAsync(MembershipStatus status, string displayName)
+    private async Task<(HttpClient Client, string Identity)> SignedInAsync(MembershipStatus status, string displayName, ReceiptState receipt = ReceiptState.Current)
     {
         var client = NewClient();
-        var identity = await RegisterAsync(client, $"member-{Guid.NewGuid():N}");
+        var identity = await RegisterAsync(client, $"member-{Guid.NewGuid():N}", agree: receipt != ReceiptState.None);
+        if (receipt is ReceiptState.Withdrawn or ReceiptState.OtherVersion)
+        {
+            await _factory.SetReceiptAsync(identity, receipt);
+        }
+
         await _factory.SetMembershipAsync(identity, status);
         await _factory.SetDisplayNameAsync(identity, displayName);
         return (client, identity);

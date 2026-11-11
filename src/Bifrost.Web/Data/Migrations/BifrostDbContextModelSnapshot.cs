@@ -821,6 +821,9 @@ namespace Bifrost.Web.Data.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<string>("SuspensionReason")
+                        .HasColumnType("text");
+
                     b.Property<Guid>("UserAccountId")
                         .HasColumnType("uuid");
 
@@ -1438,6 +1441,33 @@ namespace Bifrost.Web.Data.Migrations
                         .IsUnique();
 
                     b.ToTable("VolunteerClaims");
+                });
+
+            modelBuilder.Entity("Bifrost.Web.Domain.ConsentReceipt", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("AcceptedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("NoticeVersion")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("UserAccountId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset?>("WithdrawnAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserAccountId", "NoticeVersion")
+                        .IsUnique()
+                        .HasFilter("\"WithdrawnAtUtc\" IS NULL");
+
+                    b.ToTable("ConsentReceipts");
                 });
 
             modelBuilder.Entity("Bifrost.Web.Domain.MindKey", b =>
@@ -2140,6 +2170,17 @@ namespace Bifrost.Web.Data.Migrations
                     b.Navigation("UserAccount");
 
                     b.Navigation("WorkItem");
+                });
+
+            modelBuilder.Entity("Bifrost.Web.Domain.ConsentReceipt", b =>
+                {
+                    b.HasOne("Bifrost.Web.Domain.UserAccount", "UserAccount")
+                        .WithMany()
+                        .HasForeignKey("UserAccountId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("UserAccount");
                 });
 
             modelBuilder.Entity("Bifrost.Web.Domain.MemberProfile", b =>

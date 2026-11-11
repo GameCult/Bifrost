@@ -1,3 +1,4 @@
+import { cultLibRoot } from "./cultlib-root.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -26,8 +27,7 @@ const T_OPEN = "2023-11-14T22:13:20.000Z";
 const T_CLOSE = "2023-11-14T22:15:00.000Z";
 const CLOSED_TEXT = `Idunn incident closed (recovered): continuity-exhausted on \`closed-target\`, opened ${T_OPEN}, closed ${T_CLOSE}`;
 
-// CultLib is the sibling ../CultLib, like the other tests.
-const cult = resolve(import.meta.dirname, "..", "..", "CultLib");
+const cult = cultLibRoot;
 const cache = createRequire(resolve(cult, "packages", "cultcache-ts", "package.json"))("@gamecult/cultcache-ts");
 const msgpack = createRequire(resolve(cult, "packages", "cultnet-ts", "package.json"))("@msgpack/msgpack");
 

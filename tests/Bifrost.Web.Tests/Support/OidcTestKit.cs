@@ -5,6 +5,7 @@ using Bifrost.Web.Features.Shared;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
@@ -14,6 +15,15 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace Bifrost.Web.Tests.Support;
+
+/// <summary>The consent receipt an account holds, from a consumer's side: current, none, withdrawn, or for a version other than the one in force.</summary>
+public enum ReceiptState
+{
+    Current,
+    None,
+    Withdrawn,
+    OtherVersion
+}
 
 /// <summary>What is wrong with the signing key file a test host is started with.</summary>
 public enum OidcKeyFault
@@ -92,7 +102,9 @@ public sealed class OidcTestKit : IDisposable
         ["Bifrost:Oidc:EncryptionKeyPath"] = EncryptionKeyPath,
         ["Bifrost:Oidc:Clients:Mas:ClientId"] = ClientId,
         ["Bifrost:Oidc:Clients:Mas:ClientSecretPath"] = ClientSecretPath,
-        ["Bifrost:Oidc:Clients:Mas:RedirectUri"] = RedirectUri
+        ["Bifrost:Oidc:Clients:Mas:RedirectUri"] = RedirectUri,
+        // The shared test client has no remote address, so every request is one caller: the budgets are out of the way unless a test sets them.
+        ["Bifrost:Oidc:Limits:PerAddressPermits"] = "100000",
     };
 
     public void Dispose()
@@ -113,6 +125,11 @@ public sealed class OidcTestClock : TimeProvider
     private DateTimeOffset _now = DateTimeOffset.UtcNow;
 
     public override DateTimeOffset GetUtcNow() => _now;
+
+    // The monotonic reading follows the moved time, so a budget's window can be aged the same way as a parked request.
+    public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+
+    public override long GetTimestamp() => _now.UtcTicks;
 
     public void Advance(TimeSpan by) => _now += by;
 }
@@ -171,6 +188,24 @@ public class OidcWebApplicationFactory : TestWebApplicationFactory
         }
     }
 
+    public async Task<MembershipStatus?> MembershipStatusAsync(string identity)
+    {
+        using var scope = Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
+        var account = db.UserAccounts.Single(x => x.NormalizedBifrostIdentity == identity);
+        return (await db.Memberships.AsNoTracking().SingleOrDefaultAsync(x => x.UserAccountId == account.Id))?.Status;
+    }
+
+    public sealed record RowCounts(int Accounts, int Memberships, int Votes, int RoleAssignments);
+
+    /// <summary>What the issuer must leave alone: accounts, memberships, role grants and votes.</summary>
+    public async Task<RowCounts> RowCountsAsync()
+    {
+        using var scope = Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
+        return new RowCounts(await db.UserAccounts.CountAsync(), await db.Memberships.CountAsync(), await db.Votes.CountAsync(), await db.RoleAssignments.CountAsync());
+    }
+
     /// <summary>Sets the membership of the account registered under <paramref name="identity"/>.</summary>
     public async Task SetMembershipAsync(string identity, MembershipStatus status)
     {
@@ -197,6 +232,48 @@ public class OidcWebApplicationFactory : TestWebApplicationFactory
         var db = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
         db.UserAccounts.Remove(db.UserAccounts.Single(x => x.NormalizedBifrostIdentity == identity));
         await db.SaveChangesAsync();
+    }
+
+    /// <summary>Leaves the account with exactly the receipt state a test names: none, or one receipt for the version in force, a withdrawn one, or one for another version.</summary>
+    public async Task SetReceiptAsync(string identity, ReceiptState state)
+    {
+        using var scope = Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
+        var id = db.UserAccounts.Single(x => x.NormalizedBifrostIdentity == identity).Id;
+        db.ConsentReceipts.RemoveRange(db.ConsentReceipts.Where(x => x.UserAccountId == id));
+        await db.SaveChangesAsync();
+        await AddReceiptAsync(db, id, state);
+    }
+
+    public List<ConsentReceipt> ReceiptsOf(string identity)
+    {
+        using var scope = Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
+        return db.ConsentReceipts.AsNoTracking().Where(x => x.UserAccount!.NormalizedBifrostIdentity == identity).ToList();
+    }
+
+    /// <summary>A receipt for an account that exists only as an actor fixture.</summary>
+    public async Task AgreeAsync(Guid accountId)
+    {
+        using var scope = Services.CreateScope();
+        await AddReceiptAsync(scope.ServiceProvider.GetRequiredService<BifrostDbContext>(), accountId, ReceiptState.Current);
+    }
+
+    private static async Task AddReceiptAsync(BifrostDbContext db, Guid accountId, ReceiptState state)
+    {
+        if (state != ReceiptState.None)
+        {
+            var now = DateTimeOffset.UtcNow;
+            db.ConsentReceipts.Add(new ConsentReceipt
+            {
+                UserAccountId = accountId,
+                // Another version stands for a notice that has since been bumped (or, in a future bump, the one before it).
+                NoticeVersion = state == ReceiptState.OtherVersion ? Bifrost.Web.Features.Registration.TrainingNotice.Version - 1 : Bifrost.Web.Features.Registration.TrainingNotice.Version,
+                AcceptedAtUtc = now,
+                WithdrawnAtUtc = state == ReceiptState.Withdrawn ? now : null
+            });
+            await db.SaveChangesAsync();
+        }
     }
 
     public Guid AccountId(string identity)
@@ -228,6 +305,93 @@ public sealed class OidcNoIdentityFactory : OidcWebApplicationFactory
                 DisplayName = "No Identity",
                 Membership = new Bifrost.Web.Domain.Membership { Status = MembershipStatus.Active }
             }));
+    }
+}
+
+/// <summary>
+/// An OIDC host whose actor accessor reports an Active account holding the given Bifrost identity: how a row minted before
+/// reserved names were refused at creation (or any identity the test needs) reaches the authorize endpoint, since
+/// registration itself now refuses a reserved name.
+/// </summary>
+public sealed class OidcFixedIdentityFactory(string identity, MembershipStatus status = MembershipStatus.Active) : OidcWebApplicationFactory
+{
+    public Guid FixedAccountId { get; } = Guid.NewGuid();
+
+    protected override void ConfigureActors(IServiceCollection services)
+    {
+        services.RemoveAll<ICurrentBifrostActorAccessor>();
+        services.AddScoped<ICurrentBifrostActorAccessor>(_ => new FixedIdentity(FixedAccountId, identity, status));
+    }
+
+    private sealed class FixedIdentity(Guid id, string identity, MembershipStatus status) : ICurrentBifrostActorAccessor
+    {
+        public Task<CurrentBifrostActor> GetAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(new CurrentBifrostActor(true, new UserAccount
+            {
+                Id = id,
+                BifrostIdentity = identity,
+                NormalizedBifrostIdentity = identity, // as given: the guard, not the fixture, must fold case
+                DisplayName = "Fixed Identity",
+                Membership = new Bifrost.Web.Domain.Membership { Status = status }
+            }));
+    }
+}
+
+/// <summary>An OIDC host with extra settings (limits, a brake path) applied after the kit's own.</summary>
+public sealed class OidcSettingsFactory(IReadOnlyDictionary<string, string?> settings) : OidcWebApplicationFactory
+{
+    protected override void ConfigureWebHost(IWebHostBuilder builder)
+    {
+        base.ConfigureWebHost(builder);
+        foreach (var (key, value) in settings)
+        {
+            builder.UseSetting(key, value);
+        }
+    }
+
+    public Task PruneAsync() => Services.GetRequiredService<Bifrost.Web.Features.Oidc.OidcPruner>().PruneAsync(CancellationToken.None);
+
+    public async Task<List<string?>> TokenTypesAsync()
+    {
+        using var scope = Services.CreateScope();
+        var manager = scope.ServiceProvider.GetRequiredService<OpenIddict.Abstractions.IOpenIddictTokenManager>();
+        var types = new List<string?>();
+        await foreach (var token in manager.ListAsync())
+        {
+            types.Add(await manager.GetTypeAsync(token));
+        }
+
+        return types;
+    }
+
+    public async Task<int> AuthorizationRowsAsync()
+    {
+        using var scope = Services.CreateScope();
+        return (int)await scope.ServiceProvider.GetRequiredService<OpenIddict.Abstractions.IOpenIddictAuthorizationManager>().CountAsync();
+    }
+
+    /// <summary>Tokens that belong to some authorization (the request and code rows carry none once spent).</summary>
+    public async Task<int> TokensOfAuthorizationsAsync()
+    {
+        using var scope = Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
+        return await db.Set<OpenIddictEntityFrameworkCoreToken>().CountAsync(token => token.Authorization != null);
+    }
+
+    public async Task RevokeFirstAuthorizationAsync()
+    {
+        using var scope = Services.CreateScope();
+        var manager = scope.ServiceProvider.GetRequiredService<OpenIddict.Abstractions.IOpenIddictAuthorizationManager>();
+        await foreach (var authorization in manager.ListAsync(count: 1, offset: 0))
+        {
+            Assert.True(await manager.TryRevokeAsync(authorization));
+        }
+    }
+
+    public async Task<int> TokenRowsAsync()
+    {
+        using var scope = Services.CreateScope();
+        return (int)await scope.ServiceProvider.GetRequiredService<OpenIddict.Abstractions.IOpenIddictTokenManager>().CountAsync();
     }
 }
 

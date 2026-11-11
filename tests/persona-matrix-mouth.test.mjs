@@ -10,7 +10,7 @@ import { createImageStore, RETAIN_MS } from "../tools/persona-chat-images.mjs";
 import { personaStoreRoot } from "./image-bytes.mjs";
 import * as docs from "../tools/persona-chat-documents.mjs";
 import { gif, png, svg } from "./image-bytes.mjs";
-import { createMouth, bodyText, createBrakeReader, guarded, redact, roomsFor, projectRoomsVariable } from "../tools/persona-matrix-mouth.mjs";
+import { createMouth, replyLinkFromEnv, pageOf, bodyText, createBrakeReader, guarded, redact, roomsFor, projectRoomsVariable } from "../tools/persona-matrix-mouth.mjs";
 
 const TOKEN = "syt_SECRET_TOKEN_9f3";
 const HS_NAME = "gamecult.test";
@@ -18,8 +18,8 @@ const ROOMS = { [`#swarm:${HS_NAME}`]: "!swarm:gamecult.test", [`#operator:${HS_
 const SELF = `@eureka:${HS_NAME}`;
 
 const message = (id, sender, body, ts) => ({ type: "m.room.message", event_id: id, sender, origin_server_ts: ts, content: { msgtype: "m.text", body } });
-// The one write a braked round makes by design; an online presence PUT or any other write is not exempt.
-const offlinePresence = r => r.method === "PUT" && r.path.includes("/presence/") && r.body?.presence === "offline";
+// The one write a round makes by design: her presence state (any state; the brake and the grace decide which).
+const offlinePresence = r => r.method === "PUT" && r.path.includes("/presence/");
 const tick = () => new Promise(r => setImmediate(r));
 
 // A fake Matrix client-server API: just the endpoints the mouth uses.
@@ -953,7 +953,8 @@ test("image_delivery: a store that cannot write leaves the line and a nil image,
   } finally { await hs.close(); }
 });
 
-// Read receipts and presence: her ack posts her m.read; her brake sets her presence.
+// Read receipts and presence: Huginn's chat_read report posts her m.read; an ack posts nothing; her presence follows a
+// turn and her brake.
 const A = "!swarm:gamecult.test", B = "!operator:gamecult.test";
 const receiptScript = since => since === null ? { next_batch: "b0", ...joined({}) } : since === "b0" ? {
   next_batch: "b1",
@@ -970,78 +971,240 @@ const withMail = async (hs, overrides) => {
   return mouth;
 };
 const receiptsOf = hs => hs.receipts().map(r => [r.path.split("/rooms/")[1].split("/receipt/")[0], r.path.split("/m.read/")[1], r.auth, r.body]);
+const presencesOf = hs => hs.presencePuts().map(r => r.body.presence);
+const syncsOf = hs => hs.seen.filter(r => r.path.endsWith("/sync")).map(r => r.query.get("set_presence"));
+const reportRead = (mouth, roomAlias, eventId, persona = "eureka") => mouth.read({ persona, roomAlias, eventId, atUnixMs: 1 });
 
-test("an ack posts one m.read per room at the newest covered event, as that Persona", async () => {
+test("delivery, pending and an ack post no receipt: she has not read what the model has not seen", async () => {
   const hs = await fakeHomeserver({ sync: receiptScript });
   const mouth = await withMail(hs);
-  await mouth.ack(2);
-  await until(() => hs.receipts().length >= 1);
-  await new Promise(r => setTimeout(r, 20));
-  assert.deepEqual(receiptsOf(hs), [[A, "$a2", `Bearer ${TOKEN}`, {}]], "room A at its second event; room B untouched");
+  for (const after of [0, 1, 2, 3]) mouth.pendingAfter(after);
   await mouth.ack(3);
-  await until(() => hs.receipts().length >= 2);
+  await new Promise(r => setTimeout(r, 30));
+  assert.deepEqual(hs.receipts(), [], "mail handed to her queue, polled and acked: still no m.read");
+  assert.equal(mouth.pendingCount, 0);
+});
+
+test("a read report posts m.read at exactly that event id, as that Persona", async () => {
+  const hs = await fakeHomeserver({ sync: receiptScript });
+  const mouth = await withMail(hs);
+  assert.equal(await reportRead(mouth, A, "$a1"), null);
+  assert.deepEqual(receiptsOf(hs), [[A, "$a1", `Bearer ${TOKEN}`, {}]], "the reported event, not the newest in the room");
+  assert.equal(await reportRead(mouth, B, "$b1"), null);
   assert.deepEqual(receiptsOf(hs).slice(1), [[B, "$b1", `Bearer ${TOKEN}`, {}]]);
   assert.equal(hs.receipts().length, 2);
 });
 
-test("pending posts no receipt", async () => {
+test("a read report for an event the mouth never delivered, or in another room, posts nothing", async () => {
   const hs = await fakeHomeserver({ sync: receiptScript });
   const mouth = await withMail(hs);
-  for (const after of [0, 1, 2, 3]) mouth.pendingAfter(after);
-  await new Promise(r => setTimeout(r, 20));
+  assert.equal(await reportRead(mouth, A, "$made-up"), "UnknownEvent");
+  assert.equal(await reportRead(mouth, B, "$a1"), "RoomMismatch");
   assert.deepEqual(hs.receipts(), []);
 });
 
-test("a failed receipt leaves the ack whole", async () => {
-  const hs = await fakeHomeserver({ sync: receiptScript, failReceipts: true });
-  const lines = [];
-  const state = memoryState();
-  const mouth = await withMail(hs, { state, log: l => lines.push(l) });
-  const saves = [];
-  const save = state.save;
-  state.save = async v => { saves.push(v); return save(v); };
-  await mouth.ack(3);
-  await until(() => lines.some(l => l.includes("receipt in")));
-  assert.equal(mouth.pendingCount, 0);
-  assert.equal(state.box.value.nextBatch, "b1", "the cursor committed");
-  assert.ok(saves.length >= 1, "state.save called");
-  const failures = lines.filter(l => l.startsWith("receipt in "));
-  assert.equal(failures.length, 2, "one line per room, nothing retried");
-  assert.ok(failures.every(l => l.includes("not posted") && !l.includes(TOKEN)));
-  await new Promise(r => setTimeout(r, 20));
-  assert.equal(hs.receipts().length, 2, "no retry");
-});
-
-test("the ack does not wait for the receipt", async () => {
-  let release;
-  const hs = await fakeHomeserver({ sync: receiptScript, deferReceipts: new Promise(r => { release = r; }) });
-  const mouth = await withMail(hs);
-  const outcome = await Promise.race([mouth.ack(3).then(() => "acked"), new Promise(r => setTimeout(() => r("waited on the receipt"), 500))]);
-  assert.equal(outcome, "acked", "the ack resolves while the receipt response is held open");
-  assert.equal(mouth.pendingCount, 0);
-  release();
-  await until(() => hs.receipts().length >= 2);
-});
-
-test("presence follows the brake: online while released, offline and one PUT on the transition", async () => {
-  let open = true;
+test("a read report never moves her receipt backward or repeats it in a room", async () => {
   const hs = await fakeHomeserver({ sync: receiptScript });
-  const mouth = mouthFor(hs, { brake: async () => open });
-  const syncs = () => hs.seen.filter(r => r.path.endsWith("/sync")).map(r => r.query.get("set_presence"));
-  await mouth.syncOnce(); await mouth.syncOnce();
-  assert.deepEqual(syncs(), ["online", "online"]);
-  assert.equal(hs.presencePuts().length, 0, "released: no PUT");
-  open = false;
-  await mouth.syncOnce(); await mouth.syncOnce(); await mouth.syncOnce();
-  assert.deepEqual(syncs().slice(2), ["offline", "offline", "offline"]);
-  assert.deepEqual(hs.presencePuts().map(r => [r.path, r.body]), [[`/_matrix/client/v3/presence/${SELF}/status`, { presence: "offline" }]], "exactly one PUT");
-  assert.equal(hs.presencePuts()[0].rawPath, `/_matrix/client/v3/presence/${encodeURIComponent(SELF)}/status`, "the user id is percent-encoded on the wire");
+  const mouth = await withMail(hs);
+  assert.equal(await reportRead(mouth, A, "$a2"), null);
+  assert.equal(await reportRead(mouth, A, "$a1"), "Behind");
+  assert.equal(await reportRead(mouth, A, "$a2"), "Behind");
+  assert.equal(hs.receipts().length, 1);
+});
+
+test("a read report posts nothing while braked, and nothing is queued for the release", async () => {
+  let open = false;
+  const hs = await fakeHomeserver({ sync: receiptScript });
+  const lines = [];
+  const mouth = await withMail(hs, { brake: async () => open, log: l => lines.push(l) });
+  assert.equal(await reportRead(mouth, A, "$a1"), "Brake");
+  assert.ok(lines.some(l => l.includes("receipt not posted: brake held")));
   open = true;
   await mouth.syncOnce();
-  assert.equal(syncs().at(-1), "online");
-  open = false;
+  await new Promise(r => setTimeout(r, 20));
+  assert.deepEqual(hs.receipts(), []);
+  assert.equal(await reportRead(mouth, A, "$a1"), null, "a fresh report after the release posts");
+});
+
+test("a read report names her persona: another persona's report posts nothing", async () => {
+  const hs = await fakeHomeserver({ sync: receiptScript });
+  const mouth = await withMail(hs);
+  assert.equal(await reportRead(mouth, A, "$a1", "someone-else"), "PersonaMismatch");
+  assert.deepEqual(hs.receipts(), []);
+});
+
+test("the receipt goes to the delivered room id, not to the alias the report named", async () => {
+  const hs = await fakeHomeserver({ sync: receiptScript });
+  const mouth = await withMail(hs);
+  assert.equal(await reportRead(mouth, `#swarm:${HS_NAME}`, "$a1"), null);
+  assert.deepEqual(receiptsOf(hs), [[A, "$a1", `Bearer ${TOKEN}`, {}]]);
+});
+
+test("concurrent reports for one room are judged in arrival order: the newer lands and the older is behind", async () => {
+  const hs = await fakeHomeserver({ sync: receiptScript });
+  const mouth = await withMail(hs);
+  const [newer, older] = await Promise.all([reportRead(mouth, A, "$a2"), reportRead(mouth, A, "$a1")]);
+  assert.deepEqual([newer, older], [null, "Behind"]);
+  assert.deepEqual(receiptsOf(hs).map(r => r[1]), ["$a2"], "never a1 after a2");
+  const [first, second] = await Promise.all([reportRead(mouth, B, "$b1"), reportRead(mouth, B, "$b1")]);
+  assert.deepEqual([first, second], [null, "Behind"], "the same event twice posts once");
+});
+
+test("a failed receipt leaves the last landed receipt in place: an older event is still behind", async () => {
+  let receiptCalls = 0;
+  const hs = await fakeHomeserver({ sync: receiptScript });
+  const fetch = (url, init) => String(url).includes("/receipt/") && ++receiptCalls === 2 ? Promise.resolve(new Response("{}", { status: 500 })) : hs.fetch(url, init);
+  const mouth = await withMail(hs, { fetch });
+  assert.equal(await reportRead(mouth, A, "$a1"), null);
+  assert.equal(await reportRead(mouth, A, "$a2"), "Failed");
+  assert.equal(await reportRead(mouth, A, "$a1"), "Behind", "a1 landed; the failure of a2 does not reopen the room to a backward post");
+  assert.equal(await reportRead(mouth, A, "$a2"), null, "a2 itself can still land");
+  assert.deepEqual(receiptsOf(hs).map(r => r[1]), ["$a1", "$a2"]);
+});
+
+test("a brake placed after the first brake read stops the receipt and no present state is PUT while braked", async () => {
+  let used = 0, allowed = Infinity;
+  const hs = await fakeHomeserver({ sync: receiptScript });
+  const mouth = await withMail(hs, { brake: async () => used++ < allowed });
+  used = 0; allowed = 1; // read() sees it released once; every read after that finds it held
+  assert.equal(await reportRead(mouth, A, "$a1"), "Brake");
+  assert.deepEqual(hs.receipts(), [], "the receipt re-reads the brake after the presence write");
+  assert.ok(!presencesOf(hs).includes("online"), "online is never PUT on a stale brake read");
+  assert.equal(presencesOf(hs).at(-1), "offline");
+});
+test("a slow presence write after a send holds no other send in the room", async () => {
+  const hs = await fakeHomeserver({ sync: receiptScript });
+  const fetch = (url, init) => String(url).includes("/presence/") && init?.method === "PUT"
+    ? new Promise((_, reject) => init.signal.addEventListener("abort", () => reject(new Error("aborted")))) : hs.fetch(url, init);
+  const mouth = await withMail(hs, { fetch, sendTimeoutMs: 400 });
+  const send = id => mouth.send({ requestId: id, persona: "eureka", roomAlias: `#swarm:${HS_NAME}`, text: id });
+  void send("s1"); // its presence write hangs
+  const second = await Promise.race([send("s2").then(r => r.refusal), new Promise(r => setTimeout(() => r("held behind the first send's presence write"), 150))]);
+  assert.equal(second, null);
+});
+
+test("the grace ends exactly at its boundary: one millisecond inside is online, the boundary is unavailable", async () => {
+  let t = 9_000_000;
+  const hs = await fakeHomeserver({ sync: receiptScript });
+  const mouth = await withMail(hs, { now: () => t, presenceGraceMs: 60_000 });
+  await mouth.ack(3); // touched at t
+  t += 59_999;
   await mouth.syncOnce();
-  assert.equal(hs.presencePuts().length, 2, "a second transition PUTs once more");
+  assert.equal(syncsOf(hs).at(-1), "online");
+  t += 1;
+  await mouth.syncOnce();
+  assert.equal(syncsOf(hs).at(-1), "unavailable");
+});
+
+test("the state a poll carries is fixed before the poll: a grace that passes while it is open is PUT next round", async () => {
+  let t = 3_000_000;
+  const hs = await fakeHomeserver({ sync: receiptScript });
+  const fetch = async (url, init) => { const res = await hs.fetch(url, init); if (String(url).includes("/sync")) t += 100_000; return res; };
+  const mouth = mouthFor(hs, { now: () => t, presenceGraceMs: 60_000, fetch });
+  await mouth.ack(0); // a turn: online
+  await mouth.syncOnce();
+  assert.equal(syncsOf(hs).at(-1), "online");
+  await mouth.syncOnce();
+  assert.deepEqual(presencesOf(hs), ["online", "unavailable"], "the homeserver was told online by the poll; the next round must tell it unavailable");
+});
+
+test("a failed receipt is logged once, not retried, and the next report for the room posts", async () => {
+  const hs = await fakeHomeserver({ sync: receiptScript, failReceipts: true });
+  const lines = [];
+  const mouth = await withMail(hs, { log: l => lines.push(l) });
+  assert.equal(await reportRead(mouth, A, "$a1"), "Failed");
+  const failures = lines.filter(l => l.startsWith("receipt in "));
+  assert.equal(failures.length, 1);
+  assert.ok(failures[0].includes("not posted") && !failures[0].includes(TOKEN));
+  await new Promise(r => setTimeout(r, 20));
+  assert.equal(hs.receipts().length, 1, "no retry");
+  assert.equal(await reportRead(mouth, A, "$a1"), "Failed", "the claim was released: the room is not stuck behind a failed post");
+});
+
+test("a receipt that never answers is abandoned after sendTimeoutMs", async () => {
+  const hs = await fakeHomeserver({ sync: receiptScript, deferReceipts: new Promise(() => {}) });
+  const lines = [];
+  const mouth = await withMail(hs, { sendTimeoutMs: 40, log: l => lines.push(l) });
+  assert.equal(await reportRead(mouth, A, "$a1"), "Failed");
+  assert.ok(lines.some(l => l.startsWith("receipt in ") && l.includes("not posted")));
+  assert.equal(await reportRead(mouth, B, "$b1"), "Failed", "the next room's receipt went out after the first was abandoned");
+  assert.equal(hs.receipts().length, 2);
+});
+
+test("a throwing logger on a failed receipt causes no unhandled rejection", async () => {
+  const hs = await fakeHomeserver({ sync: receiptScript, failReceipts: true });
+  const mouth = await withMail(hs, { log: () => { throw new Error("logger down"); } });
+  const rejected = [];
+  const note = e => rejected.push(e);
+  process.on("unhandledRejection", note);
+  try {
+    await reportRead(mouth, A, "$a1").catch(() => {});
+    await new Promise(r => setTimeout(r, 50));
+  } finally { process.off("unhandledRejection", note); }
+  assert.deepEqual(rejected, []);
+});
+
+test("the receipt path is percent-encoded on the wire", async () => {
+  const ROOM = "!od d/room:gamecult.test", EVENT = "$ev/with+odd:chars";
+  const hs = await fakeHomeserver({ sync: since => since === null ? { next_batch: "b0" } : { next_batch: "b1", account_data: { events: [{ type: "m.direct", content: { [`@meta:${HS_NAME}`]: [ROOM] } }] }, ...joined({ [ROOM]: { timeline: { events: [message(EVENT, `@meta:${HS_NAME}`, "x", 9)] } } }) } });
+  const mouth = mouthFor(hs);
+  await mouth.syncOnce(); await mouth.syncOnce();
+  assert.equal(await reportRead(mouth, ROOM, EVENT), null);
+  assert.equal(hs.receipts()[0].rawPath, `/_matrix/client/v3/rooms/${encodeURIComponent(ROOM)}/receipt/m.read/${encodeURIComponent(EVENT)}`);
+});
+
+test("presence: unavailable while released and idle, online through a turn, unavailable after the grace", async () => {
+  let t = 1_000_000;
+  const hs = await fakeHomeserver({ sync: receiptScript });
+  const mouth = await withMail(hs, { now: () => t, presenceGraceMs: 60_000 });
+  assert.deepEqual(syncsOf(hs), ["unavailable", "unavailable"], "mail alone does not make her present");
+  assert.deepEqual(presencesOf(hs), ["unavailable"], "one PUT, not one per round");
+  await reportRead(mouth, A, "$a1");
+  assert.deepEqual(presencesOf(hs), ["unavailable", "online"], "the report puts her online at once, not at the next poll");
+  t += 59_000;
+  await mouth.syncOnce();
+  assert.equal(syncsOf(hs).at(-1), "online", "inside the grace");
+  t += 2_000;
+  await mouth.syncOnce();
+  assert.equal(syncsOf(hs).at(-1), "unavailable", "past the grace");
+  assert.deepEqual(presencesOf(hs), ["unavailable", "online", "unavailable"]);
+});
+
+test("a send or an ack within the grace keeps her online", async () => {
+  let t = 5_000_000;
+  const hs = await fakeHomeserver({ sync: receiptScript });
+  const mouth = await withMail(hs, { now: () => t, presenceGraceMs: 60_000 });
+  await mouth.ack(3);
+  await mouth.syncOnce();
+  assert.equal(syncsOf(hs).at(-1), "online", "an ack is a sign of a turn");
+  t += 61_000;
+  await mouth.syncOnce();
+  assert.equal(syncsOf(hs).at(-1), "unavailable");
+  const sent = await mouth.send({ requestId: "p1", persona: "eureka", roomAlias: `#swarm:${HS_NAME}`, text: "hi" });
+  assert.equal(sent.refusal, null);
+  await mouth.syncOnce();
+  assert.equal(syncsOf(hs).at(-1), "online", "a send is a sign of a turn");
+});
+
+test("presence under the brake is offline whatever the turn: one PUT on the transition, and a report cannot lift it", async () => {
+  let open = true;
+  const hs = await fakeHomeserver({ sync: receiptScript });
+  const mouth = await withMail(hs, { brake: async () => open });
+  await reportRead(mouth, A, "$a1");
+  await mouth.syncOnce();
+  assert.equal(syncsOf(hs).at(-1), "online");
+  open = false;
+  await mouth.syncOnce(); await mouth.syncOnce(); await mouth.syncOnce();
+  assert.deepEqual(syncsOf(hs).slice(-3), ["offline", "offline", "offline"]);
+  assert.equal(presencesOf(hs).at(-1), "offline");
+  assert.equal(presencesOf(hs).filter(p => p === "offline").length, 1, "exactly one offline PUT");
+  assert.equal(hs.presencePuts().at(-1).rawPath, `/_matrix/client/v3/presence/${encodeURIComponent(SELF)}/status`, "the user id is percent-encoded on the wire");
+  assert.equal(await reportRead(mouth, B, "$b1"), "Brake");
+  await mouth.syncOnce();
+  assert.equal(syncsOf(hs).at(-1), "offline");
+  open = true;
+  await mouth.syncOnce();
+  assert.equal(syncsOf(hs).at(-1), "online", "still inside the grace of the earlier report");
 });
 
 test("the first braked round of a fresh mouth PUTs offline once; a failed PUT is tried again next round", async () => {
@@ -1063,15 +1226,14 @@ test("two Personas on one homeserver: receipts and presence carry only her own b
   const a = await withMail(hs, { persona: "pa", token: "tokA" });
   let bOpen = false;
   const b = await withMail(hs, { persona: "pb", token: "tokB", brake: async () => bOpen });
-  await a.ack(3);
-  await b.syncOnce();
-  await until(() => hs.receipts().length >= 2);
-  assert.ok(hs.receipts().every(r => r.auth === "Bearer tokA"), "only A acked");
+  await reportRead(a, A, "$a1", "pa");
+  assert.equal(await reportRead(b, A, "$a1", "pb"), "Brake");
+  assert.ok(hs.receipts().every(r => r.auth === "Bearer tokA"), "only A read");
   bOpen = true; // her receipts go out only while released
-  await b.ack(3);
-  await until(() => hs.receipts().length >= 4);
+  assert.equal(await reportRead(b, A, "$a1", "pb"), null);
   assert.deepEqual([...new Set(hs.receipts().map(r => r.auth))].sort(), ["Bearer tokA", "Bearer tokB"]);
-  assert.ok(hs.presencePuts().length >= 1 && hs.presencePuts().every(r => r.path.endsWith(`/presence/${BOB}/status`) && r.auth === "Bearer tokB"));
+  assert.ok(hs.presencePuts().some(r => r.path.endsWith(`/presence/${BOB}/status`) && r.auth === "Bearer tokB"));
+  assert.ok(hs.presencePuts().filter(r => r.path.endsWith(`/presence/${BOB}/status`)).every(r => r.auth === "Bearer tokB"));
 });
 
 // ---- review fixes ------------------------------------------------------------------
@@ -1087,59 +1249,6 @@ test("a brake placed during the long-poll stops the join the poll's invite asks 
   assert.equal(hs.seen.filter(r => r.path.endsWith("/account_data/m.direct") && r.method === "PUT").length, 0, "no m.direct write");
 });
 
-test("no m.read receipt while braked: the ack proceeds, nothing is queued", async () => {
-  let open = true;
-  const hs = await fakeHomeserver({ sync: receiptScript });
-  const lines = [];
-  const state = memoryState();
-  const mouth = await withMail(hs, { brake: async () => open, state, log: l => lines.push(l) });
-  open = false;
-  await mouth.ack(3);
-  await until(() => lines.some(l => l.includes("receipts not posted")));
-  assert.equal(mouth.pendingCount, 0);
-  assert.equal(state.box.value.nextBatch, "b1", "the cursor committed");
-  assert.equal(lines.filter(l => l.includes("receipts not posted")).length, 1, "one line");
-  open = true;
-  await mouth.syncOnce();
-  await new Promise(r => setTimeout(r, 20));
-  assert.deepEqual(hs.receipts(), [], "released again: nothing deferred is posted");
-});
-
-test("the receipt path is percent-encoded on the wire", async () => {
-  const ROOM = "!od d/room:gamecult.test", EVENT = "$ev/with+odd:chars";
-  const hs = await fakeHomeserver({ sync: since => since === null ? { next_batch: "b0" } : { next_batch: "b1", account_data: { events: [{ type: "m.direct", content: { [`@meta:${HS_NAME}`]: [ROOM] } }] }, ...joined({ [ROOM]: { timeline: { events: [message(EVENT, `@meta:${HS_NAME}`, "x", 9)] } } }) } });
-  const mouth = mouthFor(hs);
-  await mouth.syncOnce(); await mouth.syncOnce();
-  await mouth.ack(1);
-  await until(() => hs.receipts().length >= 1);
-  assert.equal(hs.receipts()[0].rawPath, `/_matrix/client/v3/rooms/${encodeURIComponent(ROOM)}/receipt/m.read/${encodeURIComponent(EVENT)}`);
-});
-
-test("a receipt that never answers is abandoned after sendTimeoutMs", async () => {
-  const hs = await fakeHomeserver({ sync: receiptScript, deferReceipts: new Promise(() => {}) });
-  const lines = [];
-  const mouth = await withMail(hs, { sendTimeoutMs: 40, log: l => lines.push(l) });
-  await mouth.ack(3);
-  await until(() => lines.length >= 1);
-  await new Promise(r => setTimeout(r, 150));
-  assert.ok(lines.some(l => l.startsWith("receipt in ") && l.includes("not posted")), "abandoned and logged");
-  assert.equal(hs.receipts().length, 2, "the next room's receipt went out after the first was abandoned");
-});
-
-test("a throwing logger on a failed receipt causes no unhandled rejection", async () => {
-  const hs = await fakeHomeserver({ sync: receiptScript, failReceipts: true });
-  const mouth = await withMail(hs, { log: () => { throw new Error("logger down"); } });
-  const rejected = [];
-  const note = e => rejected.push(e);
-  process.on("unhandledRejection", note);
-  try {
-    await mouth.ack(3);
-    await until(() => hs.receipts().length >= 2);
-    await new Promise(r => setTimeout(r, 50));
-  } finally { process.off("unhandledRejection", note); }
-  assert.deepEqual(rejected, []);
-});
-
 test("a full backlog still sets presence from the brake", async () => {
   let open = true;
   const hs = await fakeHomeserver({ sync: receiptScript });
@@ -1150,7 +1259,7 @@ test("a full backlog still sets presence from the brake", async () => {
   open = false;
   assert.deepEqual(await mouth.syncOnce(), [], "backlog full: no /sync");
   assert.equal(hs.seen.filter(r => r.path.endsWith("/sync")).length, syncsBefore);
-  assert.deepEqual(hs.presencePuts().map(r => r.body), [{ presence: "offline" }]);
+  assert.deepEqual(hs.presencePuts().map(r => r.body), [{ presence: "unavailable" }, { presence: "offline" }]);
 });
 
 test("a brake placed during the first of two joins stops the second join and its m.direct write", async () => {
@@ -1166,4 +1275,686 @@ test("a brake placed during the first of two joins stops the second join and its
   open = true;
   await mouth.syncOnce();
   assert.deepEqual(joinsOf(hs), [DMROOM, DM2], "the second waits for the release");
+});
+
+test("chat_read round-trips and refuses a malformed tuple", () => {
+  const tuple = docs.readTuple({ persona: "eureka", roomAlias: "#swarm:gamecult.test", eventId: "$e1", atUnixMs: 12 });
+  assert.deepEqual(tuple, ["eureka", "#swarm:gamecult.test", "$e1", 12]);
+  assert.deepEqual(docs.parseRead(tuple), { persona: "eureka", roomAlias: "#swarm:gamecult.test", eventId: "$e1", atUnixMs: 12 });
+  assert.throws(() => docs.parseRead(["eureka", "#r", "", 1]), /event_id/);
+  assert.throws(() => docs.parseRead(["eureka", "#r", "$e", -1]), /at_unix_ms/);
+  assert.throws(() => docs.parseRead(["eureka", "#r", "$e"]));
+});
+
+test("a read report that throws does not wedge the room: the next report still posts and nothing is left unhandled", async () => {
+  const hs = await fakeHomeserver({ sync: receiptScript });
+  let boom = false;
+  const fetch = (url, init) => boom && String(url).includes("/presence/") ? Promise.reject(new Error("net")) : hs.fetch(url, init);
+  const mouth = await withMail(hs, { fetch, log: line => { if (boom && line.startsWith("presence not set")) throw new Error("logger down"); } }); // the presence failure and a throwing logger make run() reject
+  const unhandled = [], note = error => unhandled.push(String(error));
+  process.on("unhandledRejection", note);
+  try {
+    boom = true;
+    await assert.rejects(reportRead(mouth, A, "$a1"), /logger down/);
+    boom = false;
+    assert.equal(await reportRead(mouth, A, "$a2"), null, "the room's next report is judged and posted");
+    await new Promise(resolve => setTimeout(resolve, 50));
+  } finally { process.off("unhandledRejection", note); }
+  assert.deepEqual(unhandled, [], "no rejection escapes the tail's cleanup");
+  assert.equal(hs.receipts().length, 1);
+});
+
+// Addressing facts (docs/bridge.md, "Addressing facts"): why a delivery is for this Persona, as the heartbeat reads it.
+// Each case is one message as a room member sends it, with the basis and form the mouth hands the consumer.
+const META = `@meta:${HS_NAME}`;
+const withContent = (id, sender, content, ts = 3000) => ({ type: "m.room.message", event_id: id, sender, origin_server_ts: ts, content: { msgtype: "m.text", ...content } });
+async function deliver(events, { persona = {}, preload } = {}) {
+  const hs = await fakeHomeserver({
+    preload,
+    sync: since => since === null ? { next_batch: "b0" } : { next_batch: "b1", ...joined({ [ROOM]: { timeline: { events } } }) },
+  });
+  try {
+    const mouth = mouthFor(hs, persona);
+    await mouth.syncOnce();
+    return { made: await mouth.syncOnce(), hs, mouth };
+  } finally { await hs.close(); }
+}
+const facts = made => made.map(d => [d.eventId, d.basis, d.form]);
+
+test("addressing facts: the operator speaking untagged proves nothing, tagged proves a tag, and the tag outranks @room", async () => {
+  const { made } = await deliver([
+    withContent("$plain", META, { body: "everyone, status?" }),
+    withContent("$tag", META, { body: "eureka, status?", "m.mentions": { user_ids: [SELF] } }),
+    withContent("$both", META, { body: "all hands", "m.mentions": { user_ids: [SELF], room: true } }),
+    withContent("$room", META, { body: "@room standup", "m.mentions": { room: true } }),
+  ]);
+  assert.deepEqual(facts(made), [["$plain", null, "message"], ["$tag", "tag", "message"], ["$both", "tag", "message"], ["$room", "room", "message"]]);
+});
+
+test("addressing facts: a tag of another Mind is no basis for this one, and is one for that one", async () => {
+  const hs = await fakeHomeserver({
+    users: { [TOKEN]: SELF, [TOKEN_NOVA]: NOVA },
+    sync: since => since === null ? { next_batch: "b0", ...joined({ [ROOM]: { timeline: { events: [] } } }) } : { next_batch: "b1", ...joined({ [ROOM]: { timeline: { events: [withContent("$n", META, { body: "nova?", "m.mentions": { user_ids: [NOVA] } })] } } }) },
+  });
+  try {
+    const eureka = mouthFor(hs);
+    const nova = mouthFor(hs, { persona: "nova", token: TOKEN_NOVA });
+    for (const m of [eureka, nova]) await m.syncOnce();
+    assert.deepEqual([facts(await eureka.syncOnce()), facts(await nova.syncOnce())], [[["$n", null, "message"]], [["$n", "tag", "message"]]]);
+  } finally { await hs.close(); }
+});
+
+test("addressing facts: a name in the text is not a basis; the mouth does not know names, so every casing and alias reaches the heartbeat with null", async () => {
+  const bodies = ["Eureka, look", "EUREKA", "eureka's PR", "@eureka:gamecult.test please", "Bifrost needs a look"];
+  const { made } = await deliver(bodies.map((body, i) => withContent(`$n${i}`, META, { body })));
+  assert.deepEqual(made.map(d => d.basis), [null, null, null, null, null]);
+  assert.deepEqual(made.map(d => d.text), bodies, "the text is delivered whole for the heartbeat's own name match");
+});
+
+test("addressing facts: a DM is direct whatever it says or carries, a notice in it included", async () => {
+  const DM = "!dm:gamecult.test";
+  const hs = await fakeHomeserver({
+    direct: { [META]: [DM] },
+    sync: since => since === null ? { next_batch: "b0" } : { next_batch: "b1", ...joined({ [DM]: { timeline: { events: [withContent("$dm", META, { body: "hi" }), withContent("$dmn", META, { msgtype: "m.notice", body: "automated" })] } } }) },
+  });
+  try {
+    const mouth = mouthFor(hs);
+    await mouth.syncOnce();
+    assert.deepEqual(facts(await mouth.syncOnce()), [["$dm", "direct", "message"], ["$dmn", "direct", "notice"]]);
+  } finally { await hs.close(); }
+});
+
+test("addressing facts: a notice that tags her carries the tag and the notice form, so the consumer can refuse to wake on it", async () => {
+  const { made } = await deliver([withContent("$w", `@root-watch:${HS_NAME}`, { msgtype: "m.notice", body: "disk 91%", "m.mentions": { user_ids: [SELF] } })]);
+  assert.deepEqual(facts(made), [["$w", "tag", "notice"]]);
+});
+
+test("addressing facts: an edit is its own form and is never read as a new message", async () => {
+  const { made } = await deliver([withContent("$e", META, { body: "* fixed", "m.new_content": { msgtype: "m.text", body: "fixed" }, "m.relates_to": { rel_type: "m.replace", event_id: "$orig" } })]);
+  assert.deepEqual(facts(made), [["$e", null, "edit"]]);
+});
+
+test("addressing facts: a reply to her own words is a reply, in a room and in a thread, and her Self run's words are hers", async () => {
+  const mine = withContent("$mine", SELF, { body: "my earlier say" }, 1000);
+  const theirs = withContent("$theirs", `@nibu:${HS_NAME}`, { body: "someone else's" }, 1001);
+  const reply = to => ({ "m.relates_to": { "m.in_reply_to": { event_id: to } } });
+  const thread = (root, fallback) => ({ "m.relates_to": { rel_type: "m.thread", event_id: root, "m.in_reply_to": { event_id: fallback }, is_falling_back: true } });
+  const { made } = await deliver([
+    withContent("$r1", META, { body: "yes", ...reply("$mine") }),
+    withContent("$r2", META, { body: "no", ...reply("$theirs") }),
+    withContent("$r3", META, { body: "in thread under mine", ...thread("$mine", "$theirs") }),
+    withContent("$r4", META, { body: "in thread under theirs", ...thread("$theirs", "$theirs") }),
+    withContent("$r5", META, { body: "reply, and tagged", ...reply("$mine"), "m.mentions": { user_ids: [SELF] } }),
+  ], { preload: { [ROOM]: [mine, theirs] } });
+  assert.deepEqual(facts(made), [["$r1", "reply", "message"], ["$r2", null, "message"], ["$r3", "reply", "message"], ["$r4", null, "message"], ["$r5", "tag", "message"]]);
+});
+
+test("addressing facts: a reply target the homeserver will not give is null and logged without the token, never a guess", async () => {
+  const logs = [];
+  const { made } = await deliver([withContent("$r", META, { body: "re", "m.relates_to": { "m.in_reply_to": { event_id: "$gone" } } })], { persona: { log: l => logs.push(l) } });
+  assert.deepEqual(facts(made), [["$r", null, "message"]]);
+  assert.ok(logs.some(l => l.includes("reply target $gone not read")) && logs.every(l => !l.includes(TOKEN)));
+});
+
+test("addressing facts: a client that sends no m.mentions is a tag when its body links her matrix.to pill; one that sends m.mentions without her is not", async () => {
+  const pill = id => `<a href="https://matrix.to/#/${id}">Eureka</a>: look`;
+  const { made } = await deliver([
+    withContent("$p1", META, { body: "Eureka: look", format: "org.matrix.custom.html", formatted_body: pill(SELF) }),
+    withContent("$p2", META, { body: "Eureka: look", format: "org.matrix.custom.html", formatted_body: pill(encodeURIComponent(SELF)) }),
+    withContent("$p3", META, { body: "Nova: look", format: "org.matrix.custom.html", formatted_body: pill(NOVA) }),
+    withContent("$p4", META, { body: "Eureka: look", format: "org.matrix.custom.html", formatted_body: pill(SELF), "m.mentions": {} }),
+  ]);
+  assert.deepEqual(made.map(d => d.basis), ["tag", "tag", null, null]);
+});
+
+test("addressing facts: her own messages are no delivery at all, so no basis can wake her on her own words", async () => {
+  const { made } = await deliver([withContent("$self", SELF, { body: "my own", "m.mentions": { user_ids: [SELF] } })]);
+  assert.deepEqual(made, []);
+});
+
+test("addressing facts: the v3 answer carries basis and form; the v2 answer a v1 request gets is the unchanged 12 fields", async () => {
+  const { made } = await deliver([withContent("$t", META, { body: "x", "m.mentions": { user_ids: [SELF] } })]);
+  const pack = { encode: v => Buffer.from(JSON.stringify(v)) };
+  assert.equal(docs.parsePendingV3(pageOf("eureka", made, pack, () => {}, true)).deliveries[0].basis, "tag");
+  const v2 = pageOf("eureka", made, pack);
+  assert.equal(v2[1][0].length, 12);
+  assert.equal(docs.parsePending(v2).deliveries[0].basis, undefined);
+  assert.throws(() => docs.parseDeliveryV3([...docs.deliveryTuple(made[0]), "tag", "poem"]), /unknown delivery form/);
+  assert.throws(() => docs.parseDeliveryV3([...docs.deliveryTuple(made[0]), "everyone", "message"]), /unknown delivery basis/);
+  assert.throws(() => docs.parseDeliveryV3(docs.deliveryTuple(made[0])), /14-field/);
+});
+
+test("addressing facts: a hit read for a reply in one room is not lent to a reply in another room, and a target the server places elsewhere is null", async () => {
+  const mine = { ...withContent("$mine", SELF, { body: "mine" }, 1000), room_id: ROOM };
+  const reply = id => withContent(id, META, { body: "re", "m.relates_to": { "m.in_reply_to": { event_id: "$mine" } } });
+  const hs = await fakeHomeserver({
+    preload: { [ROOM]: [mine], "!operator:gamecult.test": [{ ...mine, room_id: "!elsewhere:gamecult.test" }] },
+    sync: since => since === null ? { next_batch: "b0" } : { next_batch: "b1", ...joined({ [ROOM]: { timeline: { events: [reply("$prime")] } }, "!operator:gamecult.test": { timeline: { events: [reply("$spoof")] } } }) },
+  });
+  try {
+    const mouth = mouthFor(hs);
+    await mouth.syncOnce();
+    assert.deepEqual(facts(await mouth.syncOnce()), [["$prime", "reply", "message"], ["$spoof", null, "message"]]);
+  } finally { await hs.close(); }
+});
+
+test("addressing facts: a pill is her exact matrix.to anchor: a longer id, a non-link attribute and a quoted reply are no tag", async () => {
+  const html = h => ({ body: "x", format: "org.matrix.custom.html", formatted_body: h });
+  const { made } = await deliver([
+    withContent("$a", META, html(`<a href="https://matrix.to/#/${SELF}.evil.org">x</a>`)),
+    withContent("$b", META, html(`<span data-x="https://matrix.to/#/${SELF}">x</span>`)),
+    withContent("$c", META, html(`<a class="x" href='https://matrix.to/#/${SELF}'>Eureka</a>`)),
+    withContent("$d", META, html(`<mx-reply><blockquote><a href="https://matrix.to/#/${SELF}">her</a> said</blockquote></mx-reply>ok`)),
+  ]);
+  assert.deepEqual(made.map(d => d.basis), [null, null, "tag", null]);
+});
+
+test("addressing facts: an edit or a notice replying to her costs no target fetch", async () => {
+  const to = id => ({ "m.relates_to": { "m.in_reply_to": { event_id: id } } });
+  const { made, hs } = await deliver([
+    withContent("$n", META, { msgtype: "m.notice", body: "n", ...to("$noticed") }),
+    withContent("$e", META, { body: "* e", "m.relates_to": { rel_type: "m.replace", event_id: "$orig", "m.in_reply_to": { event_id: "$edited" } } }),
+  ]);
+  assert.deepEqual(facts(made), [["$n", null, "notice"], ["$e", null, "edit"]]);
+  assert.equal(hs.seen.filter(r => r.path.includes("/event/")).length, 0);
+});
+
+test("addressing facts: a target that failed is not refetched within a minute, and is after it", async () => {
+  let t = 1_000_000;
+  const rel = { "m.relates_to": { "m.in_reply_to": { event_id: "$gone" } } };
+  const round = id => joined({ [ROOM]: { timeline: { events: [withContent(id, META, { body: id, ...rel })] } } });
+  const script = { null: { next_batch: "b0" }, b0: { next_batch: "b1", ...round("$r1") }, b1: { next_batch: "b2", ...round("$r2") }, b2: { next_batch: "b3", ...round("$r3") } };
+  const hs = await fakeHomeserver({ sync: since => script[since] ?? { next_batch: since } });
+  const fetched = () => hs.seen.filter(r => r.path.includes("/event/")).length;
+  try {
+    const mouth = mouthFor(hs, { now: () => t });
+    await mouth.syncOnce(); await mouth.syncOnce();
+    t += 59_000; await mouth.syncOnce();
+    assert.equal(fetched(), 1, "inside the minute: not refetched");
+    t += 2_000; await mouth.syncOnce();
+    assert.equal(fetched(), 2, "past the minute: read again");
+  } finally { await hs.close(); }
+});
+
+// The room tail (docs/bridge.md, "Room tail"): her rooms' recent talk past her ack cursor, bounded, as data on the v3 answer.
+const OPERATOR = "!operator:gamecult.test";
+const lines = (room, n, from = 0, sender = META) => Array.from({ length: n }, (_, i) => message(`$${room.slice(1, 4)}${from + i}`, sender, `line ${from + i}`, 10 + from + i));
+async function tailed({ preload, direct, member, events = [], act = async () => {} } = {}) {
+  const hs = await fakeHomeserver({ preload, direct, member, sync: since => since === null ? { next_batch: "b0" } : { next_batch: "b1", ...joined(events.length ? { [ROOM]: { timeline: { events } } } : {}) } });
+  try {
+    const mouth = mouthFor(hs);
+    await mouth.syncOnce();
+    await act(mouth);
+    const read = await mouth.tail();
+    return { tail: read.lines, gaps: read.gaps, rooms: read.rooms, mouth, hs };
+  } finally { await hs.close(); }
+}
+
+test("room tail: 600 lines in a room keep the newest 20, oldest first", async () => {
+  const { tail } = await tailed({ preload: { [ROOM]: lines(ROOM, 600) } });
+  assert.equal(tail.length, 20);
+  assert.deepEqual(tail.map(l => l.text), Array.from({ length: 20 }, (_, i) => `line ${580 + i}`));
+  assert.deepEqual(Object.keys(tail[0]).sort(), ["atUnixMs", "basis", "eventId", "form", "roomAlias", "sender", "text"]);
+  assert.equal(tail[0].roomAlias, `#swarm:${HS_NAME}`);
+  assert.equal(tail[0].sender, META);
+  assert.equal(tail[0].form, "message");
+  assert.equal(tail[0].basis, null, "unproven, not 'not for her'");
+});
+
+test("room tail: a quiet room, with nothing delivered, still returns its recent lines", async () => {
+  const { tail } = await tailed({ preload: { [OPERATOR]: lines(OPERATOR, 3) } });
+  assert.deepEqual(tail.map(l => l.text), ["line 0", "line 1", "line 2"]);
+  assert.ok(tail.every(l => l.roomAlias === `#operator:${HS_NAME}`));
+});
+
+test("room tail: a room she is not in the speaking set of is absent, and a DM she holds is present with basis direct", async () => {
+  const STRANGER = "!stranger:gamecult.test", DM = "!mydm:gamecult.test";
+  const { tail } = await tailed({
+    preload: { [STRANGER]: lines(STRANGER, 2), [DM]: lines(DM, 2), [ROOM]: lines(ROOM, 1) },
+    member: [...Object.values(ROOMS), STRANGER, DM],
+    direct: { [META]: [DM] },
+  });
+  assert.deepEqual([...new Set(tail.map(l => l.roomAlias))].sort(), [DM, `#swarm:${HS_NAME}`]);
+  assert.ok(tail.filter(l => l.roomAlias === DM).every(l => l.basis === "direct"));
+  assert.ok(!tail.some(l => l.eventId.startsWith("$str")));
+});
+
+test("room tail: about 60 lines over all rooms, the newest, whatever the room count", async () => {
+  const dms = ["!d1:gamecult.test", "!d2:gamecult.test", "!d3:gamecult.test", "!d4:gamecult.test"];
+  const preload = { [ROOM]: lines(ROOM, 30, 0), [OPERATOR]: lines(OPERATOR, 30, 30) };
+  dms.forEach((dm, i) => { preload[dm] = lines(dm, 30, 60 + 30 * i); });
+  const { tail } = await tailed({ preload, direct: { [META]: dms }, member: [...Object.values(ROOMS), ...dms] });
+  assert.equal(tail.length, 60);
+  assert.deepEqual(tail.map(l => l.atUnixMs), tail.map(l => l.atUnixMs).sort((a, b) => a - b), "oldest first");
+  assert.equal(Math.min(...tail.map(l => l.atUnixMs)), 110, "the oldest kept is the 60th newest of the 120 offered");
+});
+
+test("room tail: acking a delivery does not hide it, so an unaddressed line she has acked is still found, and mention basis rides on the line", async () => {
+  const events = [
+    withContent("$a", META, { body: "first" }, 3000),
+    withContent("$b", META, { body: "tag", "m.mentions": { user_ids: [SELF] } }, 3001),
+  ];
+  const hs = await fakeHomeserver({ sync: since => since === null ? { next_batch: "b0" } : { next_batch: "b1", ...joined({ [ROOM]: { timeline: { events } } }) } });
+  try {
+    const mouth = mouthFor(hs);
+    await mouth.syncOnce();
+    const made = await mouth.syncOnce();
+    assert.deepEqual((await mouth.tail()).lines.map(l => [l.eventId, l.basis]), [["$a", null], ["$b", "tag"]]);
+    await mouth.ack(made[1].seq);
+    assert.equal(mouth.pendingAfter(0).length, 0);
+    assert.deepEqual((await mouth.tail()).lines.map(l => l.eventId), ["$a", "$b"], "acked lines are the ones no delivery will bring again");
+  } finally { await hs.close(); }
+});
+
+test("room tail: a room that never answers is absent after the timeout and does not hold the others", async () => {
+  const hs = await fakeHomeserver({ preload: { [OPERATOR]: lines(OPERATOR, 2) }, sync: since => ({ next_batch: since ?? "b0" }) });
+  const hang = (url, init) => String(url).includes(encodeURIComponent(ROOM)) && String(url).includes("/messages") ? new Promise(() => {}) : hs.fetch(url, init);
+  try {
+    const mouth = mouthFor(hs, { fetch: hang, sendTimeoutMs: 50 });
+    await mouth.syncOnce();
+    const read = await mouth.tail();
+    assert.deepEqual([...new Set(read.lines.map(l => l.roomAlias))], [`#operator:${HS_NAME}`]);
+    assert.deepEqual(read.gaps, [`#swarm:${HS_NAME}`], "the room that timed out is a gap; the one that answered is not");
+  } finally { await hs.close(); }
+});
+
+test("room tail: a mouth that has not started reads no room", async () => {
+  const hs = await fakeHomeserver({ preload: { [ROOM]: lines(ROOM, 2) }, sync: since => ({ next_batch: since ?? "b0" }) });
+  try {
+    assert.deepEqual(await mouthFor(hs).tail(), { lines: [], gaps: Object.keys(ROOMS), rooms: Object.keys(ROOMS) }, "no room is known before start, so every configured room is a gap");
+    assert.equal(hs.seen.filter(r => r.path.includes("/messages")).length, 0);
+  } finally { await hs.close(); }
+});
+
+test("room tail: a body is clipped like a context line, and an unreadable room is absent without silencing the others", async () => {
+  const { tail } = await tailed({ preload: { [ROOM]: [message("$big", META, "x".repeat(5000), 10)] } });
+  assert.equal(Buffer.byteLength(tail[0].text), docs.limits.contextBytes);
+  const hs = await fakeHomeserver({ failContext: true, sync: since => ({ next_batch: since ?? "b0" }) });
+  try {
+    const mouth = mouthFor(hs);
+    await mouth.syncOnce();
+    const read = await mouth.tail();
+    assert.deepEqual(read.lines, []);
+    assert.deepEqual(read.gaps, Object.keys(ROOMS).filter(a => read.rooms.includes(a)), "an unreadable room is a gap, not quiet");
+    assert.ok(read.gaps.length > 0);
+  } finally { await hs.close(); }
+});
+
+test("room tail: only the v3 answer carries it; the v2 answer a v1 request gets is unchanged", async () => {
+  const { tail, gaps, rooms } = await tailed({ preload: { [ROOM]: lines(ROOM, 2) } });
+  const pack = { encode: v => Buffer.from(JSON.stringify(v)) };
+  assert.deepEqual(docs.parsePendingV3(pageOf("eureka", [], pack, () => {}, true, { lines: tail, gaps, rooms })).tail.map(l => l.text), ["line 0", "line 1"]);
+  const v2 = pageOf("eureka", [], pack, () => {}, false, { lines: tail, gaps: rooms, rooms });
+  assert.equal(v2.length, 2);
+  assert.deepEqual(docs.parsePending(v2), { persona: "eureka", deliveries: [] });
+  assert.throws(() => docs.parsePendingV3(["eureka", []]), /4-field/);
+});
+
+test("room tail: the reply byte budget trims the oldest tail lines, never a delivery", async () => {
+  const pack = { encode: v => Buffer.from(JSON.stringify(v)) };
+  const big = Array.from({ length: 60 }, (_, i) => ({ roomAlias: "#r:x", eventId: `$${i}`, atUnixMs: i, sender: "@a:x", form: "message", basis: null, text: "y".repeat(5000) }));
+  const kept = docs.parsePendingV3(pageOf("eureka", [], pack, () => {}, true, { lines: big, gaps: [], rooms: ["#r:x"] })).tail;
+  assert.ok(kept.length > 0 && kept.length < 60);
+  assert.equal(kept.at(-1).eventId, "$59", "the newest survive");
+});
+
+// tail_gaps (docs/bridge.md, "Gaps in the tail"): the rooms whose lines are not all in the tail, so a reader says "unknown", not "quiet".
+// Each case goes through the composition the RUDP endpoint serves: mouth.tail() into pageOf into the strict v3 parser.
+const replied = (read, pack = { encode: v => Buffer.from(JSON.stringify(v)) }) => docs.parsePendingV3(pageOf("eureka", [], pack, () => {}, true, read));
+const SWARM_ALIAS = `#swarm:${HS_NAME}`, OPERATOR_ALIAS = `#operator:${HS_NAME}`;
+
+test("tail gaps: a room whose read times out is a gap; the room that answered, quiet or not, is not", async () => {
+  const hs = await fakeHomeserver({ preload: { [OPERATOR]: lines(OPERATOR, 2) }, sync: since => ({ next_batch: since ?? "b0" }) });
+  const hang = (url, init) => String(url).includes(encodeURIComponent(ROOM)) && String(url).includes("/messages") ? new Promise(() => {}) : hs.fetch(url, init);
+  try {
+    const mouth = mouthFor(hs, { fetch: hang, sendTimeoutMs: 50 });
+    await mouth.syncOnce();
+    const got = replied(await mouth.tail());
+    assert.deepEqual(got.tailGaps, [SWARM_ALIAS]);
+    assert.deepEqual(got.tail.map(l => l.roomAlias), [OPERATOR_ALIAS, OPERATOR_ALIAS]);
+  } finally { await hs.close(); }
+});
+
+test("tail gaps: a failed read is a gap, a quiet room (no lines) and a normal room (a few lines) are not, and exactly the per-room cap is not a trim", async () => {
+  const failing = await fakeHomeserver({ failContext: true, sync: since => ({ next_batch: since ?? "b0" }) });
+  try {
+    const mouth = mouthFor(failing);
+    await mouth.syncOnce();
+    assert.deepEqual(replied(await mouth.tail()).tailGaps, [SWARM_ALIAS, OPERATOR_ALIAS], "every read failed: both rooms unknown, in room order");
+  } finally { await failing.close(); }
+
+  const { gaps } = await tailed({ preload: { [ROOM]: lines(ROOM, docs.limits.tailPerRoom) } });
+  assert.deepEqual(gaps, [], "20 lines in one room and none in the other: nothing was left out");
+  const some = await tailed({ preload: { [ROOM]: lines(ROOM, 3), [OPERATOR]: [] } });
+  assert.deepEqual(replied({ lines: some.tail, gaps: some.gaps, rooms: some.rooms }).tailGaps, []);
+});
+
+test("tail gaps: a room with more lines than the per-room cap is a gap, once, and only that room", async () => {
+  const { tail, gaps } = await tailed({ preload: { [ROOM]: lines(ROOM, docs.limits.tailPerRoom + 1), [OPERATOR]: lines(OPERATOR, 3) } });
+  assert.equal(tail.filter(l => l.roomAlias === SWARM_ALIAS).length, docs.limits.tailPerRoom);
+  assert.deepEqual(gaps, [SWARM_ALIAS]);
+});
+
+test("tail gaps: the total cap names the rooms it dropped lines from, in room order, never a room whose lines all fit", async () => {
+  const dms = ["!d1:gamecult.test", "!d2:gamecult.test", "!d3:gamecult.test"];
+  const preload = { [ROOM]: lines(ROOM, 25, 100), [OPERATOR]: lines(OPERATOR, 20, 0) };
+  dms.forEach((dm, i) => { preload[dm] = lines(dm, 20, 200 + 20 * i); });
+  const { tail, gaps } = await tailed({ preload, direct: { [META]: dms }, member: [...Object.values(ROOMS), ...dms] });
+  assert.equal(tail.length, 60);
+  assert.deepEqual(gaps, [SWARM_ALIAS, OPERATOR_ALIAS], "swarm is gapped by both caps and named once; the three DMs kept all 20 lines");
+});
+
+test("tail gaps: the reply byte budget and a line that will not encode gap their rooms, and only those", () => {
+  const pack = { encode: v => Buffer.from(JSON.stringify(v)) };
+  const mk = (room, i, extra = {}) => ({ roomAlias: room, eventId: `$${room}${i}`, atUnixMs: i, sender: "@a:x", form: "message", basis: null, text: "y".repeat(5000), ...extra });
+  const old = Array.from({ length: 30 }, (_, i) => mk("#old:x", i)), fresh = Array.from({ length: 30 }, (_, i) => mk("#new:x", 100 + i));
+  const got = replied({ lines: [...old, ...fresh], gaps: [], rooms: ["#old:x", "#new:x", "#empty:x"] }, pack);
+  assert.ok(got.tail.length < 60);
+  assert.deepEqual(got.tailGaps, ["#old:x"], "the oldest lines were trimmed; the newer room and the quiet room are whole");
+  const bad = replied({ lines: [mk("#a:x", 1), mk("#b:x", 2, { sender: 123 })], gaps: [], rooms: ["#a:x", "#b:x"] }, pack);
+  assert.deepEqual(bad.tailGaps, ["#b:x"]);
+});
+
+test("tail gaps: the parser refuses a repeated room, and a pre-gap decoder is stopped by arity, as the tail was", () => {
+  assert.throws(() => docs.parsePendingV3(["eureka", [], [], ["#a:x", "#a:x"]]), /repeats/);
+  assert.deepEqual(docs.parsePendingV3(["eureka", [], [], ["#a:x", "#b:x"]]).tailGaps, ["#a:x", "#b:x"]);
+  assert.throws(() => docs.parsePendingV3(["eureka", [], []]), /4-field/);
+  assert.throws(() => docs.parsePendingV3(["eureka", [], [], "#a:x"]), /list/);
+});
+
+test("tail gaps: a line the mouth drops as malformed (no event id) gaps its room; a clean room beside it does not", async () => {
+  const { tail, gaps } = await tailed({ preload: { [ROOM]: [message("", META, "no id", 10), message("$ok", META, "fine", 11)], [OPERATOR]: lines(OPERATOR, 1) } });
+  assert.deepEqual(tail.map(l => l.eventId).sort(), ["$ok", "$ope0"].sort());
+  assert.deepEqual(gaps, [SWARM_ALIAS]);
+});
+
+const edit = (id, ts) => ({ type: "m.room.message", event_id: id, sender: META, origin_server_ts: ts, content: { msgtype: "m.text", body: "* edited", "m.relates_to": { rel_type: "m.replace", event_id: "$x" } } });
+const threaded = (id, ts) => ({ type: "m.room.message", event_id: id, sender: META, origin_server_ts: ts, content: { msgtype: "m.text", body: "in thread", "m.relates_to": { rel_type: "m.thread", event_id: "$root" } } });
+const noise = (n, from) => Array.from({ length: n }, (_, i) => (i % 2 ? threaded : edit)(`$n${from + i}`, 1000 + from + i));
+
+test("tail gaps: a full read window hides older real lines behind edits and thread replies, so the room is a gap; a short chunk is exhausted history, not a gap", async () => {
+  const hidden = await tailed({ preload: { [ROOM]: [...lines(ROOM, 5), ...noise(120, 0)] } });
+  assert.deepEqual(hidden.tail, [], "the five real lines lie beyond the 100-event window");
+  assert.deepEqual(hidden.gaps, [SWARM_ALIAS], "so the room is unknown, not quiet");
+  const whole = await tailed({ preload: { [ROOM]: [...lines(ROOM, 5), ...noise(60, 0)] } });
+  assert.equal(whole.tail.length, 5);
+  assert.deepEqual(whole.gaps, [], "a chunk shorter than the window reached the room's start");
+  const at99 = await tailed({ preload: { [ROOM]: [...lines(ROOM, 5), ...noise(94, 0)] } });
+  assert.deepEqual(at99.gaps, [], "99 raw events: one short of the window, history exhausted");
+  const at100 = await tailed({ preload: { [ROOM]: [...lines(ROOM, 5), ...noise(95, 0)] } });
+  assert.deepEqual(at100.gaps, [SWARM_ALIAS], "exactly 100 raw events fill the window, so older history cannot be ruled out");
+});
+
+test("tail gaps: the total cap boundary: exactly 60 lines over all rooms is no gap, a 61st names the room that lost its oldest line", async () => {
+  const dms = ["!d1:gamecult.test", "!d2:gamecult.test"];
+  const rooms60 = { [ROOM]: lines(ROOM, 20, 0), [OPERATOR]: lines(OPERATOR, 20, 20), [dms[0]]: lines(dms[0], 20, 40) };
+  const at60 = await tailed({ preload: rooms60, direct: { [META]: dms }, member: [...Object.values(ROOMS), ...dms] });
+  assert.equal(at60.tail.length, 60);
+  assert.deepEqual(at60.gaps, []);
+  const at61 = await tailed({ preload: { ...rooms60, [dms[1]]: lines(dms[1], 1, 60) }, direct: { [META]: dms }, member: [...Object.values(ROOMS), ...dms] });
+  assert.equal(at61.tail.length, 60);
+  assert.deepEqual(at61.gaps, [SWARM_ALIAS]);
+});
+
+test("tail gaps: a byte-budget cut is contiguous at the oldest end, so an older line that would still fit is cut and its room gapped", () => {
+  const pack = { encode: v => Buffer.from(JSON.stringify(v)) };
+  const mk = (room, i, text) => ({ roomAlias: room, eventId: `$${room}${i}`, atUnixMs: i, sender: "@a:x", form: "message", basis: null, text });
+  const tiny = mk("#tiny:x", 0, "t"), big = Array.from({ length: 70 }, (_, i) => mk("#big:x", 1 + i, "y".repeat(5000)));
+  const got = replied({ lines: [tiny, ...big], gaps: [], rooms: ["#tiny:x", "#big:x"] }, pack);
+  assert.ok(!got.tail.some(l => l.roomAlias === "#tiny:x"), "nothing older than the cut is kept");
+  assert.deepEqual(got.tailGaps, ["#tiny:x", "#big:x"]);
+});
+
+test("tail gaps: the read timer is cleared when the read answers, and a mouth that has not started names its configured rooms for an endpoint that cannot read", async () => {
+  const delay = 4321, made = new Set(), cleared = new Set();
+  const realSet = globalThis.setTimeout, realClear = globalThis.clearTimeout;
+  globalThis.setTimeout = (fn, ms, ...rest) => { const t = realSet(fn, ms, ...rest); if (ms === delay) made.add(t); return t; };
+  globalThis.clearTimeout = t => { cleared.add(t); return realClear(t); };
+  const hs = await fakeHomeserver({ preload: { [ROOM]: lines(ROOM, 2), [OPERATOR]: lines(OPERATOR, 2) }, sync: since => ({ next_batch: since ?? "b0" }) });
+  try {
+    const mouth = mouthFor(hs, { sendTimeoutMs: delay });
+    assert.deepEqual(mouth.speakableRooms(), Object.keys(ROOMS), "before start: the configured rooms");
+    await mouth.syncOnce();
+    assert.deepEqual(mouth.speakableRooms(), Object.keys(ROOMS), "after start: the rooms she can speak in");
+    await mouth.tail();
+    assert.ok(made.size >= 2);
+    assert.ok([...made].every(t => cleared.has(t)), "no read timer is left running");
+  } finally { globalThis.setTimeout = realSet; globalThis.clearTimeout = realClear; await hs.close(); }
+});
+
+// ---- Reply link (chat_pending.v4, docs/bridge.md "Reply link"): the quoted event's id, author and excerpt, behind replyLink (default off).
+const ALICE_ID = `@alice:${HS_NAME}`;
+const quoting = (id, to, extra = {}) => withContent(id, META, { body: "re", "m.relates_to": { "m.in_reply_to": { event_id: to }, ...extra } });
+const target = (id, sender, body, extra = {}) => ({ ...withContent(id, sender, { body }, 1000), room_id: ROOM, ...extra });
+const quotes = made => made.map(d => [d.eventId, d.basis, d.replyTo]);
+async function linked(events, preload, replyLink = true) {
+  const hs = await fakeHomeserver({ preload: { [ROOM]: preload }, sync: since => since === null ? { next_batch: "b0" } : { next_batch: "b1", ...joined({ [ROOM]: { timeline: { events } } }) } });
+  try {
+    const mouth = mouthFor(hs, { replyLink });
+    await mouth.syncOnce();
+    return { made: await mouth.syncOnce(), hs };
+  } finally { await hs.close(); }
+}
+
+test("reply link: a reply to anyone carries the quoted id, the author's Matrix id and the text; basis stays reply only for her own words", async () => {
+  const { made } = await linked(
+    [quoting("$a", "$hers"), quoting("$b", "$alices"), withContent("$c", META, { body: "plain" })],
+    [target("$hers", SELF, "my words"), target("$alices", ALICE_ID, "can someone look at the build?")]);
+  assert.deepEqual(quotes(made), [
+    ["$a", "reply", { eventId: "$hers", sender: SELF, excerpt: "my words" }],
+    ["$b", null, { eventId: "$alices", sender: ALICE_ID, excerpt: "can someone look at the build?" }],
+    ["$c", null, null],
+  ]);
+});
+
+test("reply link: flag off (default) delivers no replyTo and the basis is what it always was", async () => {
+  const pre = [target("$hers", SELF, "my words"), target("$alices", ALICE_ID, "secret words")];
+  const { made } = await linked([quoting("$a", "$hers"), quoting("$b", "$alices")], pre, false);
+  assert.deepEqual(quotes(made), [["$a", "reply", null], ["$b", null, null]]);
+});
+
+test("reply link: the excerpt is cut at 240 code points, not bytes, and never splits a character", async () => {
+  const emoji = "\u{1F600}".repeat(300), ascii = "a".repeat(300), combining = "é".repeat(200);
+  const { made } = await linked([quoting("$e", "$t1"), quoting("$a", "$t2"), quoting("$c", "$t3"), quoting("$s", "$t4")],
+    [target("$t1", ALICE_ID, emoji), target("$t2", ALICE_ID, ascii), target("$t3", ALICE_ID, combining), target("$t4", ALICE_ID, "short")]);
+  const ex = made.map(d => d.replyTo.excerpt);
+  assert.deepEqual([...ex[0]].length, 240);
+  assert.equal(ex[0], "\u{1F600}".repeat(240), "240 astral characters, 960 bytes");
+  assert.equal(ex[1], "a".repeat(240));
+  assert.equal([...ex[2]].length, 240, "code points: a combining mark counts as one, as documented");
+  assert.equal(ex[3], "short");
+  assert.ok(ex.every(e => !e.includes("�")));
+});
+
+test("reply link: a redacted quoted event keeps its id and author but no text; so does a non-text one", async () => {
+  const { made } = await linked([quoting("$r", "$red"), quoting("$n", "$nobody"), quoting("$m", "$img")], [
+    target("$red", ALICE_ID, "the secret that was redacted", { content: {}, unsigned: { redacted_because: { type: "m.room.redaction" } } }),
+    target("$nobody", ALICE_ID, "", { content: {} }),
+    target("$img", ALICE_ID, "x", { type: "m.sticker", content: { body: "private caption" } }),
+  ]);
+  assert.deepEqual(made.map(d => d.replyTo), [
+    { eventId: "$red", sender: ALICE_ID, excerpt: null },
+    { eventId: "$nobody", sender: ALICE_ID, excerpt: null },
+    { eventId: "$img", sender: ALICE_ID, excerpt: null },
+  ]);
+  const redactedStillText = await linked([quoting("$r", "$red")], [target("$red", ALICE_ID, "still has a body", { unsigned: { redacted_because: {} } })]);
+  assert.equal(redactedStillText.made[0].replyTo.excerpt, null, "a redaction marker wins even if a body is present");
+});
+
+test("reply link: a quoted event in a room she cannot read, an unreadable one and a thread fallback give no replyTo and no text", async () => {
+  const { made } = await linked(
+    [quoting("$other", "$foreign"), quoting("$gone", "$missing"), quoting("$th", "$alices", { rel_type: "m.thread", event_id: "$root", is_falling_back: true })],
+    [{ ...target("$foreign", ALICE_ID, "from another room"), room_id: "!elsewhere:gamecult.test" }, target("$alices", ALICE_ID, "fallback target")]);
+  assert.deepEqual(made.map(d => d.replyTo), [null, null, null]);
+  assert.ok(!JSON.stringify(made.map(d => d.replyTo)).includes("room") && made.every(d => d.replyTo === null), "no id, author or text of the foreign event travels");
+});
+
+test("reply link: the same quoted event is read once, and a lookup cache hit from the basis check serves the quote", async () => {
+  const { made, hs } = await linked([quoting("$a", "$hers"), quoting("$b", "$hers")], [target("$hers", SELF, "mine")]);
+  assert.deepEqual(made.map(d => d.replyTo?.excerpt), ["mine", "mine"]);
+  assert.equal(hs.seen.filter(r => r.path.includes("/event/")).length, 1);
+});
+
+test("reply link: an edited target is quoted without its pre-edit text, whether it is the edit or has one bundled; id and author stay", async () => {
+  const { made } = await linked([quoting("$a", "$bundled"), quoting("$b", "$edit")], [
+    target("$bundled", ALICE_ID, "old wording", { unsigned: { "m.relations": { "m.replace": { event_id: "$x" } } } }),
+    target("$edit", ALICE_ID, "* new wording", { content: { msgtype: "m.text", body: "* new wording", "m.relates_to": { rel_type: "m.replace", event_id: "$orig" } } }),
+  ]);
+  assert.deepEqual(made.map(d => d.replyTo), [{ eventId: "$bundled", sender: ALICE_ID, excerpt: null }, { eventId: "$edit", sender: ALICE_ID, excerpt: null }]);
+});
+
+test("reply link: a cached target is re-read after 60 s, so a redaction or edit in between shows; inside 60 s the cached read stands", async () => {
+  const clock = { t: 1_000_000 };
+  const mine = target("$t", ALICE_ID, "before");
+  const hs = await fakeHomeserver({ preload: { [ROOM]: [mine] }, sync: since => since === null ? { next_batch: "b0" } : { next_batch: `b${since}x`, ...joined({ [ROOM]: { timeline: { events: [quoting(`$q${since}`, "$t")] } } }) } });
+  try {
+    const mouth = mouthFor(hs, { replyLink: true, now: () => clock.t });
+    await mouth.syncOnce();
+    const first = await mouth.syncOnce();
+    mine.content = {}; mine.unsigned = { redacted_because: {} };
+    clock.t += 59_000;
+    const within = await mouth.syncOnce();
+    clock.t += 2_000;
+    const after = await mouth.syncOnce();
+    assert.deepEqual([first, within, after].map(m => m[0].replyTo.excerpt), ["before", "before", null]);
+  } finally { await hs.close(); }
+});
+
+test("reply link: the target's own reply fallback is dropped before the cap; a body of only fallback has no excerpt", async () => {
+  const inReply = { "m.in_reply_to": { event_id: "$earlier" } };
+  const withFallback = body => ({ content: { msgtype: "m.text", body, "m.relates_to": inReply } });
+  const { made } = await linked([quoting("$a", "$f1"), quoting("$b", "$f2"), quoting("$c", "$f3"), quoting("$d", "$f4")], [
+    target("$f1", ALICE_ID, "", withFallback("> <@bob:gamecult.test> what was it\n> second line\n\nthe real answer")),
+    target("$f2", ALICE_ID, "", withFallback("> <@bob:gamecult.test> only a quote\n\n")),
+    target("$f3", ALICE_ID, "", { content: { msgtype: "m.text", body: "> a literal quote with no reply\n\nkept" } }),
+    target("$f4", ALICE_ID, "", withFallback(`> <@bob:gamecult.test> ${"q".repeat(500)}\n\n${"w".repeat(300)}`)),
+  ]);
+  assert.deepEqual(made.map(d => d.replyTo.excerpt), ["the real answer", null, "> a literal quote with no reply kept", "w".repeat(240)]);
+});
+
+test("reply link: the excerpt is safe in a prompt: control characters, bidi marks and line breaks are gone before the cap", async () => {
+  const probe = "a\u0000b\u202ec\r\nd\u001b[31m";
+  const { made } = await linked([quoting("$p", "$t1"), quoting("$q", "$t2"), quoting("$r", "$t3")], [
+    target("$t1", ALICE_ID, probe),
+    target("$t2", ALICE_ID, "  x\t\t y\n\n\nz\u200f\u2066w\u2069\u0085\u007f ok  "),
+    target("$t3", ALICE_ID, `\u202e${"\u0000".repeat(500)}${"k".repeat(300)}`),
+  ]);
+  assert.deepEqual(made.map(d => d.replyTo.excerpt), ["abc d[31m", "x  y zw ok", "k".repeat(240)], "controls removed first, so they do not eat the 240");
+});
+
+test("reply link: a mouth built without the option has it off, and only the exact env value \"1\" turns it on", async () => {
+  const hs = await fakeHomeserver({ preload: { [ROOM]: [target("$t", ALICE_ID, "words")] }, sync: since => since === null ? { next_batch: "b0" } : { next_batch: "b1", ...joined({ [ROOM]: { timeline: { events: [quoting("$q", "$t")] } } }) } });
+  try {
+    const mouth = createMouth({ persona: "eureka", homeserver: hs.url, rooms: Object.keys(ROOMS), token: TOKEN, state: memoryState(), fetch: hs.fetch, serverName: HS_NAME, brake: async () => true, log: () => {}, syncTimeoutMs: 1 });
+    await mouth.syncOnce();
+    assert.equal((await mouth.syncOnce())[0].replyTo, null);
+  } finally { await hs.close(); }
+  assert.deepEqual(["1", "true", "yes", "0", "", " 1", undefined].map(v => replyLinkFromEnv({ CHAT_PENDING_V4: v })), [true, false, false, false, false, false, false]);
+  assert.equal(replyLinkFromEnv({}), false);
+});
+
+// ---- Fixes after PR #63: the target cache, the excerpt scrub, the per-round read cap.
+const eventGets = (hs, id) => hs.seen.filter(r => r.method === "GET" && r.path.endsWith(`/event/${id}`)).length;
+async function replyAcrossTtl(replyLink, failure = 500) {
+  const clock = { t: 1_000_000 };
+  let down = false, attempts = 0;
+  const hs = await fakeHomeserver({ preload: { [ROOM]: [target("$hers", SELF, "my words")] }, sync: since => since === null ? { next_batch: "b0" } : { next_batch: `b${since}x`, ...joined({ [ROOM]: { timeline: { events: [quoting(`$q${since}`, "$hers")] } } }) } });
+  try {
+    const fetch = (u, o) => (String(u).includes("/event/%24hers") && attempts++, down && String(u).includes("/event/") ? (failure === "timeout" ? Promise.reject(new Error("timed out")) : Promise.resolve(new Response("{}", { status: failure }))) : hs.fetch(u, o));
+    const mouth = mouthFor(hs, { replyLink, now: () => clock.t, fetch });
+    await mouth.syncOnce();
+    const first = await mouth.syncOnce();
+    clock.t += 61_000; down = true;
+    const later = await mouth.syncOnce();
+    clock.t += 10_000;
+    const again = await mouth.syncOnce(); // inside 60 s of the failed re-read's renewal
+    return { first: first[0], later: later[0], again: again[0], gets: attempts };
+  } finally { await hs.close(); }
+}
+
+test("target cache: flag off, a hit is kept as before v4: no read after 60 s, basis stays reply", async () => {
+  const r = await replyAcrossTtl(false);
+  assert.deepEqual([r.first.basis, r.later.basis, r.again.basis, r.gets], ["reply", "reply", "reply", 1]);
+});
+
+test("target cache: flag on, a failed re-read after 60 s keeps the earlier hit (basis and reply_to) and renews only its age", async () => {
+  const r = await replyAcrossTtl(true);
+  assert.deepEqual([r.first.basis, r.later.basis, r.again.basis, r.gets], ["reply", "reply", "reply", 2]);
+  assert.deepEqual(r.later.replyTo, { eventId: "$hers", sender: SELF, excerpt: "my words" });
+});
+
+test("reply link: the excerpt drops Cf, Co, tag characters, U+061C, zero-width and word-joiner characters and unpaired surrogates", async () => {
+  const { made } = await linked([quoting("$a", "$t1"), quoting("$b", "$t2"), quoting("$c", "$t3"), quoting("$d", "$t4"), quoting("$e", "$t5")], [
+    target("$t1", ALICE_ID, "ig\u{E0049}\u{E0067}nore"),
+    target("$t2", ALICE_ID, "a؜b⁠c⁤d­e﻿f"),
+    target("$t3", ALICE_ID, "x​y‌z‍w"),
+    target("$t4", ALICE_ID, "p\uD800q\uDC00r\u{F0000}st"),
+    target("$t5", ALICE_ID, "keep \u{1F600} é 中"),
+  ]);
+  assert.deepEqual(made.map(d => d.replyTo.excerpt), ["ignore", "abcdef", "xyzw", "pqrst", "keep \u{1F600} é 中"]);
+});
+
+test("reply link: at most 8 uncached targets are read for reply_to per sync round; the rest are nil, and reads the basis already made are free", async () => {
+  const ids = Array.from({ length: 10 }, (_, i) => `$t${i}`);
+  const tagged = (id, to) => quoting(id, to, {}); // below: mentions her, so basis does no read of its own
+  const events = ids.map((t, i) => { const e = tagged(`$q${i}`, t); e.content["m.mentions"] = { user_ids: [SELF] }; return e; });
+  const { made, hs } = await (async () => {
+    const hs = await fakeHomeserver({ preload: { [ROOM]: ids.map(t => target(t, ALICE_ID, `text ${t}`)) }, sync: since => since === null ? { next_batch: "b0" } : { next_batch: "b1", ...joined({ [ROOM]: { timeline: { events } } }) } });
+    const mouth = mouthFor(hs, { replyLink: true });
+    await mouth.syncOnce();
+    const made = await mouth.syncOnce();
+    return { made, hs };
+  })();
+  try {
+    assert.equal(ids.filter(t => eventGets(hs, t) > 0).length, 8);
+    assert.deepEqual(made.map(d => d.replyTo === null), [false, false, false, false, false, false, false, false, true, true]);
+  } finally { await hs.close(); }
+});
+
+test("target cache: flag on, 500, 429 and a timeout keep the earlier hit at the re-read; 403 and 404 drop it (reply_to nil, basis as the failure case)", async () => {
+  for (const failure of [500, 429, "timeout"]) {
+    const r = await replyAcrossTtl(true, failure);
+    assert.deepEqual([r.later.basis, r.later.replyTo?.excerpt], ["reply", "my words"], String(failure));
+  }
+  for (const failure of [403, 404]) {
+    const r = await replyAcrossTtl(true, failure);
+    assert.deepEqual([r.first.basis, r.later.basis, r.later.replyTo, r.again.replyTo], ["reply", null, null, null], String(failure));
+  }
+});
+
+test("target cache: transient failures keep a hit for 10 minutes from the last good read, then drop it; a good read resets", async () => {
+  const clock = { t: 1_000_000 };
+  let down = false;
+  const hs = await fakeHomeserver({ preload: { [ROOM]: [target("$hers", SELF, "my words")] }, sync: since => since === null ? { next_batch: "b0" } : { next_batch: `b${since}x`, ...joined({ [ROOM]: { timeline: { events: [quoting(`$q${since}`, "$hers")] } } }) } });
+  try {
+    const fetch = (u, o) => (down && String(u).includes("/event/") ? Promise.resolve(new Response("{}", { status: 503 })) : hs.fetch(u, o));
+    const mouth = mouthFor(hs, { replyLink: true, now: () => clock.t, fetch });
+    await mouth.syncOnce();
+    await mouth.syncOnce(); // good read at t0
+    const step = async ms => { clock.t += ms; return (await mouth.syncOnce())[0]; };
+    down = true;
+    const seen = [];
+    for (const ms of [200_000, 200_000, 140_000]) seen.push((await step(ms)).replyTo?.excerpt); // 3.3, 6.7, 9 min after the good read
+    seen.push((await step(120_000)).replyTo); // 11 min
+    down = false;
+    seen.push((await step(61_000)).replyTo?.excerpt); // a good read resets
+    down = true;
+    seen.push((await step(420_000)).replyTo?.excerpt); // 7 min after the new good read: kept again
+    assert.deepEqual(seen, ["my words", "my words", "my words", null, "my words", "my words"]);
+  } finally { await hs.close(); }
+});
+
+test("reply link: the per-round read count resets each sync round", async () => {
+  const ids = Array.from({ length: 18 }, (_, i) => `$t${i}`);
+  const tagged = (i, to) => { const e = quoting(`$q${i}`, to); e.content["m.mentions"] = { user_ids: [SELF] }; return e; };
+  const hs = await fakeHomeserver({ preload: { [ROOM]: ids.map(t => target(t, ALICE_ID, `text ${t}`)) }, sync: since => since === null ? { next_batch: "b0" } : { next_batch: `b${since}x`, ...joined({ [ROOM]: { timeline: { events: since === "b0" ? ids.slice(0, 9).map((t, i) => tagged(i, t)) : ids.slice(9).map((t, i) => tagged(9 + i, t)) } } }) } });
+  try {
+    const mouth = mouthFor(hs, { replyLink: true });
+    await mouth.syncOnce();
+    const one = await mouth.syncOnce();
+    const two = await mouth.syncOnce();
+    assert.deepEqual([one, two].map(m => m.filter(d => d.replyTo !== null).length), [8, 8]);
+    assert.deepEqual([one, two].map(m => m.at(-1).replyTo), [null, null]);
+    assert.equal(ids.filter(t => eventGets(hs, t) > 0).length, 16);
+  } finally { await hs.close(); }
 });

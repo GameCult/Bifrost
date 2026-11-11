@@ -1,5 +1,6 @@
 using Bifrost.Web.Configuration;
 using Bifrost.Web.Features.ConceptVotes;
+using Bifrost.Web.Features.Registration;
 using Microsoft.Extensions.Options;
 
 namespace Bifrost.Web.Features.Shared;
@@ -12,7 +13,9 @@ public sealed class StartupConfigurationValidator(
     IOptions<HeimdallOptions> heimdallOptions,
     IOptions<StripeOptions> stripeOptions,
     IOptions<BifrostHostOptions> hostOptions,
-    IOptions<ConceptVoteOptions> conceptVoteOptions)
+    IOptions<ConceptVoteOptions> conceptVoteOptions,
+    IOptions<DeskOptions> deskOptions,
+    IOptions<RegistrationOptions> registrationOptions)
 {
     public void Validate()
     {
@@ -43,6 +46,32 @@ public sealed class StartupConfigurationValidator(
         if (conceptVotes.MaxTrackedKeys < 1)
         {
             failures.Add("ConceptVotes:MaxTrackedKeys must be at least 1.");
+        }
+
+        ValidateDesk(deskOptions.Value, failures);
+
+        var difficulty = registrationOptions.Value.Captcha.Difficulty;
+        if (difficulty < RegistrationOptions.MinDifficulty || difficulty > RegistrationOptions.MaxDifficulty)
+        {
+            failures.Add($"Bifrost:Registration:Captcha:Difficulty must be between {RegistrationOptions.MinDifficulty} and {RegistrationOptions.MaxDifficulty}.");
+        }
+
+        var wait = registrationOptions.Value.Captcha.FallbackWaitSeconds;
+        if (wait < RegistrationOptions.MinFallbackWaitSeconds || wait > RegistrationOptions.MaxFallbackWaitSeconds ||
+            wait >= RegistrationChallengeService.Lifetime.TotalSeconds)
+        {
+            failures.Add($"Bifrost:Registration:Captcha:FallbackWaitSeconds must be between {RegistrationOptions.MinFallbackWaitSeconds} and {RegistrationOptions.MaxFallbackWaitSeconds} and shorter than the challenge lifetime ({RegistrationChallengeService.Lifetime.TotalSeconds:0} seconds).");
+        }
+
+        var limits = registrationOptions.Value.Limits;
+        if (limits.PerAddressPermits < 1 || limits.Window <= TimeSpan.Zero || limits.MaxTrackedKeys < 1)
+        {
+            failures.Add("Bifrost:Registration:Limits:PerAddressPermits and MaxTrackedKeys must be at least 1 and Window must be positive.");
+        }
+
+        if (limits.FallbackPermits < 1 || limits.FallbackWindow <= TimeSpan.Zero)
+        {
+            failures.Add("Bifrost:Registration:Limits:FallbackPermits must be at least 1 and FallbackWindow must be positive.");
         }
 
         if (hostEnvironment.IsDevelopment() || hostEnvironment.IsEnvironment("Testing"))
@@ -115,6 +144,106 @@ public sealed class StartupConfigurationValidator(
 
         Refuse(failures);
     }
+
+    // Checked in every environment: a bad Mind list or decider id would otherwise pass startup and misroute or
+    // mis-attribute answers. Account existence is a request-time question, not a startup one.
+    private void ValidateDesk(DeskOptions desk, List<string> failures)
+    {
+        if (!desk.IsConfigured)
+        {
+            if (configuration.GetSection(DeskOptions.SectionName).Exists())
+            {
+                failures.Add("Desk:Minds must list at least one Mind when the Desk section exists.");
+            }
+
+            return;
+        }
+
+        if (!Uri.TryCreate(desk.AllowedOrigin, UriKind.Absolute, out var origin) ||
+            origin.Scheme is not ("http" or "https") ||
+            !string.Equals(desk.AllowedOrigin, origin.GetLeftPart(UriPartial.Authority), StringComparison.Ordinal))
+        {
+            failures.Add("Desk:AllowedOrigin must be one http(s) origin: scheme, host and optional port, no path.");
+        }
+
+        if (desk.MaxBodyBytes < 1)
+        {
+            failures.Add("Desk:MaxBodyBytes must be at least 1.");
+        }
+
+        if (desk.RetryAfterSeconds < 1)
+        {
+            failures.Add("Desk:RetryAfterSeconds must be at least 1.");
+        }
+
+        var ids = new HashSet<string>(StringComparer.Ordinal);
+        var sockets = new HashSet<string>(StringComparer.Ordinal);
+        for (var i = 0; i < desk.Minds.Count; i++)
+        {
+            var mind = desk.Minds[i];
+            if (string.IsNullOrWhiteSpace(mind.Id))
+            {
+                failures.Add($"Desk:Minds:{i}:Id must not be blank.");
+            }
+            else if (!ids.Add(mind.Id))
+            {
+                failures.Add($"Desk:Minds:{i}:Id repeats an earlier Mind id.");
+            }
+
+            if (!Path.IsPathFullyQualified(mind.Socket))
+            {
+                failures.Add($"Desk:Minds:{i}:Socket must be an absolute path.");
+            }
+            else if (!sockets.Add(mind.Socket))
+            {
+                failures.Add($"Desk:Minds:{i}:Socket repeats an earlier Mind's socket.");
+            }
+
+            if (mind.Deciders.Count is < 1 or > DeskMindOptions.MaxDeciders)
+            {
+                failures.Add($"Desk:Minds:{i}:Deciders must hold 1 to {DeskMindOptions.MaxDeciders} account ids.");
+            }
+
+            var deciders = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var decider in mind.Deciders)
+            {
+                if (!IsLowercaseGuid(decider))
+                {
+                    failures.Add($"Desk:Minds:{i}:Deciders entries must be lowercase D-format account ids.");
+                }
+                else if (!deciders.Add(decider))
+                {
+                    failures.Add($"Desk:Minds:{i}:Deciders repeats an account id.");
+                }
+            }
+        }
+
+        var attribution = desk.Attribution;
+        if (!string.IsNullOrEmpty(attribution.Operator) && !IsLowercaseGuid(attribution.Operator))
+        {
+            failures.Add("Desk:Attribution:Operator must be a lowercase D-format account id.");
+        }
+
+        var stewards = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var steward in attribution.Stewards)
+        {
+            if (!IsLowercaseGuid(steward))
+            {
+                failures.Add("Desk:Attribution:Stewards entries must be lowercase D-format account ids.");
+            }
+            else if (!stewards.Add(steward))
+            {
+                failures.Add("Desk:Attribution:Stewards repeats an account id.");
+            }
+            else if (string.Equals(steward, attribution.Operator, StringComparison.Ordinal))
+            {
+                failures.Add("Desk:Attribution:Operator must not also be a steward.");
+            }
+        }
+    }
+
+    private static bool IsLowercaseGuid(string? value) =>
+        Guid.TryParseExact(value, "D", out var guid) && string.Equals(value, guid.ToString("D"), StringComparison.Ordinal);
 
     private static void Refuse(List<string> failures)
     {

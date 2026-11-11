@@ -37,9 +37,7 @@ public sealed class OidcLogoutTests
 
     [Theory]
     [InlineData(MembershipStatus.Suspended)]
-    [InlineData(MembershipStatus.PendingApproval)]
-    [InlineData(MembershipStatus.Authenticated)]
-    public async Task A_member_who_is_not_active_gets_one_signed_logout_and_loses_the_authorizations(MembershipStatus status)
+    public async Task A_suspended_account_gets_one_signed_logout_and_loses_the_authorizations(MembershipStatus status)
     {
         using var factory = new OidcLogoutFactory();
         var (identity, idToken) = await factory.GrantAsync(status);
@@ -78,6 +76,25 @@ public sealed class OidcLogoutTests
         Assert.Single(factory.Mas.Bodies);
     }
 
+    [Theory]
+    [InlineData(ReceiptState.Withdrawn)]
+    [InlineData(ReceiptState.OtherVersion)]
+    [InlineData(ReceiptState.None)]
+    public async Task An_account_whose_agreement_has_gone_is_logged_out_while_one_that_agreed_is_left_alone(ReceiptState gone)
+    {
+        using var factory = new OidcLogoutFactory();
+        var (silenced, _) = await factory.GrantAsync(MembershipStatus.Active);
+        var (agreed, _) = await factory.GrantAsync(MembershipStatus.Active);
+        await factory.SetReceiptAsync(silenced, gone);
+
+        await factory.Reconciler.ReconcileOnceAsync(CancellationToken.None);
+
+        var token = new JsonWebToken(Assert.Single(factory.Mas.LogoutTokens()));
+        Assert.Equal(factory.AccountId(silenced).ToString("D"), token.Subject);
+        Assert.Equal(0, factory.ValidAuthorizations(factory.AccountId(silenced).ToString("D")));
+        Assert.True(factory.ValidAuthorizations(factory.AccountId(agreed).ToString("D")) > 0);
+    }
+
     [Fact]
     public async Task Two_logouts_for_one_subject_carry_different_jti()
     {
@@ -110,6 +127,23 @@ public sealed class OidcLogoutTests
         var token = Assert.Single(factory.Mas.LogoutTokens());
         Assert.Equal(factory.AccountId(suspended).ToString("D"), new JsonWebToken(token).Subject);
         Assert.Equal(before, factory.ValidAuthorizations(activeSubject));
+    }
+
+    [Theory]
+    [InlineData(MembershipStatus.Authenticated)]
+    [InlineData(MembershipStatus.PendingApproval)]
+    public async Task A_chat_tier_non_member_is_never_sent_a_logout_and_keeps_the_authorizations(MembershipStatus status)
+    {
+        using var factory = new OidcLogoutFactory();
+        var (chat, _) = await factory.GrantAsync(status);
+        var subject = factory.AccountId(chat).ToString("D");
+        var before = factory.ValidAuthorizations(subject);
+        Assert.True(before > 0);
+
+        await factory.Reconciler.ReconcileOnceAsync(CancellationToken.None);
+
+        Assert.Empty(factory.Mas.LogoutTokens());
+        Assert.Equal(before, factory.ValidAuthorizations(subject));
     }
 
     [Fact]
