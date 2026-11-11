@@ -105,6 +105,21 @@ public sealed class DeskCredentialTests : IDisposable
     }
 
     [Fact]
+    public async Task A_bearer_in_the_query_string_or_a_form_body_authenticates_nothing()
+    {
+        var (_, token) = await MemberWithTokenAsync("desk.answer");
+        DeskReplay.HoldVectorForks(factory.Door);
+
+        var query = await factory.SendAsync(
+            "POST", DeskReplay.Target("answer", "gamecult-chat", null) + "?access_token=" + token, DeskReplay.AnswerBody(DeskReplay.ChatFork));
+        var list = await factory.SendAsync("GET", DeskReplay.Target("list", "gamecult-chat", null) + "?access_token=" + token, null);
+
+        Assert.Equal(401, query.Status);
+        Assert.Equal(401, list.Status);
+        Assert.Empty(factory.Door.Calls);
+    }
+
+    [Fact]
     public async Task A_desk_answer_token_reaches_the_answer_door_but_cannot_list()
     {
         var (_, token) = await MemberWithTokenAsync("desk.answer");

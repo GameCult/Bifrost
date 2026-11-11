@@ -36,7 +36,12 @@ public static class DeskEndpoints
                 .AddValidation(validation =>
                 {
                     validation.UseLocalServer();
-                    validation.UseAspNetCore();
+                    // The bearer travels in the Authorization header only: a token in a URL lands in access logs.
+                    validation.UseAspNetCore().Configure(options =>
+                    {
+                        options.DisableAccessTokenExtractionFromQueryString = true;
+                        options.DisableAccessTokenExtractionFromBodyForm = true;
+                    });
                 });
             services.TryAddSingleton<IDeskCredential, OidcDeskCredential>();
         }
