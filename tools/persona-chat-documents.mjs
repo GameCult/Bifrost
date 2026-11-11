@@ -227,9 +227,14 @@ export function parseDeliveryV4(t) {
   const fields = tuple(t, 15, "delivery_v4");
   return { ...parseDeliveryV3(fields.slice(0, 14)), replyTo: parseReplyTo(fields[14]) };
 }
+// A Matrix id as the tuple carries it: its sigil, a non-empty rest, at most 255 bytes, no Unicode whitespace, control, format or private-use characters and no unpaired surrogates.
+// The mouth applies the same test to what a homeserver returned, so a hostile id is no reply_to rather than a skipped delivery.
+export const isMatrixId = (sigil, v) => typeof v === "string" && Buffer.byteLength(v) <= 255 && v.length > 1 && v[0] === sigil && !/[\p{White_Space}\p{Cc}\p{Cf}\p{Co}\p{Default_Ignorable_Code_Point}\uD800-\uDFFF]/u.test(v);
 function replyTo(r) {
   if (r === null) return null;
   const { eventId, sender, excerpt = null } = r;
+  if (!isMatrixId("$", eventId)) throw new Error("reply_to event_id must be an event id ($..., at most 255 bytes)");
+  if (!isMatrixId("@", sender)) throw new Error("reply_to sender must be a user id (@..., at most 255 bytes)");
   if (excerpt !== null && (typeof excerpt !== "string" || [...excerpt].length > limits.replyExcerpt)) throw new Error(`reply_to excerpt must be a string of at most ${limits.replyExcerpt} code points, or nil`);
   return [text(eventId, "reply_to event_id"), text(sender, "reply_to sender"), excerpt];
 }

@@ -314,11 +314,13 @@ export function createMouth({
   const authors = new Map(); // `${room id} ${event id}` -> { sender, excerpt, at }: read results, kept TARGET_TTL_MS, bounded; the key holds the room so another room's reply cannot borrow a hit
   const TARGET_TTL_MS = 60 * 1000; // how long a read of a target is kept: a failure always; a hit only with replyLink (without it a hit is kept until bounded out, as before v4)
   const REPLY_READS_PER_ROUND = 8; // distinct uncached targets replyToOf may read in one sync round; past it reply_to is nil (the tuple needs a sender, which only a read gives)
-  const KEEP_HIT_MS = 10 * 60 * 1000; // how long transient failures may keep a hit alive after its last good read
+  const KEEP_HIT_MS = 10 * 60 * 1000; // how long transient failures may keep a hit's sender alive after its last good read
   let replyReads = 0;
   const cachedTarget = key => {
     const known = authors.get(key);
-    return known && (now() - known.at < TARGET_TTL_MS || (!replyLink && known.sender !== null)) ? known : null;
+    if (!known) return null;
+    if (known.good !== undefined && now() - known.good > KEEP_HIT_MS) return null; // a renewed hit is never served past KEEP_HIT_MS after its last good read, whatever its age
+    return now() - known.at < TARGET_TTL_MS || (!replyLink && known.sender !== null) ? known : null;
   };
   // The quoted text, as a single line (invisible and format characters removed; still untrusted text): nil when the event is redacted (the homeserver strips its content), is not text, or is edited
   // (an edit target, or one with an m.replace bundled: the original body is the pre-edit text, which its author replaced), or is nothing but
@@ -340,7 +342,7 @@ export function createMouth({
     }
     const line = bodyText({ ...c, body }, docs.limits.contextBytes)
       .replace(/[\r\n\t\u2028\u2029]+/g, " ")
-      .replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069]|[\p{Cf}\p{Co}\u{E0000}-\u{E007F}]|[\uD800-\uDFFF]/gu, "")
+      .replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\u034f\u115f\u1160\u17b4\u17b5\u180b-\u180f\u2065\u2800\u3164\ufe00-\ufe0f\uffa0\ufff0-\ufff8]|[\p{Cf}\p{Co}\u{E0000}-\u{E007F}\u{E0080}-\u{E00FF}\u{E0100}-\u{E0FFF}]|[\uD800-\uDFFF]/gu, "")
       .trim();
     const cut = [...line].slice(0, docs.limits.replyExcerpt).join("").trimEnd();
     return cut === "" ? null : cut;
@@ -354,7 +356,7 @@ export function createMouth({
     try {
       const target = await matrix("GET", `/rooms/${encodeURIComponent(roomId)}/event/${encodeURIComponent(eventId)}`, undefined, API, AbortSignal.timeout(sendTimeoutMs));
       if (target?.room_id === undefined || target.room_id === roomId) { // an id from another room is not an answer about this one: no sender, no text
-        sender = typeof target?.sender === "string" && target.sender !== "" ? target.sender : null;
+        sender = docs.isMatrixId("@", target?.sender) ? target.sender : null;
         if (sender !== null) excerpt = excerptOf(target);
       }
     } catch (error) {
@@ -363,7 +365,7 @@ export function createMouth({
     }
     const t = now();
     const entry = sender !== null ? { sender, excerpt, at: t, good: t }
-      : transient && known?.sender != null && t - known.good <= KEEP_HIT_MS ? { ...known, at: t } // a transient failure (network, timeout, 5xx, 429) keeps the earlier hit and renews only its age, for at most KEEP_HIT_MS after the last good read
+      : transient && known?.sender != null && t - known.good <= KEEP_HIT_MS ? { ...known, excerpt: null, at: t } // a transient failure (network, timeout, 5xx, 429) keeps the earlier hit's sender and renews only its age, for at most KEEP_HIT_MS after the last good read; never its excerpt (a re-read happens only after TARGET_TTL_MS, so the excerpt is already as old as a good read may be, and a renewed entry must not serve it again)
       : { sender: null, excerpt: null, at: t }; // any other failure (403, 404, wrong room, no sender), or a hit kept too long, is the failure entry
     authors.set(key, entry);
     if (authors.size > DELIVERED_INDEX) authors.delete(authors.keys().next().value);
@@ -372,17 +374,18 @@ export function createMouth({
   const authorOf = async (roomId, eventId) => (await targetOf(roomId, eventId)).sender;
   // The event a message replies to: its own m.in_reply_to, unless that is a thread's fallback pointer (is_falling_back), which
   // names no one. nil when the target cannot be read or sits in another room.
+  const DEFER = Symbol("defer"); // replyToOf's answer when the round's read cap is spent: the delivery waits for the next round, as at the pending cap
   async function replyToOf(roomId, event) {
     if (!replyLink || formOf(event.content) !== "message") return null;
     const r = event.content["m.relates_to"]?.["m.in_reply_to"];
     const id = r?.event_id;
     if (typeof id !== "string" || id === "" || event.content["m.relates_to"]["is_falling_back"] === true) return null;
     if (!cachedTarget(`${roomId} ${id}`)) {
-      if (replyReads >= REPLY_READS_PER_ROUND) { say(`reply target ${id} not read: round cap`); return null; }
+      if (replyReads >= REPLY_READS_PER_ROUND) { say(`reply target ${id} not read: round cap, the rest of the round waits for the next`); return DEFER; }
       replyReads++;
     }
     const { sender, excerpt } = await targetOf(roomId, id);
-    return sender === null ? null : { eventId: id, sender, excerpt };
+    return sender === null || !docs.isMatrixId("$", id) ? null : { eventId: id, sender, excerpt };
   }
   async function repliesToMe(roomId, relates) {
     const targets = new Set([relates?.["m.in_reply_to"]?.event_id, relates?.rel_type === "m.thread" ? relates.event_id : undefined].filter(id => typeof id === "string" && id !== ""));
@@ -453,14 +456,15 @@ export function createMouth({
         const atUnixMs = Number.isSafeInteger(ts) && ts >= 0 ? ts : now();
         const deliverable = !baseline && !freshRooms.has(roomId) && event.sender !== selfId;
         if (deliverable && pending.length + made.length >= maxPending) { truncated = true; break rounds; }
+        const basis = deliverable ? await basisOf(roomId, event) : null;
+        const replyTo = deliverable ? await replyToOf(roomId, event) : null;
+        if (replyTo === DEFER) { truncated = true; break rounds; } // not processed: the next round meets this event again, with its read count reset
         processed.add(event.event_id);
         if (deliverable) {
           const context = await contextFor(roomId, event, round);
           const { image = null, refused = null } = await imageOf(roomId, event.content);
           if (refused !== null) say(`image refused: ${refused}`);
           const mentioned = event.content["m.mentions"]?.user_ids;
-          const basis = await basisOf(roomId, event);
-          const replyTo = await replyToOf(roomId, event);
           made.push({
             seq: ++seqCounter, roomAlias: alias, roomId, eventId: event.event_id, sender: event.sender,
             senderDisplay: displayNames.get(event.sender) ?? localpart(event.sender), text: bodyText(event.content, docs.limits.textBytes, refused), atUnixMs,

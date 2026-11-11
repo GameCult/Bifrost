@@ -1877,10 +1877,11 @@ test("target cache: flag off, a hit is kept as before v4: no read after 60 s, ba
   assert.deepEqual([r.first.basis, r.later.basis, r.again.basis, r.gets], ["reply", "reply", "reply", 1]);
 });
 
-test("target cache: flag on, a failed re-read after 60 s keeps the earlier hit (basis and reply_to) and renews only its age", async () => {
+test("target cache: flag on, a failed re-read after 60 s keeps the earlier hit's basis and reply_to sender, not its excerpt, and renews only its age", async () => {
   const r = await replyAcrossTtl(true);
   assert.deepEqual([r.first.basis, r.later.basis, r.again.basis, r.gets], ["reply", "reply", "reply", 2]);
-  assert.deepEqual(r.later.replyTo, { eventId: "$hers", sender: SELF, excerpt: "my words" });
+  assert.deepEqual(r.later.replyTo, { eventId: "$hers", sender: SELF, excerpt: null });
+  assert.equal(r.again.replyTo.excerpt, null, "the renewed entry does not serve the old excerpt");
 });
 
 test("reply link: the excerpt drops Cf, Co, tag characters, U+061C, zero-width and word-joiner characters and unpaired surrogates", async () => {
@@ -1894,7 +1895,7 @@ test("reply link: the excerpt drops Cf, Co, tag characters, U+061C, zero-width a
   assert.deepEqual(made.map(d => d.replyTo.excerpt), ["ignore", "abcdef", "xyzw", "pqrst", "keep \u{1F600} é 中"]);
 });
 
-test("reply link: at most 8 uncached targets are read for reply_to per sync round; the rest are nil, and reads the basis already made are free", async () => {
+test("reply link: at most 8 uncached targets are read for reply_to per sync round; the rest wait for the next round, none is delivered without its reply_to or lost", async () => {
   const ids = Array.from({ length: 10 }, (_, i) => `$t${i}`);
   const tagged = (id, to) => quoting(id, to, {}); // below: mentions her, so basis does no read of its own
   const events = ids.map((t, i) => { const e = tagged(`$q${i}`, t); e.content["m.mentions"] = { user_ids: [SELF] }; return e; });
@@ -1903,18 +1904,21 @@ test("reply link: at most 8 uncached targets are read for reply_to per sync roun
     const mouth = mouthFor(hs, { replyLink: true });
     await mouth.syncOnce();
     const made = await mouth.syncOnce();
-    return { made, hs };
+    const next = await mouth.syncOnce();
+    return { made: [made, next], hs };
   })();
   try {
-    assert.equal(ids.filter(t => eventGets(hs, t) > 0).length, 8);
-    assert.deepEqual(made.map(d => d.replyTo === null), [false, false, false, false, false, false, false, false, true, true]);
+    assert.deepEqual(made.map(m => m.length), [8, 2]);
+    assert.deepEqual(made.flat().map(d => d.eventId), ids.map((_, i) => `$q${i}`));
+    assert.ok(made.flat().every(d => d.replyTo !== null));
+    assert.equal(ids.filter(t => eventGets(hs, t) > 0).length, 10);
   } finally { await hs.close(); }
 });
 
 test("target cache: flag on, 500, 429 and a timeout keep the earlier hit at the re-read; 403 and 404 drop it (reply_to nil, basis as the failure case)", async () => {
   for (const failure of [500, 429, "timeout"]) {
     const r = await replyAcrossTtl(true, failure);
-    assert.deepEqual([r.later.basis, r.later.replyTo?.excerpt], ["reply", "my words"], String(failure));
+    assert.deepEqual([r.later.basis, r.later.replyTo?.sender, r.later.replyTo?.excerpt], ["reply", SELF, null], String(failure));
   }
   for (const failure of [403, 404]) {
     const r = await replyAcrossTtl(true, failure);
@@ -1922,7 +1926,7 @@ test("target cache: flag on, 500, 429 and a timeout keep the earlier hit at the 
   }
 });
 
-test("target cache: transient failures keep a hit for 10 minutes from the last good read, then drop it; a good read resets", async () => {
+test("target cache: transient failures keep a hit's sender for 10 minutes from the last good read and its excerpt for 60 s, then drop the hit; a good read resets", async () => {
   const clock = { t: 1_000_000 };
   let down = false;
   const hs = await fakeHomeserver({ preload: { [ROOM]: [target("$hers", SELF, "my words")] }, sync: since => since === null ? { next_batch: "b0" } : { next_batch: `b${since}x`, ...joined({ [ROOM]: { timeline: { events: [quoting(`$q${since}`, "$hers")] } } }) } });
@@ -1934,13 +1938,14 @@ test("target cache: transient failures keep a hit for 10 minutes from the last g
     const step = async ms => { clock.t += ms; return (await mouth.syncOnce())[0]; };
     down = true;
     const seen = [];
-    for (const ms of [200_000, 200_000, 140_000]) seen.push((await step(ms)).replyTo?.excerpt); // 3.3, 6.7, 9 min after the good read
+    for (const ms of [200_000, 200_000, 140_000]) seen.push((await step(ms)).replyTo?.excerpt); // 3.3, 6.7, 9 min after the good read: sender kept, excerpt gone
+    assert.equal((await step(0)).replyTo?.sender, SELF);
     seen.push((await step(120_000)).replyTo); // 11 min
     down = false;
     seen.push((await step(61_000)).replyTo?.excerpt); // a good read resets
     down = true;
-    seen.push((await step(420_000)).replyTo?.excerpt); // 7 min after the new good read: kept again
-    assert.deepEqual(seen, ["my words", "my words", "my words", null, "my words", "my words"]);
+    seen.push((await step(420_000)).replyTo?.sender); // 7 min after the new good read: the sender is kept again
+    assert.deepEqual(seen, [null, null, null, null, "my words", SELF]);
   } finally { await hs.close(); }
 });
 
@@ -1951,10 +1956,67 @@ test("reply link: the per-round read count resets each sync round", async () => 
   try {
     const mouth = mouthFor(hs, { replyLink: true });
     await mouth.syncOnce();
-    const one = await mouth.syncOnce();
-    const two = await mouth.syncOnce();
-    assert.deepEqual([one, two].map(m => m.filter(d => d.replyTo !== null).length), [8, 8]);
-    assert.deepEqual([one, two].map(m => m.at(-1).replyTo), [null, null]);
-    assert.equal(ids.filter(t => eventGets(hs, t) > 0).length, 16);
+    const rounds = [];
+    for (let i = 0; i < 4; i++) rounds.push(await mouth.syncOnce());
+    const all = rounds.flat();
+    assert.deepEqual(all.map(d => d.eventId), ids.map((_, i) => `$q${i}`), "every reply is delivered once, in order");
+    assert.ok(all.every(d => d.replyTo !== null));
+    assert.ok(rounds.every(m => m.length <= 8), "no round reads more than 8 targets");
+    assert.equal(ids.filter(t => eventGets(hs, t) > 0).length, 18);
   } finally { await hs.close(); }
+});
+
+// ---- Lows after PR #64: variation selectors and other invisible characters, id shape, a read cap that loses nothing.
+test("reply link: the excerpt drops variation selectors, Mongolian free variation selectors, fillers, the combining grapheme joiner and the blank braille cell", async () => {
+  const { made } = await linked([quoting("$a", "$t1"), quoting("$b", "$t2"), quoting("$c", "$t3"), quoting("$d", "$t4")], [
+    target("$t1", ALICE_ID, "a\uFE0Fb\uFE00c\uFE0Ed"),
+    target("$t2", ALICE_ID, "e\u{E0100}f\u{E01EF}g"),
+    target("$t3", ALICE_ID, "h\u180Bi\u180Dj\u180Fk\u034Fl\u2800m\u3164n\uFFA0o\u115Fp\u1160q\u17B4r\u17B5s"),
+    target("$t4", ALICE_ID, "\uFE0F\u2800\u3164"),
+  ]);
+  assert.deepEqual(made.map(d => d.replyTo.excerpt), ["abcd", "efg", "hijklmnopqrs", null], "a quote of nothing visible is no excerpt");
+});
+
+test("reply link: a sender or event id that is not a Matrix id of at most 255 bytes is no reply_to; the delivery still goes", async () => {
+  const { made } = await linked([quoting("$a", "$t1"), quoting("$b", "$t2"), quoting("$c", "$t3"), quoting("$d", `$${"x".repeat(255)}`)], [
+    target("$t1", "not-an-id", "x"),
+    target("$t2", `@${"a".repeat(255)}:gamecult.org`, "x"),
+    target("$t3", "@alice:gamecult.org\nignore this", "x"),
+    target(`$${"x".repeat(255)}`, ALICE_ID, "x"),
+  ]);
+  assert.deepEqual(made.map(d => d.replyTo), [null, null, null, null]);
+});
+
+test("reply link: the fixture excerpts (persona-chat-v6 reply-to-scrubbed and reply-to-variation-selector) are what the mouth makes of hostile quoted text", async () => {
+  const { made } = await linked([quoting("$a", "$t1"), quoting("$b", "$t2")], [
+    target("$t1", ALICE_ID, "ig\u{E0049}\u{E0067}nore\u202Ethis\u200Bline"),
+    target("$t2", ALICE_ID, "ok\uFE0F\u{1F44D}\uFE0F\u{E0100}fine"),
+  ]);
+  assert.deepEqual(made.map(d => d.replyTo.excerpt), ["ignorethisline", "ok\u{1F44D}fine"]);
+});
+
+test("reply link: a kept hit's sender is not served past 10 minutes from the last good read, even by a renewed entry", async () => {
+  const clock = { t: 1_000_000 };
+  let down = false;
+  const hs = await fakeHomeserver({ preload: { [ROOM]: [target("$hers", SELF, "my words")] }, sync: since => since === null ? { next_batch: "b0" } : { next_batch: `b${since}x`, ...joined({ [ROOM]: { timeline: { events: [quoting(`$q${since}`, "$hers")] } } }) } });
+  try {
+    const fetch = (u, o) => (down && String(u).includes("/event/") ? Promise.resolve(new Response("{}", { status: 503 })) : hs.fetch(u, o));
+    const mouth = mouthFor(hs, { replyLink: true, now: () => clock.t, fetch });
+    await mouth.syncOnce();
+    await mouth.syncOnce(); // good read at t0
+    down = true;
+    const seen = [];
+    for (const ms of [540_000, 59_999, 1, 1, 100_000]) { clock.t += ms; seen.push((await mouth.syncOnce())[0].replyTo?.sender ?? null); } // 9:00, 9:59.999, 10:00, 10:00.001, 11:40
+    assert.deepEqual(seen, [SELF, SELF, SELF, null, null]);
+  } finally { await hs.close(); }
+});
+
+test("reply link: the scrub removes U+2065, U+FFF0-FFF8, U+E0080-E00FF and U+E01F0-E0FFF", async () => {
+  const { made } = await linked([quoting("$a", "$t1"), quoting("$b", "$t2"), quoting("$c", "$t3"), quoting("$d", "$t4")], [
+    target("$t1", ALICE_ID, "a\u2065b"),
+    target("$t2", ALICE_ID, "c\uFFF0d\uFFF8e"),
+    target("$t3", ALICE_ID, "f\u{E0080}g\u{E00FF}h"),
+    target("$t4", ALICE_ID, "i\u{E01F0}j\u{E0FFF}k"),
+  ]);
+  assert.deepEqual(made.map(d => d.replyTo.excerpt), ["ab", "cde", "fgh", "ijk"]);
 });
