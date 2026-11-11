@@ -102,6 +102,8 @@ public sealed class DeskAnswerTests
             Assert.Equal(422, first.Status);
             Assert.Equal(first.Status, replay.Status);
             Assert.Equal(first.Body, replay.Body);
+            Assert.Equal("fork_too_large", (string?)JsonNode.Parse(replay.Body)!["code"]);
+            Assert.Contains(DeskReplay.ChatFork, (string)JsonNode.Parse(replay.Body)!["error"]!);
             Assert.Equal(2, factory.Door.Calls.Count(c => c.Kind == "answer"));
             Assert.Equal(2, factory.Door.Calls.Count(c => c.Kind == "read"));
         }
