@@ -5,6 +5,7 @@ using Bifrost.Web.Features.Shared;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
@@ -92,7 +93,9 @@ public sealed class OidcTestKit : IDisposable
         ["Bifrost:Oidc:EncryptionKeyPath"] = EncryptionKeyPath,
         ["Bifrost:Oidc:Clients:Mas:ClientId"] = ClientId,
         ["Bifrost:Oidc:Clients:Mas:ClientSecretPath"] = ClientSecretPath,
-        ["Bifrost:Oidc:Clients:Mas:RedirectUri"] = RedirectUri
+        ["Bifrost:Oidc:Clients:Mas:RedirectUri"] = RedirectUri,
+        // The shared test client has no remote address, so every request is one caller: the budgets are out of the way unless a test sets them.
+        ["Bifrost:Oidc:Limits:PerAddressPermits"] = "100000",
     };
 
     public void Dispose()
@@ -113,6 +116,11 @@ public sealed class OidcTestClock : TimeProvider
     private DateTimeOffset _now = DateTimeOffset.UtcNow;
 
     public override DateTimeOffset GetUtcNow() => _now;
+
+    // The monotonic reading follows the moved time, so a budget's window can be aged the same way as a parked request.
+    public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+
+    public override long GetTimestamp() => _now.UtcTicks;
 
     public void Advance(TimeSpan by) => _now += by;
 }
@@ -255,6 +263,64 @@ public sealed class OidcFixedIdentityFactory(string identity) : OidcWebApplicati
                 DisplayName = "Fixed Identity",
                 Membership = new Bifrost.Web.Domain.Membership { Status = MembershipStatus.Active }
             }));
+    }
+}
+
+/// <summary>An OIDC host with extra settings (limits, a brake path) applied after the kit's own.</summary>
+public sealed class OidcSettingsFactory(IReadOnlyDictionary<string, string?> settings) : OidcWebApplicationFactory
+{
+    protected override void ConfigureWebHost(IWebHostBuilder builder)
+    {
+        base.ConfigureWebHost(builder);
+        foreach (var (key, value) in settings)
+        {
+            builder.UseSetting(key, value);
+        }
+    }
+
+    public Task PruneAsync() => Services.GetRequiredService<Bifrost.Web.Features.Oidc.OidcPruner>().PruneAsync(CancellationToken.None);
+
+    public async Task<List<string?>> TokenTypesAsync()
+    {
+        using var scope = Services.CreateScope();
+        var manager = scope.ServiceProvider.GetRequiredService<OpenIddict.Abstractions.IOpenIddictTokenManager>();
+        var types = new List<string?>();
+        await foreach (var token in manager.ListAsync())
+        {
+            types.Add(await manager.GetTypeAsync(token));
+        }
+
+        return types;
+    }
+
+    public async Task<int> AuthorizationRowsAsync()
+    {
+        using var scope = Services.CreateScope();
+        return (int)await scope.ServiceProvider.GetRequiredService<OpenIddict.Abstractions.IOpenIddictAuthorizationManager>().CountAsync();
+    }
+
+    /// <summary>Tokens that belong to some authorization (the request and code rows carry none once spent).</summary>
+    public async Task<int> TokensOfAuthorizationsAsync()
+    {
+        using var scope = Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
+        return await db.Set<OpenIddictEntityFrameworkCoreToken>().CountAsync(token => token.Authorization != null);
+    }
+
+    public async Task RevokeFirstAuthorizationAsync()
+    {
+        using var scope = Services.CreateScope();
+        var manager = scope.ServiceProvider.GetRequiredService<OpenIddict.Abstractions.IOpenIddictAuthorizationManager>();
+        await foreach (var authorization in manager.ListAsync(count: 1, offset: 0))
+        {
+            Assert.True(await manager.TryRevokeAsync(authorization));
+        }
+    }
+
+    public async Task<int> TokenRowsAsync()
+    {
+        using var scope = Services.CreateScope();
+        return (int)await scope.ServiceProvider.GetRequiredService<OpenIddict.Abstractions.IOpenIddictTokenManager>().CountAsync();
     }
 }
 

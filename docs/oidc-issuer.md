@@ -44,6 +44,8 @@ echoes its value.
 | `Bifrost:Oidc:Clients:Mas:ClientId` | The client id MAS presents. |
 | `Bifrost:Oidc:Clients:Mas:ClientSecretPath` | File holding the client secret. |
 | `Bifrost:Oidc:Clients:Mas:RedirectUri` | MAS's callback URL, registered exactly. |
+| `Bifrost:Oidc:BrakePath` | Optional. While a file exists at this path, `/connect/authorize`, `/token` and `/userinfo` answer 503 `temporarily_unavailable` and nothing is issued; delete the file to release. Checked per request, so no restart. Unset: no marker brake. |
+| `Bifrost:Oidc:Limits:*` | `PerAddressPermits` (30), `Window` (1 min), `MaxTrackedKeys` (10000), `MaxTokenRows` (20000), `PruneInterval` (5 min). |
 | `Bifrost:Oidc:Clients:Mas:BackchannelLogoutUri` | Optional. MAS's back-channel logout URL, `https://<mas>/upstream/backchannel-logout/<provider ULID>`; absolute http(s) or startup fails. Unset: no logout is sent and no authorization is revoked. |
 
 There are no development or ephemeral keys in the host. Key files are provisioned like the other
@@ -111,17 +113,35 @@ Configure MAS's upstream provider with the issuer above, the client id and secre
 from `preferred_username`. MAS mints the Matrix localpart on first sign-in, so the claim must never change for an
 account.
 
+## Limits, prune, brake
+
+`OidcGuardMiddleware` sits ahead of OpenIddict and guards the three endpoints, matched by path segment so a trailing slash
+is no way around it. In order: the marker brake (503; a marker that cannot be read is treated as engaged); one per-address
+budget over the three endpoints together (429 with `Retry-After`; the address is the connection's after forwarded-headers
+handling that trusts only the local proxy, IPv6 keyed by /64); and a cap on token rows: a new authorize request (no
+`request_uri`) is refused with 503 while the table holds `MaxTokenRows`. Any failure inside the guard is a 503, never a pass.
+MAS's flow is a handful of requests per sign-in from one address, far under the defaults (30 a minute is about 15 sign-ins).
+
+There is no per-client budget. The one client's id is public and what a caller names is unverified, so a budget keyed on it
+would let anyone spend the real client's permits and lock sign-in out. The bound on the anonymous endpoint is the address
+budget plus the row cap, and the cap is itself a switch an attacker with many addresses can flip: it refuses new sign-ins
+(never resumed ones) until the next prune frees rows, which is the bounded failure chosen over unbounded parked rows.
+Not parking state before the user authenticates (as pushed authorization requests avoid by authenticating the client first)
+would remove the switch, and OpenIddict's request caching does not offer that.
+
+`OidcPruner` runs every `PruneInterval` and deletes tokens past expiry (parked authorize requests, codes, access tokens) or no
+longer valid, then authorizations no longer valid or ad hoc with no token left (younger than five minutes are left alone).
+Live rows are untouched. Plain EF queries rather than OpenIddict's own prune, which uses ExecuteDelete and cannot run on the
+in-memory provider the tests use.
+
+`docs/oidc-reserved-accounts.sql` is the read-only query for existing accounts that hold one of the 28 reserved names.
+
 ## Not built
 
 Checked against the Window B list (2026-11-11). Present and tested: discovery, JWKS, authorize/token/userinfo, PKCE S256,
 the one client, claims to a Matrix-legal localpart (`[a-z0-9._-]`, 3-80, lower case), reserved names at creation and now at
 issuance, back-channel logout. Not present:
 
-- **Rate limits and pruning.** No limiter sits on `/connect/*`, and expired OpenIddict rows (parked authorize requests,
-  tokens, authorizations) are never deleted. The authorize endpoint is anonymous and its client id and redirect URI are
-  public, so a caller can park rows without bound. Needs a budget (`FixedWindowBudget`) and a prune.
-- **A brake.** The Bifrost process has none; the deploy brake belongs to Idunn. The only off switch is removing
-  `Bifrost:Oidc` and restarting, or membership leaving `Active` (the reconciler then logs the person out).
 - **Non-member sign-in.** The gate is `Active` membership, so an account with no membership gets `access_denied`. A "Users"
   tier for chat registration, with no vote, is a policy choice not yet made; nothing here writes membership or votes.
 - **MAS upstream block.** `gamecult-ops` `chat/matrix-auth/config.yaml` has no `upstream_oauth2` (provider ULID,

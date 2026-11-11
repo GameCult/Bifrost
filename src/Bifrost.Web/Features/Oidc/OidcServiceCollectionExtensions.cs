@@ -67,6 +67,9 @@ public static class OidcServiceCollectionExtensions
             server.Issuer = issuer;
         });
 
+        services.AddSingleton<OidcRateLimit>();
+        services.AddSingleton<OidcPruner>();
+        services.AddHostedService(provider => provider.GetRequiredService<OidcPruner>());
         services.AddHostedService<OidcClientSeeder>();
         if (!string.IsNullOrWhiteSpace(options.Clients.Mas.BackchannelLogoutUri))
         {
