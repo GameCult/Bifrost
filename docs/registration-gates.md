@@ -80,21 +80,33 @@ raise the wait or lower the budget; do not add a visual or audio puzzle, which e
 Lives in Bifrost: the account, the receipt and the registration are one transaction, and chat admission is Bifrost's
 decision (`admission-is-bifrost-membership`).
 
+- Consent is optional. Registration succeeds with or without it; a receipt exists only if the person agreed. See
+  `training-notice.md` for why and for what the notice says.
 - Notice: `TrainingNotice.Version` (positive integer, no leading zeros, per the version rule in Heimdall's
-  `answer-collector-consent.md`) and `TrainingNotice.Text`. Served at `GET /auth/bifrost/notice`. The text in the repo is
-  draft wording. Eureka owns the final wording in gamecult-ops; changing the text is a version bump, never an edit in
-  place. The text states that no Discord material is used.
-- Receipt: `ConsentReceipt` (account, notice version, `AcceptedAtUtc`, `WithdrawnAtUtc`), unique per account and version,
-  written in the same save as the account. Registration without `acceptedNoticeVersion` equal to the current version
-  creates nothing. A new notice version needs a new acceptance; there is no path yet that asks for one.
-- Withdrawal: `POST /auth/bifrost/consent/withdraw`, signed in, sets `WithdrawnAtUtc` once on the account's receipts.
-  Withdrawal stops future use and cannot recall past use; the notice says so. The row is one-way and never deleted.
-- Consumer: a training export must include an account's data only while a receipt for the notice version in force
-  exists with `WithdrawnAtUtc` null. No export exists in Bifrost; this page is the contract it will be built against.
+  `answer-collector-consent.md`) and `TrainingNotice.Text`, served at `GET /auth/bifrost/notice`. Version 2 is in force.
+  Changing the text is a version bump, never an edit in place. The text states that nothing from Discord is used.
+- Receipt: `ConsentReceipt` (account, notice version, `AcceptedAtUtc`, `WithdrawnAtUtc`). One live (not withdrawn)
+  receipt per account and version; withdrawn rows stay as history. At registration an `acceptedNoticeVersion` equal to
+  the version in force writes the receipt in the same save as the account; a different version is refused (400) and creates
+  nothing; absent means no receipt.
+- Consent page: `GET /auth/bifrost/consent`, for any signed-in account (native, provider, existing). It shows the notice,
+  the account's state (no agreement, agreed to the current version, agreed to an older one, withdrawn) and the buttons
+  that apply: Withdraw whenever any receipt is live, Agree whenever none is live for the version in force (so an account
+  on an older version sees both). `POST /auth/bifrost/consent/accept` and `POST /auth/bifrost/consent/withdraw` are form posts refused
+  with 403 unless they came from the site itself (the strict `RequestOriginGuard`), before anything is read or written.
+  Agree is idempotent; withdraw stamps `WithdrawnAtUtc` once and deletes nothing; agreeing again after a withdrawal writes
+  a new live receipt. Withdrawal stops future use and cannot recall past use; the notice says so.
+- A version bump: receipts name the version agreed to, so after a bump no receipt matches and everyone is out of the set
+  until they agree to the new version on the consent page, which tells them their agreement is to an older version. No
+  one is prompted anywhere else; silence means no.
+- Consumer: a training export must include an account's data only while a live receipt for the notice version in force
+  exists. No export exists in Bifrost; this page is the contract it will be built against, and the notice is not
+  operative for real people until the export enforces it with a test that a withdrawn or never-agreed account's rows are
+  absent.
 
-Scope limits: accounts that arrive through Heimdall providers (Discord, Patreon, Twitch, GitHub) are created in
-`HeimdallAuthService.UpsertUserAccountAsync` and get no receipt. They reach chat the same way. Closing that needs a
-consent step on the completion page and is the next cut. Existing accounts are not re-asked.
+Limits: accounts without a receipt (provider-created, existing, registered without agreeing) are excluded, which is the
+rule, and they opt in on the consent page. A native account that loses its session cannot reach the page (no credential
+until sign-in recovery exists), so it cannot withdraw.
 
 ## Email verification
 

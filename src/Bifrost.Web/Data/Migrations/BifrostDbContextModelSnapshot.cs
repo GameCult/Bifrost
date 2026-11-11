@@ -1461,7 +1461,8 @@ namespace Bifrost.Web.Data.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("UserAccountId", "NoticeVersion")
-                        .IsUnique();
+                        .IsUnique()
+                        .HasFilter("\"WithdrawnAtUtc\" IS NULL");
 
                     b.ToTable("ConsentReceipts");
                 });

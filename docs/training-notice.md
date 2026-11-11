@@ -1,101 +1,64 @@
-# Training notice: proposed version 2
+# Training notice, version 2
 
-Proposal from Eureka, for Heimdall to merge or refuse. It changes no code and no served text; merging it records the
-proposal, and putting it live is a separate cut that bumps `TrainingNotice.Version` (see "To put it live"). Companion to
-`docs/registration-gates.md`, whose "Consent receipt" section is the contract this reads against. Read against main
-`33be966`: `TrainingNotice.cs`, the register and withdraw handlers in `Program.cs`, and the doc. Not run, not tested.
+Eureka proposed a tighter notice and listed five gaps in the receipt flow (PR #55). The steward (Heimdall) ruled on
+2026-11-11. The served text is `TrainingNotice.Text` and nothing else: this page records why it says what it says and
+what each gap became, and does not repeat the wording. Contract for the receipt and the export is in
+`registration-gates.md`.
 
-## What is wrong with version 1
+## What version 2 changed from version 1
 
-| Line in version 1 | Problem |
+| Version 1 | Version 2 |
 | --- | --- |
-| "Chat messages and activity" | "Activity" names nothing. A reader cannot tell whether it covers display names, reactions, presence, direct messages or the email address Bifrost will soon hold. |
-| "train and evaluate AI models" | Whose models, and does the text leave GameCult? Sending chat to a vendor's API to answer a message is different from building a dataset. The notice must say which it is. |
-| "No Discord material is used" | True only if nothing bridged from Discord reaches a chat room. The sentence is a promise about the whole room, not about the registrant, and nobody has checked that no bridge exists. |
-| "you can withdraw it at any time" | No form and no page exists. A native account has no credential (`registration-gates.md`, Email verification), and withdrawal needs a signed-in session. The sentence promises a door the person cannot yet reach. |
-| "Withdrawing stops future use; it cannot recall use that already happened" | Honest, but silent on the question people actually ask: is my data deleted. It is not, and the notice must say so. |
-| Registration without acceptance creates nothing | Consent is a condition of having an account. That is not a free choice, and the contract already treats "no receipt" as "no use", so the condition buys nothing it does not already have. |
-| No controller, contact or retention | A person cannot tell who holds the receipt, for how long, or whom to ask. |
+| "Chat messages and activity" | Names what counts: the text of messages with time and room, tied to the account name. Not the email address, sign-in details or anything not posted. |
+| "train and evaluate AI models" | "that GameCult builds and runs". Whether a dataset or model may leave GameCult is Meta's call, still open (below); the notice makes no claim either way beyond what it says. |
+| "No Discord material is used" | "Nothing that came from Discord is used, in any form." Kept: `gamecult-chat:ruling:discord-taints-training`. Whether any path carries Discord content into a chat room is for the chat steward to confirm (not established here), and any that exists must be excluded from every set for the sentence to stay true. |
+| Consent required to register | Optional. See below. |
+| "withdraw at any time" with no door | Names the door: the consent page, while signed in. |
+| Silent on deletion | Says plainly that withdrawing deletes nothing and what it does and does not undo. |
 
-## Proposed text (version 2)
+## Rulings on the five gaps
 
-Square brackets mark words only Meta can fill; they are not in the served text until filled.
+1. **A native account with no session cannot withdraw.** True. A native account has no credential, so a visitor who loses
+   the session cookie has no way back in, to the consent page or anywhere else. Nothing in the consent flow can fix that;
+   sign-in recovery is the verified address (`registration-gates.md`, Email verification), not built. Until it is, such
+   a person cannot withdraw and the notice cannot promise otherwise. The consequence is bounded: consent is optional, so
+   the people affected are those who ticked it and then lost the session. This stays an open limit, listed under
+   "What remains".
+2. **A version bump silently drops everyone.** True, and it stays the behavior because it is the honest one: a receipt
+   records agreement to specific words, and new words are not agreed to. The export includes an account only while a live
+   (not withdrawn) receipt for the version in force exists. After a bump, everyone is out until they agree again. The
+   notice says so ("if the notice changes, its version changes and we ask again; until you agree to the new version, your
+   messages are not used"), and the consent page shows the person that their agreement is to an older version and
+   offers the new one. Nobody is emailed or prompted elsewhere; asking is the page's job, and silence means no.
+3. **Withdrawal had no CSRF check.** True. The session cookie's SameSite default is Lax, which already keeps a cross-site
+   POST from carrying it, but nothing in the handler relied on that. Both state changes (agree, withdraw) are now
+   form POSTs refused with 403 unless they came from the site itself (`RequestOriginGuard`, the strict form), before
+   anything is read or written.
+4. **Provider-created and existing accounts have no receipt.** Correct, and now stated as the rule: no receipt, no use.
+   They can opt in on the consent page like anyone else, which is also the only way an existing member is asked.
+5. **No export exists.** True. Every promise about use is a promise about code not written. The notice must not be
+   treated as operative for real people until the export enforces the contract with a test that a withdrawn or
+   never-agreed account's rows are absent (`registration-gates.md`, Consent receipt, Consumer). No deploy has put
+   version 2 in front of anyone.
 
-> **GameCult chat training notice, version 2**
->
-> GameCult may use messages you post in GameCult chat to train and evaluate AI models that GameCult builds and runs.
-> [Meta: confirm that this is the whole purpose, and whether any dataset or model leaves GameCult.]
->
-> **What counts.** The text of your messages, with their time and room, tied to your account name. Not your email
-> address, your sign-in details or anything you did not post. Nothing that came from Discord is used, in any form.
->
-> **It is your choice.** [If Meta rules consent optional:] You can use GameCult chat without agreeing. If you do not
-> agree, none of your messages are used.
->
-> **If you agree,** we record your account, this notice's version number and the time. Nothing else is stored with it.
->
-> **If you withdraw,** we leave all your messages out of every training set made after that moment. Withdrawing deletes
-> nothing: your messages stay in chat and on our servers, anything already used to train a model stays used, and a
-> dataset already built is not recalled. We keep the record that you agreed and when you withdrew. [Meta: deletion of
-> messages is a separate request, via ___, or not offered.]
->
-> **How to withdraw:** ___. **Questions:** ___.
+## Consent is optional
 
-About 170 words. Plain, no consent boilerplate, and every sentence is something the code or an owner can honour.
+Registration succeeds with or without agreement. A receipt exists only if the person agreed. The contract already
+excluded accounts without a receipt, so optional costs nothing in correctness; it costs training data, and it removes
+the objection that agreement obtained as a condition of an account is not a free choice. This is the steward's ruling
+on Eureka's recommendation; Meta can overrule it. One consequence: the registration form no longer enforces the notice.
 
-## What each change rests on
+## Still open for Meta
 
-- "Tied to your account name" and "not your email address": the export contract in `registration-gates.md` keys on the
-  account; nothing exports an address because no address is stored today. If email verification keeps the address, this
-  line becomes a rule the export must enforce, so keep it only if that is ruled.
-- "Leave all your messages out of every set made after": the contract says an export includes an account's data only
-  while a receipt with `WithdrawnAtUtc` null exists, so withdrawal excludes the account's whole history from later
-  exports, not just later messages. The notice says the stronger thing because the contract delivers it.
-- "Withdrawing deletes nothing": the withdraw handler sets a timestamp and nothing else. The room history lives in the
-  chat server, which Bifrost does not delete from. Whether backups hold it is for the chat steward to confirm.
-- "We keep the record": the receipt row is one-way and never deleted, so say it.
+- Purpose and scope: whether a dataset or model may leave GameCult, and whether a third-party model API processing
+  messages to answer them is covered. The notice is silent on both.
+- Deletion of messages on request, who does it, and the contact words. The notice offers none.
+- Controller and contact, and minimum age. Nothing here addresses either.
+- Whether existing members should be asked to opt in beyond the consent page existing.
+- Counsel's reading of consent under the law that applies to the people registering. Not researched here.
 
-## Receipt flow: gaps found in reading
+## What remains
 
-1. **Withdrawal needs a session a native registrant may not have.** `POST /auth/bifrost/consent/withdraw` returns 401
-   without a signed-in actor, and a native account has no credential until email verification gives it one. Until the
-   sign-in link exists, withdrawal by a native account is only possible through chat sign-in, if that works for them. I did
-   not trace whether it does.
-2. **No re-ask path.** A new notice version leaves every old receipt unequal to the current version. The contract is
-   fail-closed (no match, no export), which is safe, but it also means a version bump silently removes everyone from the
-   dataset. The notice should say a new version asks again and silence means no.
-3. **Provider-created and existing accounts have no receipt**, so they are excluded from any export. That is correct
-   behaviour and should be stated as the rule, not left as a "scope limit".
-4. **Withdrawal is not CSRF-checked in what I read.** It is a cookie-authenticated POST with no body. I did not test
-   whether the antiforgery or cookie same-site settings cover it. Heimdall should confirm.
-5. **Receipts are not exported anywhere yet.** The consumer (a training export) does not exist, so every promise above is
-   a promise about code not written. The notice should not go live to real people before the export enforces the
-   contract with a test that a withdrawn account's rows are absent.
-
-## Needs a decision
-
-For Meta (hers, not mine to settle):
-
-1. **Purpose and scope**: own-model training only, or datasets or models that leave GameCult? Third-party model APIs
-   processing messages to answer them: covered by this notice or not mentioned?
-2. **Optional or required consent.** I recommend optional: registration succeeds and a receipt exists only if ticked.
-   The contract already excludes anyone without a receipt, so the code change is to make `acceptedNoticeVersion`
-   nullable. Required consent is also a legal question (consent given as a condition of service is weak in the EU);
-   I am not counsel and did not verify this against current law.
-3. **Deletion**: offered on request, and by whom, or not offered. The notice must match.
-4. **Controller and contact** words, and how a person withdraws before the form exists.
-5. **Minimum age.** The notice and flow say nothing about children. Not researched.
-
-For members (the people whose messages these are): whether they want existing members asked at all. Version 1 does not
-re-ask existing accounts, so they stay out of any dataset; asking them is the only way they can opt in.
-
-For Heimdall: items 1, 4 and 5 under "Receipt flow", and whether a Discord bridge into a chat room exists or is planned
-(the ruling `gamecult-chat:ruling:discord-taints-training` forbids Discord material in training; the notice repeats it, so
-the claim must be true).
-
-## To put it live
-
-A code cut, after Meta fills the brackets: replace `TrainingNotice.Text`, set `Version = 2`, update the tests that pin
-version 1, and decide the optional-consent change in the same cut because it changes what a receipt means. Version 1
-should not have reached the public (the doc says no form exists; I did not check what is live), so a bump should cost no
-re-ask; any real account holding a version 1 receipt falls out of the dataset until asked again.
+- A signed-out native account cannot withdraw until sign-in recovery exists.
+- No training export, so no operative use.
+- Wording changes are a version bump with a new text; never edit version 2's text in place after it has been served.

@@ -25,6 +25,7 @@ public sealed class MigrationDiscoveryTests
         "20261109200000_AddSealedBallotMotions",
         "20261109210000_AddMindKeys",
         "20261111090000_AddConsentReceipts",
+        "20261111100000_ConsentReceiptsOneLivePerVersion",
     ];
 
     // Database.GetMigrations() reads assembly metadata only; no connection is opened.

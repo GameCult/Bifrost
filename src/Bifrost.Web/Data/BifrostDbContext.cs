@@ -325,7 +325,8 @@ public sealed class BifrostDbContext(DbContextOptions<BifrostDbContext> options)
 
         modelBuilder.Entity<ConsentReceipt>(entity =>
         {
-            entity.HasIndex(x => new { x.UserAccountId, x.NoticeVersion }).IsUnique();
+            // One live receipt per account and version; a withdrawn row stays as history and a later agreement is a new row.
+            entity.HasIndex(x => new { x.UserAccountId, x.NoticeVersion }).IsUnique().HasFilter("\"WithdrawnAtUtc\" IS NULL");
             entity.HasOne(x => x.UserAccount)
                 .WithMany()
                 .HasForeignKey(x => x.UserAccountId)

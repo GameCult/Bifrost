@@ -99,7 +99,7 @@ public static class RegistrationPage
             var link = model.ErrorField switch
             {
                 RegistrationField.Identity => """<ul><li><a href="#identity">Identity name</a></li></ul>""",
-                RegistrationField.Consent => """<ul><li><a href="#consent">I have read this notice and consent</a></li></ul>""",
+                RegistrationField.Consent => """<ul><li><a href="#consent">I agree to this notice (optional)</a></li></ul>""",
                 _ => ""
             };
             summary.Append($"""<div id="errors" role="alert" tabindex="-1"><strong>Registration did not go through.</strong><p>{E(model.Error)}</p>{link}</div>""");
@@ -153,8 +153,9 @@ public static class RegistrationPage
                     </fieldset>
                     <fieldset>
                       <legend>Training notice, version {{notice}}</legend>
-                      <p id="notice">{{E(TrainingNotice.Text)}}</p>
-                      <label class="check" for="consent"><input type="checkbox" id="consent" name="consent" value="yes" required aria-describedby="notice"{{Invalid(RegistrationField.Consent)}} />I have read this notice and consent</label>
+                      {{TrainingNotice.Html("notice")}}
+                      <label class="check" for="consent"><input type="checkbox" id="consent" name="consent" value="yes" aria-describedby="notice"{{Invalid(RegistrationField.Consent)}} />I agree to this notice (optional)</label>
+                      <p class="hint">Optional. You can create an account without agreeing; then none of your messages are used. You can agree later on your consent page.</p>
                       <input type="hidden" name="acceptedNoticeVersion" value="{{notice}}" />
                     </fieldset>
                     <input type="hidden" name="challenge" value="{{E(model.Challenge)}}" />
@@ -165,7 +166,7 @@ public static class RegistrationPage
                     <button type="submit" id="create">Create account</button>
                     <button type="submit" id="skip" class="secondary">Skip the automatic check and wait {{wait}} seconds instead</button>
                   </form>
-                  <p class="hint" id="wait-note">Without a script, or if the automatic check is slow, wait {{wait}} seconds after the page opened and press the button to skip it (or Create account when there is no script). Pressed sooner, the page comes back saying how many seconds remain and keeps your names; the consent box comes back unchecked, so tick the box again before you submit. Without the automatic check only a few registrations per hour are accepted from one address.</p>
+                  <p class="hint" id="wait-note">Without a script, or if the automatic check is slow, wait {{wait}} seconds after the page opened and press the button to skip it (or Create account when there is no script). Pressed sooner, the page comes back saying how many seconds remain and keeps your names; the consent box comes back unchecked, so tick it again if you want to agree. Without the automatic check only a few registrations per hour are accepted from one address.</p>
                   <p><small>After registering, Bifrost returns you to {{E(model.ReturnPath)}}.</small></p>
                 </main>
                 <script>{{Script}}</script>

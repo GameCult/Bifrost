@@ -110,6 +110,22 @@ internal static class FormKit
         return fields;
     }
 
+    /// <summary>A nonce that provably fails this page's challenge: its hash lacks the leading zero bits the difficulty needs.</summary>
+    public static string Unsolved(string html)
+    {
+        var challenge = Hidden(html, "challenge");
+        var difficulty = int.Parse(Regex.Match(html, "data-difficulty=\"(\\d+)\"").Groups[1].Value);
+        // Starts at a long marker value so a test can check the nonce is never echoed.
+        for (var nonce = 7777777777L; ; nonce++)
+        {
+            var text = nonce.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if (RegistrationChallengeService.LeadingZeroBits(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(challenge + ":" + text))) < difficulty)
+            {
+                return text;
+            }
+        }
+    }
+
     public static string Solved(string html) => RegistrationKit.Solve(Hidden(html, "challenge"), int.Parse(Regex.Match(html, "data-difficulty=\"(\\d+)\"").Groups[1].Value));
 }
 
@@ -149,12 +165,17 @@ public sealed class RegistrationFormTests(RegistrationFormFactory factory) : ICl
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.False(response.Headers.Contains("Set-Cookie"));
-        Assert.Contains(WebUtility.HtmlEncode(TrainingNotice.Text), html);
+        foreach (var paragraph in TrainingNotice.Text.Split("\n\n"))
+        {
+            Assert.Contains(WebUtility.HtmlEncode(paragraph), html);
+        }
+
         Assert.Contains($"version {TrainingNotice.Version}", html);
         Assert.Contains("<html lang=\"en\">", html);
-        Assert.Matches("<input type=\"checkbox\" id=\"consent\" name=\"consent\" value=\"yes\" required [^>]*/>", html);
+        Assert.Matches("<input type=\"checkbox\" id=\"consent\" name=\"consent\" value=\"yes\" [^>]*/>", html);
         Assert.DoesNotMatch("<input type=\"checkbox\"[^>]*\\bchecked\\b", html);
-        Assert.Contains("I have read this notice and consent", html);
+        Assert.Contains("I agree to this notice (optional)", html);
+        Assert.DoesNotMatch("<input type=\"checkbox\"[^>]*\\brequired\\b", html);
         foreach (var id in new[] { "identity", "displayName", "consent" })
         {
             Assert.Matches($"<label[^>]*for=\"{id}\"", html);
@@ -169,7 +190,7 @@ public sealed class RegistrationFormTests(RegistrationFormFactory factory) : ICl
         Assert.Matches("<button type=\"submit\" id=\"skip\"[^>]*>Skip the automatic check and wait \\d+ seconds instead</button>", html);
         Assert.DoesNotContain("a few seconds", html);
         Assert.DoesNotContain("nothing is lost", html);
-        Assert.Contains("tick the box again", html);
+        Assert.Contains("tick it again if you want to agree", html);
         Assert.DoesNotContain("<noscript", html);
         Assert.DoesNotContain("http://", html);
         Assert.DoesNotContain("https://", html);
@@ -238,27 +259,63 @@ public sealed class RegistrationFormTests(RegistrationFormFactory factory) : ICl
     }
 
     [Fact]
-    public async Task Without_the_consent_box_the_page_returns_with_an_error_a_fresh_challenge_and_nothing_created()
+    public async Task Without_the_consent_box_the_account_is_created_with_no_receipt()
+    {
+        using var client = Client();
+        var html = await FormKit.PageAsync(client);
+        var identity = NewIdentity();
+
+        using var response = await FormKit.PostAsync(client, FormKit.Fields(html, identity, consent: false, nonce: FormKit.Solved(html)));
+
+        Assert.Equal(HttpStatusCode.SeeOther, response.StatusCode);
+        Assert.True(Exists(identity));
+        Assert.False(Created(identity).Receipt);
+        using var scope = factory.Services.CreateScope();
+        Assert.Empty(scope.ServiceProvider.GetRequiredService<BifrostDbContext>().ConsentReceipts.Where(x => x.UserAccount!.NormalizedBifrostIdentity == identity));
+    }
+
+    [Fact]
+    public async Task The_consent_box_with_a_stale_version_returns_the_page_with_an_error_and_nothing_created()
     {
         using var client = Client();
         var html = await FormKit.PageAsync(client);
         var challenge = FormKit.Hidden(html, "challenge");
         var identity = NewIdentity();
         var before = Counts();
+        var fields = FormKit.Fields(html, identity, nonce: FormKit.Solved(html));
+        fields["acceptedNoticeVersion"] = "1";
 
-        using var response = await FormKit.PostAsync(client, FormKit.Fields(html, identity, consent: false, nonce: FormKit.Solved(html)));
+        using var response = await FormKit.PostAsync(client, fields);
         var again = await response.Content.ReadAsStringAsync();
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.Matches("role=\"alert\"", again);
-        Assert.Contains("requires accepting the training notice", again);
         Assert.Matches("id=\"consent\"[^>]*aria-invalid=\"true\" aria-describedby=\"errors\"", again);
         Assert.Contains("<a href=\"#consent\">", again);
         Assert.DoesNotMatch("<input type=\"checkbox\"[^>]*\\bchecked\\b", again);
         Assert.Contains($"value=\"{identity}\"", again);
         Assert.NotEqual(challenge, FormKit.Hidden(again, "challenge"));
-        Assert.DoesNotContain(challenge, again);
         Assert.Equal(before, Counts());
+    }
+
+    [Theory]
+    [InlineData("abc")]
+    [InlineData("02")]
+    [InlineData("002")]
+    [InlineData("+2")]
+    [InlineData(" 2")]
+    public async Task The_consent_box_with_a_version_that_is_not_the_canonical_decimal_is_refused_not_read_as_no_consent(string posted)
+    {
+        using var client = Client();
+        var html = await FormKit.PageAsync(client);
+        var identity = NewIdentity();
+        var fields = FormKit.Fields(html, identity, nonce: FormKit.Solved(html));
+        fields["acceptedNoticeVersion"] = posted;
+
+        using var response = await FormKit.PostAsync(client, fields);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.False(Exists(identity));
     }
 
     [Fact]
@@ -269,13 +326,15 @@ public sealed class RegistrationFormTests(RegistrationFormFactory factory) : ICl
         var challenge = FormKit.Hidden(html, "challenge");
         var identity = NewIdentity();
 
-        using var response = await FormKit.PostAsync(client, FormKit.Fields(html, identity, nonce: "7777777777"));
+        var nonce = FormKit.Unsolved(html);
+
+        using var response = await FormKit.PostAsync(client, FormKit.Fields(html, identity, nonce: nonce));
         var again = await response.Content.ReadAsStringAsync();
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.Contains("Registration challenge failed.", again);
         Assert.DoesNotContain(challenge, again);
-        Assert.DoesNotContain("7777777777", again);
+        Assert.DoesNotContain(nonce, again);
         Assert.False(Exists(identity));
     }
 

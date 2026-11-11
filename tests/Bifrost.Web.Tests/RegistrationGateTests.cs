@@ -60,22 +60,32 @@ public sealed class RegistrationGateTests(RegistrationGateFactory factory) : ICl
         Assert.Equal(before, Counts());
     }
 
-    [Fact]
-    public async Task No_consent_is_refused_and_creates_nothing()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task No_consent_registers_the_account_with_no_receipt(bool explicitNull)
     {
         using var client = Client();
         var (challenge, nonce) = await SolvedAsync(client);
+        var identity = NewIdentity();
+        object body = explicitNull
+            ? new { identity, challenge, nonce, acceptedNoticeVersion = (int?)null }
+            : new { identity, challenge, nonce };
 
-        await AssertRefusedCreatesNothingAsync(
-            client,
-            new { identity = NewIdentity(), challenge, nonce },
-            $"current version {TrainingNotice.Version}");
+        using var response = await RegistrationKit.PostAsync(client, body, anonymous: true);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
+        var account = db.UserAccounts.Single(x => x.NormalizedBifrostIdentity == identity);
+        Assert.Empty(db.ConsentReceipts.Where(x => x.UserAccountId == account.Id));
     }
 
     [Theory]
     [InlineData(0)]
     [InlineData(-1)]
-    [InlineData(2)]
+    [InlineData(1)]
+    [InlineData(3)]
     public async Task A_wrong_notice_version_is_refused_and_creates_nothing(int version)
     {
         using var client = Client();
@@ -224,82 +234,10 @@ public sealed class RegistrationGateTests(RegistrationGateFactory factory) : ICl
         var db = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
         var account = db.UserAccounts.Single(x => x.NormalizedBifrostIdentity == identity);
         var receipt = db.ConsentReceipts.Single(x => x.UserAccountId == account.Id);
-        Assert.Equal(1, receipt.NoticeVersion);
+        Assert.Equal(2, receipt.NoticeVersion);
+        Assert.Equal(TrainingNotice.Version, receipt.NoticeVersion);
         Assert.Null(receipt.WithdrawnAtUtc);
         Assert.InRange((factory.Time.GetUtcNow() - receipt.AcceptedAtUtc).Duration(), TimeSpan.Zero, TimeSpan.FromSeconds(5));
-    }
-
-    [Fact]
-    public async Task Withdraw_stamps_once_and_touches_only_the_caller()
-    {
-        using var client = Client();
-        var mine = NewIdentity();
-        var theirs = NewIdentity();
-        (await RegistrationKit.RegisterAsync(client, mine, anonymous: true)).Dispose();
-        (await RegistrationKit.RegisterAsync(client, theirs, anonymous: true)).Dispose();
-
-        async Task<JsonElement> WithdrawAsync()
-        {
-            using var request = new HttpRequestMessage(HttpMethod.Post, "/auth/bifrost/consent/withdraw");
-            request.Headers.Add("X-Test-Bifrost-Identity", mine);
-            using var response = await client.SendAsync(request);
-            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-            return await response.Content.ReadFromJsonAsync<JsonElement>();
-        }
-
-        var first = await WithdrawAsync();
-        factory.Time.Advance(TimeSpan.FromHours(1));
-        var second = await WithdrawAsync();
-
-        using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
-        var myReceipt = db.ConsentReceipts.Single(x => x.UserAccount!.NormalizedBifrostIdentity == mine);
-        var theirReceipt = db.ConsentReceipts.Single(x => x.UserAccount!.NormalizedBifrostIdentity == theirs);
-        Assert.NotNull(myReceipt.WithdrawnAtUtc);
-        Assert.Equal(myReceipt.WithdrawnAtUtc, first.GetProperty("withdrawnAtUtc").GetDateTimeOffset());
-        Assert.Equal(first.GetProperty("withdrawnAtUtc").GetDateTimeOffset(), second.GetProperty("withdrawnAtUtc").GetDateTimeOffset());
-        Assert.Null(theirReceipt.WithdrawnAtUtc);
-    }
-
-    [Fact]
-    public async Task Anonymous_withdraw_is_refused_and_changes_nothing()
-    {
-        using var client = Client();
-        var identity = NewIdentity();
-        (await RegistrationKit.RegisterAsync(client, identity, anonymous: true)).Dispose();
-
-        using var request = new HttpRequestMessage(HttpMethod.Post, "/auth/bifrost/consent/withdraw");
-        request.Headers.Add("X-Test-Anonymous", "true");
-        using var response = await client.SendAsync(request);
-
-        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
-        using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
-        Assert.DoesNotContain(db.ConsentReceipts, x => x.WithdrawnAtUtc != null && x.UserAccount!.NormalizedBifrostIdentity == identity);
-    }
-
-    [Fact]
-    public async Task Withdraw_for_an_account_with_no_receipt_is_404()
-    {
-        using var client = Client();
-        var identity = NewIdentity();
-        using (var scope = factory.Services.CreateScope())
-        {
-            var db = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
-            db.UserAccounts.Add(new Bifrost.Web.Domain.UserAccount
-            {
-                BifrostIdentity = identity,
-                NormalizedBifrostIdentity = identity,
-                DisplayName = identity
-            });
-            await db.SaveChangesAsync();
-        }
-
-        using var request = new HttpRequestMessage(HttpMethod.Post, "/auth/bifrost/consent/withdraw");
-        request.Headers.Add("X-Test-Bifrost-Identity", identity);
-        using var response = await client.SendAsync(request);
-
-        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
 
     [Fact]
@@ -309,7 +247,7 @@ public sealed class RegistrationGateTests(RegistrationGateFactory factory) : ICl
 
         var notice = await client.GetFromJsonAsync<JsonElement>("/auth/bifrost/notice");
 
-        Assert.Equal(1, notice.GetProperty("version").GetInt32());
+        Assert.Equal(2, notice.GetProperty("version").GetInt32());
         Assert.Contains("Discord", notice.GetProperty("text").GetString());
     }
 

@@ -35,8 +35,8 @@ public sealed record RegistrationOutcome(
 
 /// <summary>
 /// The one registration gate, run by the JSON endpoint and the form alike after each has spent the general address budget.
-/// Order: consent, one proof only, the identity rules (which spend nothing), the challenge (proof of work, or the
-/// time-lock plus its tighter budget), then the account and receipt in one save, then the cookie. A refusal at any step
+/// Order: consent version (when sent), one proof only, the identity rules (which spend nothing), the challenge (proof of work, or the
+/// time-lock plus its tighter budget), then the account (and its receipt when consent was sent) in one save, then the cookie. A refusal at any step
 /// creates nothing, and a refusal before the challenge step spends neither the challenge nor a fallback permit.
 /// </summary>
 public sealed class NativeRegistration(
@@ -46,12 +46,12 @@ public sealed class NativeRegistration(
 {
     public async Task<RegistrationOutcome> RunAsync(HttpContext http, RegistrationAttempt attempt, CancellationToken cancellationToken)
     {
-        // Consent first, then the proof; a refusal here creates nothing.
-        if (attempt.AcceptedNoticeVersion != TrainingNotice.Version)
+        // Consent is optional: none sends no receipt. A version that is sent must be the one in force; a refusal here creates nothing.
+        if (attempt.AcceptedNoticeVersion is { } sent && sent != TrainingNotice.Version)
         {
             return RegistrationOutcome.Reject(
                 StatusCodes.Status400BadRequest,
-                $"Registration requires accepting the training notice, current version {TrainingNotice.Version}.",
+                $"The training notice in force is version {TrainingNotice.Version}; send that version to agree, or send none to register without agreeing.",
                 RegistrationField.Consent);
         }
 
@@ -111,7 +111,7 @@ public sealed class NativeRegistration(
 
         try
         {
-            var account = await identities.RegisterNativeAsync(attempt.Identity ?? "", attempt.DisplayName, TrainingNotice.Version, cancellationToken);
+            var account = await identities.RegisterNativeAsync(attempt.Identity ?? "", attempt.DisplayName, attempt.AcceptedNoticeVersion, cancellationToken);
             await http.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, identities.BuildPrincipal(account));
             return new(account, null, StatusCodes.Status200OK, null, RegistrationField.None, false);
         }

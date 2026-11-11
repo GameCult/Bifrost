@@ -497,10 +497,11 @@ app.MapPost("/auth/bifrost/register/form", async (
 
     string Field(string name) => form[name].FirstOrDefault() ?? "";
     var returnPath = LocalReturnPath.Parse(Field("returnUrl"));
-    // The checkbox is the consent act: without it the posted notice version is not taken as accepted.
-    int? accepted = Field("consent") == "yes" && int.TryParse(Field("acceptedNoticeVersion"), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var version)
-        ? version
-        : null;
+    // The checkbox is the consent act and is optional: unticked, the posted notice version is ignored and no receipt is made.
+    // Anything but the canonical decimal of the version in force ("02" included) with the box ticked is sent as -1 and refused, never read as "did not agree".
+    int? accepted = Field("consent") != "yes"
+        ? null
+        : Field("acceptedNoticeVersion") == TrainingNotice.Version.ToString(System.Globalization.CultureInfo.InvariantCulture) ? TrainingNotice.Version : -1;
     var identity = Field("identity");
     var displayName = Field("displayName");
     var challenge = Field("challenge");
@@ -554,38 +555,7 @@ app.MapGet("/auth/bifrost/challenge", (HttpContext httpContext, RegistrationChal
 app.MapGet("/auth/bifrost/notice", () =>
     JsonResult(new { version = TrainingNotice.Version, text = TrainingNotice.Text }, appJsonSerializerOptions)).AllowAnonymous();
 
-// Withdrawal stops future use; the receipt row stays. Idempotent: an already-withdrawn receipt keeps its first timestamp.
-app.MapPost("/auth/bifrost/consent/withdraw", async (
-    ICurrentBifrostActorAccessor actors,
-    BifrostDbContext dbContext,
-    TimeProvider clock,
-    CancellationToken cancellationToken) =>
-{
-    var actor = await actors.GetAsync(cancellationToken);
-    if (!actor.IsAuthenticated || actor.UserAccount is null)
-    {
-        return Results.Unauthorized();
-    }
-
-    var receipts = await dbContext.ConsentReceipts
-        .Where(x => x.UserAccountId == actor.UserAccount.Id)
-        .ToListAsync(cancellationToken);
-    if (receipts.Count == 0)
-    {
-        return Results.Text("No consent receipt is recorded for this account.", statusCode: StatusCodes.Status404NotFound);
-    }
-
-    var now = clock.GetUtcNow();
-    foreach (var receipt in receipts.Where(x => x.WithdrawnAtUtc is null))
-    {
-        receipt.WithdrawnAtUtc = now;
-    }
-
-    await dbContext.SaveChangesAsync(cancellationToken);
-    return JsonResult(
-        new { withdrawnAtUtc = receipts.Min(x => x.WithdrawnAtUtc) },
-        appJsonSerializerOptions);
-});
+app.MapConsent();
 
 app.MapGet("/auth/heimdall/{provider}", async (
     string provider,
