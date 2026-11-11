@@ -374,7 +374,13 @@ public sealed class DeskReadTests
 
     private static DeskAnswerDocument Doc(string id, string outcome, string? of, string? retracts, string? note) => new(
         DeskSchemas.DeskAnswer, id, DeskReplay.ChatFork, outcome, of, retracts, null, "h", note == null ? null : "a", note,
-        "2026-11-12T19:00:00Z", "2026-11-12T19:00:01Z", false, DeskWebApplicationFactory.Alice, "Steward", "r-" + id);
+        "2026-11-12T19:00:00Z", "2026-11-12T19:00:01Z", false, AnswererOf(id), "Steward", "r-" + id);
+
+    // Four different accounts, so a mask that kept any one of them, or told two apart, is seen.
+    private static readonly string[] Answerers =
+        [DeskWebApplicationFactory.Alice, DeskWebApplicationFactory.Steward, DeskWebApplicationFactory.Member, "0badc0de-0000-4000-8000-00000000000d"];
+
+    private static string AnswererOf(string answerId) => Answerers[int.Parse(answerId[1..]) - 1];
 
     // Counted, Revision, Retraction and Refused documents, every one carrying the decider's note.
     private static ForkEntry NotedEntry()
@@ -424,16 +430,39 @@ public sealed class DeskReadTests
         Assert.DoesNotContain("decider's own words", list);
         Assert.False(AnyNote(JsonNode.Parse(read)));
         Assert.False(AnyNote(JsonNode.Parse(list)));
+        // No answerer id of any answer reaches a non-decider, and every answer says the same thing instead.
+        var readMasked = JsonNode.Parse(read)!["record"]!["answers"]!.AsArray().Select(a => (string?)a!["answerer"]);
+        Assert.Equal(4, readMasked.Count());
+        Assert.All(readMasked, answerer => Assert.Equal("masked", answerer));
+        var masked = JsonNode.Parse(list)!["forks"]!.AsArray().SelectMany(f => f!["record"]!["answers"]!.AsArray()).Select(a => (string?)a!["answerer"]);
+        Assert.Equal(8, masked.Count());
+        Assert.All(masked, answerer => Assert.Equal("masked", answerer));
         // Outcomes and cards stay; the key stays written as nil, so the body is still the contract's shape.
         var expected = JsonSerializer.SerializeToNode(NotedEntry() with
         {
-            Record = NotedEntry().Record with { Answers = [.. NotedEntry().Record.Answers.Select(a => a with { Note = null })] },
+            Record = NotedEntry().Record with { Answers = [.. NotedEntry().Record.Answers.Select(a => a with { Note = null, Answerer = DeskRedaction.MaskedAnswerer })] },
         }, DeskJson.Options);
         Assert.True(DeskVectors.SameShape(JsonNode.Parse(read), expected));
         var answers = JsonNode.Parse(read)!["record"]!["answers"]!.AsArray();
         Assert.Equal(new[] { "Counted", "Revision", "Retraction", "Refused" }, answers.Select(a => (string)a!["outcome"]!).ToArray());
         Assert.All(answers, a => Assert.True(a!.AsObject().ContainsKey("note")));
         Assert.Equal(2, JsonNode.Parse(list)!["forks"]!.AsArray().Count);
+    }
+
+    [Fact]
+    public async Task Bifrost_relays_exactly_the_entries_the_door_returns_to_any_reader()
+    {
+        using var factory = new DeskWebApplicationFactory();
+        await factory.EnsureAccountAsync(DeskWebApplicationFactory.Member, true);
+        await factory.EnsureAccountAsync(DeskWebApplicationFactory.Alice, true);
+        var forks = Enumerable.Range(1, 7).Select(i => DeskReplay.Entry(DeskReplay.Card("gamecult-chat:question:q" + i))).ToArray();
+        factory.Door.ListScript = (_, r) => new DeskListOutcome.Listed(new ForkList("gamecult.fork.list.v0", r.Mind, "s1", 7, 0, forks, null));
+
+        foreach (var account in new[] { DeskWebApplicationFactory.Member, DeskWebApplicationFactory.Alice })
+        {
+            var reply = await factory.SendAsync("GET", "/api/desk/gamecult-chat/forks", null, factory.Token(account, "bifrost-desk", "desk.read"));
+            Assert.Equal(forks.Select(f => f.Card.ForkId), JsonNode.Parse(reply.Body)!["forks"]!.AsArray().Select(f => (string?)f!["card"]!["fork_id"]));
+        }
     }
 
     [Fact]
@@ -445,6 +474,7 @@ public sealed class DeskReadTests
         var (read, list) = await BodiesAsync(factory, DeskWebApplicationFactory.Alice);
 
         Assert.Contains(Secret + " 3", read);
+        Assert.Equal(Answerers, JsonNode.Parse(read)!["record"]!["answers"]!.AsArray().Select(a => (string?)a!["answerer"]));
         Assert.Equal(8, JsonNode.Parse(list)!["forks"]!.AsArray().Sum(f => f!["record"]!["answers"]!.AsArray().Count(a => a!["note"] is not null)));
         Assert.True(DeskVectors.SameShape(JsonNode.Parse(read), JsonSerializer.SerializeToNode(NotedEntry(), DeskJson.Options)));
     }

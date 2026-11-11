@@ -167,7 +167,7 @@ public static class DeskEndpoints
                     var listed = await door.ListAsync(mind.Socket, context, listRequest! with { Mind = mind.Id }, cancellationToken);
                     if (listed is DeskListOutcome.Listed(var list))
                     {
-                        await WriteJsonAsync(http, 200, IsDecider(context) ? list : DeskNotes.Strip(list));
+                        await WriteJsonAsync(http, 200, IsDecider(context) ? list : DeskRedaction.ForNonDecider(list));
                     }
                     else if (listed is DeskListOutcome.ForkTooLarge(var largeId, var largeOrder))
                     {
@@ -187,7 +187,7 @@ public static class DeskEndpoints
                     var found = await door.ReadAsync(mind.Socket, context, forkId, cancellationToken);
                     if (found is DeskReadOutcome.Found(var entry))
                     {
-                        await WriteJsonAsync(http, 200, IsDecider(context) ? entry : DeskNotes.Strip(entry));
+                        await WriteJsonAsync(http, 200, IsDecider(context) ? entry : DeskRedaction.ForNonDecider(entry));
                     }
                     else if (found is DeskReadOutcome.ForkTooLarge(var largeFork))
                     {
@@ -253,7 +253,8 @@ public static class DeskEndpoints
         }
     }
 
-    // A note is a decider's own words: only a caller on the admin-set list reads them (visibility ruling c).
+    // A note is a decider's own words, and an answerer id names an account: only a caller on the admin-set list reads
+    // either (visibility ruling c; X3).
     private static bool IsDecider(DeskDoorContext context) =>
         context.Deciders.Contains(context.Subject, StringComparer.Ordinal);
 
