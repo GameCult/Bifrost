@@ -169,9 +169,13 @@ public static class DeskEndpoints
                     {
                         await WriteJsonAsync(http, 200, IsDecider(context) ? list : DeskNotes.Strip(list));
                     }
+                    else if (listed is DeskListOutcome.ForkTooLarge(var largeId, var largeOrder))
+                    {
+                        await WriteJsonAsync(http, DeskRefusals.ForkTooLargeStatus, DeskRefusals.ForkTooLargeDocument(largeId, largeOrder));
+                    }
                     else if (listed is DeskListOutcome.NotListed(var listCode) && DoorMayRefuse(listCode))
                     {
-                        await WriteRefusalAsync(http, listCode);
+                        await WriteRefusalAsync(http, ReadListCode(listCode));
                     }
                     else
                     {
@@ -187,7 +191,7 @@ public static class DeskEndpoints
                     }
                     else if (found is DeskReadOutcome.NotFound(var readCode) && DoorMayRefuse(readCode))
                     {
-                        await WriteRefusalAsync(http, readCode);
+                        await WriteRefusalAsync(http, ReadListCode(readCode));
                     }
                     else
                     {
@@ -246,6 +250,13 @@ public static class DeskEndpoints
     private static bool DoorMayRefuse(string code) =>
         code is not (DeskRefusals.Unauthenticated or DeskRefusals.InsufficientScope or DeskRefusals.Forbidden) &&
         DeskRefusals.IsKnown(code);
+
+    // A read or list sends no body. A door that refuses one for its body (an `authority` field among them) is
+    // refusing the request, which is request_invalid; it is not an outage.
+    private static string ReadListCode(string code) =>
+        code is DeskRefusals.BodyForbiddenField or DeskRefusals.BodyUnknownField or DeskRefusals.BodyInvalid
+            ? DeskRefusals.RequestInvalid
+            : code;
 
     // At most `cap` bytes. Null when the body is longer, judged by Content-Length first and then while reading.
     private static async Task<byte[]?> ReadBodyAsync(HttpRequest request, int cap, CancellationToken cancellationToken)

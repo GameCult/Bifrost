@@ -45,6 +45,10 @@ public abstract record DeskListOutcome
     public sealed record Listed(ForkList List) : DeskListOutcome;
 
     public sealed record NotListed(string Code) : DeskListOutcome;
+
+    // The next fork is too large for any page: the page holds nothing past the cursor. The client continues with
+    // cursor c<Order>; at Order 0 it has reached the end. List only: no other call can be refused this way.
+    public sealed record ForkTooLarge(string ForkId, int Order) : DeskListOutcome;
 }
 
 public interface IDeskDoor

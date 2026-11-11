@@ -151,6 +151,19 @@ public static class DeskRefusals
         [RequestIdConflict] = (409, "request_id_conflict: this request_id was used for a different body"),
     };
 
+    // fork_too_large (Libby's ruling) is list-only and names its fork, so it is built here, not read from the table.
+    // Not a literal const: the pinned vectors' doorRefusals do not name it yet, and the schema test pins literals to them.
+    public static string ForkTooLarge => "fork_too_large";
+
+    public static int ForkTooLargeStatus => 422;
+
+    public static DeskRefusal ForkTooLargeDocument(string forkId, int order) => new(
+        DeskSchemas.Refusal,
+        ForkTooLarge,
+        order > 0
+            ? $"fork_too_large: fork {forkId} (order {order}) is too large for a page; continue with cursor c{order}"
+            : $"fork_too_large: fork {forkId} (order {order}) is too large for a page; the list has reached its end");
+
     public static bool IsKnown(string code) => Table.ContainsKey(code);
 
     public static int StatusOf(string code) => Table[code].Status;

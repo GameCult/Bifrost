@@ -123,6 +123,80 @@ public sealed class DeskReadTests
     }
 
     [Fact]
+    public async Task A_fork_too_large_for_a_page_is_a_422_that_names_the_fork_and_the_cursor_to_continue_with()
+    {
+        using var factory = new DeskWebApplicationFactory();
+        await factory.EnsureAccountAsync(DeskWebApplicationFactory.Alice, true);
+
+        factory.Door.ListScript = (_, _) => new DeskListOutcome.ForkTooLarge("nibu:question:huge", 7);
+        var reply = await factory.SendAsync("GET", "/api/desk/nibu/forks", null, ReadToken(factory));
+        var doc = JsonNode.Parse(reply.Body)!;
+        Assert.Equal(422, reply.Status);
+        Assert.Equal("fork_too_large", (string?)doc["code"]);
+        var error = (string)doc["error"]!;
+        Assert.Contains("nibu:question:huge", error);
+        Assert.Contains("order 7", error);
+        Assert.Contains("c7", error);
+
+        // At order 0 there is no cursor to continue with: the list has reached its end.
+        factory.Door.ListScript = (_, _) => new DeskListOutcome.ForkTooLarge("nibu:question:first", 0);
+        var end = await factory.SendAsync("GET", "/api/desk/nibu/forks", null, ReadToken(factory));
+        var endError = (string)JsonNode.Parse(end.Body)!["error"]!;
+        Assert.Equal(422, end.Status);
+        Assert.Contains("nibu:question:first", endError);
+        Assert.Contains("order 0", endError);
+        Assert.DoesNotContain("cursor c0", endError);
+        Assert.Contains("end", endError);
+    }
+
+    [Fact]
+    public async Task fork_too_large_is_list_only_elsewhere_the_door_saying_it_is_unavailable()
+    {
+        using var factory = new DeskWebApplicationFactory();
+        await factory.EnsureAccountAsync(DeskWebApplicationFactory.Alice, true);
+
+        factory.Door.ReadScript = (_, _) => new DeskReadOutcome.NotFound("fork_too_large");
+        factory.Door.ListScript = (_, _) => new DeskListOutcome.NotListed("fork_too_large");
+        foreach (var target in new[] { "/api/desk/nibu/forks", DeskReplay.Target("read", "nibu", "nibu:question:glow-order") })
+        {
+            var reply = await factory.SendAsync("GET", target, null, ReadToken(factory));
+            Assert.Equal(503, reply.Status);
+        }
+    }
+
+    [Fact]
+    public async Task A_short_page_with_a_cursor_below_its_last_entry_passes_through_unchanged()
+    {
+        using var factory = new DeskWebApplicationFactory();
+        await factory.EnsureAccountAsync(DeskWebApplicationFactory.Alice, true);
+        factory.Door.ListScript = (_, r) => new DeskListOutcome.Listed(new ForkList("gamecult.fork.list.v0", r.Mind, "s1", 3, 0, [], "c2"));
+
+        var reply = await factory.SendAsync("GET", "/api/desk/nibu/forks?limit=10", null, ReadToken(factory));
+
+        Assert.Equal(200, reply.Status);
+        Assert.Equal("c2", (string?)JsonNode.Parse(reply.Body)!["next_cursor"]);
+    }
+
+    [Fact]
+    public async Task A_door_that_refuses_a_read_or_list_for_a_body_field_such_as_authority_is_request_invalid_not_unavailable()
+    {
+        using var factory = new DeskWebApplicationFactory();
+        await factory.EnsureAccountAsync(DeskWebApplicationFactory.Alice, true);
+
+        foreach (var code in new[] { "body_forbidden_field", "body_unknown_field", "body_invalid" })
+        {
+            factory.Door.ReadScript = (_, _) => new DeskReadOutcome.NotFound(code);
+            factory.Door.ListScript = (_, _) => new DeskListOutcome.NotListed(code);
+            foreach (var target in new[] { "/api/desk/nibu/forks", DeskReplay.Target("read", "nibu", "nibu:question:glow-order") })
+            {
+                var reply = await factory.SendAsync("GET", target, null, ReadToken(factory));
+                Assert.Equal(400, reply.Status);
+                Assert.Equal("request_invalid", (string?)JsonNode.Parse(reply.Body)!["code"]);
+            }
+        }
+    }
+
+    [Fact]
     public async Task Door_failure_on_list_and_read_is_unavailable()
     {
         using var factory = new DeskWebApplicationFactory();
