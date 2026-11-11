@@ -174,6 +174,31 @@ public sealed class DeskVectorWireTests
         }
     }
 
+    // The list negatives on the wire. The door refuses count_negative (a count is an unsigned integer in its closed typing).
+    // The others are rules a schema cannot say or text grammars the door does not hold: a cursor is c<N> and a stamp is s<N>
+    // (Bifrost passes both on, opaque), a page is one reader's view (R-list), and an order is unique among a Mind's cards.
+    // CultLib's validators and Huginn's door judge them.
+    [Fact]
+    public async Task The_door_refuses_a_negative_count_and_judges_no_other_list_rule()
+    {
+        var rows = DeskVectors.Rows("transport", "listInvalid").ToList();
+        Assert.Equal(5, rows.Count);
+        foreach (var row in rows)
+        {
+            var name = (string)row["name"]!;
+            var served = Task.Run(() => DeskServe.ListAsync(Convert.FromHexString((string)row["messagePackHex"]!)));
+
+            if (name == "count_negative")
+            {
+                await Assert.ThrowsAsync<DeskDoorException>(() => served);
+            }
+            else
+            {
+                Assert.True(DeskServe.Text(row["message"]!) == DeskServe.Text(await served), name);
+            }
+        }
+    }
+
     // The stored-answer negatives and the answer_result negatives. The door judges that an answer is a closed 16-key map with
     // every key typed; all twelve deskAnswer negatives have the 16 keys, so none is refused here. They are rules (outcome
     // and code pairing, targets, case, and "no_answerer": a nil answerer on a Counted answer is a withheld view only a
