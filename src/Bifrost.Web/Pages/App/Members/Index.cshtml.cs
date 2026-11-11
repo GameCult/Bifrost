@@ -35,6 +35,8 @@ public sealed class IndexModel(
     };
 
     internal const string ApproveSuspendedNotice = "Nothing changed: a suspended account can only be lifted with Unsuspend.";
+    /// <summary>Admin-only text for a Suspended row whose reason predates the SuspensionReason column; the old text is never read back from the audit trail.</summary>
+    internal const string LegacySuspensionText = "Suspended before reasons were recorded";
     internal const string NoMembershipNotice = "Nothing changed: that account has no membership yet.";
     internal const string OwnAdminRoleNotice = "Nothing changed: you cannot remove or change your own platform admin role.";
     internal const string RoleOnSuspendedNotice = "Nothing changed: a suspended account's roles cannot be changed until it is unsuspended.";
@@ -119,9 +121,16 @@ public sealed class IndexModel(
         var user = await dbContext.UserAccounts
             .Include(x => x.Membership!)
                 .ThenInclude(x => x.RoleAssignments)
-            .SingleAsync(x => x.Id == userAccountId, cancellationToken);
+            .SingleOrDefaultAsync(x => x.Id == userAccountId, cancellationToken);
 
-        if (user.Membership!.Status == MembershipStatus.Suspended)
+        // The chat tier holds no membership by design (docs/oidc-issuer.md); approval refuses rather than inventing one.
+        if (user is null || user.Membership is null)
+        {
+            Notice = user is null ? RefusalNotices[SuspensionOutcome.NoSuchAccount] : NoMembershipNotice;
+            return RedirectToPage();
+        }
+
+        if (user.Membership.Status == MembershipStatus.Suspended)
         {
             Notice = ApproveSuspendedNotice; // only Unsuspend lifts a suspension
             return RedirectToPage();
@@ -181,7 +190,13 @@ public sealed class IndexModel(
         var user = await dbContext.UserAccounts
             .Include(x => x.Membership!)
                 .ThenInclude(x => x.RoleAssignments)
-            .SingleAsync(x => x.Id == userAccountId, cancellationToken);
+            .SingleOrDefaultAsync(x => x.Id == userAccountId, cancellationToken);
+
+        if (user is null)
+        {
+            Notice = RefusalNotices[SuspensionOutcome.NoSuchAccount];
+            return RedirectToPage();
+        }
 
         if (user.Membership is null)
         {
@@ -259,7 +274,13 @@ public sealed class IndexModel(
         var user = await dbContext.UserAccounts
             .Include(x => x.Membership!)
                 .ThenInclude(x => x.TierSnapshots)
-            .SingleAsync(x => x.Id == userAccountId, cancellationToken);
+            .SingleOrDefaultAsync(x => x.Id == userAccountId, cancellationToken);
+
+        if (user is null)
+        {
+            Notice = RefusalNotices[SuspensionOutcome.NoSuchAccount];
+            return RedirectToPage();
+        }
 
         if (user.Membership is null)
         {
