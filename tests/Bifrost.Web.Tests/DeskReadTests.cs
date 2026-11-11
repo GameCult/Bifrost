@@ -430,17 +430,13 @@ public sealed class DeskReadTests
         Assert.DoesNotContain("decider's own words", list);
         Assert.False(AnyNote(JsonNode.Parse(read)));
         Assert.False(AnyNote(JsonNode.Parse(list)));
-        // No answerer id of any answer reaches a non-decider, and every answer says the same thing instead.
-        var readMasked = JsonNode.Parse(read)!["record"]!["answers"]!.AsArray().Select(a => (string?)a!["answerer"]);
-        Assert.Equal(4, readMasked.Count());
-        Assert.All(readMasked, answerer => Assert.Equal("masked", answerer));
-        var masked = JsonNode.Parse(list)!["forks"]!.AsArray().SelectMany(f => f!["record"]!["answers"]!.AsArray()).Select(a => (string?)a!["answerer"]);
-        Assert.Equal(8, masked.Count());
-        Assert.All(masked, answerer => Assert.Equal("masked", answerer));
+        // Bifrost masks no id: what the door sent for the answerers is what the reader gets (the door withholds ids from non-deciders).
+        var readAnswerers = JsonNode.Parse(read)!["record"]!["answers"]!.AsArray().Select(a => (string?)a!["answerer"]);
+        Assert.Equal(NotedEntry().Record.Answers.Select(x => x.Answerer), readAnswerers);
         // Outcomes and cards stay; the key stays written as nil, so the body is still the contract's shape.
         var expected = JsonSerializer.SerializeToNode(NotedEntry() with
         {
-            Record = NotedEntry().Record with { Answers = [.. NotedEntry().Record.Answers.Select(a => a with { Note = null, Answerer = DeskRedaction.MaskedAnswerer })] },
+            Record = NotedEntry().Record with { Answers = [.. NotedEntry().Record.Answers.Select(a => a with { Note = null })] },
         }, DeskJson.Options);
         Assert.True(DeskVectors.SameShape(JsonNode.Parse(read), expected));
         var answers = JsonNode.Parse(read)!["record"]!["answers"]!.AsArray();

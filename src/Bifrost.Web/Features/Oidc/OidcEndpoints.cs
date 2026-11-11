@@ -101,16 +101,20 @@ public static class OidcEndpoints
             _ => [Destinations.AccessToken]
         });
 
+        // The training notice is the chat's: a desk token is not a chat token and needs no receipt (Meta's ruling, 2026-11-11).
         // Last, so a refusal that no agreement can cure (suspended, no identity, reserved) is never answered with an invitation to agree.
         // Not an OIDC error: the member is sent to the consent page with this request's resume path, and the parked request
         // (single use, ten minutes) is still there when they come back, because only an OpenIddict response spends it.
-        if (!await ConsentEndpoints.HasLiveReceiptAsync(db, account.Id, http.RequestAborted))
+        if (!IsDeskToken(principal) && !await ConsentEndpoints.HasLiveReceiptAsync(db, account.Id, http.RequestAborted))
         {
             return Results.Redirect(ConsentEndpoints.PathFor(http.Request.PathBase + http.Request.Path + http.Request.QueryString));
         }
 
         return Results.SignIn(principal, properties: null, OpenIddictScheme);
     }
+
+    /// <summary>A token whose scopes include a desk scope is a desk token. Only the chat token requires the training-notice receipt.</summary>
+    private static bool IsDeskToken(ClaimsPrincipal? principal) => principal is not null && principal.GetScopes().Any(DeskEndpoints.IsDeskScope);
 
     private static async Task<IResult> ExchangeAsync(HttpContext http, BifrostDbContext db)
     {
@@ -119,7 +123,7 @@ public static class OidcEndpoints
         // because the code outlives the authorize decision (an account suspended or withdrawn since gets no tokens).
         var result = await http.AuthenticateAsync(OpenIddictScheme);
         var subject = result.Principal?.GetClaim(Claims.Subject);
-        if (await ChatRefusalAsync(db, subject, http.RequestAborted) is { } refusal)
+        if (await ChatRefusalAsync(db, subject, http.RequestAborted, IsDeskToken(result.Principal)) is { } refusal)
         {
             return Deny(Errors.InvalidGrant, refusal);
         }
@@ -136,7 +140,7 @@ public static class OidcEndpoints
         }
 
         // An access token outlives the authorize decision too: an account suspended since, or one whose agreement has gone, is no longer answered.
-        if (await ChatRefusalAsync(db, result.Principal.GetClaim(Claims.Subject), http.RequestAborted) is { } refusal)
+        if (await ChatRefusalAsync(db, result.Principal.GetClaim(Claims.Subject), http.RequestAborted, IsDeskToken(result.Principal)) is { } refusal)
         {
             return Deny(Errors.InsufficientAccess, refusal);
         }
@@ -154,9 +158,9 @@ public static class OidcEndpoints
     /// <summary>
     /// The one reading of "this subject may still chat", shared by the token and userinfo endpoints and the logout reconciler:
     /// null when they may, else the description of why not. The account exists, its membership is not Suspended (absent, pending
-    /// or Active all chat), and it holds a live receipt for the notice version in force. Re-read on every call.
+    /// or Active all chat), and, for a chat token (not a desk token), it holds a live receipt for the notice version in force. Re-read on every call.
     /// </summary>
-    internal static async Task<string?> ChatRefusalAsync(BifrostDbContext db, string? subject, CancellationToken cancellationToken)
+    internal static async Task<string?> ChatRefusalAsync(BifrostDbContext db, string? subject, CancellationToken cancellationToken, bool deskToken = false)
     {
         if (!Guid.TryParse(subject, out var accountId))
         {
@@ -171,7 +175,7 @@ public static class OidcEndpoints
             return SuspendedDescription;
         }
 
-        return await ConsentEndpoints.HasLiveReceiptAsync(db, accountId, cancellationToken) ? null : ConsentRequiredDescription;
+        return deskToken || await ConsentEndpoints.HasLiveReceiptAsync(db, accountId, cancellationToken) ? null : ConsentRequiredDescription;
     }
 
     /// <summary>The account id of the subject when it is an Active member now, else null. The door to the fork desk (cookie surfaces check IsActiveMember); a chat-tier token does not pass it. Re-read on every call.</summary>

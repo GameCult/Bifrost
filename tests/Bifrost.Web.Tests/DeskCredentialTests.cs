@@ -1,3 +1,4 @@
+using Bifrost.Web.Data;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -119,6 +120,32 @@ public sealed class DeskCredentialTests : IDisposable
     }
 
     [Fact]
+    public async Task A_desk_token_issues_for_a_member_with_no_training_notice_receipt_and_a_chat_token_does_not()
+    {
+        var (client, identity) = await SignedInAsync();
+        await RemoveReceiptsAsync(identity, withdrawOnly: false);
+
+        // Chat: sent to the consent page, no code.
+        var chat = NewRequest(OidcTestKit.ClientId, OidcTestKit.RedirectUri, "openid profile");
+        var chatFinal = await DriveAsync(client, chat);
+        Assert.Equal(HttpStatusCode.Redirect, chatFinal.StatusCode);
+        Assert.DoesNotContain("code=", chatFinal.Headers.Location!.OriginalString);
+
+        // Desk: a code, a token, and the desk answers it.
+        var request = NewRequest(DeskClient, DeskRedirect, "desk.read");
+        var code = await CodeAsync(client, request);
+        var token = await ExchangeAsync(client, request, code, DeskClient, DeskSecret);
+        factory.Door.ListScript = (_, r) => new DeskListOutcome.Listed(new ForkList("gamecult.fork.list.v0", r.Mind, "s1", 0, 0, [], null));
+        Assert.Equal(200, (await GetAsync(token)).Status);
+
+        // A desk code survives the receipt going between authorize and the exchange; a suspended account still does not.
+        var later = NewRequest(DeskClient, DeskRedirect, "desk.read");
+        var laterCode = await CodeAsync(client, later);
+        await RemoveReceiptsAsync(identity, withdrawOnly: true);
+        Assert.False(string.IsNullOrEmpty(await ExchangeAsync(client, later, laterCode, DeskClient, DeskSecret)));
+    }
+
+    [Fact]
     public async Task The_chat_client_can_neither_ask_for_a_desk_scope_nor_use_its_own_token_on_the_desk()
     {
         var (client, _) = await SignedInAsync();
@@ -199,7 +226,7 @@ public sealed class DeskCredentialTests : IDisposable
     }
 
     [Fact]
-    public async Task A_member_who_is_not_a_decider_reads_masked_answerers_through_a_real_token()
+    public async Task A_member_who_is_not_a_decider_reads_no_notes_through_a_real_token_and_ids_pass_as_the_door_sent_them()
     {
         var (_, token) = await MemberWithTokenAsync("desk.read");
         const string secretAnswerer = "0badc0de-0000-4000-8000-00000000000d"; // not on any decider list, so no card carries it
@@ -213,7 +240,7 @@ public sealed class DeskCredentialTests : IDisposable
         var reply = await GetAsync(token);
 
         Assert.Equal(200, reply.Status);
-        Assert.DoesNotContain(secretAnswerer, reply.Text);
+        Assert.Contains(secretAnswerer, reply.Text); // Bifrost masks no id; Huginn's door withholds them from non-deciders
         Assert.DoesNotContain("private words", reply.Text);
     }
 
@@ -244,6 +271,25 @@ public sealed class DeskCredentialTests : IDisposable
         await factory.SetMembershipAsync(identity, MembershipStatus.Active);
         await SeedDeskClientAsync();
         return (client, identity);
+    }
+
+    // Leaves the account with no live training-notice receipt: none at all, or each one withdrawn.
+    private async Task RemoveReceiptsAsync(string identity, bool withdrawOnly)
+    {
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
+        var id = db.UserAccounts.Single(x => x.NormalizedBifrostIdentity == identity).Id;
+        var receipts = db.ConsentReceipts.Where(x => x.UserAccountId == id).ToList();
+        if (withdrawOnly)
+        {
+            receipts.ForEach(r => r.WithdrawnAtUtc = DateTimeOffset.UtcNow);
+        }
+        else
+        {
+            db.ConsentReceipts.RemoveRange(receipts);
+        }
+
+        await db.SaveChangesAsync();
     }
 
     private async Task<(string Identity, string Token)> MemberWithTokenAsync(string scope)
