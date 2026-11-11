@@ -66,7 +66,7 @@ public sealed class DeskAnswerTests
     }
 
     [Fact]
-    public async Task A_stale_cards_read_that_is_fork_too_large_stays_unavailable_until_the_contract_says_otherwise()
+    public async Task A_stale_answers_card_read_of_an_oversize_fork_is_422_fork_too_large_naming_the_fork()
     {
         var (factory, token) = await ArrangeAsync();
         using (factory)
@@ -76,8 +76,11 @@ public sealed class DeskAnswerTests
 
             var reply = await factory.SendAsync("POST", DeskReplay.Target("answer", "gamecult-chat", null), DeskReplay.AnswerBody(DeskReplay.ChatFork), token);
 
-            Assert.Equal(503, reply.Status);
-            Assert.Equal("unavailable", (string?)JsonNode.Parse(reply.Body)!["code"]);
+            var doc = JsonNode.Parse(reply.Body)!;
+            Assert.Equal(422, reply.Status);
+            Assert.Equal("fork_too_large", (string?)doc["code"]);
+            Assert.Contains(DeskReplay.ChatFork, (string)doc["error"]!);
+            Assert.Null(doc["card"]);
         }
     }
 
