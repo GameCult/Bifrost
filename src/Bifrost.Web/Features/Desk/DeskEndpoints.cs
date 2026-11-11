@@ -189,6 +189,10 @@ public static class DeskEndpoints
                     {
                         await WriteJsonAsync(http, 200, IsDecider(context) ? entry : DeskNotes.Strip(entry));
                     }
+                    else if (found is DeskReadOutcome.ForkTooLarge(var largeFork))
+                    {
+                        await WriteJsonAsync(http, DeskRefusals.ForkTooLargeStatus, DeskRefusals.ForkTooLargeDocument(largeFork));
+                    }
                     else if (found is DeskReadOutcome.NotFound(var readCode) && DoorMayRefuse(readCode) && readCode != DeskRefusals.RequestIdConflict)
                     {
                         await WriteRefusalAsync(http, ReadListCode(readCode));

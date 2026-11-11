@@ -35,6 +35,9 @@ public abstract record DeskReadOutcome
     public sealed record Found(ForkEntry Entry) : DeskReadOutcome;
 
     public sealed record NotFound(string Code) : DeskReadOutcome;
+
+    // The fork is too large to return: permanent, and nothing to page, so no order or cursor.
+    public sealed record ForkTooLarge(string ForkId) : DeskReadOutcome;
 }
 
 // The list request the desk's query string stands for. Mind is the route's, resolved against the configured list.
@@ -47,7 +50,7 @@ public abstract record DeskListOutcome
     public sealed record NotListed(string Code) : DeskListOutcome;
 
     // The next fork is too large for any page: the page holds nothing past the cursor. The client continues with
-    // cursor c<Order>; at Order 0 it has reached the end. List only: no other call can be refused this way.
+    // cursor c<Order>; at Order 0 it has reached the end. A read of such a fork has its own outcome (no order).
     public sealed record ForkTooLarge(string ForkId, int Order) : DeskListOutcome;
 }
 
