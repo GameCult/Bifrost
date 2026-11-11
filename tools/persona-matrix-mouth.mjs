@@ -311,18 +311,37 @@ export function createMouth({
   }
   // A pill is an anchor whose href is exactly her matrix.to link; a longer id, an attribute that merely contains one and a quoted reply do not count.
   const pillFor = html => typeof html === "string" && [...html.replace(/<mx-reply>[\s\S]*?<\/mx-reply>/gi, "").matchAll(/<a\s[^>]*?href\s*=\s*(["'])(.*?)\1/gi)].some(([, , href]) => [selfId, encodeURIComponent(selfId)].some(id => href === `https://matrix.to/#/${id}`));
-  const authors = new Map(); // `${room id} ${event id}` -> { sender, excerpt, at }: read results, a failure kept for NEGATIVE_MS, bounded; the key holds the room so another room's reply cannot borrow a hit
-  const NEGATIVE_MS = 60 * 1000;
-  // The quoted text: nil when the event is redacted (the homeserver strips its content) or is not text; else the first 240 code points
-  // (not bytes: a cut never splits a character), from the same body line a delivery shows. Computed only when replyLink is on.
+  const authors = new Map(); // `${room id} ${event id}` -> { sender, excerpt, at }: read results, kept TARGET_TTL_MS, bounded; the key holds the room so another room's reply cannot borrow a hit
+  const TARGET_TTL_MS = 60 * 1000; // how long a read of a target (hit or failure) is kept
+  // The quoted text, as a prompt-safe line: nil when the event is redacted (the homeserver strips its content), is not text, or is edited
+  // (an edit target, or one with an m.replace bundled: the original body is the pre-edit text, which its author replaced), or is nothing but
+  // its own reply fallback. Else: the legacy rich-reply fallback (leading "> " lines and the blank line after) is dropped, CR/LF/tab runs
+  // become one space, control characters (C0, DEL, C1) and bidi marks/overrides/isolates are removed, the result is trimmed, then cut to the
+  // first 240 code points (not bytes, so no character is split; a combining mark is its own code point) and trimmed again. Computed
+  // only when replyLink is on.
+  const FALLBACK_LINE = /^>( |$)/;
   const excerptOf = target => {
-    if (!replyLink || target?.unsigned?.redacted_because !== undefined || target?.type !== "m.room.message" || typeof target.content?.body !== "string") return null;
-    return [...bodyText(target.content, docs.limits.contextBytes)].slice(0, docs.limits.replyExcerpt).join("");
+    const c = target?.content;
+    if (!replyLink || target?.unsigned?.redacted_because !== undefined || target?.type !== "m.room.message" || typeof c?.body !== "string") return null;
+    if (c["m.relates_to"]?.rel_type === "m.replace" || target.unsigned?.["m.relations"]?.["m.replace"] !== undefined) return null;
+    let body = c.body;
+    if (c["m.relates_to"]?.["m.in_reply_to"] !== undefined) {
+      const lines = body.split("\n");
+      while (lines.length > 0 && FALLBACK_LINE.test(lines[0])) lines.shift();
+      if (lines.length > 0 && lines[0] === "") lines.shift();
+      body = lines.join("\n");
+    }
+    const line = bodyText({ ...c, body }, docs.limits.contextBytes)
+      .replace(/[\r\n\t\u2028\u2029]+/g, " ")
+      .replace(/[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "")
+      .trim();
+    const cut = [...line].slice(0, docs.limits.replyExcerpt).join("").trimEnd();
+    return cut === "" ? null : cut;
   };
   async function targetOf(roomId, eventId) {
     const key = `${roomId} ${eventId}`;
     const known = authors.get(key);
-    if (known && (known.sender !== null || now() - known.at < NEGATIVE_MS)) return known;
+    if (known && now() - known.at < TARGET_TTL_MS) return known; // short for hits too: a later redaction or edit of the target must show at a re-read
     let sender = null, excerpt = null;
     try {
       const target = await matrix("GET", `/rooms/${encodeURIComponent(roomId)}/event/${encodeURIComponent(eventId)}`, undefined, API, AbortSignal.timeout(sendTimeoutMs));
@@ -881,6 +900,9 @@ export function loadRuntime(cultRoot) {
   return { CultCache: cc.CultCache, SingleFileMessagePackBackingStore: cc.SingleFileMessagePackBackingStore, defineDocumentType: cc.defineDocumentType, readSingleFileStore: cc.readSingleFileStore, cultnet: cn, msgpack: mp };
 }
 
+// The v4 flag: on only for exactly "1"; unset, "0", "true", "yes" and anything else are off.
+export const replyLinkFromEnv = env => env.CHAT_PENDING_V4 === "1";
+
 function required(env, name) {
   if (!env[name]) throw new Error(`${name} is required`);
   return env[name];
@@ -928,7 +950,7 @@ export async function main(env = process.env) {
     const controlRoot = env.CONTROL_ROOT ?? "/etc/gamecult/minds";
     const imageRoot = env.IMAGE_STORE_ROOT ? resolve(env.IMAGE_STORE_ROOT) : null; // unset: chat images stay the typed text line
     const gate = createRoomGate(); // one for every Persona: two Minds in one room take turns
-    const replyLink = env.CHAT_PENDING_V4 === "1"; // default off: Huginn pins the v3 tuple bytes until it reads v4
+    const replyLink = replyLinkFromEnv(env); // default off: Huginn pins the v3 tuple bytes until it reads v4
     const mouths = new Map(personas.map(persona => {
       mkdirSync(join(stateRoot, persona), { recursive: true });
       return [persona, createMouth({

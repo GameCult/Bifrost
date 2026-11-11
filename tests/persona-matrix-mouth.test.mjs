@@ -10,7 +10,7 @@ import { createImageStore, RETAIN_MS } from "../tools/persona-chat-images.mjs";
 import { personaStoreRoot } from "./image-bytes.mjs";
 import * as docs from "../tools/persona-chat-documents.mjs";
 import { gif, png, svg } from "./image-bytes.mjs";
-import { createMouth, pageOf, bodyText, createBrakeReader, guarded, redact, roomsFor, projectRoomsVariable } from "../tools/persona-matrix-mouth.mjs";
+import { createMouth, replyLinkFromEnv, pageOf, bodyText, createBrakeReader, guarded, redact, roomsFor, projectRoomsVariable } from "../tools/persona-matrix-mouth.mjs";
 
 const TOKEN = "syt_SECRET_TOKEN_9f3";
 const HS_NAME = "gamecult.test";
@@ -1793,4 +1793,62 @@ test("reply link: the same quoted event is read once, and a lookup cache hit fro
   const { made, hs } = await linked([quoting("$a", "$hers"), quoting("$b", "$hers")], [target("$hers", SELF, "mine")]);
   assert.deepEqual(made.map(d => d.replyTo?.excerpt), ["mine", "mine"]);
   assert.equal(hs.seen.filter(r => r.path.includes("/event/")).length, 1);
+});
+
+test("reply link: an edited target is quoted without its pre-edit text, whether it is the edit or has one bundled; id and author stay", async () => {
+  const { made } = await linked([quoting("$a", "$bundled"), quoting("$b", "$edit")], [
+    target("$bundled", ALICE_ID, "old wording", { unsigned: { "m.relations": { "m.replace": { event_id: "$x" } } } }),
+    target("$edit", ALICE_ID, "* new wording", { content: { msgtype: "m.text", body: "* new wording", "m.relates_to": { rel_type: "m.replace", event_id: "$orig" } } }),
+  ]);
+  assert.deepEqual(made.map(d => d.replyTo), [{ eventId: "$bundled", sender: ALICE_ID, excerpt: null }, { eventId: "$edit", sender: ALICE_ID, excerpt: null }]);
+});
+
+test("reply link: a cached target is re-read after 60 s, so a redaction or edit in between shows; inside 60 s the cached read stands", async () => {
+  const clock = { t: 1_000_000 };
+  const mine = target("$t", ALICE_ID, "before");
+  const hs = await fakeHomeserver({ preload: { [ROOM]: [mine] }, sync: since => since === null ? { next_batch: "b0" } : { next_batch: `b${since}x`, ...joined({ [ROOM]: { timeline: { events: [quoting(`$q${since}`, "$t")] } } }) } });
+  try {
+    const mouth = mouthFor(hs, { replyLink: true, now: () => clock.t });
+    await mouth.syncOnce();
+    const first = await mouth.syncOnce();
+    mine.content = {}; mine.unsigned = { redacted_because: {} };
+    clock.t += 59_000;
+    const within = await mouth.syncOnce();
+    clock.t += 2_000;
+    const after = await mouth.syncOnce();
+    assert.deepEqual([first, within, after].map(m => m[0].replyTo.excerpt), ["before", "before", null]);
+  } finally { await hs.close(); }
+});
+
+test("reply link: the target's own reply fallback is dropped before the cap; a body of only fallback has no excerpt", async () => {
+  const inReply = { "m.in_reply_to": { event_id: "$earlier" } };
+  const withFallback = body => ({ content: { msgtype: "m.text", body, "m.relates_to": inReply } });
+  const { made } = await linked([quoting("$a", "$f1"), quoting("$b", "$f2"), quoting("$c", "$f3"), quoting("$d", "$f4")], [
+    target("$f1", ALICE_ID, "", withFallback("> <@bob:gamecult.test> what was it\n> second line\n\nthe real answer")),
+    target("$f2", ALICE_ID, "", withFallback("> <@bob:gamecult.test> only a quote\n\n")),
+    target("$f3", ALICE_ID, "", { content: { msgtype: "m.text", body: "> a literal quote with no reply\n\nkept" } }),
+    target("$f4", ALICE_ID, "", withFallback(`> <@bob:gamecult.test> ${"q".repeat(500)}\n\n${"w".repeat(300)}`)),
+  ]);
+  assert.deepEqual(made.map(d => d.replyTo.excerpt), ["the real answer", null, "> a literal quote with no reply kept", "w".repeat(240)]);
+});
+
+test("reply link: the excerpt is safe in a prompt: control characters, bidi marks and line breaks are gone before the cap", async () => {
+  const probe = "a\u0000b\u202ec\r\nd\u001b[31m";
+  const { made } = await linked([quoting("$p", "$t1"), quoting("$q", "$t2"), quoting("$r", "$t3")], [
+    target("$t1", ALICE_ID, probe),
+    target("$t2", ALICE_ID, "  x\t\t y\n\n\nz\u200f\u2066w\u2069\u0085\u007f ok  "),
+    target("$t3", ALICE_ID, `\u202e${"\u0000".repeat(500)}${"k".repeat(300)}`),
+  ]);
+  assert.deepEqual(made.map(d => d.replyTo.excerpt), ["abc d[31m", "x  y zw ok", "k".repeat(240)], "controls removed first, so they do not eat the 240");
+});
+
+test("reply link: a mouth built without the option has it off, and only the exact env value \"1\" turns it on", async () => {
+  const hs = await fakeHomeserver({ preload: { [ROOM]: [target("$t", ALICE_ID, "words")] }, sync: since => since === null ? { next_batch: "b0" } : { next_batch: "b1", ...joined({ [ROOM]: { timeline: { events: [quoting("$q", "$t")] } } }) } });
+  try {
+    const mouth = createMouth({ persona: "eureka", homeserver: hs.url, rooms: Object.keys(ROOMS), token: TOKEN, state: memoryState(), fetch: hs.fetch, serverName: HS_NAME, brake: async () => true, log: () => {}, syncTimeoutMs: 1 });
+    await mouth.syncOnce();
+    assert.equal((await mouth.syncOnce())[0].replyTo, null);
+  } finally { await hs.close(); }
+  assert.deepEqual(["1", "true", "yes", "0", "", " 1", undefined].map(v => replyLinkFromEnv({ CHAT_PENDING_V4: v })), [true, false, false, false, false, false, false]);
+  assert.equal(replyLinkFromEnv({}), false);
 });
