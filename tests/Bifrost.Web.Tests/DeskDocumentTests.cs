@@ -64,7 +64,7 @@ public sealed class DeskDocumentTests
     public void Cards_round_trip_with_their_spelling()
     {
         var rows = DeskVectors.Rows("card", "valid").ToList();
-        Assert.Equal(5, rows.Count);
+        Assert.Equal(7, rows.Count);
         foreach (var row in rows)
         {
             var message = row["message"]!;
@@ -82,7 +82,7 @@ public sealed class DeskDocumentTests
             "\"future\":{\"z\":1.50,\"a\":[3,null,1e2],\"big\":12345678901234567890},\"options_hash\":\"ab\",\"leans\":null}";
         var entryJson =
             "{\"schemaVersion\":\"gamecult.fork.entry.v0\",\"card\":" + card +
-            ",\"record\":{\"schemaVersion\":\"gamecult.fork.record.v0\",\"fork_id\":\"x:question:y\",\"options_hash\":\"ab\",\"counted_answer_id\":null,\"answers\":[]}}";
+            ",\"record\":{\"schemaVersion\":\"gamecult.fork.record.v0\",\"fork_id\":\"x:question:y\",\"options_hash\":\"ab\",\"counted_answer_id\":null,\"answerer_count\":0,\"answers\":[]}}";
 
         var entry = JsonSerializer.Deserialize<ForkEntry>(entryJson, DeskJson.Options)!;
         var written = JsonSerializer.Serialize(entry, DeskJson.Options);

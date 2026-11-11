@@ -22,7 +22,7 @@ public static class DeskReplay
     public static ForkEntry Entry(JsonElement card) => new(
         "gamecult.fork.entry.v0",
         card,
-        new ForkRecord("gamecult.fork.record.v0", card.GetProperty("fork_id").GetString()!, card.GetProperty("options_hash").GetString()!, null, []));
+        new ForkRecord("gamecult.fork.record.v0", card.GetProperty("fork_id").GetString()!, card.GetProperty("options_hash").GetString()!, null, 0, []));
 
     // Every fork the vectors say each Mind holds, on that Mind's socket.
     public static void HoldVectorForks(FakeDeskDoor door)

@@ -4,11 +4,12 @@ using System.Text.Json.Serialization;
 namespace Bifrost.Web.Features.Desk;
 
 // The fork-desk documents Bifrost reads or writes, spelled as CultLib's contracts/cultnet/governance/fork-card.md
-// (commit de8a062a) spells them: snake_case keys, every key written (nil where absent), declared in the
+// (commit 3a51bbab) spells them: snake_case keys, every key written (nil where absent), declared in the
 // contract's key order. Bifrost authors only DeskRefusal and DeskUnavailable. AnswerRequest is the client's body;
 // DeskAnswerDocument, ForkList and AnswerResult are Huginn's documents, typed here so they pass through unchanged.
-// The card (gamecult.fork.card.v0) is deliberately NOT typed: its shape is still moving in CultLib (raised_at), and
-// Bifrost neither reads nor edits it, so it is an opaque JsonElement that keeps every key, number and key order.
+// The card (gamecult.fork.card.v0) is deliberately NOT typed: the Huginn door owns what a reader's card holds (the
+// decider view carries ids, the non-decider view withholds them and keeps decider_count), and Bifrost neither reads
+// nor edits it, so it is an opaque JsonElement that keeps every key, number and key order.
 
 public static class DeskSchemas
 {
@@ -70,7 +71,9 @@ public sealed record DeskAnswerDocument(
     [property: JsonPropertyName("answered_at")] string AnsweredAt,
     [property: JsonPropertyName("received_at")] string ReceivedAt,
     [property: JsonPropertyName("claim_in_future")] bool ClaimInFuture,
-    [property: JsonPropertyName("answerer")] string Answerer,
+    // Nil in a non-decider's view (Huginn withholds the ids); the key is required, so a missing one is a door fault,
+    // never a nil Bifrost invented.
+    [property: JsonPropertyName("answerer"), JsonRequired] string? Answerer,
     [property: JsonPropertyName("authority")] string Authority,
     [property: JsonPropertyName("request_id")] string RequestId);
 
@@ -79,6 +82,7 @@ public sealed record ForkRecord(
     [property: JsonPropertyName("fork_id")] string ForkId,
     [property: JsonPropertyName("options_hash")] string OptionsHash,
     [property: JsonPropertyName("counted_answer_id")] string? CountedAnswerId,
+    [property: JsonPropertyName("answerer_count"), JsonRequired] int AnswererCount,
     [property: JsonPropertyName("answers")] DeskAnswerDocument[] Answers);
 
 public sealed record ForkEntry(
