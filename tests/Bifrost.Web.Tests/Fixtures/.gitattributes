@@ -1,0 +1,3 @@
+fork-card-vectors.json text eol=lf
+desk-feed/**/*.md text eol=lf
+desk-feed/*.md text eol=lf
