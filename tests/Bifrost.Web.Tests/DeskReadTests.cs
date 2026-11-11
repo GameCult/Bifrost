@@ -102,7 +102,7 @@ public sealed class DeskReadTests
             }
         }
 
-        Assert.Equal(7, steps);
+        Assert.Equal(9, steps);
     }
 
     [Fact]
@@ -123,7 +123,7 @@ public sealed class DeskReadTests
     }
 
     [Fact]
-    public async Task A_fork_too_large_for_a_page_is_a_422_that_names_the_fork_and_the_cursor_to_continue_with()
+    public async Task A_fork_too_large_for_a_page_is_a_422_that_names_the_fork_and_its_order()
     {
         using var factory = new DeskWebApplicationFactory();
         await factory.EnsureAccountAsync(DeskWebApplicationFactory.Alice, true);
@@ -136,17 +136,14 @@ public sealed class DeskReadTests
         var error = (string)doc["error"]!;
         Assert.Contains("nibu:question:huge", error);
         Assert.Contains("order 7", error);
-        Assert.Contains("c7", error);
 
-        // At order 0 there is no cursor to continue with: the list has reached its end.
+        // At order 0 the text still names the fork and its order: the client reads "below 0" as the end.
         factory.Door.ListScript = (_, _) => new DeskListOutcome.ForkTooLarge("nibu:question:first", 0);
         var end = await factory.SendAsync("GET", "/api/desk/nibu/forks", null, ReadToken(factory));
         var endError = (string)JsonNode.Parse(end.Body)!["error"]!;
         Assert.Equal(422, end.Status);
         Assert.Contains("nibu:question:first", endError);
         Assert.Contains("order 0", endError);
-        Assert.DoesNotContain("cursor c0", endError);
-        Assert.Contains("end", endError);
     }
 
     [Fact]
@@ -180,6 +177,105 @@ public sealed class DeskReadTests
         Assert.Contains("nibu:question:huge", error);
         Assert.DoesNotContain("order", error);
         Assert.DoesNotContain("cursor", error);
+    }
+
+    [Fact]
+    public async Task List_short_pages_and_oversize_forks_follow_the_vectors()
+    {
+        var steps = 0;
+        foreach (var scenario in DeskVectors.Rows("transport", "listShortPages"))
+        {
+            using var factory = new DeskWebApplicationFactory();
+            await factory.EnsureAccountAsync(DeskWebApplicationFactory.Alice, true);
+            foreach (var step in scenario["steps"]!.AsArray().Select(s => s!.AsObject()))
+            {
+                var request = step["request"]!;
+                var name = (string)scenario["name"]!;
+                if (step["refusal"] is { } refusal)
+                {
+                    factory.Door.ListScript = (_, _) => new DeskListOutcome.ForkTooLarge((string)step["fork_id"]!, (int)step["order"]!);
+                }
+                else
+                {
+                    var list = step["response"]!.Deserialize<ForkList>(DeskJson.Options)!;
+                    factory.Door.ListScript = (_, _) => new DeskListOutcome.Listed(list);
+                }
+
+                var query = $"?status={(string?)request["status"]}&cursor={(string?)request["cursor"]}&limit={(int)request["limit"]!}";
+                var reply = await factory.SendAsync("GET", $"/api/desk/{(string)request["mind"]!}/forks" + query, null, ReadToken(factory));
+
+                Assert.Equal(step["refusal"] is null ? 200 : (int)step["httpStatus"]!, reply.Status);
+                Assert.True(
+                    step["refusal"] is null
+                        ? DeskVectors.SameShape(JsonNode.Parse(reply.Body), step["response"])
+                        : DeskVectors.SameRefusal(JsonNode.Parse(reply.Body), step["refusal"], (string)step["fork_id"]!, (int)step["order"]!),
+                    name);
+                steps++;
+            }
+        }
+
+        Assert.Equal(6, steps);
+    }
+
+    [Fact]
+    public async Task A_read_past_the_cap_follows_the_vectors()
+    {
+        using var factory = new DeskWebApplicationFactory();
+        await factory.EnsureAccountAsync(DeskWebApplicationFactory.Alice, true);
+
+        var rows = DeskVectors.Rows("transport", "readTooLarge").ToList();
+        Assert.Single(rows);
+        foreach (var row in rows)
+        {
+            var forkId = (string)row["fork_id"]!;
+            factory.Door.ReadScript = (_, id) => new DeskReadOutcome.ForkTooLarge(id);
+            var reply = await factory.SendAsync("GET", DeskReplay.Target("read", (string)row["request"]!["mind"]!, forkId), null, ReadToken(factory));
+
+            Assert.Equal((int)row["httpStatus"]!, reply.Status);
+            Assert.True(DeskVectors.SameRefusal(JsonNode.Parse(reply.Body), row["refusal"], forkId, null), (string)row["name"]!);
+        }
+    }
+
+    [Fact]
+    public async Task Door_faults_follow_the_vectors_per_route()
+    {
+        using var factory = new DeskWebApplicationFactory();
+        await factory.EnsureAccountAsync(DeskWebApplicationFactory.Alice, true);
+
+        var faults = DeskVectors.Rows("transport", "doorFaults").ToList();
+        Assert.Equal(3, faults.Count);
+        foreach (var row in faults)
+        {
+            var code = (string)row["doorCode"]!;
+            string method = "GET", target;
+            string? bearer = null;
+            byte[]? body = null;
+            switch ((string)row["route"]!)
+            {
+                case "read":
+                    factory.Door.ReadScript = (_, _) => new DeskReadOutcome.NotFound(code);
+                    target = DeskReplay.Target("read", "nibu", "nibu:question:glow-order");
+                    bearer = ReadToken(factory);
+                    break;
+                case "list":
+                    factory.Door.ListScript = (_, _) => new DeskListOutcome.NotListed(code);
+                    target = "/api/desk/nibu/forks";
+                    bearer = ReadToken(factory);
+                    break;
+                default:
+                    method = "POST";
+                    factory.Door.AnswerScript = (_, _, _) => new DeskAnswerOutcome.NotStored(code);
+                    target = DeskReplay.Target("answer", "nibu", null);
+                    body = DeskReplay.AnswerBody("nibu:question:glow-order");
+                    bearer = factory.Token(DeskWebApplicationFactory.Alice, "bifrost-desk", "desk.answer");
+                    break;
+            }
+
+            var reply = await factory.SendAsync(method, target, body, bearer);
+
+            Assert.Equal((int)row["httpStatus"]!, reply.Status);
+            Assert.True(DeskVectors.SameShape(JsonNode.Parse(reply.Body), row["response"]), (string)row["name"]!);
+        }
     }
 
     [Fact]

@@ -13,10 +13,18 @@ public sealed class DeskDocumentTests
     public void Refusal_and_unavailable_documents_match_vectors()
     {
         var rows = DeskVectors.Rows("doorRefusals").ToList();
-        Assert.Equal(9, rows.Count);
+        Assert.Equal(10, rows.Count);
         foreach (var row in rows)
         {
             var code = (string)row["message"]!["code"]!;
+            if (code == DeskRefusals.ForkTooLarge)
+            {
+                // It names its fork, so it is built, not looked up; the row is the list form at order 3.
+                Assert.True(DeskVectors.SameRefusal(Write(DeskRefusals.ForkTooLargeDocument("gamecult-chat:question:q3", 3)), row["message"], "gamecult-chat:question:q3", 3), $"refusal {code}");
+                Assert.Equal((int)row["httpStatus"]!, DeskRefusals.ForkTooLargeStatus);
+                continue;
+            }
+
             Assert.True(DeskVectors.SameShape(row["message"], Write(DeskRefusals.Document(code))), $"refusal {code}");
             Assert.Equal((int)row["httpStatus"]!, DeskRefusals.StatusOf(code));
         }

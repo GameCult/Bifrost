@@ -3,12 +3,12 @@ using System.Text.Json.Nodes;
 
 namespace Bifrost.Web.Tests.Support;
 
-// CultLib's fork-card vectors, vendored at commit 89755b08b5dd4bf72ed8e5907b5ff4717e51da12.
+// CultLib's fork-card vectors, vendored at commit f6c9bf5f975177d2033578e9b51b4d21930b728a.
 public static class DeskVectors
 {
-    public const string SourceCommit = "89755b08b5dd4bf72ed8e5907b5ff4717e51da12";
+    public const string SourceCommit = "f6c9bf5f975177d2033578e9b51b4d21930b728a";
 
-    public const string FileSha256 = "3387debd16059621202b706761519231e7ad52d0d4bd071a32b80c0d916e42fa";
+    public const string FileSha256 = "cc15fc9e36e9c1f7d77b42279dc0f9a72c392adb251cc6ae3a59b79b7a004619";
 
     public static string Path => System.IO.Path.Combine(AppContext.BaseDirectory, "Fixtures", "fork-card-vectors.json");
 
@@ -44,6 +44,22 @@ public static class DeskVectors
             default:
                 return false;
         }
+    }
+
+    // The vectors' refusal `error` text is illustrative (Libby): the contract pins the code, the key set, the status
+    // (asserted by the caller) and that the text names the fork id, and its order on a list.
+    public static bool SameRefusal(JsonNode? actual, JsonNode? vector, string forkId, int? order)
+    {
+        if (actual is not JsonObject a || vector is not JsonObject v ||
+            !a.Select(p => p.Key).SequenceEqual(v.Select(p => p.Key)) ||
+            (string?)a["schemaVersion"] != (string?)v["schemaVersion"] || (string?)a["code"] != (string?)v["code"])
+        {
+            return false;
+        }
+
+        var error = (string?)a["error"] ?? string.Empty;
+        return error.Contains(forkId, StringComparison.Ordinal) &&
+               (order is null || error.Contains($"order {order}", StringComparison.Ordinal));
     }
 
     public static byte[] Bytes(JsonNode node) => System.Text.Encoding.UTF8.GetBytes(node.ToJsonString());
