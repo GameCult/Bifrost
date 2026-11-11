@@ -11,6 +11,7 @@ using Microsoft.AspNetCore.Authentication.OAuth;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.WebUtilities;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -862,6 +863,28 @@ public sealed class HeimdallCompletionTests
             Assert.Null(account);
             AssertLogged(host, "Heimdall did not grant Bifrost member access.");
         }
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task A_suspended_account_stays_suspended_through_a_sign_in_with_or_without_the_member_claim(bool asksForMemberAccess)
+    {
+        using var host = new HeimdallHost();
+        var accountId = HeimdallShapes.NewAccountId();
+        Assert.True((await Genuine(host, await host.StartAsync(member: true), accountId, ["member_access"])).SignedIn);
+        await host.Db(async db =>
+        {
+            var account = await db.UserAccounts.Include(x => x.Membership).SingleAsync(x => x.HeimdallAccountId == accountId);
+            account.Membership!.Status = MembershipStatus.Suspended;
+            await db.SaveChangesAsync();
+            return 0;
+        });
+
+        var again = await Genuine(host, await host.StartAsync(member: asksForMemberAccess), accountId, ["member_access"]);
+
+        Assert.True(again.SignedIn);
+        Assert.Equal(MembershipStatus.Suspended, (await host.Account(accountId))!.Membership!.Status);
     }
 
     [Fact]

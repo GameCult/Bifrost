@@ -176,11 +176,20 @@
                                 </div>
                             </td>
                             <td>
-                                @if (Model.Actor.CanManageMembership && user.Status != MembershipStatus.Active)
+                                @if (Model.Actor.CanManageMembership && user.Status != MembershipStatus.Active && user.Status != MembershipStatus.Suspended)
                                 {
                                     <form method="post" asp-page-handler="Approve">
                                         <input type="hidden" name="userAccountId" value="@user.UserAccountId" />
                                         <button class="button secondary" type="submit">Approve</button>
+                                    </form>
+                                }
+
+                                @if (Model.Actor.CanManageMembership)
+                                {
+                                    <form method="post" asp-page-handler="@(user.Status == MembershipStatus.Suspended ? "Unsuspend" : "Suspend")" style="margin-top: 0.8rem;">
+                                        <input type="hidden" name="userAccountId" value="@user.UserAccountId" />
+                                        <input type="text" name="reason" maxlength="500" required placeholder="Reason" />
+                                        <button class="button warm" type="submit">@(user.Status == MembershipStatus.Suspended ? "Unsuspend" : "Suspend")</button>
                                     </form>
                                 }
 
