@@ -592,11 +592,16 @@ test("tail_gaps is additive: a three-field reader finds persona, deliveries and 
 const v6Dir = resolve(root, "tests", "fixtures", "persona-chat-v6");
 const quoted = { eventId: "$q1", sender: "@alice:gamecult.org", excerpt: "can someone look at the build?" };
 const v4Delivery = { ...delivery, isDirect: false, basis: null, form: "message" };
+// The excerpts the mouth makes from hostile quoted text (pinned in tests/persona-matrix-mouth.test.mjs, "the fixture excerpts"): the scrubbed line, never the hidden bytes.
+const scrubbedExcerpt = "ignorethisline";
+const variationExcerpt = "ok\u{1F44D}fine";
 const v6Samples = {
   "gamecult.persona.chat_pending_request.v3": { tuple: docs.pendingRequestTuple({ persona: "eureka", afterSeq: 3 }), parse: docs.parsePendingRequest },
   "gamecult.persona.chat_pending.v4.reply-to": { tuple: docs.pendingV4Tuple({ persona: "eureka", deliveries: [{ ...v4Delivery, replyTo: quoted }] }), parse: docs.parsePendingV4 },
   "gamecult.persona.chat_pending.v4.no-reply-to": { tuple: docs.pendingV4Tuple({ persona: "eureka", deliveries: [v4Delivery] }), parse: docs.parsePendingV4 },
   "gamecult.persona.chat_pending.v4.reply-to-redacted": { tuple: docs.pendingV4Tuple({ persona: "eureka", deliveries: [{ ...v4Delivery, replyTo: { ...quoted, excerpt: null } }] }), parse: docs.parsePendingV4 },
+  "gamecult.persona.chat_pending.v4.reply-to-scrubbed": { tuple: docs.pendingV4Tuple({ persona: "eureka", deliveries: [{ ...v4Delivery, replyTo: { ...quoted, excerpt: scrubbedExcerpt } }] }), parse: docs.parsePendingV4 },
+  "gamecult.persona.chat_pending.v4.reply-to-variation-selector": { tuple: docs.pendingV4Tuple({ persona: "eureka", deliveries: [{ ...v4Delivery, replyTo: { ...quoted, excerpt: variationExcerpt } }] }), parse: docs.parsePendingV4 },
 };
 const hexOf = bytes => `${[...bytes].map(b => b.toString(16).padStart(2, "0")).join("")}\n`;
 for (const [name, { tuple, parse }] of Object.entries(v6Samples)) {
@@ -610,10 +615,21 @@ for (const [name, { tuple, parse }] of Object.entries(v6Samples)) {
       const decoded = msgpack.decode(bytes);
       assert.equal(decoded.length, 4, "persona, deliveries, tail, tail_gaps");
       assert.equal(decoded[1][0].length, 15, "the 14 v3 fields, then reply_to");
-      assert.deepEqual(decoded[1][0][14], name.endsWith("no-reply-to") ? null : [quoted.eventId, quoted.sender, name.endsWith("redacted") ? null : quoted.excerpt]);
+      assert.deepEqual(decoded[1][0][14], name.endsWith("no-reply-to") ? null : [quoted.eventId, quoted.sender, name.endsWith("redacted") ? null : name.endsWith("scrubbed") ? scrubbedExcerpt : name.endsWith("variation-selector") ? variationExcerpt : quoted.excerpt]);
     }
   });
 }
+
+test("documents: reply_to refuses an event id or sender that is not an id of at most 255 bytes, on encode and on parse", () => {
+  const ok = { eventId: "$q1", sender: "@alice:gamecult.org", excerpt: null };
+  const d = { ...delivery, isDirect: false, basis: null, form: "message" };
+  for (const bad of [{ eventId: "q1" }, { eventId: "$" }, { eventId: `$${"x".repeat(255)}` }, { eventId: "$a b" }, { sender: "alice" }, { sender: "@" }, { sender: `@${"é".repeat(128)}` }, { sender: "@a:b\u0085" }])
+    assert.throws(() => docs.deliveryV4Tuple({ ...d, replyTo: { ...ok, ...bad } }), /reply_to/, JSON.stringify(bad).slice(0, 40));
+  assert.doesNotThrow(() => docs.deliveryV4Tuple({ ...d, replyTo: { ...ok, eventId: `$${"x".repeat(254)}` } }));
+  const tuple = docs.deliveryV4Tuple({ ...d, replyTo: ok });
+  tuple[14] = ["q1", ok.sender, null];
+  assert.throws(() => docs.parseDeliveryV4(tuple), /reply_to/);
+});
 
 test("v1, v2 and v3 bytes are unchanged by v4: a delivery without reply_to encodes to the v3 bytes plus one nil, and the older tuples never see the field", async () => {
   const v3 = msgpack.encode(docs.pendingV3Tuple({ persona: "eureka", deliveries: [v4Delivery] }));
