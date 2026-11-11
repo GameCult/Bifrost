@@ -1,5 +1,4 @@
 using System.Net;
-using System.Text;
 using Bifrost.Web.Configuration;
 using Bifrost.Web.Data;
 using Microsoft.EntityFrameworkCore;
@@ -13,14 +12,12 @@ using OpenIddict.Server.AspNetCore;
 namespace Bifrost.Web.Features.Oidc;
 
 /// <summary>
-/// The issuer's front door, ahead of OpenIddict: the marker brake, the per-address and per-client budgets, and the bound
+/// The issuer's front door, ahead of OpenIddict: the marker brake, the per-address budget, and the bound
 /// on token rows. The address is the connection's, already corrected by the forwarded-headers handling that trusts only
 /// the local proxy, so a caller cannot pick its own. It fails closed: anything this middleware cannot decide is a 503, never a pass.
 /// </summary>
 public sealed class OidcGuardMiddleware(RequestDelegate next, OidcIssuerOptions options, OidcRateLimit limit, ILogger<OidcGuardMiddleware> logger)
 {
-    private const int MaxClientIdLength = 128;
-
     public async Task InvokeAsync(HttpContext http, IOpenIddictTokenManager tokens)
     {
         var endpoint = EndpointOf(http.Request.Path);
@@ -38,20 +35,14 @@ public sealed class OidcGuardMiddleware(RequestDelegate next, OidcIssuerOptions 
                 return;
             }
 
-            if (limit.Spend($"address:{AddressKey(http.Connection.RemoteIpAddress)}") is { } byAddress)
+            if (limit.Spend(AddressKey(http.Connection.RemoteIpAddress)) is { } byAddress)
             {
                 await RefuseAsync(http, StatusCodes.Status429TooManyRequests, "too_many_requests", byAddress.RetryAfter);
                 return;
             }
 
-            if (limit.Spend($"client:{endpoint}:{await ClientKeyAsync(http, endpoint)}") is { } byClient)
-            {
-                await RefuseAsync(http, StatusCodes.Status429TooManyRequests, "too_many_requests", byClient.RetryAfter);
-                return;
-            }
-
             // A new authorize request parks a row for anyone who can name the (public) client; a resumed one carries request_uri and parks none.
-            if (endpoint == "authorize" && !http.Request.Query.ContainsKey("request_uri") && await tokens.CountAsync(http.RequestAborted) >= options.Limits.MaxTokenRows)
+            if (endpoint == Authorize && !http.Request.Query.ContainsKey("request_uri") && await tokens.CountAsync(http.RequestAborted) >= options.Limits.MaxTokenRows)
             {
                 await RefuseAsync(http, StatusCodes.Status503ServiceUnavailable, "temporarily_unavailable", options.Limits.PruneInterval);
                 return;
@@ -67,13 +58,33 @@ public sealed class OidcGuardMiddleware(RequestDelegate next, OidcIssuerOptions 
         await next(http);
     }
 
+    private const string Authorize = "authorize";
+
+    // OpenIddict answers these paths with or without a trailing slash, so the match is by segments, never exact equality.
     private static string? EndpointOf(PathString path) =>
-        path.Equals(OidcServiceCollectionExtensions.AuthorizationPath, StringComparison.OrdinalIgnoreCase) ? "authorize"
-        : path.Equals(OidcServiceCollectionExtensions.TokenPath, StringComparison.OrdinalIgnoreCase) ? "token"
-        : path.Equals(OidcServiceCollectionExtensions.UserInfoPath, StringComparison.OrdinalIgnoreCase) ? "userinfo"
+        path.StartsWithSegments(OidcServiceCollectionExtensions.AuthorizationPath, StringComparison.OrdinalIgnoreCase) ? Authorize
+        : path.StartsWithSegments(OidcServiceCollectionExtensions.TokenPath, StringComparison.OrdinalIgnoreCase) ? "token"
+        : path.StartsWithSegments(OidcServiceCollectionExtensions.UserInfoPath, StringComparison.OrdinalIgnoreCase) ? "userinfo"
         : null;
 
-    private static bool BrakeEngaged(string path) => !string.IsNullOrWhiteSpace(path) && File.Exists(path);
+    // A marker that cannot be told apart from an absent one (a permission or I/O error) throws, and the guard answers 503: the brake never releases by accident.
+    private static bool BrakeEngaged(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return false;
+        }
+
+        try
+        {
+            File.GetAttributes(path);
+            return true;
+        }
+        catch (Exception exception) when (exception is FileNotFoundException or DirectoryNotFoundException)
+        {
+            return false;
+        }
+    }
 
     // An IPv6 caller owns its /64, so rotating the low bits buys nothing.
     private static string AddressKey(IPAddress? address)
@@ -98,32 +109,6 @@ public sealed class OidcGuardMiddleware(RequestDelegate next, OidcIssuerOptions 
         return new IPAddress(bytes).ToString() + "/64";
     }
 
-    // The client the caller names, not one it proved: authorize names it in the query or form, token in its Basic header.
-    // An unreadable value shares one key, so garbage cannot mint keys.
-    private static async Task<string> ClientKeyAsync(HttpContext http, string endpoint)
-    {
-        string? clientId = null;
-        if (endpoint == "authorize")
-        {
-            clientId = http.Request.Query["client_id"].FirstOrDefault()
-                ?? (http.Request.HasFormContentType ? (await http.Request.ReadFormAsync(http.RequestAborted))["client_id"].FirstOrDefault() : null);
-        }
-        else if (endpoint == "token" && http.Request.Headers.Authorization.FirstOrDefault() is { } header
-            && header.StartsWith("Basic ", StringComparison.OrdinalIgnoreCase))
-        {
-            try
-            {
-                var decoded = Encoding.UTF8.GetString(Convert.FromBase64String(header["Basic ".Length..].Trim()));
-                clientId = Uri.UnescapeDataString(decoded.Split(':', 2)[0]);
-            }
-            catch (FormatException)
-            {
-            }
-        }
-
-        return string.IsNullOrEmpty(clientId) || clientId.Length > MaxClientIdLength ? "unnamed" : clientId;
-    }
-
     private static Task RefuseAsync(HttpContext http, int status, string error, TimeSpan retryAfter)
     {
         http.Response.StatusCode = status;
@@ -133,20 +118,22 @@ public sealed class OidcGuardMiddleware(RequestDelegate next, OidcIssuerOptions 
     }
 }
 
-/// <summary>The issuer's per-address and per-client permits, on the shared fixed-window budget.</summary>
+/// <summary>
+/// The issuer's per-address permits on the shared fixed-window budget. There is no per-client budget: the one client's id is
+/// public and what a caller names unverified, so a budget on it would let anyone spend the real client's permits.
+/// </summary>
 public sealed class OidcRateLimit(OidcIssuerOptions options, TimeProvider clock)
 {
     private readonly FixedWindowBudget addresses = new(options.Limits.PerAddressPermits, options.Limits.Window, options.Limits.MaxTrackedKeys, clock);
-    private readonly FixedWindowBudget clients = new(options.Limits.PerClientPermits, options.Limits.Window, options.Limits.MaxTrackedKeys, clock);
 
-    public BudgetDenial? Spend(string key) => key.StartsWith("address:", StringComparison.Ordinal) ? addresses.Spend(key) : clients.Spend(key);
+    public BudgetDenial? Spend(string address) => addresses.Spend(address);
 }
 
 /// <summary>
 /// Deletes expired and orphaned authorizations and tokens on a schedule: tokens past their expiry (parked authorize
 /// requests, codes, access tokens) or no longer valid, then authorizations that are no longer valid or are ad hoc with no
-/// token left. Live rows are never touched. Plain queries, not OpenIddict's ExecuteDelete prune, so the same code runs on
-/// Postgres and on the in-memory test provider.
+/// token left. Live rows are never touched. Plain queries, not OpenIddict's ExecuteDelete prune, which the in-memory test provider
+/// cannot run; an authorization takes its remaining tokens with it, because the foreign key has no cascade on Postgres.
 /// </summary>
 public sealed class OidcPruner(IServiceScopeFactory scopes, OidcIssuerOptions options, TimeProvider clock, ILogger<OidcPruner> logger) : BackgroundService
 {
@@ -176,10 +163,13 @@ public sealed class OidcPruner(IServiceScopeFactory scopes, OidcIssuerOptions op
 
         do
         {
+            // A token row references its authorization (no cascade in the database), so the tokens go with it.
             var authorizations = await db.Set<OpenIddictEntityFrameworkCoreAuthorization>()
+                .Include(authorization => authorization.Tokens)
                 .Where(authorization => authorization.CreationDate < young
                     && (authorization.Status != Statuses.Valid || (authorization.Type == AuthorizationTypes.AdHoc && !authorization.Tokens.Any())))
                 .Take(Batch).ToListAsync(cancellationToken);
+            db.RemoveRange(authorizations.SelectMany(authorization => authorization.Tokens));
             db.RemoveRange(authorizations);
             await db.SaveChangesAsync(cancellationToken);
             removed = authorizations.Count;

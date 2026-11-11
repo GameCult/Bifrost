@@ -7,6 +7,7 @@ using System.Text.Json;
 using Bifrost.Web.Domain;
 using Bifrost.Web.Features.Shared;
 using Bifrost.Web.Tests.Support;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -207,28 +208,97 @@ public sealed class OidcIssuerTests : IClassFixture<OidcWebApplicationFactory>
     }
 
     [Fact]
-    public async Task A_flood_naming_one_client_is_refused_for_that_client_only()
+    public async Task A_flood_naming_the_real_client_does_not_spend_anyone_elses_permits_and_a_trailing_slash_is_no_way_around()
     {
-        using var factory = new OidcSettingsFactory(Settings(("Limits:PerClientPermits", "3")));
+        using var factory = new OidcSettingsFactory(Settings(("Limits:PerAddressPermits", "4")));
         using var client = factory.CreateClient(ClientOptions());
 
-        var flooded = new List<HttpStatusCode>();
-        for (var i = 0; i < 5; i++)
+        var statuses = new List<HttpStatusCode>();
+        foreach (var path in new[] { NewRequest().Path, NewRequest().Path, "/connect/authorize/?client_id=x", "/connect/token/", "/connect/userinfo/" })
         {
-            using var response = await client.GetAsync(NewRequest("noisy-client").Path);
-            flooded.Add(response.StatusCode);
+            using var response = await client.GetAsync(path);
+            statuses.Add(response.StatusCode);
         }
 
-        using var other = await client.GetAsync(NewRequest().Path);
-        Assert.Equal([HttpStatusCode.TooManyRequests, HttpStatusCode.TooManyRequests], flooded.Skip(3));
-        Assert.NotEqual(HttpStatusCode.TooManyRequests, other.StatusCode);
-        Assert.NotEqual(HttpStatusCode.TooManyRequests, flooded[0]);
+        Assert.Equal(HttpStatusCode.TooManyRequests, statuses[4]); // the slashed forms spend the same budget
+        Assert.DoesNotContain(HttpStatusCode.TooManyRequests, statuses.Take(4));
+    }
+
+    [Theory]
+    [InlineData("/connect/authorize")]
+    [InlineData("/connect/authorize/")]
+    [InlineData("/connect/token/")]
+    [InlineData("/connect/userinfo/")]
+    [InlineData("/CONNECT/Userinfo")]
+    public async Task The_brake_holds_for_every_spelling_of_an_endpoint(string path)
+    {
+        var marker = Path.Combine(Path.GetTempPath(), $"oidc-brake-{Guid.NewGuid():N}");
+        File.WriteAllText(marker, "braked");
+        try
+        {
+            using var factory = new OidcSettingsFactory(Settings(("BrakePath", marker)));
+            using var client = factory.CreateClient(ClientOptions());
+            using var response = await client.GetAsync(path == "/connect/authorize" || path == "/connect/authorize/" ? path + "?client_id=x" : path);
+            Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        }
+        finally
+        {
+            File.Delete(marker);
+        }
+    }
+
+    [Fact]
+    public async Task A_guard_that_cannot_decide_answers_503_and_never_passes_the_request_on()
+    {
+        var reached = false;
+        var options = new Bifrost.Web.Configuration.OidcIssuerOptions();
+        var middleware = new Bifrost.Web.Features.Oidc.OidcGuardMiddleware(
+            _ => { reached = true; return Task.CompletedTask; }, options,
+            new Bifrost.Web.Features.Oidc.OidcRateLimit(options, TimeProvider.System),
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<Bifrost.Web.Features.Oidc.OidcGuardMiddleware>.Instance);
+        var http = new DefaultHttpContext();
+        http.Request.Path = "/connect/authorize";
+        http.Request.QueryString = new QueryString("?client_id=x");
+        http.Response.Body = new MemoryStream();
+
+        await middleware.InvokeAsync(http, System.Reflection.DispatchProxy.Create<OpenIddict.Abstractions.IOpenIddictTokenManager, ThrowingProxy>());
+
+        Assert.False(reached);
+        Assert.Equal(StatusCodes.Status503ServiceUnavailable, http.Response.StatusCode);
+    }
+
+    /// <summary>Every call fails: the row count the guard asks of the token table cannot be answered.</summary>
+    public class ThrowingProxy : System.Reflection.DispatchProxy
+    {
+        protected override object? Invoke(System.Reflection.MethodInfo? targetMethod, object?[]? args) => throw new InvalidOperationException("the token table is down");
+    }
+
+    [Fact]
+    public async Task A_resumed_authorize_request_is_not_refused_by_the_row_cap_but_a_fresh_one_is()
+    {
+        using var factory = new OidcSettingsFactory(Settings(("Limits:MaxTokenRows", "3")));
+        _factory = factory;
+        var (client, _) = await SignedInAsync(MembershipStatus.Active, "Resumer");
+        using var first = await client.GetAsync(NewRequest().Path); // parks one row, answers with a redirect carrying the request_uri
+        var resume = first.Headers.Location!.ToString();
+        Assert.Contains("request_uri", resume);
+
+        using var anonymous = factory.CreateClient(ClientOptions());
+        for (var i = 0; i < 2; i++)
+        {
+            using var filler = await anonymous.GetAsync(NewRequest().Path);
+        }
+
+        using var fresh = await anonymous.GetAsync(NewRequest().Path);
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, fresh.StatusCode);
+        using var resumed = await client.GetAsync(resume);
+        Assert.NotEqual(HttpStatusCode.ServiceUnavailable, resumed.StatusCode);
     }
 
     [Fact]
     public async Task A_mas_flow_fits_the_default_budgets_and_the_window_reopens()
     {
-        using var factory = new OidcSettingsFactory(Settings(("Limits:PerAddressPermits", "30"), ("Limits:PerClientPermits", "300")));
+        using var factory = new OidcSettingsFactory(Settings(("Limits:PerAddressPermits", "30")));
         _factory = factory;
         var (client, identity) = await SignedInAsync(MembershipStatus.Active, "Within Budget");
 
@@ -325,12 +395,32 @@ public sealed class OidcIssuerTests : IClassFixture<OidcWebApplicationFactory>
         await factory.PruneAsync();
         var after = await factory.TokenRowsAsync();
         Assert.True(after < before, "expired rows went");
-        Assert.True(after >= 1, "the live access token stayed");
+        Assert.Contains("urn:ietf:params:oauth:token-type:access_token", await factory.TokenTypesAsync()); // the live one, not merely some row
 
         using var userinfo = new HttpRequestMessage(HttpMethod.Get, "/connect/userinfo");
         userinfo.Headers.Authorization = new AuthenticationHeaderValue("Bearer", tokens.AccessToken);
         using var response = await factory.CreateClient(ClientOptions()).SendAsync(userinfo);
         Assert.NotEqual(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task The_prune_takes_a_revoked_authorization_with_its_tokens_and_touches_no_live_authorization()
+    {
+        using var factory = new OidcSettingsFactory(Settings());
+        _factory = factory;
+        var (revoked, _) = await SignedInAsync(MembershipStatus.Active, "Revoked");
+        await CompleteFlowAsync(revoked);
+        var (live, _) = await SignedInAsync(MembershipStatus.Active, "Live");
+        await CompleteFlowAsync(live);
+        Assert.Equal(2, await factory.AuthorizationRowsAsync());
+        Assert.Equal(6, await factory.TokensOfAuthorizationsAsync()); // a spent code, an access token and an id token each
+        await factory.RevokeFirstAuthorizationAsync();
+
+        factory.Clock.Advance(TimeSpan.FromMinutes(6)); // past the grace for a young row; the access tokens (an hour) are still alive
+        await factory.PruneAsync();
+
+        Assert.Equal(1, await factory.AuthorizationRowsAsync());
+        Assert.Equal(2, await factory.TokenRowsAsync()); // no orphan stays either: the revoked one's tokens went with it; the live one's access and id tokens stayed, spent codes go
     }
 
     [Theory]

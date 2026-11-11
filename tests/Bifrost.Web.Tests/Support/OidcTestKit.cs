@@ -5,6 +5,7 @@ using Bifrost.Web.Features.Shared;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
@@ -279,6 +280,43 @@ public sealed class OidcSettingsFactory(IReadOnlyDictionary<string, string?> set
     }
 
     public Task PruneAsync() => Services.GetRequiredService<Bifrost.Web.Features.Oidc.OidcPruner>().PruneAsync(CancellationToken.None);
+
+    public async Task<List<string?>> TokenTypesAsync()
+    {
+        using var scope = Services.CreateScope();
+        var manager = scope.ServiceProvider.GetRequiredService<OpenIddict.Abstractions.IOpenIddictTokenManager>();
+        var types = new List<string?>();
+        await foreach (var token in manager.ListAsync())
+        {
+            types.Add(await manager.GetTypeAsync(token));
+        }
+
+        return types;
+    }
+
+    public async Task<int> AuthorizationRowsAsync()
+    {
+        using var scope = Services.CreateScope();
+        return (int)await scope.ServiceProvider.GetRequiredService<OpenIddict.Abstractions.IOpenIddictAuthorizationManager>().CountAsync();
+    }
+
+    /// <summary>Tokens that belong to some authorization (the request and code rows carry none once spent).</summary>
+    public async Task<int> TokensOfAuthorizationsAsync()
+    {
+        using var scope = Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
+        return await db.Set<OpenIddictEntityFrameworkCoreToken>().CountAsync(token => token.Authorization != null);
+    }
+
+    public async Task RevokeFirstAuthorizationAsync()
+    {
+        using var scope = Services.CreateScope();
+        var manager = scope.ServiceProvider.GetRequiredService<OpenIddict.Abstractions.IOpenIddictAuthorizationManager>();
+        await foreach (var authorization in manager.ListAsync(count: 1, offset: 0))
+        {
+            Assert.True(await manager.TryRevokeAsync(authorization));
+        }
+    }
 
     public async Task<int> TokenRowsAsync()
     {

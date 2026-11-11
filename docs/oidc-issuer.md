@@ -45,7 +45,7 @@ echoes its value.
 | `Bifrost:Oidc:Clients:Mas:ClientSecretPath` | File holding the client secret. |
 | `Bifrost:Oidc:Clients:Mas:RedirectUri` | MAS's callback URL, registered exactly. |
 | `Bifrost:Oidc:BrakePath` | Optional. While a file exists at this path, `/connect/authorize`, `/token` and `/userinfo` answer 503 `temporarily_unavailable` and nothing is issued; delete the file to release. Checked per request, so no restart. Unset: no marker brake. |
-| `Bifrost:Oidc:Limits:*` | `PerAddressPermits` (30), `PerClientPermits` (300), `Window` (1 min), `MaxTrackedKeys` (10000), `MaxTokenRows` (20000), `PruneInterval` (5 min). |
+| `Bifrost:Oidc:Limits:*` | `PerAddressPermits` (30), `Window` (1 min), `MaxTrackedKeys` (10000), `MaxTokenRows` (20000), `PruneInterval` (5 min). |
 | `Bifrost:Oidc:Clients:Mas:BackchannelLogoutUri` | Optional. MAS's back-channel logout URL, `https://<mas>/upstream/backchannel-logout/<provider ULID>`; absolute http(s) or startup fails. Unset: no logout is sent and no authorization is revoked. |
 
 There are no development or ephemeral keys in the host. Key files are provisioned like the other
@@ -115,12 +115,19 @@ account.
 
 ## Limits, prune, brake
 
-`OidcGuardMiddleware` sits ahead of OpenIddict and guards the three endpoints. In order: the marker brake (503); a per-address
-budget (429 with `Retry-After`; the address is the connection's after forwarded-headers handling that trusts only the local
-proxy, IPv6 keyed by /64); a per-client budget keyed by the client id the caller names (authorize query or form, token Basic
-header; unreadable or over-long names share one key); and a cap on token rows: a new authorize request (no `request_uri`)
-is refused with 503 while the table holds `MaxTokenRows`. Any failure inside the guard is a 503, never a pass. MAS's flow is
-a handful of requests per sign-in from one address, far under the defaults.
+`OidcGuardMiddleware` sits ahead of OpenIddict and guards the three endpoints, matched by path segment so a trailing slash
+is no way around it. In order: the marker brake (503; a marker that cannot be read is treated as engaged); one per-address
+budget over the three endpoints together (429 with `Retry-After`; the address is the connection's after forwarded-headers
+handling that trusts only the local proxy, IPv6 keyed by /64); and a cap on token rows: a new authorize request (no
+`request_uri`) is refused with 503 while the table holds `MaxTokenRows`. Any failure inside the guard is a 503, never a pass.
+MAS's flow is a handful of requests per sign-in from one address, far under the defaults (30 a minute is about 15 sign-ins).
+
+There is no per-client budget. The one client's id is public and what a caller names is unverified, so a budget keyed on it
+would let anyone spend the real client's permits and lock sign-in out. The bound on the anonymous endpoint is the address
+budget plus the row cap, and the cap is itself a switch an attacker with many addresses can flip: it refuses new sign-ins
+(never resumed ones) until the next prune frees rows, which is the bounded failure chosen over unbounded parked rows.
+Not parking state before the user authenticates (as pushed authorization requests avoid by authenticating the client first)
+would remove the switch, and OpenIddict's request caching does not offer that.
 
 `OidcPruner` runs every `PruneInterval` and deletes tokens past expiry (parked authorize requests, codes, access tokens) or no
 longer valid, then authorizations no longer valid or ad hoc with no token left (younger than five minutes are left alone).

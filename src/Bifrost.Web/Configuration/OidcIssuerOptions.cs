@@ -53,15 +53,12 @@ public sealed class OidcClientOptions
 }
 
 /// <summary>
-/// Budgets on /connect/authorize, /connect/token and /connect/userinfo, and the bound on what the anonymous authorize
-/// endpoint can park. Per source address and per client id, one fixed window; a refused caller gets 429 with Retry-After.
-/// The defaults suit one client (MAS) behind one proxy.
+/// One budget on /connect/authorize, /connect/token and /connect/userinfo together, per source address in one fixed window (a refused caller gets 429 with Retry-After),
+/// and the bound on what the anonymous authorize endpoint can park. No per-client budget: the client id is public. The defaults suit one client (MAS) behind one proxy.
 /// </summary>
 public sealed class OidcLimitsOptions
 {
     public int PerAddressPermits { get; init; } = 30;
-
-    public int PerClientPermits { get; init; } = 300;
 
     public TimeSpan Window { get; init; } = TimeSpan.FromMinutes(1);
 
