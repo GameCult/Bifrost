@@ -38,6 +38,8 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
                 ["ConceptVotes:CastPermits"] = "100000",
                 ["ConceptVotes:MintPermits"] = "100000",
                 ["MindIntake:Permits"] = "100000",
+                ["Bifrost:Registration:Captcha:Difficulty"] = "4",
+                ["Bifrost:Registration:Limits:PerAddressPermits"] = "100000",
                 ["Host:PublicBaseUrl"] = "https://localhost",
                 ["Host:ExpectedHost"] = "localhost",
                 ["Host:RequireStrictHostValidation"] = "false",

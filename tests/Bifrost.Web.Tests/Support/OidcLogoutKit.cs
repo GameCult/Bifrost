@@ -403,7 +403,7 @@ public sealed class OidcLogoutFactory : OidcWebApplicationFactory
     {
         using var client = CreateClient(HostClientOptions());
         var identity = $"member-{Guid.NewGuid():N}";
-        using (var register = await client.PostAsJsonAsync("/auth/bifrost/register", new { identity, displayName = identity }))
+        using (var register = await RegistrationKit.RegisterAsync(client, identity))
         {
             Assert.Equal(HttpStatusCode.OK, register.StatusCode);
         }

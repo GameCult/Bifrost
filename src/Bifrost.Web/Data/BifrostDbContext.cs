@@ -43,6 +43,7 @@ public sealed class BifrostDbContext(DbContextOptions<BifrostDbContext> options)
 
     public DbSet<SealedBallot> SealedBallots => Set<SealedBallot>();
 
+    public DbSet<ConsentReceipt> ConsentReceipts => Set<ConsentReceipt>();
     public DbSet<MindKey> MindKeys => Set<MindKey>();
 
     public DbSet<MindNonce> MindNonces => Set<MindNonce>();
@@ -320,6 +321,15 @@ public sealed class BifrostDbContext(DbContextOptions<BifrostDbContext> options)
                 .WithMany()
                 .HasForeignKey(x => x.UserAccountId)
                 .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<ConsentReceipt>(entity =>
+        {
+            entity.HasIndex(x => new { x.UserAccountId, x.NoticeVersion }).IsUnique();
+            entity.HasOne(x => x.UserAccount)
+                .WithMany()
+                .HasForeignKey(x => x.UserAccountId)
+                .OnDelete(DeleteBehavior.Cascade);
         });
 
         modelBuilder.Entity<MindKey>(entity =>

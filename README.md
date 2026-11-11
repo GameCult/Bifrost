@@ -73,7 +73,7 @@ For the full staged roadmap, including contribution points, revenue share, patro
 ## Local Dev Notes
 
 - set `GitHubOAuth:ClientId` and `GitHubOAuth:ClientSecret` before using sign-in
-- POST `/auth/bifrost/register` with `identity`, optional `displayName`, and optional `returnUrl` to create a Bifrost-native account without OAuth; this signs in as `Authenticated` but does not grant active member access
+- POST `/auth/bifrost/register` with `identity`, optional `displayName`, optional `returnUrl`, a solved proof-of-work `challenge` and `nonce` (from `GET /auth/bifrost/challenge`), and `acceptedNoticeVersion` (the `version` from `GET /auth/bifrost/notice`) to create a Bifrost-native account without OAuth; this signs in as `Authenticated` but does not grant active member access
 - set `Bootstrap:AdminGitHubLogins` with at least one GitHub login for the first active admin path
 - HTTP bridge ledger configuration (`BIFROST_BRIDGE_BASE_URL` / `BIFROST_BRIDGE_TOKEN`) is removed from live CLI transport. Request-lane, governance, dispatch, and bridge receipts converge on Bifrost-owned `bifrost.crossing_receipt.v1` documents in `.bifrost/bridge-receipts.cc`.
 - external bridge actions must carry typed CultMesh command provenance such as `BIFROST_CULTMESH_COMMAND_ID`; unreceipted and HTTP-ledger hatches fail closed.

@@ -15,6 +15,7 @@ public sealed partial class BifrostIdentityService(
     public async Task<UserAccount> RegisterNativeAsync(
         string identity,
         string? displayName,
+        int noticeVersion,
         CancellationToken cancellationToken)
     {
         var normalizedIdentity = NormalizeIdentity(identity);
@@ -57,7 +58,14 @@ public sealed partial class BifrostIdentityService(
             }
         };
 
+        // One SaveChanges: no account exists without the receipt of the notice it accepted.
         dbContext.UserAccounts.Add(userAccount);
+        dbContext.ConsentReceipts.Add(new ConsentReceipt
+        {
+            UserAccount = userAccount,
+            NoticeVersion = noticeVersion,
+            AcceptedAtUtc = now
+        });
         await dbContext.SaveChangesAsync(cancellationToken);
         return userAccount;
     }

@@ -838,7 +838,7 @@ public sealed class OidcIssuerTests : IClassFixture<OidcWebApplicationFactory>
 
     private static async Task<string> RegisterAsync(HttpClient client, string identity)
     {
-        using var response = await client.PostAsJsonAsync("/auth/bifrost/register", new { identity, displayName = identity });
+        using var response = await RegistrationKit.RegisterAsync(client, identity);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         return identity.ToLowerInvariant();
     }

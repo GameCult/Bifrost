@@ -1155,6 +1155,25 @@ public sealed class AuditEvent
     public UserAccount? ActorUserAccount { get; set; }
 }
 
+/// <summary>
+/// An account's consent to the training notice, recorded with the notice version it accepted. Withdrawal sets
+/// <see cref="WithdrawnAtUtc"/>; the row is never deleted, so what was agreed and when stays answerable.
+/// </summary>
+public sealed class ConsentReceipt
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+
+    public Guid UserAccountId { get; set; }
+
+    public int NoticeVersion { get; set; }
+
+    public DateTimeOffset AcceptedAtUtc { get; set; }
+
+    public DateTimeOffset? WithdrawnAtUtc { get; set; }
+
+    public UserAccount? UserAccount { get; set; }
+}
+
 /// <summary>A Mind's registered Ed25519 public key. Bifrost never holds a private key.</summary>
 public sealed class MindKey
 {

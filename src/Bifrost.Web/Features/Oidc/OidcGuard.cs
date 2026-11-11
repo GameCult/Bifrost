@@ -35,7 +35,7 @@ public sealed class OidcGuardMiddleware(RequestDelegate next, OidcIssuerOptions 
                 return;
             }
 
-            if (limit.Spend(AddressKey(http.Connection.RemoteIpAddress)) is { } byAddress)
+            if (limit.Spend(ClientAddress.BudgetKey(http.Connection.RemoteIpAddress)) is { } byAddress)
             {
                 await RefuseAsync(http, StatusCodes.Status429TooManyRequests, "too_many_requests", byAddress.RetryAfter);
                 return;
@@ -84,29 +84,6 @@ public sealed class OidcGuardMiddleware(RequestDelegate next, OidcIssuerOptions 
         {
             return false;
         }
-    }
-
-    // An IPv6 caller owns its /64, so rotating the low bits buys nothing.
-    private static string AddressKey(IPAddress? address)
-    {
-        if (address is null)
-        {
-            return "unknown";
-        }
-
-        if (address.IsIPv4MappedToIPv6)
-        {
-            address = address.MapToIPv4();
-        }
-
-        if (address.AddressFamily != System.Net.Sockets.AddressFamily.InterNetworkV6)
-        {
-            return address.ToString();
-        }
-
-        var bytes = address.GetAddressBytes();
-        Array.Clear(bytes, 8, 8);
-        return new IPAddress(bytes).ToString() + "/64";
     }
 
     private static Task RefuseAsync(HttpContext http, int status, string error, TimeSpan retryAfter)

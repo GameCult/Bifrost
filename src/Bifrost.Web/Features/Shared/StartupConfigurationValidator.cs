@@ -13,7 +13,8 @@ public sealed class StartupConfigurationValidator(
     IOptions<StripeOptions> stripeOptions,
     IOptions<BifrostHostOptions> hostOptions,
     IOptions<ConceptVoteOptions> conceptVoteOptions,
-    IOptions<DeskOptions> deskOptions)
+    IOptions<DeskOptions> deskOptions,
+    IOptions<RegistrationOptions> registrationOptions)
 {
     public void Validate()
     {
@@ -47,6 +48,18 @@ public sealed class StartupConfigurationValidator(
         }
 
         ValidateDesk(deskOptions.Value, failures);
+
+        var difficulty = registrationOptions.Value.Captcha.Difficulty;
+        if (difficulty < RegistrationOptions.MinDifficulty || difficulty > RegistrationOptions.MaxDifficulty)
+        {
+            failures.Add($"Bifrost:Registration:Captcha:Difficulty must be between {RegistrationOptions.MinDifficulty} and {RegistrationOptions.MaxDifficulty}.");
+        }
+
+        var limits = registrationOptions.Value.Limits;
+        if (limits.PerAddressPermits < 1 || limits.Window <= TimeSpan.Zero || limits.MaxTrackedKeys < 1)
+        {
+            failures.Add("Bifrost:Registration:Limits:PerAddressPermits and MaxTrackedKeys must be at least 1 and Window must be positive.");
+        }
 
         if (hostEnvironment.IsDevelopment() || hostEnvironment.IsEnvironment("Testing"))
         {

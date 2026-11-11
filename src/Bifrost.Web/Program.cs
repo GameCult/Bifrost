@@ -14,6 +14,7 @@ using Bifrost.Web.Features.Membership;
 using Bifrost.Web.Features.Motions;
 using Bifrost.Web.Features.Oidc;
 using Bifrost.Web.Features.Patronage;
+using Bifrost.Web.Features.Registration;
 using Bifrost.Web.Features.Shared;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
@@ -131,6 +132,9 @@ builder.Services.AddScoped<SealedBallotService>();
 builder.Services.AddScoped<MindIntakeService>();
 builder.Services.AddOptions<MindIntakeOptions>().BindConfiguration(MindIntakeOptions.SectionName);
 builder.Services.AddSingleton<MindIntakeRateLimit>(); // TimeProvider and options resolve from the container
+builder.Services.AddOptions<RegistrationOptions>().BindConfiguration(RegistrationOptions.SectionName);
+builder.Services.AddSingleton<RegistrationChallengeService>();
+builder.Services.AddSingleton<RegistrationRateLimit>();
 builder.Services.AddHostedService<SealedBallotCloser>();
 builder.Services.AddScoped<MotionEveSurfaceService>();
 builder.Services.AddScoped<PatronageService>();
@@ -386,13 +390,34 @@ app.MapPost("/auth/bifrost/register", async (
     NativeBifrostRegistrationRequest request,
     HttpContext httpContext,
     BifrostIdentityService bifrostIdentityService,
+    RegistrationChallengeService challenges,
+    RegistrationRateLimit rateLimit,
     CancellationToken cancellationToken) =>
 {
+    if (rateLimit.Refuse(httpContext) is { } refused)
+    {
+        return refused;
+    }
+
+    // Consent first, then the proof of work; a refusal here creates nothing.
+    if (request.AcceptedNoticeVersion != TrainingNotice.Version)
+    {
+        return Results.Text(
+            $"Registration requires accepting the training notice, current version {TrainingNotice.Version}.",
+            statusCode: StatusCodes.Status400BadRequest);
+    }
+
+    if (!challenges.TryConsume(request.Challenge, request.Nonce))
+    {
+        return Results.Text("Registration challenge failed.", statusCode: StatusCodes.Status400BadRequest);
+    }
+
     try
     {
         var userAccount = await bifrostIdentityService.RegisterNativeAsync(
             request.Identity,
             request.DisplayName,
+            TrainingNotice.Version,
             cancellationToken);
         await httpContext.SignInAsync(
             CookieAuthenticationDefaults.AuthenticationScheme,
@@ -413,6 +438,56 @@ app.MapPost("/auth/bifrost/register", async (
         return Results.Text(error.Message, statusCode: StatusCodes.Status400BadRequest);
     }
 }).AllowAnonymous();
+
+app.MapGet("/auth/bifrost/challenge", (HttpContext httpContext, RegistrationChallengeService challenges, RegistrationRateLimit rateLimit) =>
+{
+    if (rateLimit.Refuse(httpContext) is { } refused)
+    {
+        return refused;
+    }
+
+    httpContext.Response.Headers.CacheControl = "no-store";
+    var challenge = challenges.Issue();
+    return challenge is null
+        ? Results.Text("Registration is busy; try again shortly.", statusCode: StatusCodes.Status503ServiceUnavailable)
+        : JsonResult(challenge, appJsonSerializerOptions);
+}).AllowAnonymous();
+
+app.MapGet("/auth/bifrost/notice", () =>
+    JsonResult(new { version = TrainingNotice.Version, text = TrainingNotice.Text }, appJsonSerializerOptions)).AllowAnonymous();
+
+// Withdrawal stops future use; the receipt row stays. Idempotent: an already-withdrawn receipt keeps its first timestamp.
+app.MapPost("/auth/bifrost/consent/withdraw", async (
+    ICurrentBifrostActorAccessor actors,
+    BifrostDbContext dbContext,
+    TimeProvider clock,
+    CancellationToken cancellationToken) =>
+{
+    var actor = await actors.GetAsync(cancellationToken);
+    if (!actor.IsAuthenticated || actor.UserAccount is null)
+    {
+        return Results.Unauthorized();
+    }
+
+    var receipts = await dbContext.ConsentReceipts
+        .Where(x => x.UserAccountId == actor.UserAccount.Id)
+        .ToListAsync(cancellationToken);
+    if (receipts.Count == 0)
+    {
+        return Results.Text("No consent receipt is recorded for this account.", statusCode: StatusCodes.Status404NotFound);
+    }
+
+    var now = clock.GetUtcNow();
+    foreach (var receipt in receipts.Where(x => x.WithdrawnAtUtc is null))
+    {
+        receipt.WithdrawnAtUtc = now;
+    }
+
+    await dbContext.SaveChangesAsync(cancellationToken);
+    return JsonResult(
+        new { withdrawnAtUtc = receipts.Min(x => x.WithdrawnAtUtc) },
+        appJsonSerializerOptions);
+});
 
 app.MapGet("/auth/heimdall/{provider}", async (
     string provider,
@@ -792,7 +867,10 @@ public partial class Program;
 public sealed record NativeBifrostRegistrationRequest(
     string Identity,
     string? DisplayName,
-    string? ReturnUrl);
+    string? ReturnUrl,
+    string? Challenge,
+    string? Nonce,
+    int? AcceptedNoticeVersion);
 
 public sealed record NativeBifrostRegistrationResponse(
     Guid UserAccountId,

@@ -28,7 +28,7 @@ public sealed class ReservedIdentityTests
     {
         var service = NewService(out var db);
 
-        var ex = await Assert.ThrowsAsync<BifrostIdentityException>(() => service.RegisterNativeAsync(name, null, default));
+        var ex = await Assert.ThrowsAsync<BifrostIdentityException>(() => service.RegisterNativeAsync(name, null, 1, default));
 
         Assert.Equal("That Bifrost identity is reserved.", ex.Message);
         Assert.Empty(db.UserAccounts);
@@ -42,7 +42,7 @@ public sealed class ReservedIdentityTests
     {
         var service = NewService(out var db);
 
-        await Assert.ThrowsAsync<BifrostIdentityException>(() => service.RegisterNativeAsync(name, null, default));
+        await Assert.ThrowsAsync<BifrostIdentityException>(() => service.RegisterNativeAsync(name, null, 1, default));
 
         Assert.Empty(db.UserAccounts);
     }
@@ -56,7 +56,7 @@ public sealed class ReservedIdentityTests
     {
         var service = NewService(out var db);
 
-        var account = await service.RegisterNativeAsync(name, null, default);
+        var account = await service.RegisterNativeAsync(name, null, 1, default);
 
         Assert.Equal(name, account.NormalizedBifrostIdentity);
         Assert.Single(db.UserAccounts);
@@ -112,7 +112,7 @@ public sealed class ReservedIdentityTests
     {
         var service = NewService(out var db);
 
-        var ex = await Assert.ThrowsAsync<BifrostIdentityException>(() => service.RegisterNativeAsync(name, null, default));
+        var ex = await Assert.ThrowsAsync<BifrostIdentityException>(() => service.RegisterNativeAsync(name, null, 1, default));
 
         Assert.Equal("That Bifrost identity is reserved.", ex.Message);
         Assert.Empty(db.UserAccounts);
@@ -147,7 +147,7 @@ public sealed class ReservedIdentityTests
     public async Task Mixed_case_input_is_refused_by_register_and_suffixed_when_derived(string input)
     {
         var service = NewService(out var db);
-        await Assert.ThrowsAsync<BifrostIdentityException>(() => service.RegisterNativeAsync(input, null, default));
+        await Assert.ThrowsAsync<BifrostIdentityException>(() => service.RegisterNativeAsync(input, null, 1, default));
         Assert.Empty(db.UserAccounts);
 
         var account = new UserAccount { DisplayName = input };

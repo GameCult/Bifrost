@@ -44,7 +44,8 @@ public sealed class DeskOptionsTests
             Options.Create(new StripeOptions()),
             Options.Create(new BifrostHostOptions()),
             Options.Create(new ConceptVoteOptions()),
-            Options.Create(Bind(values))).Validate();
+            Options.Create(Bind(values)),
+            Options.Create(new RegistrationOptions())).Validate();
     }
 
     private static void Refused(Dictionary<string, string?> values, string expectedFragment)
