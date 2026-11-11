@@ -14,6 +14,11 @@
             because trust and contributor accountability are product concerns, not just auth concerns.
         </p>
 
+        @if (!string.IsNullOrEmpty(Model.Notice))
+        {
+            <p class="validation-summary-errors" role="alert">@Model.Notice</p>
+        }
+
         @if (Model.Actor.CanManageMembership)
         {
             <form method="post" asp-page-handler="Invite">

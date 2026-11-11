@@ -22,6 +22,18 @@ public sealed class IndexModel(
     [BindProperty]
     public UpdateProfileInput Profile { get; set; } = new();
 
+    /// <summary>Why the last suspend or unsuspend did nothing; one of <see cref="RefusalNotices"/>, carried across the redirect.</summary>
+    [TempData]
+    public string? Notice { get; set; }
+
+    private static readonly IReadOnlyDictionary<SuspensionOutcome, string> RefusalNotices = new Dictionary<SuspensionOutcome, string>
+    {
+        [SuspensionOutcome.NoReason] = "Nothing changed: a reason is required to suspend or unsuspend an account.",
+        [SuspensionOutcome.ProtectedAccount] = "Nothing changed: you cannot suspend yourself or another platform admin.",
+        [SuspensionOutcome.NoSuchAccount] = "Nothing changed: that account or its membership does not exist.",
+        [SuspensionOutcome.NotApplicable] = "Nothing changed: the account is already in that state."
+    };
+
     public CurrentBifrostActor Actor { get; private set; } = CurrentBifrostActor.Anonymous;
 
     public IReadOnlyList<MemberDirectoryItem> Users { get; private set; } = [];
@@ -143,7 +155,13 @@ public sealed class IndexModel(
         var outcome = suspend
             ? await suspension.SuspendAsync(Actor, userAccountId, reason, cancellationToken)
             : await suspension.UnsuspendAsync(Actor, userAccountId, reason, cancellationToken);
-        return outcome == SuspensionOutcome.NotAdmin ? Forbid() : RedirectToPage();
+        if (outcome == SuspensionOutcome.NotAdmin)
+        {
+            return Forbid();
+        }
+
+        Notice = RefusalNotices.GetValueOrDefault(outcome);
+        return RedirectToPage();
     }
 
     public async Task<IActionResult> OnPostToggleRoleAsync(Guid userAccountId, MemberRole role, CancellationToken cancellationToken)
