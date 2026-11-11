@@ -253,6 +253,20 @@ A line a delivery already shows and a room she cannot speak in change nothing he
 
 Golden bytes: `tests/fixtures/persona-chat-v5/` (`chat_pending.v3.tail` carries two lines and no gap, `chat_pending.v3.tail-gaps` one line and two gap rooms; the earlier v3 samples gain an empty fourth element); Huginn pins the same bytes.
 
+### Reply link (`chat_pending.v4`)
+
+A reply to anyone but the Persona arrives bare in v3: `basis` is `reply` only when the quoted author is her account. v4 adds what the message quotes. **It is off unless the mouth runs with `CHAT_PENDING_V4=1`** (exactly `1`; default off), because Huginn pins the tuple bytes and must read v4 first. With the flag off, `gamecult.persona.chat_pending_request.v3` is not a served kind: it is refused as any unknown kind is (`chat_refusal` `UnknownKind`, logged), byte for byte, and v1/v2/v3 requests are answered as before. With it on, that request kind (the v1 tuple `[persona, after_seq]` again; the kind asked by names the answer) is answered with `gamecult.persona.chat_pending.v4`.
+
+The answer is `[persona, deliveries, tail, tail_gaps]` exactly as v3; each delivery is the 14 v3 fields, then field 14:
+
+| Field | Type | Meaning |
+|---|---|---|
+| 14 `reply_to` | nil or `[event_id, sender, excerpt]` | The event this message replies to (its own `m.in_reply_to`; a thread's `is_falling_back` pointer names no one and is nil). `event_id` the quoted event; `sender` its author's Matrix id, read from the homeserver as her account; `excerpt` nil, or its text. |
+
+`excerpt` is nil, with `event_id` and `sender` kept, when the quoted event is redacted (`unsigned.redacted_because` present or no content) or is not a text-bearing `m.room.message`; a media event excerpts as its typed line, like a delivery's text. Otherwise it is the first 240 **Unicode code points** of that text (after the 1000-byte line bound), cut on a code point so no character is split; a combining mark counts as its own code point; there is no truncation marker. `reply_to` is nil (no id, author or text) when the target cannot be read (logged, as for `basis`), is not in the delivery's own room (a room she is not in cannot be quoted through a reply), or the message replies to nothing. The quoted event is read the way `basis` already reads it (`GET /rooms/{room}/event/{id}` as her account, kept per room and event, a failure for a minute), so a reply costs at most one read per target, shared with the `basis` check. `basis` for v1-v3 is unchanged. `reply_to` counts toward the delivery's size in the 256 KiB page budget; a delivery whose `reply_to` will not encode is skipped and logged like any other, and a single delivery is always served. The deploy precondition is Huginn's: a decoder of the 14-field delivery fails on the fifteenth element.
+
+Golden bytes: `tests/fixtures/persona-chat-v6/` (`.msgpack` and its `.hex`: `chat_pending.v4.reply-to`, `.no-reply-to`, `.reply-to-redacted`, and the `chat_pending_request.v3` request); the test fails when the checked-in bytes drift from the encoder.
+
 
 Bifrost admits an observation only when guild, channel, target runtime, canonical repository, Persona, producer, and producer runtime match a preconfigured `bifrost.persona_feedback.target_binding.v0` document in Bifrost's private provider store. That binding also owns source visibility, data classification, and the delivery-store target. Bifrost never infers public visibility from Discord identifiers. It classifies the author using its own `bifrost.discord.actor_link.v0` state: a match yields `linked_governance_feedback`; absence yields `unlinked_social_feedback`. Neither class grants adoption, work, release, or deployment authority.
 

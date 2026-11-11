@@ -122,6 +122,7 @@ export function createMouth({
   persona, homeserver, serverName, rooms, token, fetch: httpFetch = globalThis.fetch, state, brake,
   now = Date.now, log = () => {}, syncTimeoutMs = 30000, maxPending = MAX_PENDING, gate = createRoomGate(), sendTimeoutMs = SEND_TIMEOUT_MS,
   presenceGraceMs = PRESENCE_GRACE_MS,
+  replyLink = false, // resolve each reply's quoted event into delivery.replyTo (the v4 answer; one more event read per reply to a non-Mind)
   images = null, // this Persona's image store (createImageStore), or null: images stay the typed text line
   isServed = async () => false, // (async) whether a Matrix user id is an account this process speaks for: a Mind is not a person to open a DM with
 }) {
@@ -310,22 +311,43 @@ export function createMouth({
   }
   // A pill is an anchor whose href is exactly her matrix.to link; a longer id, an attribute that merely contains one and a quoted reply do not count.
   const pillFor = html => typeof html === "string" && [...html.replace(/<mx-reply>[\s\S]*?<\/mx-reply>/gi, "").matchAll(/<a\s[^>]*?href\s*=\s*(["'])(.*?)\1/gi)].some(([, , href]) => [selfId, encodeURIComponent(selfId)].some(id => href === `https://matrix.to/#/${id}`));
-  const authors = new Map(); // `${room id} ${event id}` -> { sender, at }: read results, a failure kept for NEGATIVE_MS, bounded; the key holds the room so another room's reply cannot borrow a hit
+  const authors = new Map(); // `${room id} ${event id}` -> { sender, excerpt, at }: read results, a failure kept for NEGATIVE_MS, bounded; the key holds the room so another room's reply cannot borrow a hit
   const NEGATIVE_MS = 60 * 1000;
-  async function authorOf(roomId, eventId) {
+  // The quoted text: nil when the event is redacted (the homeserver strips its content) or is not text; else the first 240 code points
+  // (not bytes: a cut never splits a character), from the same body line a delivery shows. Computed only when replyLink is on.
+  const excerptOf = target => {
+    if (!replyLink || target?.unsigned?.redacted_because !== undefined || target?.type !== "m.room.message" || typeof target.content?.body !== "string") return null;
+    return [...bodyText(target.content, docs.limits.contextBytes)].slice(0, docs.limits.replyExcerpt).join("");
+  };
+  async function targetOf(roomId, eventId) {
     const key = `${roomId} ${eventId}`;
     const known = authors.get(key);
-    if (known && (known.sender !== null || now() - known.at < NEGATIVE_MS)) return known.sender;
-    let sender = null;
+    if (known && (known.sender !== null || now() - known.at < NEGATIVE_MS)) return known;
+    let sender = null, excerpt = null;
     try {
       const target = await matrix("GET", `/rooms/${encodeURIComponent(roomId)}/event/${encodeURIComponent(eventId)}`, undefined, API, AbortSignal.timeout(sendTimeoutMs));
-      if (target?.room_id === undefined || target.room_id === roomId) sender = typeof target?.sender === "string" ? target.sender : null; // an id from another room is not an answer about this one
+      if (target?.room_id === undefined || target.room_id === roomId) { // an id from another room is not an answer about this one: no sender, no text
+        sender = typeof target?.sender === "string" && target.sender !== "" ? target.sender : null;
+        if (sender !== null) excerpt = excerptOf(target);
+      }
     } catch (error) {
       say(`reply target ${eventId} not read: ${error.message}`);
     }
-    authors.set(key, { sender, at: now() });
+    const entry = { sender, excerpt, at: now() };
+    authors.set(key, entry);
     if (authors.size > DELIVERED_INDEX) authors.delete(authors.keys().next().value);
-    return sender;
+    return entry;
+  }
+  const authorOf = async (roomId, eventId) => (await targetOf(roomId, eventId)).sender;
+  // The event a message replies to: its own m.in_reply_to, unless that is a thread's fallback pointer (is_falling_back), which
+  // names no one. nil when the target cannot be read or sits in another room.
+  async function replyToOf(roomId, event) {
+    if (!replyLink || formOf(event.content) !== "message") return null;
+    const r = event.content["m.relates_to"]?.["m.in_reply_to"];
+    const id = r?.event_id;
+    if (typeof id !== "string" || id === "" || event.content["m.relates_to"]["is_falling_back"] === true) return null;
+    const { sender, excerpt } = await targetOf(roomId, id);
+    return sender === null ? null : { eventId: id, sender, excerpt };
   }
   async function repliesToMe(roomId, relates) {
     const targets = new Set([relates?.["m.in_reply_to"]?.event_id, relates?.rel_type === "m.thread" ? relates.event_id : undefined].filter(id => typeof id === "string" && id !== ""));
@@ -402,12 +424,13 @@ export function createMouth({
           if (refused !== null) say(`image refused: ${refused}`);
           const mentioned = event.content["m.mentions"]?.user_ids;
           const basis = await basisOf(roomId, event);
+          const replyTo = await replyToOf(roomId, event);
           made.push({
             seq: ++seqCounter, roomAlias: alias, roomId, eventId: event.event_id, sender: event.sender,
             senderDisplay: displayNames.get(event.sender) ?? localpart(event.sender), text: bodyText(event.content, docs.limits.textBytes, refused), atUnixMs,
             context, image,
             mentions: Array.isArray(mentioned) ? mentioned.filter(id => typeof id === "string" && id !== "" && id.length <= 255).slice(0, docs.limits.mentions) : [],
-            isDirect: directRooms.has(roomId), basis, form: formOf(event.content),
+            isDirect: directRooms.has(roomId), basis, form: formOf(event.content), replyTo,
           });
           if (image) images.hold(image.path, seqCounter);
         }
@@ -730,15 +753,16 @@ export function connectionIdFor(connectionKey) {
 // The reply to a chat_pending_request: deliveries oldest first, each encoded on its own so one that
 // will not encode is skipped and logged without silencing the rest, up to the reply byte budget.
 // The caller acks what it has read and asks again.
+// A v4 reply (v4 true, with v3) is the v3 reply with each delivery's reply_to counted in its size, like any field: one oversize delivery is still alone on its page.
 // A v3 reply also carries `tail` (room lines, oldest first), trimmed oldest first to what the byte budget has left after the deliveries,
 // and `tail_gaps`: the rooms of `tail.rooms`, in that order, with lines missing from the reply: those `tail.gaps` names plus every room
 // whose line the byte budget or an unencodable line dropped here.
-export function pageOf(persona, deliveries, msgpack, log = () => {}, v3 = false, tail = { lines: [], gaps: [], rooms: [] }) {
+export function pageOf(persona, deliveries, msgpack, log = () => {}, v3 = false, tail = { lines: [], gaps: [], rooms: [] }, v4 = false) {
   const page = [];
   let bytes = 0;
   for (const delivery of deliveries) {
     let tuple, size;
-    try { tuple = (v3 ? docs.deliveryV3Tuple : docs.deliveryTuple)(delivery); size = msgpack.encode(tuple).length; } catch (error) {
+    try { tuple = (v4 ? docs.deliveryV4Tuple : v3 ? docs.deliveryV3Tuple : docs.deliveryTuple)(delivery); size = msgpack.encode(tuple).length; } catch (error) {
       log(`delivery ${delivery?.seq} skipped: ${error?.message ?? error}`);
       continue;
     }
@@ -769,7 +793,7 @@ export function pageOf(persona, deliveries, msgpack, log = () => {}, v3 = false,
 // session, and a request is answered on the session it arrived on. Requests arrive as
 // document_put_raw messages. A request naming a Persona this
 // process does not serve is answered with a typed UnknownPersona refusal.
-export async function startChatEndpoint({ mouths, runtime, port, connectionKey, runtimeId, socketFactory = createSocket, host = "127.0.0.1", log = () => {} }) {
+export async function startChatEndpoint({ mouths, runtime, port, connectionKey, runtimeId, socketFactory = createSocket, host = "127.0.0.1", log = () => {}, replyLink = false }) {
   if (!/^127\.\d+\.\d+\.\d+$/.test(host)) throw new Error("the chat endpoint listens on loopback only");
   const { msgpack, cultnet } = runtime;
   const socket = socketFactory("udp4");
@@ -781,7 +805,7 @@ export async function startChatEndpoint({ mouths, runtime, port, connectionKey, 
   const respond = (peer, persona, kind, recordKey, tuple) => server.send(peer, "schema", msgpack.encode(cultnet.encodeCultNetMessageForWire(
     docs.envelope({ kind, recordKey, payload: msgpack.encode(tuple), sourceRuntimeId: runtimeId, sourceAgentId: persona, sourceRole: "bifrost-persona-matrix-mouth" }), "cultnet.schema.v0")));
   const refuseUnknown = (peer, persona) => respond(peer, persona, docs.kinds.refusal, persona, docs.refusalTuple({ persona, refusal: "UnknownPersona" }));
-  const served = [docs.kinds.pendingRequest, docs.kinds.pendingRequestV3, docs.kinds.ack, docs.kinds.read, docs.kinds.sendRequest, docs.kinds.sendRequestV2, docs.kinds.openDirectRequest];
+  const served = [docs.kinds.pendingRequest, docs.kinds.pendingRequestV3, ...(replyLink ? [docs.kinds.pendingRequestV4] : []), docs.kinds.ack, docs.kinds.read, docs.kinds.sendRequest, docs.kinds.sendRequestV2, docs.kinds.openDirectRequest];
   const handle = async ({ peer, channelId, payload }) => {
     try {
       if (channelId !== "schema") throw new Error("chat request arrived on a foreign channel");
@@ -798,13 +822,14 @@ export async function startChatEndpoint({ mouths, runtime, port, connectionKey, 
         const mouth = mouths.get(request.persona);
         const receipt = mouth ? await mouth.openDirect(request) : { requestId: request.requestId, outcome: "UnknownPersona", roomId: null, eventId: null };
         respond(peer, request.persona, docs.kinds.openDirectReceipt, receipt.requestId, docs.openDirectReceiptTuple(receipt));
-      } else if (document.schemaId === docs.kinds.pendingRequest || document.schemaId === docs.kinds.pendingRequestV3) {
-        const v3 = document.schemaId === docs.kinds.pendingRequestV3; // the kind asked by names the answer: v1 gets the 12-field v2 answer, as before
+      } else if (document.schemaId === docs.kinds.pendingRequest || document.schemaId === docs.kinds.pendingRequestV3 || document.schemaId === docs.kinds.pendingRequestV4) {
+        const v4 = document.schemaId === docs.kinds.pendingRequestV4; // only reachable with replyLink: `served` drops it otherwise
+        const v3 = v4 || document.schemaId === docs.kinds.pendingRequestV3; // the kind asked by names the answer: v1 gets the 12-field v2 answer, as before
         const request = docs.parsePendingRequest(tuple);
         const mouth = mouths.get(request.persona);
         if (!mouth) return refuseUnknown(peer, request.persona);
         const tail = v3 ? await mouth.tail().catch(error => { log(`tail not read: ${error?.message ?? error}`); const rooms = mouth.speakableRooms(); return { lines: [], gaps: rooms, rooms }; }) : undefined;
-        respond(peer, request.persona, v3 ? docs.kinds.pendingV3 : docs.kinds.pending, request.persona, pageOf(request.persona, mouth.pendingAfter(request.afterSeq), msgpack, log, v3, tail));
+        respond(peer, request.persona, v4 ? docs.kinds.pendingV4 : v3 ? docs.kinds.pendingV3 : docs.kinds.pending, request.persona, pageOf(request.persona, mouth.pendingAfter(request.afterSeq), msgpack, log, v3, tail, v4));
       } else if (document.schemaId === docs.kinds.ack) {
         const request = docs.parseAck(tuple);
         const mouth = mouths.get(request.persona);
@@ -903,10 +928,11 @@ export async function main(env = process.env) {
     const controlRoot = env.CONTROL_ROOT ?? "/etc/gamecult/minds";
     const imageRoot = env.IMAGE_STORE_ROOT ? resolve(env.IMAGE_STORE_ROOT) : null; // unset: chat images stay the typed text line
     const gate = createRoomGate(); // one for every Persona: two Minds in one room take turns
+    const replyLink = env.CHAT_PENDING_V4 === "1"; // default off: Huginn pins the v3 tuple bytes until it reads v4
     const mouths = new Map(personas.map(persona => {
       mkdirSync(join(stateRoot, persona), { recursive: true });
       return [persona, createMouth({
-        persona, homeserver, serverName, rooms: roomsByPersona.get(persona), token: tokens.get(persona), gate, isServed: async id => { await Promise.all([...mouths.values()].map(m => m.start().catch(() => {}))); return [...mouths.values()].some(m => m.userId === id); }, log: line => log(`${persona}: ${line}`),
+        persona, homeserver, serverName, rooms: roomsByPersona.get(persona), token: tokens.get(persona), gate, replyLink, isServed: async id => { await Promise.all([...mouths.values()].map(m => m.start().catch(() => {}))); return [...mouths.values()].some(m => m.userId === id); }, log: line => log(`${persona}: ${line}`),
         images: imageRoot ? createImageStore({ root: join(imageRoot, persona), log: line => log(`${persona}: ${line}`) }) : null,
         state: cultcacheState({ runtime, path: join(stateRoot, persona, "cursor.cc") }),
         brake: createBrakeReader({ controlPath: join(controlRoot, persona, "control.cc"), readStore: runtime.readSingleFileStore, decode: runtime.msgpack.decode }),
@@ -914,7 +940,7 @@ export async function main(env = process.env) {
     }));
     const listen = required(env, "CHAT_RUDP_LISTEN"); // host:port, loopback
     const colon = listen.lastIndexOf(":");
-    await startChatEndpoint({ mouths, runtime, host: listen.slice(0, colon), port: Number(listen.slice(colon + 1)), connectionKey: chatKey, runtimeId: "bifrost-persona-mouth", log });
+    await startChatEndpoint({ mouths, runtime, host: listen.slice(0, colon), port: Number(listen.slice(colon + 1)), connectionKey: chatKey, runtimeId: "bifrost-persona-mouth", log, replyLink });
     await Promise.all([...mouths.values()].map(mouth => mouth.run()));
   });
 }

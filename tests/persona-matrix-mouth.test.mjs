@@ -1721,3 +1721,76 @@ test("tail gaps: the read timer is cleared when the read answers, and a mouth th
     assert.ok([...made].every(t => cleared.has(t)), "no read timer is left running");
   } finally { globalThis.setTimeout = realSet; globalThis.clearTimeout = realClear; await hs.close(); }
 });
+
+// ---- Reply link (chat_pending.v4, docs/bridge.md "Reply link"): the quoted event's id, author and excerpt, behind replyLink (default off).
+const ALICE_ID = `@alice:${HS_NAME}`;
+const quoting = (id, to, extra = {}) => withContent(id, META, { body: "re", "m.relates_to": { "m.in_reply_to": { event_id: to }, ...extra } });
+const target = (id, sender, body, extra = {}) => ({ ...withContent(id, sender, { body }, 1000), room_id: ROOM, ...extra });
+const quotes = made => made.map(d => [d.eventId, d.basis, d.replyTo]);
+async function linked(events, preload, replyLink = true) {
+  const hs = await fakeHomeserver({ preload: { [ROOM]: preload }, sync: since => since === null ? { next_batch: "b0" } : { next_batch: "b1", ...joined({ [ROOM]: { timeline: { events } } }) } });
+  try {
+    const mouth = mouthFor(hs, { replyLink });
+    await mouth.syncOnce();
+    return { made: await mouth.syncOnce(), hs };
+  } finally { await hs.close(); }
+}
+
+test("reply link: a reply to anyone carries the quoted id, the author's Matrix id and the text; basis stays reply only for her own words", async () => {
+  const { made } = await linked(
+    [quoting("$a", "$hers"), quoting("$b", "$alices"), withContent("$c", META, { body: "plain" })],
+    [target("$hers", SELF, "my words"), target("$alices", ALICE_ID, "can someone look at the build?")]);
+  assert.deepEqual(quotes(made), [
+    ["$a", "reply", { eventId: "$hers", sender: SELF, excerpt: "my words" }],
+    ["$b", null, { eventId: "$alices", sender: ALICE_ID, excerpt: "can someone look at the build?" }],
+    ["$c", null, null],
+  ]);
+});
+
+test("reply link: flag off (default) delivers no replyTo and the basis is what it always was", async () => {
+  const pre = [target("$hers", SELF, "my words"), target("$alices", ALICE_ID, "secret words")];
+  const { made } = await linked([quoting("$a", "$hers"), quoting("$b", "$alices")], pre, false);
+  assert.deepEqual(quotes(made), [["$a", "reply", null], ["$b", null, null]]);
+});
+
+test("reply link: the excerpt is cut at 240 code points, not bytes, and never splits a character", async () => {
+  const emoji = "\u{1F600}".repeat(300), ascii = "a".repeat(300), combining = "é".repeat(200);
+  const { made } = await linked([quoting("$e", "$t1"), quoting("$a", "$t2"), quoting("$c", "$t3"), quoting("$s", "$t4")],
+    [target("$t1", ALICE_ID, emoji), target("$t2", ALICE_ID, ascii), target("$t3", ALICE_ID, combining), target("$t4", ALICE_ID, "short")]);
+  const ex = made.map(d => d.replyTo.excerpt);
+  assert.deepEqual([...ex[0]].length, 240);
+  assert.equal(ex[0], "\u{1F600}".repeat(240), "240 astral characters, 960 bytes");
+  assert.equal(ex[1], "a".repeat(240));
+  assert.equal([...ex[2]].length, 240, "code points: a combining mark counts as one, as documented");
+  assert.equal(ex[3], "short");
+  assert.ok(ex.every(e => !e.includes("�")));
+});
+
+test("reply link: a redacted quoted event keeps its id and author but no text; so does a non-text one", async () => {
+  const { made } = await linked([quoting("$r", "$red"), quoting("$n", "$nobody"), quoting("$m", "$img")], [
+    target("$red", ALICE_ID, "the secret that was redacted", { content: {}, unsigned: { redacted_because: { type: "m.room.redaction" } } }),
+    target("$nobody", ALICE_ID, "", { content: {} }),
+    target("$img", ALICE_ID, "x", { type: "m.sticker", content: { body: "private caption" } }),
+  ]);
+  assert.deepEqual(made.map(d => d.replyTo), [
+    { eventId: "$red", sender: ALICE_ID, excerpt: null },
+    { eventId: "$nobody", sender: ALICE_ID, excerpt: null },
+    { eventId: "$img", sender: ALICE_ID, excerpt: null },
+  ]);
+  const redactedStillText = await linked([quoting("$r", "$red")], [target("$red", ALICE_ID, "still has a body", { unsigned: { redacted_because: {} } })]);
+  assert.equal(redactedStillText.made[0].replyTo.excerpt, null, "a redaction marker wins even if a body is present");
+});
+
+test("reply link: a quoted event in a room she cannot read, an unreadable one and a thread fallback give no replyTo and no text", async () => {
+  const { made } = await linked(
+    [quoting("$other", "$foreign"), quoting("$gone", "$missing"), quoting("$th", "$alices", { rel_type: "m.thread", event_id: "$root", is_falling_back: true })],
+    [{ ...target("$foreign", ALICE_ID, "from another room"), room_id: "!elsewhere:gamecult.test" }, target("$alices", ALICE_ID, "fallback target")]);
+  assert.deepEqual(made.map(d => d.replyTo), [null, null, null]);
+  assert.ok(!JSON.stringify(made.map(d => d.replyTo)).includes("room") && made.every(d => d.replyTo === null), "no id, author or text of the foreign event travels");
+});
+
+test("reply link: the same quoted event is read once, and a lookup cache hit from the basis check serves the quote", async () => {
+  const { made, hs } = await linked([quoting("$a", "$hers"), quoting("$b", "$hers")], [target("$hers", SELF, "mine")]);
+  assert.deepEqual(made.map(d => d.replyTo?.excerpt), ["mine", "mine"]);
+  assert.equal(hs.seen.filter(r => r.path.includes("/event/")).length, 1);
+});

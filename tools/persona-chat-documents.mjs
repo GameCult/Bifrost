@@ -11,6 +11,8 @@ export const kinds = Object.freeze({
   pending: "gamecult.persona.chat_pending.v2",
   pendingRequestV3: "gamecult.persona.chat_pending_request.v2", // the same tuple as v1; asking by this kind is asking for the v3 answer
   pendingV3: "gamecult.persona.chat_pending.v3",
+  pendingRequestV4: "gamecult.persona.chat_pending_request.v3", // the same tuple again; served only when the mouth's reply-link flag is on, else an unknown kind
+  pendingV4: "gamecult.persona.chat_pending.v4",
   ack: "gamecult.persona.chat_ack.v1",
   read: "gamecult.persona.chat_read.v1",
   sendRequest: "gamecult.persona.chat_send_request.v1",
@@ -39,7 +41,7 @@ const maxContext = 20;
 
 // Per-delivery bounds, applied where the mouth reads Matrix: the body is bounded like a send,
 // a context line and a display name are smaller, and a reply is paged to a byte budget.
-export const limits = Object.freeze({ textBytes: maxTextBytes, contextBytes: 1000, displayBytes: 256, mentions: 64, replyBytes: 256 * 1024, tailPerRoom: 20, tailTotal: 60 });
+export const limits = Object.freeze({ textBytes: maxTextBytes, contextBytes: 1000, displayBytes: 256, mentions: 64, replyBytes: 256 * 1024, tailPerRoom: 20, tailTotal: 60, replyExcerpt: 240 });
 
 // `value` cut to at most `maxBytes` of UTF-8 without splitting a character.
 export function clip(value, maxBytes) {
@@ -215,6 +217,28 @@ function form(v) {
   return v;
 }
 
+// The v4 delivery: the 14 fields of v3, then reply_to: nil, or [event_id, sender, excerpt] for the event this one replies to.
+// sender is the quoted author's Matrix id. excerpt is nil for a quoted event whose text must not travel (redacted, not text);
+// otherwise its first replyExcerpt (240) Unicode code points. A quote the mouth could not establish is reply_to nil, never a guess.
+export function deliveryV4Tuple(d) {
+  return [...deliveryV3Tuple(d), replyTo(d.replyTo ?? null)];
+}
+export function parseDeliveryV4(t) {
+  const fields = tuple(t, 15, "delivery_v4");
+  return { ...parseDeliveryV3(fields.slice(0, 14)), replyTo: parseReplyTo(fields[14]) };
+}
+function replyTo(r) {
+  if (r === null) return null;
+  const { eventId, sender, excerpt = null } = r;
+  if (excerpt !== null && (typeof excerpt !== "string" || [...excerpt].length > limits.replyExcerpt)) throw new Error(`reply_to excerpt must be a string of at most ${limits.replyExcerpt} code points, or nil`);
+  return [text(eventId, "reply_to event_id"), text(sender, "reply_to sender"), excerpt];
+}
+function parseReplyTo(t) {
+  if (t === null) return null;
+  const [eventId, sender, excerpt] = tuple(t, 3, "reply_to");
+  return { eventId: text(eventId, "reply_to event_id"), sender: text(sender, "reply_to sender"), excerpt: replyTo({ eventId, sender, excerpt })[2] };
+}
+
 export function parseDelivery(t) {
   const [s, roomAlias, roomId, eventId, sender, senderDisplay, body, atUnixMs, context, mentions, isDirect, image] = tuple(t, 12, "delivery");
   if (!Array.isArray(context)) throw new Error("delivery context must be a list");
@@ -261,6 +285,18 @@ export function parsePendingV3(t) {
   const gaps = tailGaps.map(room => text(room, "tail_gap"));
   if (new Set(gaps).size !== gaps.length) throw new Error("chat_pending tail_gaps repeats a room");
   return { persona: text(persona, "persona"), deliveries: deliveries.map(parseDeliveryV3), tail: tail.map(parseTailLine), tailGaps: gaps };
+}
+
+// The v4 answer: the v3 answer with v4 deliveries.
+export function pendingV4Tuple({ persona, deliveries, tail = [], tailGaps = [] }) {
+  const [p, , t, g] = pendingV3Tuple({ persona, deliveries: [], tail, tailGaps });
+  return [p, deliveries.map(deliveryV4Tuple), t, g];
+}
+export function parsePendingV4(t) {
+  const [persona, deliveries, tail, tailGaps] = tuple(t, 4, "chat_pending_v4");
+  if (!Array.isArray(deliveries)) throw new Error("chat_pending deliveries must be a list");
+  const rest = parsePendingV3([persona, [], tail, tailGaps]);
+  return { ...rest, deliveries: deliveries.map(parseDeliveryV4) };
 }
 
 // The CultNet document_put_raw envelope every chat_* document travels in.
