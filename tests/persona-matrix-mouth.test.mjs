@@ -1921,3 +1921,40 @@ test("target cache: flag on, 500, 429 and a timeout keep the earlier hit at the 
     assert.deepEqual([r.first.basis, r.later.basis, r.later.replyTo, r.again.replyTo], ["reply", null, null, null], String(failure));
   }
 });
+
+test("target cache: transient failures keep a hit for 10 minutes from the last good read, then drop it; a good read resets", async () => {
+  const clock = { t: 1_000_000 };
+  let down = false;
+  const hs = await fakeHomeserver({ preload: { [ROOM]: [target("$hers", SELF, "my words")] }, sync: since => since === null ? { next_batch: "b0" } : { next_batch: `b${since}x`, ...joined({ [ROOM]: { timeline: { events: [quoting(`$q${since}`, "$hers")] } } }) } });
+  try {
+    const fetch = (u, o) => (down && String(u).includes("/event/") ? Promise.resolve(new Response("{}", { status: 503 })) : hs.fetch(u, o));
+    const mouth = mouthFor(hs, { replyLink: true, now: () => clock.t, fetch });
+    await mouth.syncOnce();
+    await mouth.syncOnce(); // good read at t0
+    const step = async ms => { clock.t += ms; return (await mouth.syncOnce())[0]; };
+    down = true;
+    const seen = [];
+    for (const ms of [200_000, 200_000, 140_000]) seen.push((await step(ms)).replyTo?.excerpt); // 3.3, 6.7, 9 min after the good read
+    seen.push((await step(120_000)).replyTo); // 11 min
+    down = false;
+    seen.push((await step(61_000)).replyTo?.excerpt); // a good read resets
+    down = true;
+    seen.push((await step(420_000)).replyTo?.excerpt); // 7 min after the new good read: kept again
+    assert.deepEqual(seen, ["my words", "my words", "my words", null, "my words", "my words"]);
+  } finally { await hs.close(); }
+});
+
+test("reply link: the per-round read count resets each sync round", async () => {
+  const ids = Array.from({ length: 18 }, (_, i) => `$t${i}`);
+  const tagged = (i, to) => { const e = quoting(`$q${i}`, to); e.content["m.mentions"] = { user_ids: [SELF] }; return e; };
+  const hs = await fakeHomeserver({ preload: { [ROOM]: ids.map(t => target(t, ALICE_ID, `text ${t}`)) }, sync: since => since === null ? { next_batch: "b0" } : { next_batch: `b${since}x`, ...joined({ [ROOM]: { timeline: { events: since === "b0" ? ids.slice(0, 9).map((t, i) => tagged(i, t)) : ids.slice(9).map((t, i) => tagged(9 + i, t)) } } }) } });
+  try {
+    const mouth = mouthFor(hs, { replyLink: true });
+    await mouth.syncOnce();
+    const one = await mouth.syncOnce();
+    const two = await mouth.syncOnce();
+    assert.deepEqual([one, two].map(m => m.filter(d => d.replyTo !== null).length), [8, 8]);
+    assert.deepEqual([one, two].map(m => m.at(-1).replyTo), [null, null]);
+    assert.equal(ids.filter(t => eventGets(hs, t) > 0).length, 16);
+  } finally { await hs.close(); }
+});

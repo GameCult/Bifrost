@@ -314,6 +314,7 @@ export function createMouth({
   const authors = new Map(); // `${room id} ${event id}` -> { sender, excerpt, at }: read results, kept TARGET_TTL_MS, bounded; the key holds the room so another room's reply cannot borrow a hit
   const TARGET_TTL_MS = 60 * 1000; // how long a read of a target is kept: a failure always; a hit only with replyLink (without it a hit is kept until bounded out, as before v4)
   const REPLY_READS_PER_ROUND = 8; // distinct uncached targets replyToOf may read in one sync round; past it reply_to is nil (the tuple needs a sender, which only a read gives)
+  const KEEP_HIT_MS = 10 * 60 * 1000; // how long transient failures may keep a hit alive after its last good read
   let replyReads = 0;
   const cachedTarget = key => {
     const known = authors.get(key);
@@ -360,7 +361,10 @@ export function createMouth({
       transient = error.status === undefined || error.status >= 500 || error.status === 429; // network, timeout, 5xx, 429: the answer is unknown; 403, 404 and any other refusal are an answer
       say(`reply target ${eventId} not read: ${error.message}`);
     }
-    const entry = sender === null && transient && known?.sender != null ? { ...known, at: now() } : { sender, excerpt, at: now() }; // a re-read that fails transiently (network, timeout, 5xx, 429) keeps the earlier hit and renews only its age; any other failure (403, 404, wrong room, no sender) replaces it with the failure entry
+    const t = now();
+    const entry = sender !== null ? { sender, excerpt, at: t, good: t }
+      : transient && known?.sender != null && t - known.good <= KEEP_HIT_MS ? { ...known, at: t } // a transient failure (network, timeout, 5xx, 429) keeps the earlier hit and renews only its age, for at most KEEP_HIT_MS after the last good read
+      : { sender: null, excerpt: null, at: t }; // any other failure (403, 404, wrong room, no sender), or a hit kept too long, is the failure entry
     authors.set(key, entry);
     if (authors.size > DELIVERED_INDEX) authors.delete(authors.keys().next().value);
     return entry;
