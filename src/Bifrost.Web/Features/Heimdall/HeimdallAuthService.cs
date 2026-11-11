@@ -319,7 +319,8 @@ public sealed class HeimdallAuthService(
                 UserAccountId = userAccount.Id,
                 CreatedAtUtc = now
             };
-            if (grantMemberAccess)
+            // A suspension is an admin's decision: the claim neither lifts it nor, absent, imposes it.
+            if (grantMemberAccess && userAccount.Membership.Status != MembershipStatus.Suspended)
             {
                 userAccount.Membership.Status = MembershipStatus.Active;
                 userAccount.Membership.ApprovedAtUtc ??= now;
@@ -332,7 +333,7 @@ public sealed class HeimdallAuthService(
             userAccount,
             displayName,
             cancellationToken);
-        if (grantMemberAccess)
+        if (grantMemberAccess && userAccount.Membership!.Status == MembershipStatus.Active)
         {
             ApplicationBootstrapper.EnsureRole(
                 userAccount.Membership!,

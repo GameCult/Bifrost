@@ -1,6 +1,7 @@
 using System.ComponentModel.DataAnnotations;
 using Bifrost.Web.Data;
 using Bifrost.Web.Domain;
+using Bifrost.Web.Features.Membership;
 using Bifrost.Web.Features.Shared;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
@@ -12,6 +13,7 @@ public sealed class IndexModel(
     BifrostDbContext dbContext,
     ICurrentBifrostActorAccessor actorAccessor,
     AuditTrailService auditTrailService,
+    MembershipSuspensionService suspension,
     TimeProvider timeProvider) : PageModel
 {
     [BindProperty]
@@ -102,7 +104,12 @@ public sealed class IndexModel(
                 .ThenInclude(x => x.RoleAssignments)
             .SingleAsync(x => x.Id == userAccountId, cancellationToken);
 
-        user.Membership!.Status = MembershipStatus.Active;
+        if (user.Membership!.Status == MembershipStatus.Suspended)
+        {
+            return RedirectToPage(); // only Unsuspend lifts a suspension
+        }
+
+        user.Membership.Status = MembershipStatus.Active;
         user.Membership.ApprovedAtUtc = timeProvider.GetUtcNow();
         ApplicationBootstrapper.EnsureRole(
             user.Membership,
@@ -122,6 +129,21 @@ public sealed class IndexModel(
             cancellationToken);
 
         return RedirectToPage();
+    }
+
+    public async Task<IActionResult> OnPostSuspendAsync(Guid userAccountId, string? reason, CancellationToken cancellationToken) =>
+        await ChangeSuspensionAsync(userAccountId, reason, suspend: true, cancellationToken);
+
+    public async Task<IActionResult> OnPostUnsuspendAsync(Guid userAccountId, string? reason, CancellationToken cancellationToken) =>
+        await ChangeSuspensionAsync(userAccountId, reason, suspend: false, cancellationToken);
+
+    private async Task<IActionResult> ChangeSuspensionAsync(Guid userAccountId, string? reason, bool suspend, CancellationToken cancellationToken)
+    {
+        Actor = await actorAccessor.GetAsync(cancellationToken);
+        var outcome = suspend
+            ? await suspension.SuspendAsync(Actor, userAccountId, reason, cancellationToken)
+            : await suspension.UnsuspendAsync(Actor, userAccountId, reason, cancellationToken);
+        return outcome == SuspensionOutcome.NotAdmin ? Forbid() : RedirectToPage();
     }
 
     public async Task<IActionResult> OnPostToggleRoleAsync(Guid userAccountId, MemberRole role, CancellationToken cancellationToken)

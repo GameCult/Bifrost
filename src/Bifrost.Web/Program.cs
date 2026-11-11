@@ -117,6 +117,7 @@ builder.Services.AddHttpContextAccessor();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddScoped<ICurrentBifrostActorAccessor, CurrentBifrostActorAccessor>();
 builder.Services.AddScoped<AuditTrailService>();
+builder.Services.AddScoped<Bifrost.Web.Features.Membership.MembershipSuspensionService>();
 builder.Services.AddScoped<DashboardSnapshotService>();
 builder.Services.AddScoped<BridgeActionService>();
 builder.Services.AddScoped<AgentDispatchRunService>();
