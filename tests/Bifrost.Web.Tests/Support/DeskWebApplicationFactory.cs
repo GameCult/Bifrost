@@ -26,9 +26,13 @@ public sealed class DeskWebApplicationFactory : TestWebApplicationFactory
 
     private readonly Dictionary<string, string?>? configuration;
     private readonly bool registerPorts;
+    private readonly bool fakeDoor;
 
-    public DeskWebApplicationFactory(Dictionary<string, string?>? configuration = null, bool configured = true, bool registerPorts = true)
+    // fakeDoor false leaves the door to the app's own wiring (UnixSocketDeskDoor), for tests that stand a socket up.
+    public DeskWebApplicationFactory(
+        Dictionary<string, string?>? configuration = null, bool configured = true, bool registerPorts = true, bool fakeDoor = true)
     {
+        this.fakeDoor = fakeDoor;
         this.configuration = configured ? configuration ?? DefaultConfiguration() : null;
         this.registerPorts = registerPorts;
     }
@@ -88,7 +92,10 @@ public sealed class DeskWebApplicationFactory : TestWebApplicationFactory
             builder.ConfigureServices(services =>
             {
                 services.AddSingleton<IDeskCredential>(Credential);
-                services.AddSingleton<IDeskDoor>(Door);
+                if (fakeDoor)
+                {
+                    services.AddSingleton<IDeskDoor>(Door);
+                }
             });
         }
     }

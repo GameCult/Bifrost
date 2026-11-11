@@ -4,6 +4,7 @@ using Bifrost.Web.Data;
 using Bifrost.Web.Features.Oidc;
 using Microsoft.AspNetCore.Cors.Infrastructure;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
 using Microsoft.Net.Http.Headers;
 
@@ -24,6 +25,7 @@ public static class DeskEndpoints
 
     public static IServiceCollection AddBifrostDesk(this IServiceCollection services)
     {
+        services.TryAddSingleton<IDeskDoor>(_ => new UnixSocketDeskDoor());
         services.AddSingleton(provider => new DeskMindRoutes(provider.GetRequiredService<IOptions<DeskOptions>>().Value.Minds));
         services.AddCors();
         // Exactly the configured origin, no credentials, and only on the routes that require this policy.
