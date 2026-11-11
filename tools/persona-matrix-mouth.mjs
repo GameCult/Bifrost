@@ -317,6 +317,7 @@ export function createMouth({
   const REPLY_READS_PER_ROUND = 8; // target GETs one sync round may make, whoever asks (basis or reply_to): an event whose uncached targets would pass it waits for the next round
   const KEEP_HIT_MS = 10 * 60 * 1000; // how long transient failures may keep a hit's sender alive after its last good read
   let replyReads = 0;
+  const held = new Map(); // key -> entry: targets the round's cap check counted as cached, kept for the round so the 60 s keep cannot lapse between the check and the read and spend a GET the check did not count
   const cachedTarget = key => {
     const known = authors.get(key);
     if (!known) return null;
@@ -350,7 +351,7 @@ export function createMouth({
   };
   async function targetOf(roomId, eventId) {
     const key = `${roomId} ${eventId}`;
-    const cached = cachedTarget(key);
+    const cached = cachedTarget(key) ?? held.get(key);
     if (cached) return cached; // with replyLink a hit is short too: a later redaction or edit of the target must show at a re-read
     const known = authors.get(key);
     let sender = null, excerpt = null, transient = false;
@@ -381,7 +382,12 @@ export function createMouth({
     const relates = event.content["m.relates_to"];
     if (!replyLink || formOf(event.content) !== "message") return 0;
     const ids = new Set([relates?.["m.in_reply_to"]?.event_id, relates?.rel_type === "m.thread" ? relates.event_id : undefined].filter(id => typeof id === "string" && id !== ""));
-    return [...ids].filter(id => !cachedTarget(`${roomId} ${id}`)).length;
+    let reads = 0;
+    for (const id of ids) {
+      const key = `${roomId} ${id}`, hit = cachedTarget(key);
+      if (hit) held.set(key, hit); else reads++;
+    }
+    return reads;
   };
   async function replyToOf(roomId, event) {
     if (!replyLink || formOf(event.content) !== "message") return null;
@@ -429,6 +435,7 @@ export function createMouth({
   async function syncOnce() {
     if (!started || unjoined()) await start();
     replyReads = 0;
+    held.clear();
     const free = await released(); // the round's brake read for presence, taken before any early return
     await setPresence(free);
     if (pending.length >= maxPending) return []; // unanswered mail is not outrun: the position stays where it is
@@ -471,7 +478,7 @@ export function createMouth({
           const mentioned = event.content["m.mentions"]?.user_ids;
           made.push({
             seq: ++seqCounter, roomAlias: alias, roomId, eventId: event.event_id, sender: event.sender,
-            senderDisplay: displayNames.get(event.sender) ?? localpart(event.sender), text: bodyText(event.content, docs.limits.textBytes, refused), atUnixMs,
+            senderDisplay: displayNames.get(event.sender) ?? (localpart(event.sender) || event.sender), text: bodyText(event.content, docs.limits.textBytes, refused), atUnixMs,
             context, image,
             mentions: Array.isArray(mentioned) ? mentioned.filter(id => docs.isMatrixId("@", id)).slice(0, docs.limits.mentions) : [],
             isDirect: directRooms.has(roomId), basis, form: formOf(event.content), replyTo,

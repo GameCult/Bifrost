@@ -2089,3 +2089,38 @@ test("id shape: a mention longer than 255 bytes, though under 255 characters, is
   const { made } = await linked([withContent("$m", META, { body: "hi", "m.mentions": { user_ids: [SELF, `@${"é".repeat(200)}:x`, "@a b:x"] } })], []);
   assert.deepEqual(made.map(d => d.mentions), [[SELF]]);
 });
+
+const threadOf = (id, root, to) => withContent(id, META, { body: "re", "m.relates_to": { rel_type: "m.thread", event_id: root, "m.in_reply_to": { event_id: to } } });
+async function capRun(events, { clock = { t: 1_000_000 }, lapseOnR = 0, steps = 3 } = {}) {
+  const ids = [...Array.from({ length: 8 }, (_, i) => `$y${i}`), "$x", "$r"];
+  const hs = await fakeHomeserver({ preload: { [ROOM]: ids.map(t => target(t, ALICE_ID, `text ${t}`)) }, sync: since => since === null ? { next_batch: "b0" } : since === "b0" ? { next_batch: "b1", ...joined({ [ROOM]: { timeline: { events: [quoting("$qx", "$x")] } } }) } : since === "b1" ? { next_batch: "b2", ...joined({ [ROOM]: { timeline: { events } } }) } : { next_batch: since } });
+  try {
+    const fetch = (u, o) => { if (/\/event\/%24r(\?|$)/.test(String(u))) clock.t += lapseOnR; return hs.fetch(u, o); };
+    const mouth = mouthFor(hs, { replyLink: true, now: () => clock.t, fetch });
+    await mouth.syncOnce();
+    await mouth.syncOnce(); // $x read at t0
+    clock.t += 59_000;
+    const rounds = [];
+    for (let i = 0; i < steps; i++) rounds.push(await mouth.syncOnce());
+    return { rounds, hs, gets: id => eventGets(hs, id) };
+  } finally { await hs.close(); }
+}
+
+test("round cap: a thread root counts toward the 8 reads: 8 plain replies then a threaded one defers the threaded one to the next round", async () => {
+  const { rounds } = await capRun([...Array.from({ length: 8 }, (_, i) => quoting(`$q${i}`, `$y${i}`)), threadOf("$th", "$r", "$x")]);
+  assert.deepEqual(rounds[0].map(d => d.eventId), Array.from({ length: 8 }, (_, i) => `$q${i}`));
+  assert.deepEqual(rounds[1].map(d => d.eventId), ["$th"]);
+});
+
+test("round cap: a target cached at the check is served from the round even when its 60 s keep lapses between the check and the read", async () => {
+  const { rounds, gets } = await capRun([...Array.from({ length: 6 }, (_, i) => quoting(`$q${i}`, `$y${i}`)), threadOf("$th", "$x", "$r")], { lapseOnR: 2000 });
+  assert.equal(rounds.flat().length, 7, "the six replies and the threaded one: 6 + 1 counted read");
+  assert.equal(gets("$x"), 2, "$x: the read at t0 and the thread context's own root read, none for the lapsed keep");
+  assert.ok(rounds[0].every(d => d.replyTo !== null));
+});
+
+test("display name: a sender with an empty localpart is delivered under its own id, and the page encodes", async () => {
+  const { rounds } = await capRun([withContent("$odd", "@:evil.test", { body: "hi" })], { steps: 1 });
+  assert.equal(rounds[0][0].senderDisplay, "@:evil.test");
+  assert.doesNotThrow(() => docs.pendingV4Tuple({ persona: "p", deliveries: rounds[0] }));
+});
