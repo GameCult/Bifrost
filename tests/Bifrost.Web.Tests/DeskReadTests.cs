@@ -205,7 +205,11 @@ public sealed class DeskReadTests
                 var reply = await factory.SendAsync("GET", $"/api/desk/{(string)request["mind"]!}/forks" + query, null, ReadToken(factory));
 
                 Assert.Equal(step["refusal"] is null ? 200 : (int)step["httpStatus"]!, reply.Status);
-                Assert.True(DeskVectors.SameShape(JsonNode.Parse(reply.Body), step["refusal"] ?? step["response"]), name);
+                Assert.True(
+                    step["refusal"] is null
+                        ? DeskVectors.SameShape(JsonNode.Parse(reply.Body), step["response"])
+                        : DeskVectors.SameRefusal(JsonNode.Parse(reply.Body), step["refusal"], (string)step["fork_id"]!, (int)step["order"]!),
+                    name);
                 steps++;
             }
         }
@@ -226,7 +230,7 @@ public sealed class DeskReadTests
             var reply = await factory.SendAsync("GET", DeskReplay.Target("read", (string)row["request"]!["mind"]!, forkId), null, ReadToken(factory));
 
             Assert.Equal((int)row["httpStatus"]!, reply.Status);
-            Assert.True(DeskVectors.SameShape(JsonNode.Parse(reply.Body), row["refusal"]), (string)row["name"]!);
+            Assert.True(DeskVectors.SameRefusal(JsonNode.Parse(reply.Body), row["refusal"], forkId, null), (string)row["name"]!);
         }
     }
 

@@ -46,5 +46,21 @@ public static class DeskVectors
         }
     }
 
+    // The vectors' refusal `error` text is illustrative (Libby): the contract pins the code, the key set, the status
+    // (asserted by the caller) and that the text names the fork id, and its order on a list.
+    public static bool SameRefusal(JsonNode? actual, JsonNode? vector, string forkId, int? order)
+    {
+        if (actual is not JsonObject a || vector is not JsonObject v ||
+            !a.Select(p => p.Key).SequenceEqual(v.Select(p => p.Key)) ||
+            (string?)a["schemaVersion"] != (string?)v["schemaVersion"] || (string?)a["code"] != (string?)v["code"])
+        {
+            return false;
+        }
+
+        var error = (string?)a["error"] ?? string.Empty;
+        return error.Contains(forkId, StringComparison.Ordinal) &&
+               (order is null || error.Contains($"order {order}", StringComparison.Ordinal));
+    }
+
     public static byte[] Bytes(JsonNode node) => System.Text.Encoding.UTF8.GetBytes(node.ToJsonString());
 }

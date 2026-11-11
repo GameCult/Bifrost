@@ -20,7 +20,7 @@ public sealed class DeskDocumentTests
             if (code == DeskRefusals.ForkTooLarge)
             {
                 // It names its fork, so it is built, not looked up; the row is the list form at order 3.
-                Assert.True(DeskVectors.SameShape(row["message"], Write(DeskRefusals.ForkTooLargeDocument("gamecult-chat:question:q3", 3))), $"refusal {code}");
+                Assert.True(DeskVectors.SameRefusal(Write(DeskRefusals.ForkTooLargeDocument("gamecult-chat:question:q3", 3)), row["message"], "gamecult-chat:question:q3", 3), $"refusal {code}");
                 Assert.Equal((int)row["httpStatus"]!, DeskRefusals.ForkTooLargeStatus);
                 continue;
             }
