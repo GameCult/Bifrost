@@ -229,6 +229,13 @@ public static class DeskEndpoints
                 if (string.Equals(result.Answer.Code, DeskStatus.StaleFork, StringComparison.Ordinal))
                 {
                     var current = await door.ReadAsync(mind.Socket, context, result.Answer.ForkId, cancellationToken);
+                    if (current is DeskReadOutcome.ForkTooLarge(var largeFork))
+                    {
+                        // Nothing is recorded for a stale answer, and the card it would carry cannot be returned: permanent.
+                        await WriteJsonAsync(http, DeskRefusals.ForkTooLargeStatus, DeskRefusals.ForkTooLargeDocument(largeFork));
+                        return;
+                    }
+
                     if (current is not DeskReadOutcome.Found(var entry))
                     {
                         await WriteUnavailableAsync(http, desk);

@@ -66,7 +66,7 @@ public sealed class DeskAnswerTests
     }
 
     [Fact]
-    public async Task A_stale_cards_read_that_is_fork_too_large_stays_unavailable_until_the_contract_says_otherwise()
+    public async Task A_stale_answers_card_read_of_an_oversize_fork_is_422_fork_too_large_naming_the_fork()
     {
         var (factory, token) = await ArrangeAsync();
         using (factory)
@@ -76,8 +76,36 @@ public sealed class DeskAnswerTests
 
             var reply = await factory.SendAsync("POST", DeskReplay.Target("answer", "gamecult-chat", null), DeskReplay.AnswerBody(DeskReplay.ChatFork), token);
 
-            Assert.Equal(503, reply.Status);
-            Assert.Equal("unavailable", (string?)JsonNode.Parse(reply.Body)!["code"]);
+            var doc = JsonNode.Parse(reply.Body)!;
+            Assert.Equal(422, reply.Status);
+            Assert.Equal("fork_too_large", (string?)doc["code"]);
+            Assert.Contains(DeskReplay.ChatFork, (string)doc["error"]!);
+            Assert.Null(doc["card"]);
+        }
+    }
+
+    [Fact]
+    public async Task A_replayed_request_id_that_is_stale_again_takes_the_same_reread_and_gets_the_same_422()
+    {
+        var (factory, token) = await ArrangeAsync();
+        using (factory)
+        {
+            // The door's stored Refused(stale_fork) for this request_id, returned on every replay while the fork stays oversize.
+            factory.Door.AnswerScript = (_, _, _) => new DeskAnswerOutcome.Answered(Stale(DeskReplay.ChatFork));
+            factory.Door.ReadScript = (_, id) => new DeskReadOutcome.ForkTooLarge(id);
+            var body = DeskReplay.AnswerBody(DeskReplay.ChatFork);
+            var target = DeskReplay.Target("answer", "gamecult-chat", null);
+
+            var first = await factory.SendAsync("POST", target, body, token);
+            var replay = await factory.SendAsync("POST", target, body, token);
+
+            Assert.Equal(422, first.Status);
+            Assert.Equal(first.Status, replay.Status);
+            Assert.Equal(first.Body, replay.Body);
+            Assert.Equal("fork_too_large", (string?)JsonNode.Parse(replay.Body)!["code"]);
+            Assert.Contains(DeskReplay.ChatFork, (string)JsonNode.Parse(replay.Body)!["error"]!);
+            Assert.Equal(2, factory.Door.Calls.Count(c => c.Kind == "answer"));
+            Assert.Equal(2, factory.Door.Calls.Count(c => c.Kind == "read"));
         }
     }
 
