@@ -102,7 +102,7 @@ public sealed class DeskReadTests
             }
         }
 
-        Assert.Equal(10, steps);
+        Assert.Equal(12, steps);
     }
 
     [Fact]
