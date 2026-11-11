@@ -14,7 +14,7 @@ namespace Bifrost.Web.Features.Desk;
 // `unavailable`; this is the one type the client throws for every one of those, so a failure is never an empty page.
 public sealed class DeskDoorException(string message, Exception? inner = null) : Exception(message, inner);
 
-// The production IDeskDoor: a client of Huginn's desk door (Huginn docs/desk-feed-door.md at 79d954c). One new
+// The production IDeskDoor: a client of Huginn's desk door (Huginn docs/desk-feed-door.md at b299d6f7). One new
 // connection per call, one request frame, one reply frame, closed after, all inside one deadline. The client holds no
 // connection state, so a dead socket fails only the calls addressed to that Mind.
 //
@@ -22,8 +22,9 @@ public sealed class DeskDoorException(string message, Exception? inner = null) :
 //   payload = standard base64 of the named MessagePack of Huginn's externally tagged DeskRequest / DeskResponse
 //
 // The reply is decoded by key, never by position, and strictly: every contract document is a closed map whose keys are
-// all present with the right type, a key written twice anywhere is a failure, and so is a float, a binary or an
-// extension value (the contract has none; integers keep every digit). The card inside an entry is not read beyond
+// all present with the right type (the variants' own maps too: as_of is an unsigned integer, as Huginn's DeskResponse
+// declares), a key written twice anywhere is a failure, and so is a float, a binary or an extension value (the
+// contract has none; integers keep every digit). The card inside an entry is not read beyond
 // being a map: it stays an opaque JsonElement, so whatever keys and integers Huginn wrote leave unchanged.
 public sealed partial class UnixSocketDeskDoor : IDeskDoor
 {
@@ -79,6 +80,7 @@ public sealed partial class UnixSocketDeskDoor : IDeskDoor
         switch (variant)
         {
             case "Answered":
+                Closed(value, "Answered", string.Empty, ("answer", Kind.Map), ("counted_answer_id", Kind.TextOrNull), ("as_of", Kind.Unsigned));
                 var answer = AnswerDocument(value, "answer");
 
                 // Huginn's reply carries no card: a stale_fork answer gets the current card from the edge's read.
@@ -113,6 +115,7 @@ public sealed partial class UnixSocketDeskDoor : IDeskDoor
         switch (variant)
         {
             case "Fork":
+                Closed(value, "Fork", string.Empty, ("entry", Kind.Map), ("as_of", Kind.Unsigned));
                 return new DeskReadOutcome.Found(Entry(Required(value, "entry"), "entry"));
             case "NotStored":
                 var code = RefusalCode(value);
@@ -148,6 +151,7 @@ public sealed partial class UnixSocketDeskDoor : IDeskDoor
         switch (variant)
         {
             case "Forks":
+                Closed(value, "Forks", string.Empty, ("list", Kind.Map), ("as_of", Kind.Unsigned));
                 var list = List(Required(value, "list"));
                 return list.Mind == context.Mind
                     ? new DeskListOutcome.Listed(list)
@@ -185,6 +189,7 @@ public sealed partial class UnixSocketDeskDoor : IDeskDoor
         TextOrNull,
         Flag,
         Count,
+        Unsigned,
         Map,
         Items,
     }
@@ -212,6 +217,7 @@ public sealed partial class UnixSocketDeskDoor : IDeskDoor
                 Kind.TextOrNull => v.ValueKind is JsonValueKind.String or JsonValueKind.Null,
                 Kind.Flag => v.ValueKind is JsonValueKind.True or JsonValueKind.False,
                 Kind.Count => v.ValueKind == JsonValueKind.Number && v.TryGetInt32(out var n) && n >= 0,
+                Kind.Unsigned => v.ValueKind == JsonValueKind.Number && v.TryGetUInt64(out _),
                 Kind.Map => v.ValueKind == JsonValueKind.Object,
                 _ => v.ValueKind == JsonValueKind.Array,
             };
