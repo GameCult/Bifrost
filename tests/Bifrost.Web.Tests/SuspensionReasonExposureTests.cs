@@ -5,6 +5,8 @@ using Microsoft.IdentityModel.JsonWebTokens;
 using Microsoft.IdentityModel.Tokens;
 using Bifrost.Web.Data;
 using Bifrost.Web.Domain;
+using Bifrost.Web.Features.Membership;
+using Bifrost.Web.Features.Shared;
 using Bifrost.Web.Tests.Support;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
@@ -36,6 +38,54 @@ public sealed class SuspensionReasonExposureTests
         using var response = await client.SendAsync(request);
         Assert.True(response.StatusCode == HttpStatusCode.OK, path);
         return await response.Content.ReadAsStringAsync();
+    }
+
+    private sealed class FixedActor(CurrentBifrostActor actor) : ICurrentBifrostActorAccessor
+    {
+        public Task<CurrentBifrostActor> GetAsync(CancellationToken cancellationToken) => Task.FromResult(actor);
+    }
+
+    // Guards the projection on its own: the view's admin gate cannot be the only thing keeping the reason off a non-admin's page model.
+    [Fact]
+    public async Task The_members_page_model_carries_no_reason_for_a_non_admin_viewer_and_does_for_an_admin()
+    {
+        using var factory = new TestWebApplicationFactory();
+        await SeedAsync(factory.Services, "suspendedtwo", MembershipStatus.Suspended, Canary);
+        using var scope = factory.Services.CreateScope();
+        var sp = scope.ServiceProvider;
+        var db = sp.GetRequiredService<BifrostDbContext>();
+        var viewer = await db.UserAccounts.Include(x => x.Membership!).ThenInclude(x => x.RoleAssignments).SingleAsync(x => x.BifrostIdentity == "suspendedtwo");
+
+        async Task<IReadOnlyList<Bifrost.Web.Pages.App.Members.IndexModel.MemberDirectoryItem>> UsersSeenBy(bool admin)
+        {
+            viewer.Membership!.IsPlatformAdmin = admin;
+            var model = new Bifrost.Web.Pages.App.Members.IndexModel(db, new FixedActor(new CurrentBifrostActor(true, viewer)),
+                sp.GetRequiredService<AuditTrailService>(), sp.GetRequiredService<MembershipSuspensionService>(), TimeProvider.System);
+            await model.OnGetAsync(CancellationToken.None);
+            return model.Users;
+        }
+
+        Assert.All(await UsersSeenBy(admin: false), u => Assert.DoesNotContain(Canary, u.SuspensionReason));
+        Assert.Contains(await UsersSeenBy(admin: true), u => u.SuspensionReason == Canary);
+    }
+
+    [Fact]
+    public async Task The_member_dashboard_hides_the_bootstrap_promotion_receipt_but_shows_ordinary_activity()
+    {
+        using var factory = new TestWebApplicationFactory();
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
+            db.AuditEvents.Add(new AuditEvent { Action = "membership.bootstrap-promoted", Detail = "PROMO-CANARY-41", EntityType = "Membership", EntityId = "x", OccurredAtUtc = DateTimeOffset.UtcNow });
+            db.AuditEvents.Add(new AuditEvent { Action = "membership.approved", Detail = "ORDINARY-CANARY-41", EntityType = "Membership", EntityId = "x", OccurredAtUtc = DateTimeOffset.UtcNow.AddMinutes(-1) });
+            await db.SaveChangesAsync();
+        }
+
+        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false, BaseAddress = new Uri("https://localhost") });
+        var html = await client.GetStringAsync("/App");
+
+        Assert.Contains("ORDINARY-CANARY-41", html);
+        Assert.DoesNotContain("PROMO-CANARY-41", html);
     }
 
     [Fact]
