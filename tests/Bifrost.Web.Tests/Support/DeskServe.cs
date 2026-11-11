@@ -109,4 +109,44 @@ public static class DeskServe
     }
 
     public static byte[] FromJson(JsonNode node) => MessagePackSerializer.ConvertFromJson(node.ToJsonString(DeskJson.Options));
+
+    // A list page of one entry, as JSON (the shape the door takes), from a vendored CultLib entry file.
+    public static JsonObject PageOf(JsonNode entry, string mind = "gamecult-chat") =>
+        JsonNode.Parse($$"""{"schemaVersion":"gamecult.fork.list.v0","mind":"{{mind}}","stamp":"s7","open_count":1,"recorded_count":0,"forks":[{{entry.ToJsonString(DeskJson.Options)}}],"next_cursor":null}""")!.AsObject();
+
+    public static JsonObject Entry(string file) =>
+        JsonNode.Parse(MessagePackSerializer.ConvertToJson(File.ReadAllBytes(Path.Combine(DeskFeedFixturePinTests.Directory, "cultlib-3a51bbab", file + ".msgpack"))))!.AsObject();
+
+    // The reply payload exactly as given, asked as a list for "gamecult-chat"; throws what the door throws.
+    public static async Task<DeskListOutcome> ListPayloadAsync(byte[] payload)
+    {
+        using var huginn = Socket(payload);
+        return await new UnixSocketDeskDoor().ListAsync(huginn.Path, Context, new DeskListRequest("gamecult-chat", "open", null, 50), CancellationToken.None);
+    }
+
+    // The reply payload exactly as given, asked as a read.
+    public static async Task<DeskReadOutcome> ReadPayloadAsync(byte[] payload)
+    {
+        using var huginn = Socket(payload);
+        return await new UnixSocketDeskDoor().ReadAsync(huginn.Path, Context, "gamecult-chat:question:slot-mark-consent", CancellationToken.None);
+    }
+
+    public static async Task<DeskAnswerOutcome> AnswerPayloadAsync(byte[] payload)
+    {
+        using var huginn = Socket(payload);
+        return await new UnixSocketDeskDoor().AnswerAsync(huginn.Path, Context, DeskReplay.AnswerBody(DeskReplay.ChatFork), CancellationToken.None);
+    }
+
+    // A JSON text becomes MessagePack with the one str `marker` (at most 31 bytes) replaced by `with`: a bin, bytes that
+    // are not UTF-8. JSON cannot spell either, so the marker stands where the test wants one.
+    public static byte[] WithMarkerReplaced(JsonNode json, string marker, byte[] with)
+    {
+        var bytes = MessagePackSerializer.ConvertFromJson(json.ToJsonString(DeskJson.Options));
+        var needle = new byte[] { (byte)(0xa0 | marker.Length) }.Concat(System.Text.Encoding.ASCII.GetBytes(marker)).ToArray();
+        var at = bytes.AsSpan().IndexOf(needle);
+        Assert.True(at >= 0 && bytes.AsSpan(at + 1).IndexOf(needle) < 0, "the marker is in the bytes exactly once");
+        return [.. bytes[..at], .. with, .. bytes[(at + needle.Length)..]];
+    }
+
+    public static byte[] Bin(int length) => [0xc4, (byte)length, .. Enumerable.Repeat((byte)'x', length)];
 }
