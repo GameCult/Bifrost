@@ -623,7 +623,7 @@ for (const [name, { tuple, parse }] of Object.entries(v6Samples)) {
 test("documents: reply_to refuses an event id or sender that is not an id of at most 255 bytes, on encode and on parse", () => {
   const ok = { eventId: "$q1", sender: "@alice:gamecult.org", excerpt: null };
   const d = { ...delivery, isDirect: false, basis: null, form: "message" };
-  for (const bad of [{ eventId: "q1" }, { eventId: "$" }, { eventId: `$${"x".repeat(255)}` }, { eventId: "$a b" }, { sender: "alice" }, { sender: "@" }, { sender: `@${"é".repeat(128)}` }, { sender: "@a:b\u0085" }])
+  for (const bad of [{ eventId: "q1" }, { eventId: "$" }, { eventId: `$${"x".repeat(255)}` }, { eventId: "$a b" }, { sender: "alice" }, { sender: "@" }, { sender: `@${"é".repeat(128)}` }, { sender: "@a:b\u0085" }, { sender: "@a\u00a0b" }, { sender: "@a\u200bb" }, { sender: "@a\u202eb" }, { sender: "@a\ud800b" }, { eventId: "$a\u3000b" }])
     assert.throws(() => docs.deliveryV4Tuple({ ...d, replyTo: { ...ok, ...bad } }), /reply_to/, JSON.stringify(bad).slice(0, 40));
   assert.doesNotThrow(() => docs.deliveryV4Tuple({ ...d, replyTo: { ...ok, eventId: `$${"x".repeat(254)}` } }));
   const tuple = docs.deliveryV4Tuple({ ...d, replyTo: ok });

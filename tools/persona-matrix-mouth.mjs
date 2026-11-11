@@ -315,7 +315,6 @@ export function createMouth({
   const TARGET_TTL_MS = 60 * 1000; // how long a read of a target is kept: a failure always; a hit only with replyLink (without it a hit is kept until bounded out, as before v4)
   const REPLY_READS_PER_ROUND = 8; // distinct uncached targets replyToOf may read in one sync round; past it reply_to is nil (the tuple needs a sender, which only a read gives)
   const KEEP_HIT_MS = 10 * 60 * 1000; // how long transient failures may keep a hit's sender alive after its last good read
-  const KEEP_EXCERPT_MS = TARGET_TTL_MS; // its excerpt lives no longer than a good read does: a redaction or edit must not be outlived by a transient failure
   let replyReads = 0;
   const cachedTarget = key => {
     const known = authors.get(key);
@@ -341,7 +340,7 @@ export function createMouth({
     }
     const line = bodyText({ ...c, body }, docs.limits.contextBytes)
       .replace(/[\r\n\t\u2028\u2029]+/g, " ")
-      .replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\u034f\u115f\u1160\u17b4\u17b5\u180b-\u180f\u2800\u3164\ufe00-\ufe0f\uffa0]|[\p{Cf}\p{Co}\u{E0000}-\u{E007F}\u{E0100}-\u{E01EF}]|[\uD800-\uDFFF]/gu, "")
+      .replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\u034f\u115f\u1160\u17b4\u17b5\u180b-\u180f\u2065\u2800\u3164\ufe00-\ufe0f\uffa0\ufff0-\ufff8]|[\p{Cf}\p{Co}\u{E0000}-\u{E007F}\u{E0080}-\u{E00FF}\u{E0100}-\u{E0FFF}]|[\uD800-\uDFFF]/gu, "")
       .trim();
     const cut = [...line].slice(0, docs.limits.replyExcerpt).join("").trimEnd();
     return cut === "" ? null : cut;
@@ -364,7 +363,7 @@ export function createMouth({
     }
     const t = now();
     const entry = sender !== null ? { sender, excerpt, at: t, good: t }
-      : transient && known?.sender != null && t - known.good <= KEEP_HIT_MS ? { ...known, excerpt: t - known.good <= KEEP_EXCERPT_MS ? known.excerpt : null, at: t } // a transient failure (network, timeout, 5xx, 429) keeps the earlier hit's sender and renews only its age, for at most KEEP_HIT_MS after the last good read; its excerpt only for KEEP_EXCERPT_MS
+      : transient && known?.sender != null && t - known.good <= KEEP_HIT_MS ? { ...known, excerpt: null, at: t } // a transient failure (network, timeout, 5xx, 429) keeps the earlier hit's sender and renews only its age, for at most KEEP_HIT_MS after the last good read; never its excerpt (a re-read happens only after TARGET_TTL_MS, so the excerpt is already as old as a good read may be, and a renewed entry must not serve it again)
       : { sender: null, excerpt: null, at: t }; // any other failure (403, 404, wrong room, no sender), or a hit kept too long, is the failure entry
     authors.set(key, entry);
     if (authors.size > DELIVERED_INDEX) authors.delete(authors.keys().next().value);

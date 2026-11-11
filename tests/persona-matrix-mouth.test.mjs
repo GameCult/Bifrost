@@ -1881,6 +1881,7 @@ test("target cache: flag on, a failed re-read after 60 s keeps the earlier hit's
   const r = await replyAcrossTtl(true);
   assert.deepEqual([r.first.basis, r.later.basis, r.again.basis, r.gets], ["reply", "reply", "reply", 2]);
   assert.deepEqual(r.later.replyTo, { eventId: "$hers", sender: SELF, excerpt: null });
+  assert.equal(r.again.replyTo.excerpt, null, "the renewed entry does not serve the old excerpt");
 });
 
 test("reply link: the excerpt drops Cf, Co, tag characters, U+061C, zero-width and word-joiner characters and unpaired surrogates", async () => {
