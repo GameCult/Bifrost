@@ -587,3 +587,111 @@ test("tail_gaps is additive: a three-field reader finds persona, deliveries and 
   // Not claimed: a strict three-field decoder (rmp-serde into a three-field tuple) accepts it. It fails on the length, as it did for the tail, so Huginn defaults tail_gaps before this mouth deploys.
   assert.notEqual(withGaps.length, 3);
 });
+
+// ---- chat_pending.v4: reply_to (docs/bridge.md, "Reply link"). Behind a flag, default off.
+const v6Dir = resolve(root, "tests", "fixtures", "persona-chat-v6");
+const quoted = { eventId: "$q1", sender: "@alice:gamecult.org", excerpt: "can someone look at the build?" };
+const v4Delivery = { ...delivery, isDirect: false, basis: null, form: "message" };
+const v6Samples = {
+  "gamecult.persona.chat_pending_request.v3": { tuple: docs.pendingRequestTuple({ persona: "eureka", afterSeq: 3 }), parse: docs.parsePendingRequest },
+  "gamecult.persona.chat_pending.v4.reply-to": { tuple: docs.pendingV4Tuple({ persona: "eureka", deliveries: [{ ...v4Delivery, replyTo: quoted }] }), parse: docs.parsePendingV4 },
+  "gamecult.persona.chat_pending.v4.no-reply-to": { tuple: docs.pendingV4Tuple({ persona: "eureka", deliveries: [v4Delivery] }), parse: docs.parsePendingV4 },
+  "gamecult.persona.chat_pending.v4.reply-to-redacted": { tuple: docs.pendingV4Tuple({ persona: "eureka", deliveries: [{ ...v4Delivery, replyTo: { ...quoted, excerpt: null } }] }), parse: docs.parsePendingV4 },
+};
+const hexOf = bytes => `${[...bytes].map(b => b.toString(16).padStart(2, "0")).join("")}\n`;
+for (const [name, { tuple, parse }] of Object.entries(v6Samples)) {
+  test(`golden fixture: ${name} is byte-stable (msgpack and hex) and parses back`, async () => {
+    const bytes = Buffer.from(msgpack.encode(tuple));
+    if (process.env.UPDATE_FIXTURES === "1") { await mkdir(v6Dir, { recursive: true }); await writeFile(resolve(v6Dir, `${name}.msgpack`), bytes); await writeFile(resolve(v6Dir, `${name}.hex`), hexOf(bytes)); }
+    assert.deepEqual(bytes, await readFile(resolve(v6Dir, `${name}.msgpack`)), "wire bytes changed: Huginn decodes these fixtures");
+    assert.equal(await readFile(resolve(v6Dir, `${name}.hex`), "utf8"), hexOf(bytes), "the hex dump is the msgpack file");
+    assert.deepEqual(parse(msgpack.decode(bytes)), parse(tuple));
+    if (name.includes("pending.v4")) {
+      const decoded = msgpack.decode(bytes);
+      assert.equal(decoded.length, 4, "persona, deliveries, tail, tail_gaps");
+      assert.equal(decoded[1][0].length, 15, "the 14 v3 fields, then reply_to");
+      assert.deepEqual(decoded[1][0][14], name.endsWith("no-reply-to") ? null : [quoted.eventId, quoted.sender, name.endsWith("redacted") ? null : quoted.excerpt]);
+    }
+  });
+}
+
+test("v1, v2 and v3 bytes are unchanged by v4: a delivery without reply_to encodes to the v3 bytes plus one nil, and the older tuples never see the field", async () => {
+  const v3 = msgpack.encode(docs.pendingV3Tuple({ persona: "eureka", deliveries: [v4Delivery] }));
+  assert.deepEqual(docs.deliveryV3Tuple({ ...v4Delivery, replyTo: quoted }), docs.deliveryV3Tuple(v4Delivery), "reply_to never reaches a v3 tuple");
+  assert.deepEqual(docs.deliveryTuple({ ...v4Delivery, replyTo: quoted }), docs.deliveryTuple(v4Delivery), "nor a v2 tuple");
+  assert.deepEqual(docs.deliveryV4Tuple(v4Delivery).slice(0, 14), docs.deliveryV3Tuple(v4Delivery));
+  assert.equal(msgpack.decode(v3)[1][0].length, 14);
+  const golden = msgpack.decode(await readFile(resolve(v5Dir, "gamecult.persona.chat_pending.v3.unproven-notice.msgpack")));
+  assert.equal(golden[1][0].length, 14, "the pinned v3 fixture stays 14 fields");
+});
+
+test("reply_to tuple: an excerpt over 240 code points, an empty id or sender, or a bad shape is refused; the cap counts code points, not bytes", () => {
+  const ok = n => docs.deliveryV4Tuple({ ...v4Delivery, replyTo: { ...quoted, excerpt: "\u{1F600}".repeat(n) } });
+  assert.equal([...ok(240)[14][2]].length, 240, "240 astral characters (960 bytes) fit");
+  assert.throws(() => ok(241), /at most 240 code points/);
+  assert.throws(() => docs.deliveryV4Tuple({ ...v4Delivery, replyTo: { ...quoted, sender: "" } }), /reply_to sender/);
+  assert.throws(() => docs.parseDeliveryV4([...docs.deliveryV3Tuple(v4Delivery), ["$q"]]), /3-field/);
+  assert.throws(() => docs.parseDeliveryV4(docs.deliveryV3Tuple(v4Delivery)), /15-field/);
+});
+
+test("v4 paging: reply_to counts toward each delivery's size, and one oversize or malformed delivery cannot break the page", () => {
+  const mk = (n, replyTo, body = "ok") => ({ ...v4Delivery, seq: n, eventId: `$e${n}`, text: body, replyTo });
+  const logs = [];
+  const page = pageOf("eureka", [mk(1, quoted), mk(2, { ...quoted, excerpt: "x".repeat(241) }), mk(3, null)], msgpack, l => logs.push(l), true, undefined, true);
+  assert.deepEqual(page[1].map(t => t[0]), [1, 3], "the delivery whose reply_to will not encode is skipped, logged, and the rest served");
+  assert.ok(logs.some(l => l.includes("delivery 2 skipped")));
+  const size = msgpack.encode(pageOf("eureka", [mk(1, quoted)], msgpack, () => {}, true, undefined, true)[1][0]).length;
+  const bare = msgpack.encode(pageOf("eureka", [mk(1, null)], msgpack, () => {}, true, undefined, true)[1][0]).length;
+  assert.ok(size > bare + quoted.excerpt.length, "the quote is part of the delivery's size");
+  const many = Array.from({ length: 400 }, (_, i) => mk(i + 1, { ...quoted, excerpt: "y".repeat(240) }, "x".repeat(3900)));
+  const paged = pageOf("eureka", many, msgpack, () => {}, true, undefined, true);
+  assert.ok(msgpack.encode(paged).length <= docs.limits.replyBytes + 1000 && paged[1].length > 1 && paged[1].length < 400, "quotes count toward the 256 KiB budget");
+  assert.equal(pageOf("eureka", [mk(1, quoted, "x".repeat(4000))], msgpack, () => {}, true, undefined, true)[1].length, 1, "a single delivery is always served");
+  assert.equal(docs.parsePendingV3(pageOf("eureka", [mk(1, quoted)], msgpack, () => {}, true))?.deliveries.length, 1, "asked as v3, the same delivery is served without reply_to");
+  assert.equal(pageOf("eureka", [mk(1, quoted)], msgpack, () => {}, true)[1][0].length, 14);
+});
+
+// Dial a throwaway endpoint, send one request and return the first document answered.
+async function askOnce({ replyLink, kind, tuple }) {
+  const mouth = { pendingAfter: () => [{ ...v4Delivery, replyTo: quoted }], tail: async () => ({ lines: [], gaps: [], rooms: [] }), speakableRooms: () => [] };
+  const key = "connection-key-v4";
+  const logs = [];
+  const server = await startChatEndpoint({ mouths: new Map([["eureka", mouth]]), runtime, port: 0, connectionKey: key, runtimeId: "mouth-v4", log: l => logs.push(l), ...(replyLink === undefined ? {} : { replyLink }) });
+  const client = dgram.createSocket("udp4");
+  await new Promise(ok => client.bind(0, "127.0.0.1", ok));
+  const connection = new runtime.cultnet.CultNetRudpSocketTransportConnection({ runtimeId: "huginn-v4", socket: client, mode: "client", remoteHost: "127.0.0.1", remotePort: server.address.port, connectionId: connectionIdFor(key), initialSequence: 1, resendDelayMs: 50, resendPollMs: 10, maxFragmentBytes: 1200 });
+  try {
+    const got = new Promise((ok, fail) => { const t = setTimeout(() => fail(new Error(`no reply; logged ${logs.join(" | ")}`)), 5000); connection.on("frame", v => { clearTimeout(t); ok(runtime.cultnet.parseCultNetMessage(msgpack.decode(v.payload), "cultnet.schema.v0").document); }); });
+    connection.connect();
+    for (let i = 0; i < 100 && !connection.connected; i++) await new Promise(r => setTimeout(r, 20));
+    connection.send("schema", msgpack.encode(runtime.cultnet.encodeCultNetMessageForWire(docs.envelope({ kind, recordKey: "eureka", payload: msgpack.encode(tuple), sourceRuntimeId: "huginn-v4", sourceAgentId: "eureka", sourceRole: "persona-organ" }), "cultnet.schema.v0")));
+    return { document: await got, logs };
+  } finally { server.close(); connection.close(); try { client.close(); } catch { /* closed */ } }
+}
+
+test("v4 flag off (the default): a chat_pending_request.v3 is answered exactly as any unknown kind is, and the v3 kind is unchanged", async () => {
+  const request = docs.pendingRequestTuple({ persona: "eureka", afterSeq: 0 });
+  for (const flag of [undefined, false]) {
+    const { document, logs } = await askOnce({ replyLink: flag, kind: docs.kinds.pendingRequestV4, tuple: request });
+    assert.deepEqual([document.schemaId, docs.parseRefusal(msgpack.decode(document.payload))], [docs.kinds.refusal, { persona: "eureka", refusal: "UnknownKind" }]);
+    assert.ok(logs.some(l => l.includes("unknown kind: gamecult.persona.chat_pending_request.v3")));
+    const same = await askOnce({ replyLink: flag, kind: "gamecult.persona.chat_pending_request.v9", tuple: request });
+    assert.deepEqual(Buffer.from(same.document.payload), Buffer.from(document.payload), "byte for byte the answer to a kind that never existed");
+  }
+  const v3 = await askOnce({ replyLink: false, kind: docs.kinds.pendingRequestV3, tuple: request });
+  assert.equal(v3.document.schemaId, docs.kinds.pendingV3);
+  assert.equal(msgpack.decode(v3.document.payload)[1][0].length, 14, "a v3 request never gets reply_to, flag or no");
+});
+
+test("v4 flag on: the v3 request kind is answered with chat_pending.v4 over RUDP, reply_to in field 14 of each delivery; v1 and v3 requests are unchanged", async () => {
+  const request = docs.pendingRequestTuple({ persona: "eureka", afterSeq: 0 });
+  const { document } = await askOnce({ replyLink: true, kind: docs.kinds.pendingRequestV4, tuple: request });
+  assert.equal(document.schemaId, docs.kinds.pendingV4);
+  const wire = msgpack.decode(document.payload);
+  assert.deepEqual(wire[1][0][14], [quoted.eventId, quoted.sender, quoted.excerpt]);
+  assert.equal(docs.parsePendingV4(wire).deliveries[0].replyTo.sender, "@alice:gamecult.org");
+  const v3 = await askOnce({ replyLink: true, kind: docs.kinds.pendingRequestV3, tuple: request });
+  assert.equal(msgpack.decode(v3.document.payload)[1][0].length, 14);
+  const v1 = await askOnce({ replyLink: true, kind: docs.kinds.pendingRequest, tuple: request });
+  assert.equal(msgpack.decode(v1.document.payload)[1][0].length, 12);
+});
