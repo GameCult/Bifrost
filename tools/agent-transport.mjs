@@ -68,11 +68,6 @@ const updateRequestDefinition = defineDocumentType({
     parse: parseUpdateRequest,
   },
   name: "id",
-  indexes: {
-    targetRepoName: "targetRepoName",
-    targetAgentIdentity: "targetAgentIdentity",
-    status: "status",
-  },
   members: [
     { slot: 1, memberName: "id", typeName: "string", isName: true },
     { slot: 2, memberName: "targetRepoName", typeName: "string", indexAlias: "targetRepoName" },

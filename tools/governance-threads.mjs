@@ -59,11 +59,6 @@ const topicDefinition = defineDocumentType({
   schemaVersion: "bifrost.governance.topic.v0",
   schema: { parse: parseTopic },
   name: "id",
-  indexes: {
-    jurisdictionRepoName: "jurisdictionRepoName",
-    jurisdictionAgentIdentity: "jurisdictionAgentIdentity",
-    status: "status",
-  },
   members: [
     { slot: 1, memberName: "id", typeName: "string", isName: true },
     { slot: 2, memberName: "title", typeName: "string" },
@@ -93,11 +88,6 @@ const commentDefinition = defineDocumentType({
   schemaVersion: "bifrost.governance.topic_comment.v0",
   schema: { parse: parseComment },
   name: "id",
-  indexes: {
-    topicId: "topicId",
-    authorId: "authorId",
-    stance: "stance",
-  },
   members: [
     { slot: 1, memberName: "id", typeName: "string", isName: true },
     { slot: 2, memberName: "topicId", typeName: "string", indexAlias: "topicId" },

@@ -24,7 +24,6 @@ export function repositoryReleaseAuthorityDefinition(defineDocumentTypeInput) {
     contentHash: repositoryReleaseAuthoritySchemaId,
     global: false,
     name: "authorityId",
-    indexes: { repositoryFullName: "repositoryFullName", upstreamRef: "upstreamRef", commitSha: "commitSha", status: "status" },
     schema: { parse: parseRepositoryReleaseAuthority },
     members: [
       { slot: 1, memberName: "authorityId", typeName: "string", isName: true },
