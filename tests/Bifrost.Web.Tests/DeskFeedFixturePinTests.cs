@@ -3,28 +3,32 @@ using System.Security.Cryptography;
 namespace Bifrost.Web.Tests;
 
 // Huginn's desk-feed golden bytes, vendored byte for byte from
-// crates/huginn-mind/tests/fixtures/desk-feed/ at Huginn commit 9dde93e (docs/desk-feed-door.md is the contract).
+// crates/huginn-mind/tests/fixtures/desk-feed/ at Huginn commit 79d954c (docs/desk-feed-door.md is the contract).
 // A silent re-vendor fails here: move the pin on purpose, with the contract and the door's tests.
 public sealed class DeskFeedFixturePinTests
 {
-    public const string HuginnCommit = "9dde93e";
+    public const string HuginnCommit = "79d954c";
 
     public static readonly string Directory = Path.Combine(AppContext.BaseDirectory, "Fixtures", "desk-feed");
 
     private static readonly Dictionary<string, string> Sha256 = new(StringComparer.Ordinal)
     {
         [".gitattributes"] = "171872d6445cb1ffef0263b613d1ac318a60398449831d4cc4f772f78a7ebcff",
-        ["README.md"] = "e2529f2bfedaf986a3f0df100c60ca2a4c46a74c83845d4d9c02d5c9a35dcb88",
+        ["README.md"] = "441636e7b122289181ff999f2de51e8ca59fbab5782b7e05e1002bcca9657c48",
+        ["card-viewers-decider.synthetic.payload.hex"] = "13e0d20ed4c07d638417a39237f17d96c5decd659be47b0d022d26712980ec15",
+        ["card-viewers-decider.synthetic.payload.msgpack"] = "c5c2d9b1f4f08b0049227a9cb9deb850bc9a7a74acd7ad6c85b15d2433133dee",
+        ["card-viewers-non-decider.synthetic.payload.hex"] = "e59938dff11230981bf51241d89091df76d2ca36b563f2a65dea58873844bf8c",
+        ["card-viewers-non-decider.synthetic.payload.msgpack"] = "003fe7bb3ac93dc5cdf56fa1eca003f720d423fb1260778882ce5354729a1027",
         ["error.response.frame.bin"] = "fa03f44b82d7c4796f45dd36086a54342dc1de7e660a58cf3ddff4ff59d85a4c",
         ["error.response.frame.hex"] = "21c75b6e1d000ddc1a5455a9cc4d6c5b37bd1640c22e1055e96ff85bdff461bb",
         ["failure.response.frame.bin"] = "edc2277943334744d3057902800c25bbc913ff8ed336b4612f1a19772ec46dc9",
         ["failure.response.frame.hex"] = "b3c262ac506b51529e8063b2d38cc8c0047b431b75fe6ede1a91adebefd014d3",
         ["failure.response.payload.hex"] = "13ca85b5868451892746d2531833d394b66d25b5069cd0208169c5fcc94bf350",
         ["failure.response.payload.msgpack"] = "4bf7c80eb2d75b9559ab430757a98ebfd424745ed3fc1888d21bc6e41ed99403",
-        ["list-counts.request.frame.bin"] = "1c04651e0b5b00c1ea955c19a07694c887010a5dbed3c56c745eb08b2e86a525",
-        ["list-counts.request.frame.hex"] = "38f70d81ad9d6622e259147f8d092e1d1a506dbff41509736a78b514fd87c33b",
-        ["list-counts.request.payload.hex"] = "b4ed23985d7b2ff45710fce0f0969cc9a8e421d1f7f01c5d8bc0e1a4f9c014bf",
-        ["list-counts.request.payload.msgpack"] = "738646e54e0ec239d309b3bc3d8513e73db9dd2e7ea9df0a6a29ad999d3e2fa8",
+        ["list-counts.request.frame.bin"] = "be338fc06f127f9c20f82952708ffe95f8b6b8de7c5098834eb8cb257893637f",
+        ["list-counts.request.frame.hex"] = "496bbc58292a1d029361bd553eef2ccf786cfa6520b1a3ad97c831893c36cf50",
+        ["list-counts.request.payload.hex"] = "5ec076a5d8006a0290ad269deffb2bfe45ac7ee8b6a11ea2d4968a6ac8603e4b",
+        ["list-counts.request.payload.msgpack"] = "52f244c3d704067f79561c8d46f4069ac3f4452a73d916fb92154d28b28ea6c7",
         ["list-counts.response.frame.bin"] = "bf51c933fbbaa61934907cb66f5e07ac813de48e849ac80bdf3ba4f75d3952a3",
         ["list-counts.response.frame.hex"] = "3f395ae2302d0882fb2456fe94512bba045a1c967f98b4ebf6b306dd5e3d74a3",
         ["list-counts.response.payload.hex"] = "9a6f6b0be985d6ff8d313fa9e12ffe6662a59ff7305e574f4bfe8bf9a3ce2291",
@@ -33,14 +37,14 @@ public sealed class DeskFeedFixturePinTests
         ["list-empty.response.frame.hex"] = "9b0f15bf8948e44f9e43718914f6621402c98c06e0d21bf90640c521ab7f1a45",
         ["list-empty.response.payload.hex"] = "d93cd65c1d9f4fc052b9c7f17d16ea6e468a7af296cafd6a31d671ae855d2860",
         ["list-empty.response.payload.msgpack"] = "7b1a26f303d3bdd0317d24a0eb4a2d9144ada0a878c927905a1a345efabf3a9f",
-        ["list-open-cursor.request.frame.bin"] = "c73283d1e1e774abf66a6e4011ccc5c3f723a81cc2a4d3eb39575411479e7051",
-        ["list-open-cursor.request.frame.hex"] = "b8a1716d9a1d6c1ece46dc8cdafa8a9efaa5474596ae41facd95fe8efcbad6f5",
-        ["list-open-cursor.request.payload.hex"] = "0901e276fa578bb30792d925a0a2d0b65a09629d7b2493d4e666c714127df531",
-        ["list-open-cursor.request.payload.msgpack"] = "5fd85c8418ea8f15313178c3410f9d21a8f0cc0bdbadbf5c56f3fa825a9869b9",
-        ["list-open.request.frame.bin"] = "30ca39b84d3fa4c0562ad4707db765f35d2e0f2bcd42695e2595b6f8fafb3866",
-        ["list-open.request.frame.hex"] = "ca4b065102699f7998040b5d0a396a088b2f7254ff1a6801fa1d648746453d3f",
-        ["list-open.request.payload.hex"] = "960f570d6f76691ba75e4adb81b80e836612282ee0f88993be4754f60b00d461",
-        ["list-open.request.payload.msgpack"] = "4f6ca021ff72d59869359ffb296bd93706ef13d86e8aea4efe5bcf11f4b59bd6",
+        ["list-open-cursor.request.frame.bin"] = "13671e1c83c10350d86b149a86a98b69763b9a3e40eae0024c10f3e70b96ef8b",
+        ["list-open-cursor.request.frame.hex"] = "e2270f26d122374554855bf60686edbc5d4abfd63374cde08ab479a5f310aa12",
+        ["list-open-cursor.request.payload.hex"] = "437f4c0cbdc712e9b3f8e1f8666cf8ffe88061cce8d0da3a64e648eb7b6bb27f",
+        ["list-open-cursor.request.payload.msgpack"] = "05889e90f8143aa1a1375539f6e76593a682413b70cb40a8aaa3c7db2882622a",
+        ["list-open.request.frame.bin"] = "2af34627a45d7bfca034b880bf61f5dfd78022a8df425f418c0a084181663903",
+        ["list-open.request.frame.hex"] = "03f74ba78996b2ccb3fcf5fb712ae1d19f7594099ba04250ee0223c8631b9a24",
+        ["list-open.request.payload.hex"] = "a58e8583d41d4a04cbd983c6b5a8bdae26105f2eb7f25dfb7d5f86aa81847e93",
+        ["list-open.request.payload.msgpack"] = "431e000c3f002c254adc57273557c8111e815ca42a8dd4272762d3e7697d7f0a",
         ["list-response-too-large.response.frame.bin"] = "b95218e48c1f8e4162f515b97a85c324b9ccfe2b3216780ed0eca1d2e2066f19",
         ["list-response-too-large.response.frame.hex"] = "b4bedb2c59b1362e5059caf6dbea63952b8fe9c47b681da3825422bc677f8632",
         ["list-response-too-large.response.payload.hex"] = "4f5f18915e0e536c387e659eb2021570a5b0bc5e0f530521ca226dc687d6780d",
@@ -57,12 +61,14 @@ public sealed class DeskFeedFixturePinTests
         ["read-unknown.response.frame.hex"] = "97ab11a04a2d62917186b23666ed26ef09df220ffb1c3e188d919985085733e2",
         ["read-unknown.response.payload.hex"] = "ca8d4d1fa4d40915b6e062767967e62343b360ce669801da96d99509e24787fb",
         ["read-unknown.response.payload.msgpack"] = "0d4fe47159db88b5048bc1f42a0e72857b568eac48572777a0c896ee94f7c208",
-        ["read.request.frame.bin"] = "702d5a0a80bf05b75b24eff5a3f889ab0c96e819b8ca172e77bae05d74895662",
-        ["read.request.frame.hex"] = "79c951722dd939212cb33635270dec11f47debd979960e8d4f74f2ecfd83708a",
-        ["read.request.payload.hex"] = "3202f08616589a3d56bc36299b9915d1f8de8d2cd5573d21bca9115d30d9d968",
-        ["read.request.payload.msgpack"] = "c10a27f67a4a2512d06c01528e1ee59754f9cc2e5a1b244b9982268bc8b4d2e0",
-        ["record-whole.payload.hex"] = "f1fcee6923dbed3b49153e552e045af0e5be415fd857583e52ea519553784c46",
-        ["record-whole.payload.msgpack"] = "1687ef965066e1a7e264ccd10760449ce14f28b2042c67f7d7944b0db2275581",
+        ["read.request.frame.bin"] = "3a9bc16ce4ce706e8c839bf4cfe65d3e2fdf759992555e68be6fc7bcc15653ea",
+        ["read.request.frame.hex"] = "3c3d9540c4af789d230b7108f98d5d5f3dd9b291ff618064ddc374eb2a7bb082",
+        ["read.request.payload.hex"] = "48aed263254eac7bc156c1af1f2ee210a08dda2b453a5be2dc17083ab73800b2",
+        ["read.request.payload.msgpack"] = "c5447f462247703af4329e071bc0ac14dce1cb94a63c85517400791d022263ca",
+        ["record-non-decider.proposed.payload.hex"] = "15350e035612b380b55811c90b218afb7444214a2965deae35076aabe78206e5",
+        ["record-non-decider.proposed.payload.msgpack"] = "5095dfb375613a5f80a4471e1d5b68c77890b0732dc03cc11e52d9e769406afc",
+        ["record-whole.payload.hex"] = "f70d1a81a4f1031c04d5e1750f9162afc859a7b4d5b4cacf3e562d60ac00f531",
+        ["record-whole.payload.msgpack"] = "3ad3926b024fb76178cd68cbdab6a28da1ddef9a3aca6b66050488213145d496",
         ["refused-unit.response.frame.bin"] = "4f86943a6947dd3c6041ee7d1b52d3f73697604dd224ca5dcf5b66064b0de1f1",
         ["refused-unit.response.frame.hex"] = "f25f35911d242d6fdb7ac4e1ecb3fe01901aa4b816d957104bde6f21b29a1bed",
         ["refused-unit.response.payload.hex"] = "858d49c8c66ce1b9c32160e2aecb320a8c00166728c80f5a02d62ec90b4f410d",
@@ -74,7 +80,7 @@ public sealed class DeskFeedFixturePinTests
     };
 
     [Fact]
-    public void Fixtures_are_huginn_9dde93e_byte_for_byte()
+    public void Fixtures_are_huginn_79d954c_byte_for_byte()
     {
         var present = new DirectoryInfo(Directory).GetFiles().Select(f => f.Name).Order(StringComparer.Ordinal).ToArray();
         Assert.Equal(Sha256.Keys.Order(StringComparer.Ordinal).ToArray(), present);

@@ -1,17 +1,22 @@
 using System.Diagnostics;
 using System.Net.Sockets;
 using System.Text.Json;
+using System.Text.Json.Nodes;
+using MessagePack;
 using Bifrost.Web.Features.Desk;
 using Bifrost.Web.Tests.Support;
 
 namespace Bifrost.Web.Tests;
 
-// The production door against a real unix socket and Huginn's golden frames (fixtures at Huginn 9dde93e).
+// The production door against a real unix socket and Huginn's golden frames (fixtures at Huginn 79d954c).
 public sealed class UnixSocketDeskDoorTests
 {
     private const string Fork = "eureka-substrate:question:desk-listing-authority";
 
-    private static readonly DeskDoorContext Context = new("eureka", "Member", "7", ["7", "12"]);
+    // The fixtures' account ids: lowercase D-format UUIDs, synthetic.
+    private const string Decider = "5f0c2b1e-8a4d-4c3b-9e7f-1a2b3c4d5e6f";
+
+    private static readonly DeskDoorContext Context = new("eureka", "Member", Decider, [Decider, "0b9d7e3a-6c21-4f58-a0d4-9e8f7a6b5c4d"]);
 
     private static UnixSocketDeskDoor DoorWith(string messageId) => new(() => messageId);
 
@@ -203,7 +208,7 @@ public sealed class UnixSocketDeskDoorTests
         """{"order":8,"future_key":{"z":[3,null,100],"a":true},"options_hash":"cd","schemaVersion":"gamecult.fork.card.v0","fork_id":"x:question:b","title":"B","leans":null}""";
 
     private static string EntryJson(string card, string forkId) =>
-        $$$"""{"schemaVersion":"gamecult.fork.entry.v0","card":{{{card}}},"record":{"schemaVersion":"gamecult.fork.record.v0","fork_id":"{{{forkId}}}","options_hash":"ab","counted_answer_id":null,"answers":[]}}""";
+        $$$"""{"schemaVersion":"gamecult.fork.entry.v0","card":{{{card}}},"record":{"schemaVersion":"gamecult.fork.record.v0","fork_id":"{{{forkId}}}","options_hash":"ab","counted_answer_id":null,"answerer_count":0,"answers":[]}}""";
 
     [Fact]
     public async Task Cards_in_a_list_and_a_read_come_through_byte_faithful()
@@ -233,6 +238,145 @@ public sealed class UnixSocketDeskDoorTests
 
         var result = Assert.IsType<DeskAnswerOutcome.Answered>(outcome).Result;
         Assert.Equal((DeskSchemas.AnswerResult, "n1", "Counted", "n1", null), (result.SchemaVersion, result.Answer.AnswerId, result.Answer.Outcome, result.CountedAnswerId, result.Card));
+    }
+
+    // ---- (c2) both reader views through the door and the edge ----
+
+    // Huginn's fragments at 79d954c, as JSON. record-whole is the decider's view as Huginn sent it before
+    // answerer_count existed; record-non-decider.proposed is a PROPOSED mirror type built in Huginn's test (the
+    // non-decider view, every answerer nil, answerer_count 2); card-viewers-*.synthetic are SYNTHETIC two-key
+    // fragments, not cards. Bifrost reads none of them as anything but what they are: a record, and two keys a card
+    // carries.
+    private static JsonObject Fragment(string name) =>
+        JsonNode.Parse(MessagePackSerializer.ConvertToJson(File.ReadAllBytes(
+            Path.Combine(DeskFeedFixturePinTests.Directory, name + ".payload.msgpack"))))!.AsObject();
+
+    // The decider's view as the CultLib 3a51bbab contract spells it: record-whole with answerer_count (the number of
+    // distinct ids over its two answers) in the contract's place, after counted_answer_id. Huginn's record-whole does
+    // not carry it yet.
+    private static JsonObject DeciderRecord()
+    {
+        var whole = Fragment("record-whole");
+        var record = new JsonObject();
+        foreach (var (key, value) in whole.ToList())
+        {
+            whole.Remove(key);
+            record[key] = value;
+            if (key == "counted_answer_id")
+            {
+                record["answerer_count"] = 2;
+            }
+        }
+
+        return record;
+    }
+
+    // The vector card with its two reader-view keys replaced by a fragment's, in the card's own key order.
+    private static string ViewCard(string fragment)
+    {
+        var card = JsonNode.Parse(DeskVectors.Rows("card", "valid").First(r => (string)r["name"]! == "operator_fork")["message"]!.ToJsonString())!.AsObject();
+        var view = Fragment(fragment);
+        card["fork_id"] = Fork;
+        card["deciders"] = view["deciders"]!.DeepClone();
+        card["decider_count"] = view["decider_count"]!.DeepClone();
+        return card.ToJsonString(DeskJson.Options);
+    }
+
+    private static string EntryOf(string card, JsonObject record) =>
+        $$$"""{"schemaVersion":"gamecult.fork.entry.v0","card":{{{card}}},"record":{{{record.ToJsonString(DeskJson.Options)}}}}""";
+
+    private static string ListOf(string entry) =>
+        $$$"""{"Forks":{"list":{"schemaVersion":"gamecult.fork.list.v0","mind":"gamecult-chat","stamp":"s7","open_count":1,"recorded_count":0,"forks":[{{{entry}}}],"next_cursor":null},"as_of":7}}""";
+
+    [Fact]
+    public void Every_account_id_in_the_fixtures_is_a_lowercase_D_format_uuid_and_the_non_decider_fragments_name_none()
+    {
+        var grammar = new System.Text.RegularExpressions.Regex("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$");
+        foreach (var id in Fragment("card-viewers-decider.synthetic")["deciders"]!.AsArray().Select(d => (string)d!)
+                     .Concat(Fragment("record-whole")["answers"]!.AsArray().Select(a => (string)a!["answerer"]!)))
+        {
+            Assert.Matches(grammar, id);
+        }
+
+        var nonDeciderCard = Fragment("card-viewers-non-decider.synthetic");
+        Assert.Empty(nonDeciderCard["deciders"]!.AsArray());
+        Assert.Equal(2, (int)nonDeciderCard["decider_count"]!);
+        Assert.All(Fragment("record-non-decider.proposed")["answers"]!.AsArray(), a => Assert.Null(a!["answerer"]));
+    }
+
+    [Theory]
+    [InlineData("card-viewers-decider.synthetic")]
+    [InlineData("card-viewers-non-decider.synthetic")]
+    public async Task A_card_in_either_view_comes_through_the_door_byte_for_byte(string view)
+    {
+        var card = ViewCard(view);
+        var nonDecider = view.Contains("non-decider", StringComparison.Ordinal);
+        var record = nonDecider ? Fragment("record-non-decider.proposed") : DeciderRecord();
+        using var huginn = new FakeHuginnSocket(FakeHuginnSocket.Answer((_, _) => ListOf(EntryOf(card, record))));
+
+        var listed = Assert.IsType<DeskListOutcome.Listed>(await List(new UnixSocketDeskDoor(), huginn.Path));
+
+        var entry = Assert.Single(listed.List.Forks);
+        // The card is opaque: raised_at (a string), decider_count and the withheld or whole deciders leave as they came.
+        Assert.Equal(card, JsonSerializer.Serialize(entry.Card, DeskJson.Options));
+        Assert.Equal(nonDecider, entry.Card.GetProperty("deciders").GetArrayLength() == 0);
+        Assert.Equal(2, entry.Card.GetProperty("decider_count").GetInt32());
+        Assert.Equal(JsonValueKind.String, entry.Card.GetProperty("raised_at").ValueKind);
+        Assert.Equal(2, entry.Record.AnswererCount);
+        Assert.Equal(record.ToJsonString(DeskJson.Options), JsonSerializer.Serialize(entry.Record, DeskJson.Options));
+        Assert.All(entry.Record.Answers, a => Assert.Equal(nonDecider, a.Answerer is null));
+    }
+
+    [Fact]
+    public async Task A_decider_record_keeps_its_ids_and_a_non_decider_record_comes_through_with_nil_answerers_and_the_count()
+    {
+        var chat = DeskWebApplicationFactory.SocketOf("gamecult-chat");
+        _ = chat; // the edge below talks to a real socket, not the fake door's table
+        var nonDecider = Fragment("record-non-decider.proposed");
+        using var huginn = new FakeHuginnSocket(FakeHuginnSocket.Answer((_, _) => ListOf(EntryOf(ViewCard("card-viewers-non-decider.synthetic"), nonDecider))));
+        using var factory = new DeskWebApplicationFactory(ConfigurationWith(huginn.Path, FakeHuginnSocket.Absent()), fakeDoor: false);
+        await factory.EnsureAccountAsync(DeskWebApplicationFactory.Member, true);
+        var reply = await factory.SendAsync("GET", "/api/desk/gamecult-chat/forks", token: factory.Token(DeskWebApplicationFactory.Member, "bifrost-desk", "desk.read"));
+
+        // Huginn withheld the ids; Bifrost invents none, and nils the notes (the one thing it strips).
+        Assert.Equal(200, reply.Status);
+        var forks = JsonNode.Parse(reply.Text)!["forks"]!.AsArray();
+        var record = forks[0]!["record"]!;
+        Assert.Equal(2, (int)record["answerer_count"]!);
+        Assert.All(record["answers"]!.AsArray(), a =>
+        {
+            Assert.True(a!.AsObject().ContainsKey("answerer"));
+            Assert.Null(a["answerer"]);
+            Assert.Null(a["note"]);
+        });
+        Assert.Empty(forks[0]!["card"]!["deciders"]!.AsArray());
+        Assert.Equal(2, (int)forks[0]!["card"]!["decider_count"]!);
+        Assert.DoesNotContain("The asker lists her own forks.", reply.Text);
+
+        // The decider's view, as the contract spells it, keeps every id and every note.
+        var decider = DeciderRecord();
+        using var huginn2 = new FakeHuginnSocket(FakeHuginnSocket.Answer((_, _) => ListOf(EntryOf(ViewCard("card-viewers-decider.synthetic"), decider))));
+        using var factory2 = new DeskWebApplicationFactory(ConfigurationWith(huginn2.Path, FakeHuginnSocket.Absent()), fakeDoor: false);
+        await factory2.EnsureAccountAsync(DeskWebApplicationFactory.Alice, true);
+        var own = await factory2.SendAsync("GET", "/api/desk/gamecult-chat/forks", token: factory2.Token(DeskWebApplicationFactory.Alice, "bifrost-desk", "desk.read"));
+
+        Assert.Equal(200, own.Status);
+        var shown = JsonNode.Parse(own.Text)!["forks"]![0]!["record"]!;
+        Assert.Equal(decider.ToJsonString(DeskJson.Options), shown.ToJsonString(DeskJson.Options));
+    }
+
+    // Huginn's record-whole at 79d954c has no answerer_count, which the 3a51bbab contract requires. The door refuses it
+    // as a reply that does not decode; it does not write the 0 it could have made up. When Huginn's fixture gains the
+    // key this test is the one to retire.
+    [Fact]
+    public async Task Huginns_record_without_answerer_count_is_a_fault_not_a_zero()
+    {
+        var entry = EntryOf(ViewCard("card-viewers-decider.synthetic"), Fragment("record-whole"));
+        using var huginn = new FakeHuginnSocket(FakeHuginnSocket.Answer((_, _) => ListOf(entry)));
+
+        var failure = await Assert.ThrowsAsync<DeskDoorException>(() => List(new UnixSocketDeskDoor(), huginn.Path));
+
+        Assert.Contains("does not decode", failure.Message);
     }
 
     // ---- (d) one dead Mind fails only itself, through the HTTP edge ----
