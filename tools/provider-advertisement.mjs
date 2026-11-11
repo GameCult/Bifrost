@@ -179,9 +179,6 @@ const advertisementDefinition = defineDocumentType({
     parse: (input) => parseAdvertisement(input, { requireCurrentContract: false }),
   },
   name: "providerId",
-  indexes: {
-    serviceName: "serviceName",
-  },
   members: [
     { slot: 1, memberName: "providerId", typeName: "string", isName: true },
     { slot: 2, memberName: "serviceName", typeName: "string", indexAlias: "serviceName" },
