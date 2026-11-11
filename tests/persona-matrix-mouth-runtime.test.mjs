@@ -140,7 +140,7 @@ test("the RUDP endpoint serves pending, ack and send over CultNet, and answers a
   const calls = { acks: [], sends: [], reads: [] };
   const mouth = {
     pendingAfter: after => (after < 7 ? [delivery] : []),
-    tail: async () => [tailLine],
+    tail: async () => { if (calls.tailFails) throw new Error("room read failed"); return [tailLine]; },
     ack: async through => { calls.acks.push(through); },
     read: async request => { calls.reads.push(request); return null; },
     send: async request => { calls.sends.push(request); return request.text === "muted" ? { requestId: request.requestId, eventId: null, refusal: "Brake" } : { requestId: request.requestId, eventId: "$sent", refusal: null }; },
@@ -183,6 +183,15 @@ test("the RUDP endpoint serves pending, ack and send over CultNet, and answers a
     const v3 = docs.parsePendingV3(msgpack.decode(document.payload));
     assert.deepEqual(v3.deliveries[0], { ...delivery, basis: null, form: "message" });
     assert.deepEqual(v3.tail, [tailLine], "the v3 answer carries the room tail");
+
+    calls.tailFails = true;
+    reply = nextReply();
+    put(docs.kinds.pendingRequestV3, "eureka", docs.pendingRequestTuple({ persona: "eureka", afterSeq: 0 }));
+    document = await reply;
+    const degraded = docs.parsePendingV3(msgpack.decode(document.payload));
+    assert.equal(degraded.deliveries.length, 1, "a tail that throws does not silence the deliveries");
+    assert.deepEqual(degraded.tail, []);
+    calls.tailFails = false;
 
     put(docs.kinds.ack, "eureka:7", docs.ackTuple({ persona: "eureka", throughSeq: 7 }));
     reply = nextReply();

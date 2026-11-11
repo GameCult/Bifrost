@@ -221,14 +221,14 @@ Proposed runtime half (follow-up `persona-wakes-on-address-only`):
 
 ### Room tail (`chat_pending.v3`, field 2)
 
-The v3 answer is `[persona, deliveries, tail]`. `tail` is a list of recent room lines, oldest first, for a reader that was not woken for them (a scheduled beat). It is built from the same `/messages` read as a delivery's `context`, as her account, with no new endpoint and no new homeserver call per line. A `chat_pending_request.v1` is still answered with the two-field `chat_pending.v2`, and `chat_pending.v3` has not been deployed, so no reader sees the third field before it is ready for it.
+The v3 answer is `[persona, deliveries, tail]`. `tail` is a list of recent room lines, oldest first, for a reader that was not woken for them (a scheduled beat). It uses the same room read as a delivery's `context` (the same function, a separate read), as her account, with no new endpoint; the cost is one `/messages` call per speakable room per poll (15 seconds cached), including every DM. A `chat_pending_request.v1` is still answered with the two-field `chat_pending.v2`. `chat_pending.v3` has not been deployed, but a reader that decodes it as a two-field tuple fails on the third element (rmp-serde `LengthMismatch`), so Huginn must accept `tail` (a defaulted field) before this mouth is deployed.
 
 | Bound | Rule |
 |---|---|
 | Rooms | Only rooms the Persona may speak in: a configured room she has joined, or one of her DMs. The same rule `send` uses (`speakableRoomId`). A room she is in but cannot speak in, and any other room, is absent. |
 | Lines | A text line outside threads, not an edit, newest `20` per room, newest `60` over all rooms. Trimmed oldest first if the reply byte budget (256 KiB, deliveries first) would be exceeded. |
-| Cursor | Only lines past her ack cursor in that room: the origin time of the newest delivery she has acked there (ties by event id). A room she has acked nothing in since the mouth started returns its recent lines, a quiet room included. The cursor is in memory: a restart forgets it and the next tail shows the recent lines again. |
-| Read | A room's read is kept 15 seconds, dropped when a sync brings the room news or an ack moves the cursor. A room that cannot be read is logged and absent; the other rooms and the deliveries are unaffected. |
+| Cursor | None. The tail is each room's newest lines whether or not they were delivered or acked: a message the wake rule left unaddressed is acked and leaves `pending`, and the tail is where a beat still finds it. A reader removes the lines a delivery already shows (by event id). Her own lines are included. |
+| Read | A room's read is kept 15 seconds, dropped when a sync brings the room news. A room that cannot be read within 10 seconds is logged and absent; the other rooms and the deliveries are unaffected. |
 
 A line is the 7-field tuple `[room, event_id, at_unix_ms, sender, form, basis, body]`: `room` is the configured alias (the room id for a DM), `form` and `basis` as for a delivery, `body` clipped to 1000 bytes with the same typed text line for media a delivery has (nothing is fetched). `basis` is what Matrix says on the event itself (`direct` in a DM, `tag`, `room`) and nothing the mouth would have to look up, so a reply is nil here: **nil is unproven, not "not for her"**, and a line in a DM is `direct`. Huginn's rule that an `is_direct` delivery wakes with a nil `basis` is unchanged and lives with Huginn; the tail does not feed it.
 

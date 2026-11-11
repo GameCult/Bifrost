@@ -142,8 +142,7 @@ export function createMouth({
   let started = false;
   let lastPresence = null; // 'online' | 'unavailable' | 'offline' | null: command-only, suppresses repeat presence PUTs
   let activeUntil = 0; // her last sign of life in a turn, plus the grace
-  const ackedThrough = new Map(); // room id -> { ts, ids }: the newest delivery she has acked there, ids those at exactly that time; the tail is what lies past it
-  const tailReads = new Map(); // room id -> { at, lines }: a room's tail read, kept TAIL_TTL_MS or until a sync brings the room news or an ack moves the cursor
+  const tailReads = new Map(); // room id -> { at, lines }: a room's tail read, kept TAIL_TTL_MS or until a sync brings the room news
   const delivered = new Map(); // event id -> { roomId, roomAlias, seq }: what the mouth handed her, newest last, bounded
   const readThrough = new Map(); // room id -> { seq, eventId } of the last receipt that landed
   const readTails = new Map(); // room id -> the read report in flight: reports for one room run one at a time
@@ -472,22 +471,18 @@ export function createMouth({
   }
 
   async function ack(throughSeq) {
-    for (const d of pending) if (d.seq <= throughSeq) {
-      const through = ackedThrough.get(d.roomId);
-      if (!through || d.atUnixMs > through.ts) ackedThrough.set(d.roomId, { ts: d.atUnixMs, ids: new Set([d.eventId]) });
-      else if (d.atUnixMs === through.ts) through.ids.add(d.eventId);
-    }
     pending = pending.filter(d => d.seq > throughSeq);
-    tailReads.clear();
     images?.acked(throughSeq);
     await commit(pending.length ? pending[0].seq - 1 : seqCounter);
     touch();
   }
 
-  // Her rooms' recent talk, for a reader that was not woken for it: in each room she may speak in, the newest tailPerRoom lines past
-  // her ack cursor there (a room she has acked nothing in yields its recent lines), the newest tailTotal over all rooms, oldest
-  // first. From the same /messages read as a delivery's context, as her account, bodies clipped as context lines are. The basis is
-  // what Matrix says on the event itself (no reply lookup: nil is unproven). A room that cannot be read is logged and absent.
+  // Her rooms' recent talk, for a reader that was not woken for it: in each room she may speak in, the newest tailPerRoom lines
+  // whether or not they were delivered or acked (a delivery the wake rule left unaddressed is acked and gone from `pending`; the tail
+  // is where a beat still finds it, and the reader removes what a delivery already shows), the newest tailTotal over all rooms,
+  // oldest first. From the same /messages read as a delivery's context, as her account, bodies clipped as context lines are. The
+  // basis is what Matrix says on the event itself (no reply lookup: nil is unproven). A room that cannot be read in sendTimeoutMs
+  // is logged and absent, so one stuck room never holds the reply.
   async function tail() {
     if (!started) return [];
     const targets = new Set();
@@ -495,21 +490,24 @@ export function createMouth({
     const perRoom = await Promise.all([...targets].map(async roomId => {
       let read = tailReads.get(roomId);
       if (!read || now() - read.at >= TAIL_TTL_MS) {
-        read = { at: now(), lines: roomEvents(roomId).catch(error => { say(`tail for ${roomId} not fetched: ${error.message}`); return null; }) };
+        let timer;
+        const lines = Promise.race([
+          roomEvents(roomId),
+          new Promise((_, fail) => { timer = setTimeout(() => fail(new Error(`no answer in ${sendTimeoutMs} ms`)), sendTimeoutMs); }),
+        ]).catch(error => { say(`tail for ${roomId} not fetched: ${error.message}`); return null; }).finally(() => clearTimeout(timer));
+        read = { at: now(), lines };
         tailReads.set(roomId, read);
       }
       const events = await read.lines;
       if (events === null) { if (tailReads.get(roomId) === read) tailReads.delete(roomId); return []; }
-      const through = ackedThrough.get(roomId);
       const alias = aliasByRoomId.get(roomId) ?? roomId;
       const lines = [];
-      for (const e of events) {
-        const at = Number.isSafeInteger(e.origin_server_ts) && e.origin_server_ts >= 0 ? e.origin_server_ts : 0;
-        if (through && (at < through.ts || (at === through.ts && through.ids.has(e.event_id)))) continue;
+      for (const e of events.slice(-docs.limits.tailPerRoom)) {
         if (typeof e.event_id !== "string" || e.event_id === "") continue;
+        const at = Number.isSafeInteger(e.origin_server_ts) && e.origin_server_ts >= 0 ? e.origin_server_ts : 0;
         lines.push({ roomAlias: alias, eventId: e.event_id, atUnixMs: at, sender: e.sender, form: formOf(e.content), basis: await basisOf(roomId, e, false), text: bodyText(e.content, docs.limits.contextBytes) });
       }
-      return lines.slice(-docs.limits.tailPerRoom);
+      return lines;
     }));
     return perRoom.flat().sort((a, b) => a.atUnixMs - b.atUnixMs).slice(-docs.limits.tailTotal);
   }

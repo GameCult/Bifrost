@@ -1528,7 +1528,7 @@ test("room tail: about 60 lines over all rooms, the newest, whatever the room co
   assert.equal(Math.min(...tail.map(l => l.atUnixMs)), 110, "the oldest kept is the 60th newest of the 120 offered");
 });
 
-test("room tail: lines at or before her ack cursor are gone, later ones stay, and mention basis rides on the line", async () => {
+test("room tail: acking a delivery does not hide it, so an unaddressed line she has acked is still found, and mention basis rides on the line", async () => {
   const events = [
     withContent("$a", META, { body: "first" }, 3000),
     withContent("$b", META, { body: "tag", "m.mentions": { user_ids: [SELF] } }, 3001),
@@ -1538,12 +1538,29 @@ test("room tail: lines at or before her ack cursor are gone, later ones stay, an
     const mouth = mouthFor(hs);
     await mouth.syncOnce();
     const made = await mouth.syncOnce();
-    assert.equal(made.length, 2);
     assert.deepEqual((await mouth.tail()).map(l => [l.eventId, l.basis]), [["$a", null], ["$b", "tag"]]);
-    await mouth.ack(made[0].seq);
-    assert.deepEqual((await mouth.tail()).map(l => l.eventId), ["$b"], "unacked past the cursor only");
     await mouth.ack(made[1].seq);
-    assert.deepEqual(await mouth.tail(), []);
+    assert.equal(mouth.pendingAfter(0).length, 0);
+    assert.deepEqual((await mouth.tail()).map(l => l.eventId), ["$a", "$b"], "acked lines are the ones no delivery will bring again");
+  } finally { await hs.close(); }
+});
+
+test("room tail: a room that never answers is absent after the timeout and does not hold the others", async () => {
+  const hs = await fakeHomeserver({ preload: { [OPERATOR]: lines(OPERATOR, 2) }, sync: since => ({ next_batch: since ?? "b0" }) });
+  const hang = (url, init) => String(url).includes(encodeURIComponent(ROOM)) && String(url).includes("/messages") ? new Promise(() => {}) : hs.fetch(url, init);
+  try {
+    const mouth = mouthFor(hs, { fetch: hang, sendTimeoutMs: 50 });
+    await mouth.syncOnce();
+    const tail = await mouth.tail();
+    assert.deepEqual([...new Set(tail.map(l => l.roomAlias))], [`#operator:${HS_NAME}`]);
+  } finally { await hs.close(); }
+});
+
+test("room tail: a mouth that has not started reads no room", async () => {
+  const hs = await fakeHomeserver({ preload: { [ROOM]: lines(ROOM, 2) }, sync: since => ({ next_batch: since ?? "b0" }) });
+  try {
+    assert.deepEqual(await mouthFor(hs).tail(), []);
+    assert.equal(hs.seen.filter(r => r.path.includes("/messages")).length, 0);
   } finally { await hs.close(); }
 });
 
