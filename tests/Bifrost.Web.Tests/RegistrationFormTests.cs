@@ -174,7 +174,8 @@ public sealed class RegistrationFormTests(RegistrationFormFactory factory) : ICl
         Assert.Contains("<html lang=\"en\">", html);
         Assert.Matches("<input type=\"checkbox\" id=\"consent\" name=\"consent\" value=\"yes\" [^>]*/>", html);
         Assert.DoesNotMatch("<input type=\"checkbox\"[^>]*\\bchecked\\b", html);
-        Assert.Contains("I agree to this notice (optional)", html);
+        Assert.Contains("I agree to this notice, to speak in a recorded room", html);
+        Assert.Contains("Withdrawing ends future speaking there; lines you have already spoken stay.", html);
         Assert.DoesNotMatch("<input type=\"checkbox\"[^>]*\\brequired\\b", html);
         foreach (var id in new[] { "identity", "displayName", "consent" })
         {
@@ -283,7 +284,7 @@ public sealed class RegistrationFormTests(RegistrationFormFactory factory) : ICl
         var identity = NewIdentity();
         var before = Counts();
         var fields = FormKit.Fields(html, identity, nonce: FormKit.Solved(html));
-        fields["acceptedNoticeVersion"] = "1";
+        fields["acceptedNoticeVersion"] = (TrainingNotice.Version + 1).ToString();
 
         using var response = await FormKit.PostAsync(client, fields);
         var again = await response.Content.ReadAsStringAsync();

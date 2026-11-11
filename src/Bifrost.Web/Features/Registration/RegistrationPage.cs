@@ -99,7 +99,7 @@ public static class RegistrationPage
             var link = model.ErrorField switch
             {
                 RegistrationField.Identity => """<ul><li><a href="#identity">Identity name</a></li></ul>""",
-                RegistrationField.Consent => """<ul><li><a href="#consent">I agree to this notice (optional)</a></li></ul>""",
+                RegistrationField.Consent => """<ul><li><a href="#consent">I agree to this notice, to speak in a recorded room</a></li></ul>""",
                 _ => ""
             };
             summary.Append($"""<div id="errors" role="alert" tabindex="-1"><strong>Registration did not go through.</strong><p>{E(model.Error)}</p>{link}</div>""");
@@ -154,8 +154,8 @@ public static class RegistrationPage
                     <fieldset>
                       <legend>Training notice, version {{notice}}</legend>
                       {{TrainingNotice.Html("notice")}}
-                      <label class="check" for="consent"><input type="checkbox" id="consent" name="consent" value="yes" aria-describedby="notice"{{Invalid(RegistrationField.Consent)}} />I agree to this notice (optional)</label>
-                      <p class="hint">Optional. You can create an account without agreeing; then none of your messages are used. You can agree later on your consent page.</p>
+                      <label class="check" for="consent"><input type="checkbox" id="consent" name="consent" value="yes" aria-describedby="notice"{{Invalid(RegistrationField.Consent)}} />I agree to this notice, to speak in a recorded room</label>
+                      <p class="hint">You can create an account without agreeing. Agreement is needed to speak in a recorded room, and you can give it later on your consent page. Withdrawing ends future speaking there; lines you have already spoken stay.</p>
                       <input type="hidden" name="acceptedNoticeVersion" value="{{notice}}" />
                     </fieldset>
                     <input type="hidden" name="challenge" value="{{E(model.Challenge)}}" />

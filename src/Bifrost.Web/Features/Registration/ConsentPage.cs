@@ -42,25 +42,26 @@ public static class ConsentPage
 
     private static string Iso(DateTimeOffset time) => time.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", System.Globalization.CultureInfo.InvariantCulture);
 
-    public static string Render(ConsentState state, string? error)
+    public static string Render(ConsentState state, string? error, string? returnPath = null)
     {
         static string E(string? text) => WebUtility.HtmlEncode(text ?? "");
         var version = TrainingNotice.Version.ToString(System.Globalization.CultureInfo.InvariantCulture);
         var (message, anyLive) = state switch
         {
-            ConsentState.Current current => ($"You agreed to version {version} on {Iso(current.AgreedAtUtc)}. Your messages may be used as the notice says.", true),
-            ConsentState.Older older => ($"You agreed to version {older.Version} on {Iso(older.AgreedAtUtc)}; version {version} is in force and your messages are not used until you agree to it.", true),
-            ConsentState.Withdrawn withdrawn => ($"You withdrew on {Iso(withdrawn.WithdrawnAtUtc)}. Your messages are not used.", false),
-            _ => ("You have not agreed. Your messages are not used.", false)
+            ConsentState.Current current => ($"You agreed to version {version} on {Iso(current.AgreedAtUtc)}. You may speak in a recorded room, and your messages may be used as the notice says.", true),
+            ConsentState.Older older => ($"You agreed to version {older.Version} on {Iso(older.AgreedAtUtc)}; version {version} is in force; you cannot speak in a recorded room and your messages are not used until you agree to it.", true),
+            ConsentState.Withdrawn withdrawn => ($"You withdrew on {Iso(withdrawn.WithdrawnAtUtc)}. You cannot speak in a recorded room, and your messages are not used. Lines you already spoke stay.", false),
+            _ => ("You have not agreed. You cannot speak in a recorded room, and your messages are not used.", false)
         };
         var summary = error is null ? "" : $"""<div id="errors" role="alert" tabindex="-1"><strong>That did not go through.</strong><p>{E(error)}</p></div>""";
         // Withdraw whenever any live receipt exists (an older one included); Agree whenever none is live for the version in force.
+        var back = returnPath is null ? "" : $"""<input type="hidden" name="returnUrl" value="{E(returnPath)}" />""";
         var withdrawButton = anyLive
             ? """<form method="post" action="/auth/bifrost/consent/withdraw"><button type="submit">Withdraw</button></form>"""
             : "";
         var agreeButton = state is ConsentState.Current
             ? ""
-            : $"""<form method="post" action="/auth/bifrost/consent/accept"><input type="hidden" name="version" value="{version}" /><button type="submit">Agree to version {version}</button></form>""";
+            : $"""<form method="post" action="/auth/bifrost/consent/accept"><input type="hidden" name="version" value="{version}" />{back}<button type="submit">Agree to version {version}</button></form>""";
         var button = agreeButton + withdrawButton;
 
         return $$"""
@@ -91,11 +92,11 @@ public static class ConsentPage
                   <h1>Training consent</h1>
                   {{summary}}
                   <p id="state" aria-live="polite">{{E(message)}}</p>
-                  {{button}}
                   <fieldset>
                     <legend>Training notice, version {{version}}</legend>
                     {{TrainingNotice.Html("notice")}}
                   </fieldset>
+                  {{button}}
                 </main>
               </body>
             </html>
