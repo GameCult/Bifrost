@@ -96,7 +96,6 @@ public sealed class OidcTestKit : IDisposable
         ["Bifrost:Oidc:Clients:Mas:RedirectUri"] = RedirectUri,
         // The shared test client has no remote address, so every request is one caller: the budgets are out of the way unless a test sets them.
         ["Bifrost:Oidc:Limits:PerAddressPermits"] = "100000",
-        ["Bifrost:Oidc:Limits:PerClientPermits"] = "100000"
     };
 
     public void Dispose()
