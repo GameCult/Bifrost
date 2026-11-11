@@ -41,7 +41,7 @@ asked again on their next chat sign-in.
    (not withdrawn) receipt for the version in force exists. After a bump, everyone is out until they agree again. The
    notice says so ("if the notice changes, its version changes and we ask again; until you agree to the new version, your
    messages are not used"), and the consent page shows the person that their agreement is to an older version and
-   offers the new one. Since the chat gate, a bump also ends everyone's chat token until they agree (their next chat sign-in lands on that page). Nobody is emailed or prompted elsewhere; asking is the page's job, and silence means no.
+   offers the new one. Since the chat gate, a bump also stops new chat tokens for everyone until they agree (their next chat sign-in lands on that page; a session already open runs to its natural expiry unless `BackchannelLogoutUri` is set, when the 30 s reconciler ends it). Nobody is emailed or prompted elsewhere; asking is the page's job, and silence means no.
 3. **Withdrawal had no CSRF check.** True. The session cookie's SameSite default is Lax, which already keeps a cross-site
    POST from carrying it, but nothing in the handler relied on that. Both state changes (agree, withdraw) are now
    form POSTs refused with 403 unless they came from the site itself (`RequestOriginGuard`, the strict form), before
