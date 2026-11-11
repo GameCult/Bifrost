@@ -2,6 +2,7 @@ using System.Security.Claims;
 using Microsoft.AspNetCore;
 using Bifrost.Web.Data;
 using Bifrost.Web.Domain;
+using Bifrost.Web.Features.Desk;
 using Bifrost.Web.Features.Membership;
 using Bifrost.Web.Features.Registration;
 using Bifrost.Web.Features.Shared;
@@ -85,6 +86,13 @@ public static class OidcEndpoints
 
         var principal = new ClaimsPrincipal(identity);
         principal.SetScopes(request.GetScopes());
+        // A desk scope is what makes a token a desk token: its audience is the desk's. The client's permissions already
+        // decided whether it may ask for the scope (the MAS client may not), so this branch is reached only by one that may.
+        if (request.GetScopes().Any(DeskEndpoints.IsDeskScope))
+        {
+            principal.SetResources(DeskEndpoints.Audience);
+        }
+
         principal.SetDestinations(claim => claim.Type switch
         {
             Claims.Subject => [Destinations.AccessToken, Destinations.IdentityToken],

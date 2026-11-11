@@ -4,6 +4,7 @@ using Bifrost.Web.Data;
 using Bifrost.Web.Features.Oidc;
 using Microsoft.AspNetCore.Cors.Infrastructure;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
 using Microsoft.Net.Http.Headers;
 
@@ -22,8 +23,24 @@ public static class DeskEndpoints
     public const string AnswerScope = "desk.answer";
     public const string CorsPolicy = "DeskCors";
 
-    public static IServiceCollection AddBifrostDesk(this IServiceCollection services)
+    public static bool IsDeskScope(string scope) => scope is ReadScope or AnswerScope;
+
+    // The desk's credential is OpenIddict validation against the local server, so it exists only where Bifrost:Oidc is
+    // configured. Without it nothing is registered here and startup fails in the validator, with its own message.
+    public static IServiceCollection AddBifrostDesk(this IServiceCollection services, bool oidcConfigured)
     {
+        if (oidcConfigured)
+        {
+            services.AddOpenIddict()
+                .AddServer(server => server.RegisterScopes(ReadScope, AnswerScope))
+                .AddValidation(validation =>
+                {
+                    validation.UseLocalServer();
+                    validation.UseAspNetCore();
+                });
+            services.TryAddSingleton<IDeskCredential, OidcDeskCredential>();
+        }
+
         services.AddSingleton(provider => new DeskMindRoutes(provider.GetRequiredService<IOptions<DeskOptions>>().Value.Minds));
         services.AddCors();
         // Exactly the configured origin, no credentials, and only on the routes that require this policy.

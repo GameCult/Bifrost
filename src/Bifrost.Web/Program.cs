@@ -267,7 +267,7 @@ if (oidcOptions is not null)
 var deskConfigured = builder.Configuration.GetSection(DeskOptions.SectionName).Exists();
 if (deskConfigured)
 {
-    builder.Services.AddBifrostDesk();
+    builder.Services.AddBifrostDesk(oidcConfigured: oidcOptions is not null);
 }
 
 var app = builder.Build();

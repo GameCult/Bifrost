@@ -15,7 +15,8 @@ public sealed class StartupConfigurationValidator(
     IOptions<BifrostHostOptions> hostOptions,
     IOptions<ConceptVoteOptions> conceptVoteOptions,
     IOptions<DeskOptions> deskOptions,
-    IOptions<RegistrationOptions> registrationOptions)
+    IOptions<RegistrationOptions> registrationOptions,
+    OidcIssuerOptions? oidcOptions = null)
 {
     public void Validate()
     {
@@ -149,6 +150,12 @@ public sealed class StartupConfigurationValidator(
     // mis-attribute answers. Account existence is a request-time question, not a startup one.
     private void ValidateDesk(DeskOptions desk, List<string> failures)
     {
+        // The desk's bearer is validated against Bifrost's own issuer: without Bifrost:Oidc there is no credential to serve with.
+        if (oidcOptions is null && configuration.GetSection(DeskOptions.SectionName).Exists())
+        {
+            failures.Add("Bifrost:Oidc must be configured when the Desk section exists: the desk validates its bearer tokens against Bifrost's own issuer.");
+        }
+
         if (!desk.IsConfigured)
         {
             if (configuration.GetSection(DeskOptions.SectionName).Exists())

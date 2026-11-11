@@ -36,13 +36,14 @@ public sealed class DeskSurfaceTests
     }
 
     [Fact]
-    public void A_configured_desk_without_its_ports_stops_startup()
+    public void A_configured_desk_without_its_door_stops_startup()
     {
         using var factory = new DeskWebApplicationFactory(registerPorts: false);
 
         var failure = Assert.ThrowsAny<Exception>(() => factory.CreateClient());
 
-        Assert.Contains("IDeskCredential", failure.ToString());
+        // The credential is production wiring (OpenIddict validation); the door is the port a test or Huginn supplies.
+        Assert.Contains("IDeskDoor", failure.ToString());
     }
 
     [Fact]

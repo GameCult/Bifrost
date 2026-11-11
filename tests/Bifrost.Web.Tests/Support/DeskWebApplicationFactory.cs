@@ -7,6 +7,8 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using OpenIddict.Abstractions;
 
 namespace Bifrost.Web.Tests.Support;
 
@@ -26,9 +28,17 @@ public sealed class DeskWebApplicationFactory : TestWebApplicationFactory
 
     private readonly Dictionary<string, string?>? configuration;
     private readonly bool registerPorts;
+    private readonly bool realCredential;
 
-    public DeskWebApplicationFactory(Dictionary<string, string?>? configuration = null, bool configured = true, bool registerPorts = true)
+    // A configured desk needs Bifrost:Oidc (its credential validates against the local issuer): generated keys per factory.
+    private readonly OidcTestKit oidcKit = new();
+
+    // The chat client's secret, for a test that holds the chat client's own token.
+    public string OidcSecret => oidcKit.ClientSecret;
+
+    public DeskWebApplicationFactory(Dictionary<string, string?>? configuration = null, bool configured = true, bool registerPorts = true, bool realCredential = false)
     {
+        this.realCredential = realCredential;
         this.configuration = configured ? configuration ?? DefaultConfiguration() : null;
         this.registerPorts = registerPorts;
     }
@@ -36,6 +46,14 @@ public sealed class DeskWebApplicationFactory : TestWebApplicationFactory
     public FakeDeskDoor Door { get; } = new();
 
     public FakeDeskCredential Credential { get; } = new();
+
+    // Moves time for a real-credential host, so an access token can be aged past its lifetime.
+    public OidcTestClock Clock { get; } = new();
+
+    // A test-only scope: a token issued with it is stamped for this audience instead of the desk's, by the test host's
+    // own issuer, so "a valid token for another audience" is a real token.
+    public const string OtherAudienceScope = "test.other_audience";
+    public const string OtherAudience = "bifrost-votes";
 
 
     public static Dictionary<string, string?> DefaultConfiguration()
@@ -77,13 +95,48 @@ public sealed class DeskWebApplicationFactory : TestWebApplicationFactory
         base.ConfigureWebHost(builder);
         if (configuration is not null)
         {
+            foreach (var (key, value) in oidcKit.Configuration)
+            {
+                builder.UseSetting(key, value);
+            }
+
             foreach (var (key, value) in configuration)
             {
                 builder.UseSetting(key, value);
             }
         }
 
-        if (registerPorts)
+        if (realCredential)
+        {
+            // The production credential stays registered; the host signs in by cookie as the real site does.
+            builder.ConfigureServices(services =>
+            {
+                services.Configure<Microsoft.AspNetCore.Authentication.AuthenticationOptions>(options =>
+                {
+                    options.DefaultScheme = Microsoft.AspNetCore.Authentication.Cookies.CookieAuthenticationDefaults.AuthenticationScheme;
+                    options.DefaultAuthenticateScheme = Microsoft.AspNetCore.Authentication.Cookies.CookieAuthenticationDefaults.AuthenticationScheme;
+                });
+                services.RemoveAll<TimeProvider>();
+                services.AddSingleton<TimeProvider>(Clock);
+                services.AddOpenIddict().AddServer(server =>
+                {
+                    server.RegisterScopes(OtherAudienceScope);
+                    // After the issuer has prepared the access token's own principal, so the audience it carries is the one changed.
+                    server.AddEventHandler<OpenIddict.Server.OpenIddictServerEvents.ProcessSignInContext>(handler =>
+                        handler.UseInlineHandler(context =>
+                        {
+                            if (context.AccessTokenPrincipal is { } principal && principal.HasScope(OtherAudienceScope))
+                            {
+                                principal.SetAudiences(OtherAudience);
+                            }
+
+                            return default;
+                        }).SetOrder(OpenIddict.Server.OpenIddictServerHandlers.PrepareAccessTokenPrincipal.Descriptor.Order + 1));
+                });
+                services.AddSingleton<IDeskDoor>(Door);
+            });
+        }
+        else if (registerPorts)
         {
             builder.ConfigureServices(services =>
             {
@@ -113,6 +166,25 @@ public sealed class DeskWebApplicationFactory : TestWebApplicationFactory
         }
 
         await db.SaveChangesAsync();
+    }
+
+    // Sets the membership of a member who registered through the real gate.
+    public async Task SetMembershipAsync(string identity, MembershipStatus status)
+    {
+        using var scope = Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
+        var account = db.UserAccounts.Single(x => x.NormalizedBifrostIdentity == identity);
+        db.Memberships.Single(x => x.UserAccountId == account.Id).Status = status;
+        await db.SaveChangesAsync();
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        base.Dispose(disposing);
+        if (disposing)
+        {
+            oidcKit.Dispose();
+        }
     }
 
     public string Token(string? subject, string? audience, params string[] scopes) =>
