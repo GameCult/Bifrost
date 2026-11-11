@@ -50,8 +50,13 @@ public static class OidcEndpoints
 
         var actor = await actors.GetAsync(http.RequestAborted);
         // Chat tier: any account that is not suspended may sign in to chat. Membership is neither required nor written;
-        // every member or governance surface keeps asking for Active itself (ActiveMemberIdAsync).
-        if (actor.UserAccount is null || actor.Membership?.Status == MembershipStatus.Suspended)
+        // every member or governance surface keeps asking for Active itself (the Active-member policy, IsActiveMember, ActiveMemberIdAsync).
+        if (actor.UserAccount is null)
+        {
+            return Deny(Errors.AccessDenied, NoIdentityDescription);
+        }
+
+        if (actor.Membership?.Status == MembershipStatus.Suspended)
         {
             return Deny(Errors.AccessDenied, SuspendedDescription);
         }
@@ -145,7 +150,7 @@ public static class OidcEndpoints
         return account is not null && account.Membership?.Status != MembershipStatus.Suspended;
     }
 
-    /// <summary>The account id of the subject when it is an Active member now, else null. The only door to member surfaces (the fork desk); a chat-tier token does not pass it. Re-read on every call.</summary>
+    /// <summary>The account id of the subject when it is an Active member now, else null. The door to the fork desk (cookie surfaces check IsActiveMember); a chat-tier token does not pass it. Re-read on every call.</summary>
     internal static async Task<Guid?> ActiveMemberIdAsync(BifrostDbContext db, string? subject, CancellationToken cancellationToken)
     {
         if (!Guid.TryParse(subject, out var accountId))
