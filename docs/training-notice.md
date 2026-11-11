@@ -11,10 +11,11 @@ fails a test. A reworded notice is version 2, with its own pinned hash.
 
 ## Before deploy
 
-Delete every row from `ConsentReceipts` (and confirm the table is empty) on any database that ever ran main at or after
-`33be966`, before deploying this. Old version 1 receipts were given to different words and would otherwise count as
-agreement to these. Meta/ops must confirm that nothing was ever deployed with receipts in it; if something was, this step is
-required there and the people who agreed are asked again on their next chat sign-in.
+Migration `20261111120000_ClearLegacyConsentReceipts` deletes every row from `ConsentReceipts` when it runs, because
+version 1 receipts were given to different words and must not count as agreement to these. Manual emptying is therefore only
+a belt-and-braces check: confirm the table is empty after the migrate on any database that ever ran main at or after
+`33be966`. Meta/ops must still confirm whether anything was deployed with receipts in it; if so, the people who agreed are
+asked again on their next chat sign-in.
 
 ## What the notice says and why
 

@@ -27,6 +27,7 @@ public sealed class MigrationDiscoveryTests
         "20261111090000_AddConsentReceipts",
         "20261111100000_ConsentReceiptsOneLivePerVersion",
         "20261111110000_AddMembershipSuspensionReason",
+        "20261111120000_ClearLegacyConsentReceipts",
     ];
 
     // Database.GetMigrations() reads assembly metadata only; no connection is opened.
