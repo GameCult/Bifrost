@@ -1,9 +1,13 @@
 using System.Net;
 using System.Text;
 using Bifrost.Web.Configuration;
+using Bifrost.Web.Data;
+using Microsoft.EntityFrameworkCore;
+using OpenIddict.EntityFrameworkCore.Models;
 using Bifrost.Web.Features.Shared;
 using Microsoft.Extensions.Options;
 using OpenIddict.Abstractions;
+using static OpenIddict.Abstractions.OpenIddictConstants;
 using OpenIddict.Server.AspNetCore;
 
 namespace Bifrost.Web.Features.Oidc;
@@ -139,17 +143,48 @@ public sealed class OidcRateLimit(OidcIssuerOptions options, TimeProvider clock)
 }
 
 /// <summary>
-/// Deletes expired and orphaned authorizations and tokens on a schedule (OpenIddict's own prune: tokens that are no longer
-/// valid or have expired, and authorizations that are ad hoc or invalid with no live token). Live rows are never touched.
+/// Deletes expired and orphaned authorizations and tokens on a schedule: tokens past their expiry (parked authorize
+/// requests, codes, access tokens) or no longer valid, then authorizations that are no longer valid or are ad hoc with no
+/// token left. Live rows are never touched. Plain queries, not OpenIddict's ExecuteDelete prune, so the same code runs on
+/// Postgres and on the in-memory test provider.
 /// </summary>
 public sealed class OidcPruner(IServiceScopeFactory scopes, OidcIssuerOptions options, TimeProvider clock, ILogger<OidcPruner> logger) : BackgroundService
 {
+    private const int Batch = 500;
+
+    // A fresh authorization briefly has no token yet; leave anything younger than this alone.
+    private static readonly TimeSpan AuthorizationGrace = TimeSpan.FromMinutes(5);
+
     public async Task PruneAsync(CancellationToken cancellationToken)
     {
         await using var scope = scopes.CreateAsyncScope();
-        var threshold = clock.GetUtcNow();
-        await scope.ServiceProvider.GetRequiredService<IOpenIddictTokenManager>().PruneAsync(threshold, cancellationToken);
-        await scope.ServiceProvider.GetRequiredService<IOpenIddictAuthorizationManager>().PruneAsync(threshold, cancellationToken);
+        var db = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
+        var now = clock.GetUtcNow();
+        var young = now - AuthorizationGrace;
+
+        int removed;
+        do
+        {
+            var tokens = await db.Set<OpenIddictEntityFrameworkCoreToken>()
+                .Where(token => token.ExpirationDate < now || (token.Status != Statuses.Valid && token.CreationDate < young))
+                .Take(Batch).ToListAsync(cancellationToken);
+            db.RemoveRange(tokens);
+            await db.SaveChangesAsync(cancellationToken);
+            removed = tokens.Count;
+        }
+        while (removed == Batch);
+
+        do
+        {
+            var authorizations = await db.Set<OpenIddictEntityFrameworkCoreAuthorization>()
+                .Where(authorization => authorization.CreationDate < young
+                    && (authorization.Status != Statuses.Valid || (authorization.Type == AuthorizationTypes.AdHoc && !authorization.Tokens.Any())))
+                .Take(Batch).ToListAsync(cancellationToken);
+            db.RemoveRange(authorizations);
+            await db.SaveChangesAsync(cancellationToken);
+            removed = authorizations.Count;
+        }
+        while (removed == Batch);
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)

@@ -294,13 +294,13 @@ public sealed class OidcIssuerTests : IClassFixture<OidcWebApplicationFactory>
             parked.Add(response.StatusCode);
         }
 
-        Assert.Equal(3L, await factory.TokenRowsAsync());
+        Assert.Equal(3, await factory.TokenRowsAsync());
         Assert.All(parked.Skip(3), status => Assert.Equal(HttpStatusCode.ServiceUnavailable, status));
         Assert.All(parked.Take(3), status => Assert.NotEqual(HttpStatusCode.ServiceUnavailable, status));
 
         factory.Clock.Advance(TimeSpan.FromMinutes(11)); // past the ten-minute parked lifetime
         await factory.PruneAsync();
-        Assert.Equal(0L, await factory.TokenRowsAsync());
+        Assert.Equal(0, await factory.TokenRowsAsync());
         using var again = await client.GetAsync(NewRequest().Path);
         Assert.NotEqual(HttpStatusCode.ServiceUnavailable, again.StatusCode);
     }

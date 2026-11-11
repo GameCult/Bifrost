@@ -280,10 +280,10 @@ public sealed class OidcSettingsFactory(IReadOnlyDictionary<string, string?> set
 
     public Task PruneAsync() => Services.GetRequiredService<Bifrost.Web.Features.Oidc.OidcPruner>().PruneAsync(CancellationToken.None);
 
-    public async Task<long> TokenRowsAsync()
+    public async Task<int> TokenRowsAsync()
     {
         using var scope = Services.CreateScope();
-        return await scope.ServiceProvider.GetRequiredService<OpenIddict.Abstractions.IOpenIddictTokenManager>().CountAsync();
+        return (int)await scope.ServiceProvider.GetRequiredService<OpenIddict.Abstractions.IOpenIddictTokenManager>().CountAsync();
     }
 }
 
