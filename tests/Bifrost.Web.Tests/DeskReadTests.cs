@@ -214,7 +214,7 @@ public sealed class DeskReadTests
             }
         }
 
-        Assert.True(steps >= 4);
+        Assert.Equal(6, steps);
     }
 
     [Fact]
@@ -223,7 +223,9 @@ public sealed class DeskReadTests
         using var factory = new DeskWebApplicationFactory();
         await factory.EnsureAccountAsync(DeskWebApplicationFactory.Alice, true);
 
-        foreach (var row in DeskVectors.Rows("transport", "readTooLarge"))
+        var rows = DeskVectors.Rows("transport", "readTooLarge").ToList();
+        Assert.Single(rows);
+        foreach (var row in rows)
         {
             var forkId = (string)row["fork_id"]!;
             factory.Door.ReadScript = (_, id) => new DeskReadOutcome.ForkTooLarge(id);
@@ -240,7 +242,9 @@ public sealed class DeskReadTests
         using var factory = new DeskWebApplicationFactory();
         await factory.EnsureAccountAsync(DeskWebApplicationFactory.Alice, true);
 
-        foreach (var row in DeskVectors.Rows("transport", "doorFaults"))
+        var faults = DeskVectors.Rows("transport", "doorFaults").ToList();
+        Assert.Equal(3, faults.Count);
+        foreach (var row in faults)
         {
             var code = (string)row["doorCode"]!;
             string method = "GET", target;
