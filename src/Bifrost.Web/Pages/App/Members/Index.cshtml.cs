@@ -22,7 +22,7 @@ public sealed class IndexModel(
     [BindProperty]
     public UpdateProfileInput Profile { get; set; } = new();
 
-    /// <summary>Why the last suspend or unsuspend did nothing; one of <see cref="RefusalNotices"/>, carried across the redirect.</summary>
+    /// <summary>Why the last membership action did nothing; one of <see cref="RefusalNotices"/>, carried across the redirect.</summary>
     [TempData]
     public string? Notice { get; set; }
 
@@ -33,6 +33,11 @@ public sealed class IndexModel(
         [SuspensionOutcome.NoSuchAccount] = "Nothing changed: that account or its membership does not exist.",
         [SuspensionOutcome.NotApplicable] = "Nothing changed: the account is already in that state."
     };
+
+    internal const string ApproveSuspendedNotice = "Nothing changed: a suspended account can only be lifted with Unsuspend.";
+    internal const string NoMembershipNotice = "Nothing changed: that account has no membership yet.";
+    internal const string OwnAdminRoleNotice = "Nothing changed: you cannot remove or change your own platform admin role.";
+    internal const string RoleOnSuspendedNotice = "Nothing changed: a suspended account's roles cannot be changed until it is unsuspended.";
 
     public CurrentBifrostActor Actor { get; private set; } = CurrentBifrostActor.Anonymous;
 
@@ -118,7 +123,8 @@ public sealed class IndexModel(
 
         if (user.Membership!.Status == MembershipStatus.Suspended)
         {
-            return RedirectToPage(); // only Unsuspend lifts a suspension
+            Notice = ApproveSuspendedNotice; // only Unsuspend lifts a suspension
+            return RedirectToPage();
         }
 
         user.Membership.Status = MembershipStatus.Active;
@@ -179,6 +185,19 @@ public sealed class IndexModel(
 
         if (user.Membership is null)
         {
+            Notice = NoMembershipNotice;
+            return RedirectToPage();
+        }
+
+        if (user.Id == Actor.UserAccount.Id && role == MemberRole.PlatformAdmin)
+        {
+            Notice = OwnAdminRoleNotice;
+            return RedirectToPage();
+        }
+
+        if (user.Membership.Status == MembershipStatus.Suspended)
+        {
+            Notice = RoleOnSuspendedNotice;
             return RedirectToPage();
         }
 
@@ -193,7 +212,7 @@ public sealed class IndexModel(
                 Notes = "Assigned from the member admin page."
             });
         }
-        else if (!(user.Id == Actor.UserAccount.Id && role == MemberRole.PlatformAdmin))
+        else
         {
             // Out of the collection too, so the flags below derive from the roles as they will stand after the save.
             user.Membership.RoleAssignments.Remove(existingAssignment);

@@ -19,7 +19,7 @@ public sealed class MembersPageNoticeTests(TestWebApplicationFactory factory) : 
         HandleCookies = true
     });
 
-    private async Task<Guid> SeedMemberAsync(MembershipStatus status)
+    private async Task<Guid> SeedMemberAsync(MembershipStatus status, bool withMembership = true)
     {
         using var scope = factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
@@ -27,7 +27,7 @@ public sealed class MembersPageNoticeTests(TestWebApplicationFactory factory) : 
         var account = new UserAccount
         {
             DisplayName = id, BifrostIdentity = id, NormalizedBifrostIdentity = id,
-            Membership = new Bifrost.Web.Domain.Membership { Status = status, ApprovedAtUtc = DateTimeOffset.UtcNow }
+            Membership = withMembership ? new Bifrost.Web.Domain.Membership { Status = status, ApprovedAtUtc = DateTimeOffset.UtcNow } : null
         };
         db.UserAccounts.Add(account);
         await db.SaveChangesAsync();
@@ -47,7 +47,7 @@ public sealed class MembersPageNoticeTests(TestWebApplicationFactory factory) : 
         return Regex.Match(html, "name=\"__RequestVerificationToken\"[^>]*value=\"([^\"]+)\"").Groups[1].Value;
     }
 
-    private static async Task<string> PostThenFollowAsync(HttpClient client, string handler, Guid target, string reason)
+    private static async Task<string> PostThenFollowAsync(HttpClient client, string handler, Guid target, string reason, string? role = null)
     {
         var token = await TokenAsync(client);
         Assert.NotEmpty(token);
@@ -55,6 +55,7 @@ public sealed class MembersPageNoticeTests(TestWebApplicationFactory factory) : 
         {
             ["userAccountId"] = target.ToString(),
             ["reason"] = reason,
+            ["role"] = role ?? "Producer",
             ["__RequestVerificationToken"] = token
         }));
         Assert.Equal(HttpStatusCode.Redirect, post.StatusCode);
@@ -126,5 +127,76 @@ public sealed class MembersPageNoticeTests(TestWebApplicationFactory factory) : 
         var html = await PostThenFollowAsync(client, "Suspend", member, "spam");
 
         Assert.DoesNotContain("role=\"alert\"", html);
+    }
+
+    private async Task<(MembershipStatus Status, int Roles)> StateAsync(Guid user)
+    {
+        using var scope = factory.Services.CreateScope();
+        var m = await scope.ServiceProvider.GetRequiredService<BifrostDbContext>().Memberships.AsNoTracking().Include(x => x.RoleAssignments).SingleAsync(x => x.UserAccountId == user);
+        return (m.Status, m.RoleAssignments.Count);
+    }
+
+    [Fact]
+    public async Task Approving_a_suspended_account_says_only_unsuspend_lifts_it_and_leaves_it_suspended()
+    {
+        using var client = Client();
+        _ = await SignedInAdminIdAsync(client);
+        var member = await SeedMemberAsync(MembershipStatus.Suspended);
+
+        var html = await PostThenFollowAsync(client, "Approve", member, "");
+
+        Assert.Contains("only be lifted with Unsuspend", Alert.Match(html).Groups[1].Value);
+        Assert.Equal(MembershipStatus.Suspended, (await StateAsync(member)).Status);
+    }
+
+    [Fact]
+    public async Task Toggling_a_role_on_a_suspended_account_is_refused_with_a_notice_and_changes_nothing()
+    {
+        using var client = Client();
+        _ = await SignedInAdminIdAsync(client);
+        var member = await SeedMemberAsync(MembershipStatus.Suspended);
+
+        var html = await PostThenFollowAsync(client, "ToggleRole", member, "", role: "Producer");
+
+        Assert.Contains("roles cannot be changed until it is unsuspended", Alert.Match(html).Groups[1].Value);
+        Assert.Equal(0, (await StateAsync(member)).Roles);
+    }
+
+    [Fact]
+    public async Task Toggling_a_role_on_an_account_without_a_membership_says_so()
+    {
+        using var client = Client();
+        _ = await SignedInAdminIdAsync(client);
+        var member = await SeedMemberAsync(MembershipStatus.Active, withMembership: false);
+
+        var html = await PostThenFollowAsync(client, "ToggleRole", member, "", role: "Producer");
+
+        Assert.Contains("has no membership yet", Alert.Match(html).Groups[1].Value);
+    }
+
+    [Fact]
+    public async Task An_admin_toggling_their_own_platform_admin_role_is_refused_and_keeps_the_role()
+    {
+        using var client = Client();
+        var admin = await SignedInAdminIdAsync(client);
+        var before = (await StateAsync(admin)).Roles;
+
+        var html = await PostThenFollowAsync(client, "ToggleRole", admin, "", role: "PlatformAdmin");
+
+        Assert.Contains("cannot remove or change your own platform admin role", Alert.Match(html).Groups[1].Value);
+        Assert.Equal(before, (await StateAsync(admin)).Roles);
+    }
+
+    [Fact]
+    public async Task A_role_toggle_on_an_active_account_still_works_without_a_refusal()
+    {
+        using var client = Client();
+        _ = await SignedInAdminIdAsync(client);
+        var member = await SeedMemberAsync(MembershipStatus.Active);
+
+        var html = await PostThenFollowAsync(client, "ToggleRole", member, "", role: "Producer");
+
+        Assert.DoesNotContain("role=\"alert\"", html);
+        Assert.True((await StateAsync(member)).Roles >= 1);
     }
 }
