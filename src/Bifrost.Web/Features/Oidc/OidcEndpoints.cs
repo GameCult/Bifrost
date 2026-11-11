@@ -117,18 +117,22 @@ public static class OidcEndpoints
         return Results.Json(claims);
     }
 
-    /// <summary>The one reading of "this subject is still an Active member", shared by the token and userinfo endpoints and the logout reconciler.</summary>
-    internal static async Task<bool> IsStillActiveMemberAsync(BifrostDbContext db, string? subject, CancellationToken cancellationToken)
+    /// <summary>The one reading of "this subject is still an Active member", shared by the token and userinfo endpoints, the logout reconciler and the fork desk.</summary>
+    internal static async Task<bool> IsStillActiveMemberAsync(BifrostDbContext db, string? subject, CancellationToken cancellationToken) =>
+        await ActiveMemberIdAsync(db, subject, cancellationToken) is not null;
+
+    /// <summary>The account id of the subject when it is an Active member now, else null. Re-read on every call.</summary>
+    internal static async Task<Guid?> ActiveMemberIdAsync(BifrostDbContext db, string? subject, CancellationToken cancellationToken)
     {
         if (!Guid.TryParse(subject, out var accountId))
         {
-            return false;
+            return null;
         }
 
         var account = await db.UserAccounts.AsNoTracking()
             .Include(x => x.Membership)
             .SingleOrDefaultAsync(x => x.Id == accountId, cancellationToken);
-        return new CurrentBifrostActor(true, account).IsActiveMember;
+        return new CurrentBifrostActor(true, account).IsActiveMember ? accountId : null;
     }
 
     private static IResult Deny(string error, string description) =>

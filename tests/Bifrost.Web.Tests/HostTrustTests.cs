@@ -362,7 +362,8 @@ public sealed class HostTrustTests : IClassFixture<TestWebApplicationFactory>
                 MintPermits = mintPermits,
                 MintWindow = mintWindow ?? TimeSpan.FromHours(1),
                 MaxTrackedKeys = maxTrackedKeys
-            })).Validate();
+            }),
+            Options.Create(new DeskOptions())).Validate();
     }
 
     private sealed class StubHostEnvironment(string environmentName) : IHostEnvironment
