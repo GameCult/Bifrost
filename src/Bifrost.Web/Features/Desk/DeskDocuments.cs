@@ -4,7 +4,7 @@ using System.Text.Json.Serialization;
 namespace Bifrost.Web.Features.Desk;
 
 // The fork-desk documents Bifrost reads or writes, spelled as CultLib's contracts/cultnet/governance/fork-card.md
-// (commit 89755b08) spells them: snake_case keys, every key written (nil where absent), declared in the
+// (commit f6c9bf5f) spells them: snake_case keys, every key written (nil where absent), declared in the
 // contract's key order. Bifrost authors only DeskRefusal and DeskUnavailable. AnswerRequest is the client's body;
 // ForkCard, DeskAnswerDocument and AnswerResult are Huginn's documents, typed here so they pass through unchanged.
 
@@ -151,22 +151,20 @@ public static class DeskRefusals
         [RequestIdConflict] = (409, "request_id_conflict: this request_id was used for a different body"),
     };
 
-    // fork_too_large (Libby's ruling) names its fork, so it is built here, not read from the table.
-    // Not a literal const: the pinned vectors' doorRefusals do not name it yet, and the schema test pins literals to them.
-    public static string ForkTooLarge => "fork_too_large";
+    // fork_too_large names its fork, so it is built here, not read from the table; a bare door code of that name is
+    // never a refusal. The texts are the pinned vectors' (alone is past the response budget).
+    public const string ForkTooLarge = "fork_too_large";
 
     public static int ForkTooLargeStatus => 422;
 
+    // A list page whose next fork alone is past the budget: the client continues with cursor c<order>; at order 0
+    // it has reached the end.
     public static DeskRefusal ForkTooLargeDocument(string forkId, int order) => new(
-        DeskSchemas.Refusal,
-        ForkTooLarge,
-        order > 0
-            ? $"fork_too_large: fork {forkId} (order {order}) is too large for a page; continue with cursor c{order}"
-            : $"fork_too_large: fork {forkId} (order {order}) is too large for a page; the list has reached its end");
+        DeskSchemas.Refusal, ForkTooLarge, $"fork_too_large: fork {forkId} (order {order}) alone is past the response budget");
 
-    // A read of an oversize fork: the same permanent refusal, naming the fork and nothing to page.
+    // A read of such a fork: nothing to page, so no order.
     public static DeskRefusal ForkTooLargeDocument(string forkId) => new(
-        DeskSchemas.Refusal, ForkTooLarge, $"fork_too_large: fork {forkId} is too large to return");
+        DeskSchemas.Refusal, ForkTooLarge, $"fork_too_large: fork {forkId} alone is past the response budget");
 
     public static bool IsKnown(string code) => Table.ContainsKey(code);
 

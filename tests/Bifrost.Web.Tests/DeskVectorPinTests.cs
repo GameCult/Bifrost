@@ -6,7 +6,7 @@ namespace Bifrost.Web.Tests;
 public sealed class DeskVectorPinTests
 {
     [Fact]
-    public void Vectors_are_cultlib_89755b08()
+    public void Vectors_are_cultlib_f6c9bf5f()
     {
         var sha = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(DeskVectors.Path))).ToLowerInvariant();
 
