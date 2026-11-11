@@ -247,16 +247,20 @@ function parseTailLine(t) {
   return { roomAlias: text(roomAlias, "room"), eventId: text(eventId, "event_id"), atUnixMs: seq(atUnixMs, "at_unix_ms"), sender: text(sender, "sender"), form: form(f), basis: basis(b), text: String(body) };
 }
 
-// The v3 answer: the persona, the deliveries, then the tail (at most tailPerRoom lines a room, tailTotal in all, oldest first).
-export function pendingV3Tuple({ persona, deliveries, tail = [] }) {
+// The v3 answer: the persona, the deliveries, the tail (at most tailPerRoom lines a room, tailTotal in all, oldest first), then
+// tail_gaps: the rooms (alias, or room id for a DM) whose lines are not all in the tail, each once. Absent or empty: every room was read fully.
+export function pendingV3Tuple({ persona, deliveries, tail = [], tailGaps = [] }) {
   if (tail.length > limits.tailTotal) throw new Error("chat_pending tail is over the line bound");
-  return [text(persona, "persona"), deliveries.map(deliveryV3Tuple), tail.map(tailLineTuple)];
+  return [text(persona, "persona"), deliveries.map(deliveryV3Tuple), tail.map(tailLineTuple), tailGaps.map(room => text(room, "tail_gap"))];
 }
 export function parsePendingV3(t) {
-  const [persona, deliveries, tail] = tuple(t, 3, "chat_pending_v3");
+  const [persona, deliveries, tail, tailGaps] = tuple(t, 4, "chat_pending_v3");
   if (!Array.isArray(deliveries)) throw new Error("chat_pending deliveries must be a list");
   if (!Array.isArray(tail)) throw new Error("chat_pending tail must be a list");
-  return { persona: text(persona, "persona"), deliveries: deliveries.map(parseDeliveryV3), tail: tail.map(parseTailLine) };
+  if (!Array.isArray(tailGaps)) throw new Error("chat_pending tail_gaps must be a list");
+  const gaps = tailGaps.map(room => text(room, "tail_gap"));
+  if (new Set(gaps).size !== gaps.length) throw new Error("chat_pending tail_gaps repeats a room");
+  return { persona: text(persona, "persona"), deliveries: deliveries.map(parseDeliveryV3), tail: tail.map(parseTailLine), tailGaps: gaps };
 }
 
 // The CultNet document_put_raw envelope every chat_* document travels in.

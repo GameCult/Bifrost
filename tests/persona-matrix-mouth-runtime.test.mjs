@@ -94,7 +94,7 @@ test("the brake reader reads a real CultCache control store", async () => {
 test("two clients served at once each get their own answer on their own session", async () => {
   const mouth = {
     pendingAfter: () => [],
-    tail: async () => [],
+    tail: async () => ({ lines: [], gaps: [], rooms: [] }),
     ack: async () => {},
     // Slow enough that the two requests are in flight together.
     send: async request => { await new Promise(r => setTimeout(r, 150)); return { requestId: request.requestId, eventId: `$${request.requestId}`, refusal: null }; },
@@ -140,7 +140,8 @@ test("the RUDP endpoint serves pending, ack and send over CultNet, and answers a
   const calls = { acks: [], sends: [], reads: [] };
   const mouth = {
     pendingAfter: after => (after < 7 ? [delivery] : []),
-    tail: async () => { if (calls.tailFails) throw new Error("room read failed"); return [tailLine]; },
+    tail: async () => { if (calls.tailFails) throw new Error("room read failed"); return { lines: [tailLine], gaps: ["#operator:gamecult.org"], rooms: ["#operator:gamecult.org", "#swarm:gamecult.org"] }; },
+    speakableRooms: () => ["#operator:gamecult.org", "#swarm:gamecult.org"],
     ack: async through => { calls.acks.push(through); },
     read: async request => { calls.reads.push(request); return null; },
     send: async request => { calls.sends.push(request); return request.text === "muted" ? { requestId: request.requestId, eventId: null, refusal: "Brake" } : { requestId: request.requestId, eventId: "$sent", refusal: null }; },
@@ -175,6 +176,7 @@ test("the RUDP endpoint serves pending, ack and send over CultNet, and answers a
     const pending = docs.parsePending(msgpack.decode(document.payload));
     assert.deepEqual(pending.deliveries.map(d => d.eventId), ["$e1"]);
     assert.deepEqual(pending.deliveries[0], delivery, "sender, mentions and the DM flag cross the wire exactly");
+    assert.deepEqual(Buffer.from(document.payload), await readFile(resolve(root, "tests", "fixtures", "persona-chat-v3", "gamecult.persona.chat_pending.v2.no-image.msgpack")), "a v1 request is answered with the two-field v2, byte for byte the golden, whatever the tail gaps");
 
     reply = nextReply();
     put(docs.kinds.pendingRequestV3, "eureka", docs.pendingRequestTuple({ persona: "eureka", afterSeq: 0 }));
@@ -183,6 +185,7 @@ test("the RUDP endpoint serves pending, ack and send over CultNet, and answers a
     const v3 = docs.parsePendingV3(msgpack.decode(document.payload));
     assert.deepEqual(v3.deliveries[0], { ...delivery, basis: null, form: "message" });
     assert.deepEqual(v3.tail, [tailLine], "the v3 answer carries the room tail");
+    assert.deepEqual(v3.tailGaps, ["#operator:gamecult.org"], "and the rooms whose tail is incomplete");
 
     calls.tailFails = true;
     reply = nextReply();
@@ -191,6 +194,7 @@ test("the RUDP endpoint serves pending, ack and send over CultNet, and answers a
     const degraded = docs.parsePendingV3(msgpack.decode(document.payload));
     assert.equal(degraded.deliveries.length, 1, "a tail that throws does not silence the deliveries");
     assert.deepEqual(degraded.tail, []);
+    assert.deepEqual(degraded.tailGaps, ["#operator:gamecult.org", "#swarm:gamecult.org"], "a tail that throws leaves every speakable room a gap, not quiet");
     calls.tailFails = false;
 
     put(docs.kinds.ack, "eureka:7", docs.ackTuple({ persona: "eureka", throughSeq: 7 }));
@@ -340,6 +344,9 @@ const v5Samples = {
     { roomAlias: "#operator:gamecult.org", eventId: "$e0", atUnixMs: 1_700_000_000_000, sender: "@meta:gamecult.org", form: "message", basis: null, text: "earlier" },
     { roomAlias: "#operator:gamecult.org", eventId: "$e1", atUnixMs: 1_700_000_001_000, sender: "@meta:gamecult.org", form: "notice", basis: "tag", text: "hello eureka" },
   ] }), parse: docs.parsePendingV3 },
+  "gamecult.persona.chat_pending.v3.tail-gaps": { tuple: docs.pendingV3Tuple({ persona: "eureka", deliveries: [], tail: [
+    { roomAlias: "#operator:gamecult.org", eventId: "$e1", atUnixMs: 1_700_000_001_000, sender: "@meta:gamecult.org", form: "message", basis: null, text: "hello eureka" },
+  ], tailGaps: ["#swarm:gamecult.org", "!dm1:gamecult.org"] }), parse: docs.parsePendingV3 },
   "gamecult.persona.chat_pending.v3.unproven-notice": { tuple: docs.pendingV3Tuple({ persona: "eureka", deliveries: [{ ...delivery, isDirect: false, mentions: [], basis: null, form: "notice" }] }), parse: docs.parsePendingV3 },
 };
 for (const [name, { tuple, parse }] of Object.entries(v5Samples)) {
@@ -349,9 +356,10 @@ for (const [name, { tuple, parse }] of Object.entries(v5Samples)) {
     if (process.env.UPDATE_FIXTURES === "1") { await mkdir(v5Dir, { recursive: true }); await writeFile(file, bytes); }
     assert.deepEqual(bytes, await readFile(file), "wire bytes changed: Huginn decodes these fixtures");
     assert.deepEqual(parse(msgpack.decode(bytes)), parse(tuple));
-    if (name.includes("pending.v3")) assert.equal(msgpack.decode(bytes).length, 3, "persona, deliveries, tail");
+    if (name.includes("pending.v3")) assert.equal(msgpack.decode(bytes).length, 4, "persona, deliveries, tail, tail_gaps");
     if (name.endsWith("v3.tag") || name.endsWith("unproven-notice")) assert.equal(msgpack.decode(bytes)[1][0].length, 14);
-    if (name.endsWith("v3.tail")) assert.equal(msgpack.decode(bytes)[2][0].length, 7);
+    if (name.endsWith("v3.tail")) { assert.equal(msgpack.decode(bytes)[2][0].length, 7); assert.deepEqual(msgpack.decode(bytes)[3], [], "no gap: every room read fully"); }
+    if (name.endsWith("v3.tail-gaps")) assert.deepEqual(msgpack.decode(bytes)[3], ["#swarm:gamecult.org", "!dm1:gamecult.org"]);
   });
 }
 
@@ -390,7 +398,7 @@ test("RoomMoved is v2 only, and the v2 documents are strict about arity and newe
 
 test("the RUDP endpoint answers a v1 send with the three-field receipt and a v2 send with the four-field one", async () => {
   const seen = [];
-  const mouth = { pendingAfter: () => [], tail: async () => [], ack: async () => {}, send: async request => {
+  const mouth = { pendingAfter: () => [], tail: async () => ({ lines: [], gaps: [], rooms: [] }), ack: async () => {}, send: async request => {
     seen.push(request);
     return request.basis ? { requestId: request.requestId, eventId: null, refusal: "RoomMoved", newer: ["$a"] } : { requestId: request.requestId, eventId: "$sent", refusal: null, newer: [] };
   } };
@@ -565,4 +573,17 @@ test("the RUDP endpoint answers an open-direct request with a receipt for its Pe
     connection.close();
     try { client.close(); } catch { /* the connection already closed its socket */ }
   }
+});
+
+test("tail_gaps is additive: a three-field reader finds persona, deliveries and tail unchanged in the first three elements of the new bytes", async () => {
+  const sample = { persona: "eureka", deliveries: [{ ...delivery, isDirect: false, basis: "tag", form: "message" }], tail: [{ roomAlias: "#operator:gamecult.org", eventId: "$e0", atUnixMs: 1_700_000_000_000, sender: "@meta:gamecult.org", form: "message", basis: null, text: "earlier" }] };
+  const noGaps = msgpack.decode(msgpack.encode(docs.pendingV3Tuple(sample)));
+  const after = msgpack.decode(await readFile(resolve(root, "tests", "fixtures", "persona-chat-v5", "gamecult.persona.chat_pending.v3.tail-gaps.msgpack")));
+  const withGaps = msgpack.decode(msgpack.encode(docs.pendingV3Tuple({ ...sample, tailGaps: ["#swarm:gamecult.org"] })));
+  assert.equal(withGaps.length, 4);
+  assert.deepEqual(withGaps.slice(0, 3), noGaps.slice(0, 3), "persona, deliveries and tail are byte-for-meaning the same with or without gaps");
+  assert.deepEqual(docs.parsePendingV3([...withGaps.slice(0, 3), []]).tail, docs.parsePendingV3(noGaps).tail);
+  assert.equal(after.length, 4);
+  // Not claimed: a strict three-field decoder (rmp-serde into a three-field tuple) accepts it. It fails on the length, as it did for the tail, so Huginn defaults tail_gaps before this mouth deploys.
+  assert.notEqual(withGaps.length, 3);
 });

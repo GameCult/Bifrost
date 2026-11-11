@@ -1485,7 +1485,8 @@ async function tailed({ preload, direct, member, events = [], act = async () => 
     const mouth = mouthFor(hs);
     await mouth.syncOnce();
     await act(mouth);
-    return { tail: await mouth.tail(), mouth, hs };
+    const read = await mouth.tail();
+    return { tail: read.lines, gaps: read.gaps, rooms: read.rooms, mouth, hs };
   } finally { await hs.close(); }
 }
 
@@ -1538,10 +1539,10 @@ test("room tail: acking a delivery does not hide it, so an unaddressed line she 
     const mouth = mouthFor(hs);
     await mouth.syncOnce();
     const made = await mouth.syncOnce();
-    assert.deepEqual((await mouth.tail()).map(l => [l.eventId, l.basis]), [["$a", null], ["$b", "tag"]]);
+    assert.deepEqual((await mouth.tail()).lines.map(l => [l.eventId, l.basis]), [["$a", null], ["$b", "tag"]]);
     await mouth.ack(made[1].seq);
     assert.equal(mouth.pendingAfter(0).length, 0);
-    assert.deepEqual((await mouth.tail()).map(l => l.eventId), ["$a", "$b"], "acked lines are the ones no delivery will bring again");
+    assert.deepEqual((await mouth.tail()).lines.map(l => l.eventId), ["$a", "$b"], "acked lines are the ones no delivery will bring again");
   } finally { await hs.close(); }
 });
 
@@ -1551,15 +1552,16 @@ test("room tail: a room that never answers is absent after the timeout and does 
   try {
     const mouth = mouthFor(hs, { fetch: hang, sendTimeoutMs: 50 });
     await mouth.syncOnce();
-    const tail = await mouth.tail();
-    assert.deepEqual([...new Set(tail.map(l => l.roomAlias))], [`#operator:${HS_NAME}`]);
+    const read = await mouth.tail();
+    assert.deepEqual([...new Set(read.lines.map(l => l.roomAlias))], [`#operator:${HS_NAME}`]);
+    assert.deepEqual(read.gaps, [`#swarm:${HS_NAME}`], "the room that timed out is a gap; the one that answered is not");
   } finally { await hs.close(); }
 });
 
 test("room tail: a mouth that has not started reads no room", async () => {
   const hs = await fakeHomeserver({ preload: { [ROOM]: lines(ROOM, 2) }, sync: since => ({ next_batch: since ?? "b0" }) });
   try {
-    assert.deepEqual(await mouthFor(hs).tail(), []);
+    assert.deepEqual(await mouthFor(hs).tail(), { lines: [], gaps: Object.keys(ROOMS), rooms: Object.keys(ROOMS) }, "no room is known before start, so every configured room is a gap");
     assert.equal(hs.seen.filter(r => r.path.includes("/messages")).length, 0);
   } finally { await hs.close(); }
 });
@@ -1571,24 +1573,151 @@ test("room tail: a body is clipped like a context line, and an unreadable room i
   try {
     const mouth = mouthFor(hs);
     await mouth.syncOnce();
-    assert.deepEqual(await mouth.tail(), []);
+    const read = await mouth.tail();
+    assert.deepEqual(read.lines, []);
+    assert.deepEqual(read.gaps, Object.keys(ROOMS).filter(a => read.rooms.includes(a)), "an unreadable room is a gap, not quiet");
+    assert.ok(read.gaps.length > 0);
   } finally { await hs.close(); }
 });
 
 test("room tail: only the v3 answer carries it; the v2 answer a v1 request gets is unchanged", async () => {
-  const { tail } = await tailed({ preload: { [ROOM]: lines(ROOM, 2) } });
+  const { tail, gaps, rooms } = await tailed({ preload: { [ROOM]: lines(ROOM, 2) } });
   const pack = { encode: v => Buffer.from(JSON.stringify(v)) };
-  assert.deepEqual(docs.parsePendingV3(pageOf("eureka", [], pack, () => {}, true, tail)).tail.map(l => l.text), ["line 0", "line 1"]);
-  const v2 = pageOf("eureka", [], pack, () => {}, false, tail);
+  assert.deepEqual(docs.parsePendingV3(pageOf("eureka", [], pack, () => {}, true, { lines: tail, gaps, rooms })).tail.map(l => l.text), ["line 0", "line 1"]);
+  const v2 = pageOf("eureka", [], pack, () => {}, false, { lines: tail, gaps: rooms, rooms });
   assert.equal(v2.length, 2);
   assert.deepEqual(docs.parsePending(v2), { persona: "eureka", deliveries: [] });
-  assert.throws(() => docs.parsePendingV3(["eureka", []]), /3-field/);
+  assert.throws(() => docs.parsePendingV3(["eureka", []]), /4-field/);
 });
 
 test("room tail: the reply byte budget trims the oldest tail lines, never a delivery", async () => {
   const pack = { encode: v => Buffer.from(JSON.stringify(v)) };
   const big = Array.from({ length: 60 }, (_, i) => ({ roomAlias: "#r:x", eventId: `$${i}`, atUnixMs: i, sender: "@a:x", form: "message", basis: null, text: "y".repeat(5000) }));
-  const kept = docs.parsePendingV3(pageOf("eureka", [], pack, () => {}, true, big)).tail;
+  const kept = docs.parsePendingV3(pageOf("eureka", [], pack, () => {}, true, { lines: big, gaps: [], rooms: ["#r:x"] })).tail;
   assert.ok(kept.length > 0 && kept.length < 60);
   assert.equal(kept.at(-1).eventId, "$59", "the newest survive");
+});
+
+// tail_gaps (docs/bridge.md, "Gaps in the tail"): the rooms whose lines are not all in the tail, so a reader says "unknown", not "quiet".
+// Each case goes through the composition the RUDP endpoint serves: mouth.tail() into pageOf into the strict v3 parser.
+const replied = (read, pack = { encode: v => Buffer.from(JSON.stringify(v)) }) => docs.parsePendingV3(pageOf("eureka", [], pack, () => {}, true, read));
+const SWARM_ALIAS = `#swarm:${HS_NAME}`, OPERATOR_ALIAS = `#operator:${HS_NAME}`;
+
+test("tail gaps: a room whose read times out is a gap; the room that answered, quiet or not, is not", async () => {
+  const hs = await fakeHomeserver({ preload: { [OPERATOR]: lines(OPERATOR, 2) }, sync: since => ({ next_batch: since ?? "b0" }) });
+  const hang = (url, init) => String(url).includes(encodeURIComponent(ROOM)) && String(url).includes("/messages") ? new Promise(() => {}) : hs.fetch(url, init);
+  try {
+    const mouth = mouthFor(hs, { fetch: hang, sendTimeoutMs: 50 });
+    await mouth.syncOnce();
+    const got = replied(await mouth.tail());
+    assert.deepEqual(got.tailGaps, [SWARM_ALIAS]);
+    assert.deepEqual(got.tail.map(l => l.roomAlias), [OPERATOR_ALIAS, OPERATOR_ALIAS]);
+  } finally { await hs.close(); }
+});
+
+test("tail gaps: a failed read is a gap, a quiet room (no lines) and a normal room (a few lines) are not, and exactly the per-room cap is not a trim", async () => {
+  const failing = await fakeHomeserver({ failContext: true, sync: since => ({ next_batch: since ?? "b0" }) });
+  try {
+    const mouth = mouthFor(failing);
+    await mouth.syncOnce();
+    assert.deepEqual(replied(await mouth.tail()).tailGaps, [SWARM_ALIAS, OPERATOR_ALIAS], "every read failed: both rooms unknown, in room order");
+  } finally { await failing.close(); }
+
+  const { gaps } = await tailed({ preload: { [ROOM]: lines(ROOM, docs.limits.tailPerRoom) } });
+  assert.deepEqual(gaps, [], "20 lines in one room and none in the other: nothing was left out");
+  const some = await tailed({ preload: { [ROOM]: lines(ROOM, 3), [OPERATOR]: [] } });
+  assert.deepEqual(replied({ lines: some.tail, gaps: some.gaps, rooms: some.rooms }).tailGaps, []);
+});
+
+test("tail gaps: a room with more lines than the per-room cap is a gap, once, and only that room", async () => {
+  const { tail, gaps } = await tailed({ preload: { [ROOM]: lines(ROOM, docs.limits.tailPerRoom + 1), [OPERATOR]: lines(OPERATOR, 3) } });
+  assert.equal(tail.filter(l => l.roomAlias === SWARM_ALIAS).length, docs.limits.tailPerRoom);
+  assert.deepEqual(gaps, [SWARM_ALIAS]);
+});
+
+test("tail gaps: the total cap names the rooms it dropped lines from, in room order, never a room whose lines all fit", async () => {
+  const dms = ["!d1:gamecult.test", "!d2:gamecult.test", "!d3:gamecult.test"];
+  const preload = { [ROOM]: lines(ROOM, 25, 100), [OPERATOR]: lines(OPERATOR, 20, 0) };
+  dms.forEach((dm, i) => { preload[dm] = lines(dm, 20, 200 + 20 * i); });
+  const { tail, gaps } = await tailed({ preload, direct: { [META]: dms }, member: [...Object.values(ROOMS), ...dms] });
+  assert.equal(tail.length, 60);
+  assert.deepEqual(gaps, [SWARM_ALIAS, OPERATOR_ALIAS], "swarm is gapped by both caps and named once; the three DMs kept all 20 lines");
+});
+
+test("tail gaps: the reply byte budget and a line that will not encode gap their rooms, and only those", () => {
+  const pack = { encode: v => Buffer.from(JSON.stringify(v)) };
+  const mk = (room, i, extra = {}) => ({ roomAlias: room, eventId: `$${room}${i}`, atUnixMs: i, sender: "@a:x", form: "message", basis: null, text: "y".repeat(5000), ...extra });
+  const old = Array.from({ length: 30 }, (_, i) => mk("#old:x", i)), fresh = Array.from({ length: 30 }, (_, i) => mk("#new:x", 100 + i));
+  const got = replied({ lines: [...old, ...fresh], gaps: [], rooms: ["#old:x", "#new:x", "#empty:x"] }, pack);
+  assert.ok(got.tail.length < 60);
+  assert.deepEqual(got.tailGaps, ["#old:x"], "the oldest lines were trimmed; the newer room and the quiet room are whole");
+  const bad = replied({ lines: [mk("#a:x", 1), mk("#b:x", 2, { sender: 123 })], gaps: [], rooms: ["#a:x", "#b:x"] }, pack);
+  assert.deepEqual(bad.tailGaps, ["#b:x"]);
+});
+
+test("tail gaps: the parser refuses a repeated room, and a pre-gap decoder is stopped by arity, as the tail was", () => {
+  assert.throws(() => docs.parsePendingV3(["eureka", [], [], ["#a:x", "#a:x"]]), /repeats/);
+  assert.deepEqual(docs.parsePendingV3(["eureka", [], [], ["#a:x", "#b:x"]]).tailGaps, ["#a:x", "#b:x"]);
+  assert.throws(() => docs.parsePendingV3(["eureka", [], []]), /4-field/);
+  assert.throws(() => docs.parsePendingV3(["eureka", [], [], "#a:x"]), /list/);
+});
+
+test("tail gaps: a line the mouth drops as malformed (no event id) gaps its room; a clean room beside it does not", async () => {
+  const { tail, gaps } = await tailed({ preload: { [ROOM]: [message("", META, "no id", 10), message("$ok", META, "fine", 11)], [OPERATOR]: lines(OPERATOR, 1) } });
+  assert.deepEqual(tail.map(l => l.eventId).sort(), ["$ok", "$ope0"].sort());
+  assert.deepEqual(gaps, [SWARM_ALIAS]);
+});
+
+const edit = (id, ts) => ({ type: "m.room.message", event_id: id, sender: META, origin_server_ts: ts, content: { msgtype: "m.text", body: "* edited", "m.relates_to": { rel_type: "m.replace", event_id: "$x" } } });
+const threaded = (id, ts) => ({ type: "m.room.message", event_id: id, sender: META, origin_server_ts: ts, content: { msgtype: "m.text", body: "in thread", "m.relates_to": { rel_type: "m.thread", event_id: "$root" } } });
+const noise = (n, from) => Array.from({ length: n }, (_, i) => (i % 2 ? threaded : edit)(`$n${from + i}`, 1000 + from + i));
+
+test("tail gaps: a full read window hides older real lines behind edits and thread replies, so the room is a gap; a short chunk is exhausted history, not a gap", async () => {
+  const hidden = await tailed({ preload: { [ROOM]: [...lines(ROOM, 5), ...noise(120, 0)] } });
+  assert.deepEqual(hidden.tail, [], "the five real lines lie beyond the 100-event window");
+  assert.deepEqual(hidden.gaps, [SWARM_ALIAS], "so the room is unknown, not quiet");
+  const whole = await tailed({ preload: { [ROOM]: [...lines(ROOM, 5), ...noise(60, 0)] } });
+  assert.equal(whole.tail.length, 5);
+  assert.deepEqual(whole.gaps, [], "a chunk shorter than the window reached the room's start");
+  const at99 = await tailed({ preload: { [ROOM]: [...lines(ROOM, 5), ...noise(94, 0)] } });
+  assert.deepEqual(at99.gaps, [], "99 raw events: one short of the window, history exhausted");
+  const at100 = await tailed({ preload: { [ROOM]: [...lines(ROOM, 5), ...noise(95, 0)] } });
+  assert.deepEqual(at100.gaps, [SWARM_ALIAS], "exactly 100 raw events fill the window, so older history cannot be ruled out");
+});
+
+test("tail gaps: the total cap boundary: exactly 60 lines over all rooms is no gap, a 61st names the room that lost its oldest line", async () => {
+  const dms = ["!d1:gamecult.test", "!d2:gamecult.test"];
+  const rooms60 = { [ROOM]: lines(ROOM, 20, 0), [OPERATOR]: lines(OPERATOR, 20, 20), [dms[0]]: lines(dms[0], 20, 40) };
+  const at60 = await tailed({ preload: rooms60, direct: { [META]: dms }, member: [...Object.values(ROOMS), ...dms] });
+  assert.equal(at60.tail.length, 60);
+  assert.deepEqual(at60.gaps, []);
+  const at61 = await tailed({ preload: { ...rooms60, [dms[1]]: lines(dms[1], 1, 60) }, direct: { [META]: dms }, member: [...Object.values(ROOMS), ...dms] });
+  assert.equal(at61.tail.length, 60);
+  assert.deepEqual(at61.gaps, [SWARM_ALIAS]);
+});
+
+test("tail gaps: a byte-budget cut is contiguous at the oldest end, so an older line that would still fit is cut and its room gapped", () => {
+  const pack = { encode: v => Buffer.from(JSON.stringify(v)) };
+  const mk = (room, i, text) => ({ roomAlias: room, eventId: `$${room}${i}`, atUnixMs: i, sender: "@a:x", form: "message", basis: null, text });
+  const tiny = mk("#tiny:x", 0, "t"), big = Array.from({ length: 70 }, (_, i) => mk("#big:x", 1 + i, "y".repeat(5000)));
+  const got = replied({ lines: [tiny, ...big], gaps: [], rooms: ["#tiny:x", "#big:x"] }, pack);
+  assert.ok(!got.tail.some(l => l.roomAlias === "#tiny:x"), "nothing older than the cut is kept");
+  assert.deepEqual(got.tailGaps, ["#tiny:x", "#big:x"]);
+});
+
+test("tail gaps: the read timer is cleared when the read answers, and a mouth that has not started names its configured rooms for an endpoint that cannot read", async () => {
+  const delay = 4321, made = new Set(), cleared = new Set();
+  const realSet = globalThis.setTimeout, realClear = globalThis.clearTimeout;
+  globalThis.setTimeout = (fn, ms, ...rest) => { const t = realSet(fn, ms, ...rest); if (ms === delay) made.add(t); return t; };
+  globalThis.clearTimeout = t => { cleared.add(t); return realClear(t); };
+  const hs = await fakeHomeserver({ preload: { [ROOM]: lines(ROOM, 2), [OPERATOR]: lines(OPERATOR, 2) }, sync: since => ({ next_batch: since ?? "b0" }) });
+  try {
+    const mouth = mouthFor(hs, { sendTimeoutMs: delay });
+    assert.deepEqual(mouth.speakableRooms(), Object.keys(ROOMS), "before start: the configured rooms");
+    await mouth.syncOnce();
+    assert.deepEqual(mouth.speakableRooms(), Object.keys(ROOMS), "after start: the rooms she can speak in");
+    await mouth.tail();
+    assert.ok(made.size >= 2);
+    assert.ok([...made].every(t => cleared.has(t)), "no read timer is left running");
+  } finally { globalThis.setTimeout = realSet; globalThis.clearTimeout = realClear; await hs.close(); }
 });

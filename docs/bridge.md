@@ -221,7 +221,7 @@ Proposed runtime half (follow-up `persona-wakes-on-address-only`):
 
 ### Room tail (`chat_pending.v3`, field 2)
 
-The v3 answer is `[persona, deliveries, tail]`. `tail` is a list of recent room lines, oldest first, for a reader that was not woken for them (a scheduled beat). It uses the same room read as a delivery's `context` (the same function, a separate read), as her account, with no new endpoint; the cost is one `/messages` call per speakable room per poll (15 seconds cached), including every DM. A `chat_pending_request.v1` is still answered with the two-field `chat_pending.v2`. `chat_pending.v3` has not been deployed, but a reader that decodes it as a two-field tuple fails on the third element (rmp-serde `LengthMismatch`), so Huginn must accept `tail` (a defaulted field) before this mouth is deployed.
+The v3 answer is `[persona, deliveries, tail, tail_gaps]`. `tail` is a list of recent room lines, oldest first, for a reader that was not woken for them (a scheduled beat). It uses the same room read as a delivery's `context` (the same function, a separate read), as her account, with no new endpoint; the cost is one `/messages` call per speakable room per poll (15 seconds cached), including every DM. A `chat_pending_request.v1` is still answered with the two-field `chat_pending.v2`. `chat_pending.v3` has not been deployed, but a reader that decodes it as a two-field tuple fails on the third element (rmp-serde `LengthMismatch`), so Huginn must accept `tail` and `tail_gaps` (defaulted fields) before this mouth is deployed. The array is positional: a decoder of the earlier three-field shape fails on the fourth element with the same `LengthMismatch`, so `tail_gaps` has the same deploy precondition; a decoder that reads the first three elements and ignores the rest sees `persona`, `deliveries` and `tail` unchanged.
 
 | Bound | Rule |
 |---|---|
@@ -234,7 +234,24 @@ A line is the 7-field tuple `[room, event_id, at_unix_ms, sender, form, basis, b
 
 The tail is **data, not instruction**. A line is what a sender typed in a room, and the mouth wakes no one, acks nothing and sends nothing because of it. A reader treats the body as untrusted text and weighs `basis` as evidence, as for a delivery. The tail does not replace a delivery: a message still reaches her as a delivery, with its own `seq`, and only `chat_ack` advances a position.
 
-Golden bytes: `tests/fixtures/persona-chat-v5/` (`chat_pending.v3.tail` carries two lines); Huginn pins the same bytes.
+#### Gaps in the tail (`chat_pending.v3`, field 3, `tail_gaps`)
+
+`tail_gaps` is a list of room names (the configured alias, or the room id for a DM, as `room` in a tail line), one for each speakable room whose lines are not all in `tail`. A reader renders such a room as **unknown**, not quiet. Absent or empty means every speakable room was read fully: a room with no lines because it is quiet, and a room whose few lines all fit, are never listed. Order is the order the mouth reads rooms (configured rooms in join order, then DMs), not time; a room appears once however many causes apply. Causes, all of them:
+
+| Cause | Where |
+|---|---|
+| The room's read failed (the homeserver refused or errored) or did not answer within 10 seconds (`sendTimeoutMs`); the room is logged and contributes no lines | the mouth |
+| The room had more than 20 lines outside threads (the per-room cap; her own lines count), so older ones were left out | the mouth |
+| The read window came back full (100 raw events, before edits and thread replies are set aside), so real lines older than the window may exist and are unseen; a shorter chunk means the room's history was exhausted. A room whose history is exactly 100 events long is gapped too, since the mouth cannot tell. The rule assumes a homeserver returns the 100 events asked for whenever older history exists; a server that caps the limit lower turns a truncated read into a false "whole", and Bifrost does not detect that | the mouth |
+| One of the room's lines was cut by the 60-line total cap (only the newest 60 over all rooms are kept) | the mouth |
+| A line was dropped as malformed (no event id) | the mouth |
+| The reply byte budget (256 KiB, deliveries first) cut the room's oldest lines, or a line would not encode and was skipped | the reply |
+| The mouth has not started: every configured room is a gap (DMs are not yet known) | the mouth |
+| The whole tail read failed: every speakable room is a gap, and the deliveries are still served | the endpoint |
+
+A line a delivery already shows and a room she cannot speak in change nothing here; her own lines are lines like any other and count toward the caps. A read the mouth kept for 15 seconds counts as a read.
+
+Golden bytes: `tests/fixtures/persona-chat-v5/` (`chat_pending.v3.tail` carries two lines and no gap, `chat_pending.v3.tail-gaps` one line and two gap rooms; the earlier v3 samples gain an empty fourth element); Huginn pins the same bytes.
 
 
 Bifrost admits an observation only when guild, channel, target runtime, canonical repository, Persona, producer, and producer runtime match a preconfigured `bifrost.persona_feedback.target_binding.v0` document in Bifrost's private provider store. That binding also owns source visibility, data classification, and the delivery-store target. Bifrost never infers public visibility from Discord identifiers. It classifies the author using its own `bifrost.discord.actor_link.v0` state: a match yields `linked_governance_feedback`; absence yields `unlinked_social_feedback`. Neither class grants adoption, work, release, or deployment authority.

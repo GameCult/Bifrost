@@ -254,11 +254,14 @@ export function createMouth({
   const lineOf = e => ({ sender: e.sender, text: bodyText(e.content, docs.limits.contextBytes), atUnixMs: Number.isSafeInteger(e.origin_server_ts) && e.origin_server_ts >= 0 ? e.origin_server_ts : 0 });
 
   // The room's recent messages outside threads, oldest first.
-  async function roomEvents(roomId) {
+  // `truncated`: the homeserver filled the whole window, so older history may exist that this read never saw.
+  async function roomRead(roomId) {
     const filter = encodeURIComponent(JSON.stringify({ types: ["m.room.message"] }));
     const reply = await matrix("GET", `/rooms/${encodeURIComponent(roomId)}/messages?dir=b&limit=${FETCH_LIMIT}&filter=${filter}`);
-    return (reply.chunk ?? []).filter(e => isLine(e) && threadRootOf(e) === null).reverse();
+    const chunk = reply.chunk ?? [];
+    return { events: chunk.filter(e => isLine(e) && threadRootOf(e) === null).reverse(), truncated: chunk.length >= FETCH_LIMIT };
   }
+  const roomEvents = async roomId => (await roomRead(roomId)).events;
   // One thread's messages, root first.
   async function threadEvents(roomId, rootId) {
     const room = encodeURIComponent(roomId);
@@ -483,33 +486,49 @@ export function createMouth({
   // oldest first. From the same /messages read as a delivery's context, as her account, bodies clipped as context lines are. The
   // basis is what Matrix says on the event itself (no reply lookup: nil is unproven). A room that cannot be read in sendTimeoutMs
   // is logged and absent, so one stuck room never holds the reply.
+  // Returns { lines, gaps, rooms }: `rooms` are the rooms read, in read order (configured rooms in join order, then DMs); `gaps` are
+  // those of them whose lines are not all in `lines` (read failed or timed out, the read window full so older lines may be unseen, a line past a cap, a line dropped as malformed), in
+  // the same order. A room with nothing to show because it is quiet is not a gap. A mouth that has not started knows no room but the
+  // configured ones, and all of those are gaps.
   async function tail() {
-    if (!started) return [];
+    if (!started) return { lines: [], gaps: [...rooms], rooms: [...rooms] };
     const targets = new Set();
     for (const alias of [...joinedAliases, ...directRooms]) { const id = speakableRoomId(alias); if (id) targets.add(id); }
+    const gapped = new Set();
     const perRoom = await Promise.all([...targets].map(async roomId => {
+      const alias = aliasByRoomId.get(roomId) ?? roomId;
       let read = tailReads.get(roomId);
       if (!read || now() - read.at >= TAIL_TTL_MS) {
         let timer;
         const lines = Promise.race([
-          roomEvents(roomId),
+          roomRead(roomId),
           new Promise((_, fail) => { timer = setTimeout(() => fail(new Error(`no answer in ${sendTimeoutMs} ms`)), sendTimeoutMs); }),
         ]).catch(error => { say(`tail for ${roomId} not fetched: ${error.message}`); return null; }).finally(() => clearTimeout(timer));
         read = { at: now(), lines };
         tailReads.set(roomId, read);
       }
-      const events = await read.lines;
-      if (events === null) { if (tailReads.get(roomId) === read) tailReads.delete(roomId); return []; }
-      const alias = aliasByRoomId.get(roomId) ?? roomId;
+      const got = await read.lines;
+      if (got === null) { if (tailReads.get(roomId) === read) tailReads.delete(roomId); gapped.add(alias); return []; }
+      const { events, truncated } = got;
+      if (truncated || events.length > docs.limits.tailPerRoom) gapped.add(alias);
       const lines = [];
       for (const e of events.slice(-docs.limits.tailPerRoom)) {
-        if (typeof e.event_id !== "string" || e.event_id === "") continue;
+        if (typeof e.event_id !== "string" || e.event_id === "") { gapped.add(alias); continue; }
         const at = Number.isSafeInteger(e.origin_server_ts) && e.origin_server_ts >= 0 ? e.origin_server_ts : 0;
         lines.push({ roomAlias: alias, eventId: e.event_id, atUnixMs: at, sender: e.sender, form: formOf(e.content), basis: await basisOf(roomId, e, false), text: bodyText(e.content, docs.limits.contextBytes) });
       }
       return lines;
     }));
-    return perRoom.flat().sort((a, b) => a.atUnixMs - b.atUnixMs).slice(-docs.limits.tailTotal);
+    const newest = perRoom.flat().sort((a, b) => a.atUnixMs - b.atUnixMs);
+    for (const dropped of newest.slice(0, Math.max(0, newest.length - docs.limits.tailTotal))) gapped.add(dropped.roomAlias);
+    const order = [...targets].map(id => aliasByRoomId.get(id) ?? id);
+    return { lines: newest.slice(-docs.limits.tailTotal), gaps: order.filter(a => gapped.has(a)), rooms: order };
+  }
+  // The rooms `tail` would read, in its order: what a reply names as unread when the read itself fails outright.
+  function speakableRooms() {
+    const ids = new Set();
+    for (const alias of [...joinedAliases, ...directRooms]) { const id = speakableRoomId(alias); if (id) ids.add(id); }
+    return started ? [...ids].map(id => aliasByRoomId.get(id) ?? id) : [...rooms];
   }
 
   function pendingAfter(afterSeq) {
@@ -666,7 +685,7 @@ export function createMouth({
     }
   }
 
-  return { start, syncOnce, ack, read, pendingAfter, tail, send, openDirect, run, get userId() { return selfId; }, get pendingCount() { return pending.length; } };
+  return { start, syncOnce, ack, read, pendingAfter, tail, speakableRooms, send, openDirect, run, get userId() { return selfId; }, get pendingCount() { return pending.length; } };
 }
 
 // Replace every secret in a message. `secrets` is one string or a list.
@@ -711,8 +730,10 @@ export function connectionIdFor(connectionKey) {
 // The reply to a chat_pending_request: deliveries oldest first, each encoded on its own so one that
 // will not encode is skipped and logged without silencing the rest, up to the reply byte budget.
 // The caller acks what it has read and asks again.
-// A v3 reply also carries `tail` (room lines, oldest first), trimmed oldest first to what the byte budget has left after the deliveries.
-export function pageOf(persona, deliveries, msgpack, log = () => {}, v3 = false, tail = []) {
+// A v3 reply also carries `tail` (room lines, oldest first), trimmed oldest first to what the byte budget has left after the deliveries,
+// and `tail_gaps`: the rooms of `tail.rooms`, in that order, with lines missing from the reply: those `tail.gaps` names plus every room
+// whose line the byte budget or an unencodable line dropped here.
+export function pageOf(persona, deliveries, msgpack, log = () => {}, v3 = false, tail = { lines: [], gaps: [], rooms: [] }) {
   const page = [];
   let bytes = 0;
   for (const delivery of deliveries) {
@@ -727,17 +748,20 @@ export function pageOf(persona, deliveries, msgpack, log = () => {}, v3 = false,
   }
   if (!v3) return [persona, page];
   const lines = [];
-  for (const line of tail.slice().reverse()) {
+  const gapped = new Set(tail.gaps);
+  let full = false;
+  for (const line of tail.lines.slice().reverse()) {
     let tuple, size;
     try { tuple = docs.tailLineTuple(line); size = msgpack.encode(tuple).length; } catch (error) {
       log(`tail line ${line?.eventId} skipped: ${error?.message ?? error}`);
+      gapped.add(line?.roomAlias);
       continue;
     }
-    if (bytes + size > docs.limits.replyBytes) break;
+    if (full || bytes + size > docs.limits.replyBytes) { full = true; gapped.add(line.roomAlias); continue; }
     lines.unshift(tuple);
     bytes += size;
   }
-  return [persona, page, lines];
+  return [persona, page, lines, tail.rooms.filter(room => gapped.has(room))];
 }
 
 // CultNet RUDP endpoint on loopback, one for every Persona in `mouths` (persona -> mouth).
@@ -779,7 +803,7 @@ export async function startChatEndpoint({ mouths, runtime, port, connectionKey, 
         const request = docs.parsePendingRequest(tuple);
         const mouth = mouths.get(request.persona);
         if (!mouth) return refuseUnknown(peer, request.persona);
-        const tail = v3 ? await mouth.tail().catch(error => { log(`tail not read: ${error?.message ?? error}`); return []; }) : [];
+        const tail = v3 ? await mouth.tail().catch(error => { log(`tail not read: ${error?.message ?? error}`); const rooms = mouth.speakableRooms(); return { lines: [], gaps: rooms, rooms }; }) : undefined;
         respond(peer, request.persona, v3 ? docs.kinds.pendingV3 : docs.kinds.pending, request.persona, pageOf(request.persona, mouth.pendingAfter(request.afterSeq), msgpack, log, v3, tail));
       } else if (document.schemaId === docs.kinds.ack) {
         const request = docs.parseAck(tuple);
