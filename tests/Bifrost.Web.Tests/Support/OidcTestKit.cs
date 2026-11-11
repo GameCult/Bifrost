@@ -179,6 +179,24 @@ public class OidcWebApplicationFactory : TestWebApplicationFactory
         }
     }
 
+    public async Task<MembershipStatus?> MembershipStatusAsync(string identity)
+    {
+        using var scope = Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
+        var account = db.UserAccounts.Single(x => x.NormalizedBifrostIdentity == identity);
+        return (await db.Memberships.AsNoTracking().SingleOrDefaultAsync(x => x.UserAccountId == account.Id))?.Status;
+    }
+
+    public sealed record RowCounts(int Accounts, int Memberships, int Votes, int RoleAssignments);
+
+    /// <summary>What the issuer must leave alone: accounts, memberships, role grants and votes.</summary>
+    public async Task<RowCounts> RowCountsAsync()
+    {
+        using var scope = Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
+        return new RowCounts(await db.UserAccounts.CountAsync(), await db.Memberships.CountAsync(), await db.Votes.CountAsync(), await db.RoleAssignments.CountAsync());
+    }
+
     /// <summary>Sets the membership of the account registered under <paramref name="identity"/>.</summary>
     public async Task SetMembershipAsync(string identity, MembershipStatus status)
     {
@@ -244,15 +262,15 @@ public sealed class OidcNoIdentityFactory : OidcWebApplicationFactory
 /// reserved names were refused at creation (or any identity the test needs) reaches the authorize endpoint, since
 /// registration itself now refuses a reserved name.
 /// </summary>
-public sealed class OidcFixedIdentityFactory(string identity) : OidcWebApplicationFactory
+public sealed class OidcFixedIdentityFactory(string identity, MembershipStatus status = MembershipStatus.Active) : OidcWebApplicationFactory
 {
     protected override void ConfigureActors(IServiceCollection services)
     {
         services.RemoveAll<ICurrentBifrostActorAccessor>();
-        services.AddScoped<ICurrentBifrostActorAccessor>(_ => new FixedIdentity(identity));
+        services.AddScoped<ICurrentBifrostActorAccessor>(_ => new FixedIdentity(identity, status));
     }
 
-    private sealed class FixedIdentity(string identity) : ICurrentBifrostActorAccessor
+    private sealed class FixedIdentity(string identity, MembershipStatus status) : ICurrentBifrostActorAccessor
     {
         public Task<CurrentBifrostActor> GetAsync(CancellationToken cancellationToken) =>
             Task.FromResult(new CurrentBifrostActor(true, new UserAccount
@@ -261,7 +279,7 @@ public sealed class OidcFixedIdentityFactory(string identity) : OidcWebApplicati
                 BifrostIdentity = identity,
                 NormalizedBifrostIdentity = identity, // as given: the guard, not the fixture, must fold case
                 DisplayName = "Fixed Identity",
-                Membership = new Bifrost.Web.Domain.Membership { Status = MembershipStatus.Active }
+                Membership = new Bifrost.Web.Domain.Membership { Status = status }
             }));
     }
 }

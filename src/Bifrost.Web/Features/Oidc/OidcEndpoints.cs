@@ -20,7 +20,7 @@ namespace Bifrost.Web.Features.Oidc;
 /// </summary>
 public static class OidcEndpoints
 {
-    public const string NotActiveDescription = "The account is not an active GameCult member.";
+    public const string SuspendedDescription = "The account is suspended.";
     public const string NoIdentityDescription = "The account has no Bifrost identity.";
     public const string ReservedIdentityDescription = "The account's Bifrost identity is reserved.";
 
@@ -49,9 +49,16 @@ public static class OidcEndpoints
         }
 
         var actor = await actors.GetAsync(http.RequestAborted);
-        if (actor.UserAccount is null || !actor.IsActiveMember)
+        // Chat tier: any account that is not suspended may sign in to chat. Membership is neither required nor written;
+        // every member or governance surface keeps asking for Active itself (the Active-member policy, IsActiveMember, ActiveMemberIdAsync).
+        if (actor.UserAccount is null)
         {
-            return Deny(Errors.AccessDenied, NotActiveDescription);
+            return Deny(Errors.AccessDenied, NoIdentityDescription);
+        }
+
+        if (actor.Membership?.Status == MembershipStatus.Suspended)
+        {
+            return Deny(Errors.AccessDenied, SuspendedDescription);
         }
 
         var account = actor.UserAccount;
@@ -90,13 +97,13 @@ public static class OidcEndpoints
     private static async Task<IResult> ExchangeAsync(HttpContext http, BifrostDbContext db)
     {
         // Only the authorization code grant is enabled, so OpenIddict has refused every other grant already.
-        // The code's own principal carries the claims chosen at authorize time; membership is read again here,
-        // because the code outlives the authorize decision (a member suspended since gets no tokens).
+        // The code's own principal carries the claims chosen at authorize time; suspension is read again here,
+        // because the code outlives the authorize decision (an account suspended since gets no tokens).
         var result = await http.AuthenticateAsync(OpenIddictScheme);
         var subject = result.Principal?.GetClaim(Claims.Subject);
-        if (!await IsStillActiveMemberAsync(db, subject, http.RequestAborted))
+        if (!await IsStillChatEligibleAsync(db, subject, http.RequestAborted))
         {
-            return Deny(Errors.InvalidGrant, NotActiveDescription);
+            return Deny(Errors.InvalidGrant, SuspendedDescription);
         }
 
         return Results.SignIn(result.Principal!, properties: null, OpenIddictScheme);
@@ -110,10 +117,10 @@ public static class OidcEndpoints
             return Results.Challenge(authenticationSchemes: [OpenIddictScheme]);
         }
 
-        // An access token outlives the authorize decision too: a member suspended since is no longer answered.
-        if (!await IsStillActiveMemberAsync(db, result.Principal.GetClaim(Claims.Subject), http.RequestAborted))
+        // An access token outlives the authorize decision too: an account suspended since is no longer answered.
+        if (!await IsStillChatEligibleAsync(db, result.Principal.GetClaim(Claims.Subject), http.RequestAborted))
         {
-            return Deny(Errors.InsufficientAccess, NotActiveDescription);
+            return Deny(Errors.InsufficientAccess, SuspendedDescription);
         }
 
         var claims = new Dictionary<string, object?> { [Claims.Subject] = result.Principal.GetClaim(Claims.Subject) };
@@ -126,11 +133,24 @@ public static class OidcEndpoints
         return Results.Json(claims);
     }
 
-    /// <summary>The one reading of "this subject is still an Active member", shared by the token and userinfo endpoints, the logout reconciler and the fork desk.</summary>
-    internal static async Task<bool> IsStillActiveMemberAsync(BifrostDbContext db, string? subject, CancellationToken cancellationToken) =>
-        await ActiveMemberIdAsync(db, subject, cancellationToken) is not null;
+    /// <summary>
+    /// The one reading of "this subject may still chat", shared by the token and userinfo endpoints and the logout reconciler:
+    /// the account exists and its membership is not Suspended. Membership may be absent, pending or Active. Re-read on every call.
+    /// </summary>
+    internal static async Task<bool> IsStillChatEligibleAsync(BifrostDbContext db, string? subject, CancellationToken cancellationToken)
+    {
+        if (!Guid.TryParse(subject, out var accountId))
+        {
+            return false;
+        }
 
-    /// <summary>The account id of the subject when it is an Active member now, else null. Re-read on every call.</summary>
+        var account = await db.UserAccounts.AsNoTracking()
+            .Include(x => x.Membership)
+            .SingleOrDefaultAsync(x => x.Id == accountId, cancellationToken);
+        return account is not null && account.Membership?.Status != MembershipStatus.Suspended;
+    }
+
+    /// <summary>The account id of the subject when it is an Active member now, else null. The door to the fork desk (cookie surfaces check IsActiveMember); a chat-tier token does not pass it. Re-read on every call.</summary>
     internal static async Task<Guid?> ActiveMemberIdAsync(BifrostDbContext db, string? subject, CancellationToken cancellationToken)
     {
         if (!Guid.TryParse(subject, out var accountId))

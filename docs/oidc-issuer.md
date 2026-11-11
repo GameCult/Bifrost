@@ -68,25 +68,29 @@ The authorize endpoint reads the cookie session and the same actor facts the `/A
 - No session: challenge to `/auth/sign-in`, which resumes the original request after sign-in. OpenIddict parks the
   full request (its request token, in the OpenIddict token table, expiring after ten minutes, spent when used) and
   the return path carries only a short `request_uri`, so `LocalReturnPath.MaxLength` stays 256.
-- Signed in, membership not `Active`: redirect to the client's `redirect_uri` with `error=access_denied` and
-  `error_description=The account is not an active GameCult member.`
-- Signed in, `Active`, but `NormalizedBifrostIdentity` empty: `error=access_denied` with
+- Signed in, membership `Suspended`: redirect to the client's `redirect_uri` with `error=access_denied` and
+  `error_description=The account is suspended.`
+- Signed in with no membership, `Authenticated` or `PendingApproval` (the chat tier): treated like an active member for
+  sign-in to chat and nothing else. The token carries the same `openid profile` claims; the issuer writes no membership,
+  role or vote, and every member or governance surface (`/App`, `/eve/governance`, `/api/sealed-motions`, the fork desk)
+  still asks for `Active` itself, so neither the session nor the token opens them.
+- Signed in, with an account that can chat, but `NormalizedBifrostIdentity` empty: `error=access_denied` with
   `error_description=The account has no Bifrost identity.`
-- Signed in, `Active`, but the identity is a reserved localpart (`BifrostIdentityService.IsReserved`: the 13 Synapse
+- Signed in, with an account that can chat, but the identity is a reserved localpart (`BifrostIdentityService.IsReserved`: the 13 Synapse
   accounts and the system names, the same 28 as MAS `banned_usernames`): `error=access_denied` with
   `error_description=The account's Bifrost identity is reserved.` Creation refuses these names, but a row minted before
   that refusal may hold one and there is no rename path, so the issuer never vouches for a Mind's or a system's localpart. The refusal is at authorize only: a code or access token issued for such a row before this check deployed stays redeemable until it expires (minutes), and token and userinfo re-read membership, not the name. Whether any such row exists is not known from the code; one query of `UserAccounts` against the 28 names would say.
-- Signed in and `Active`: a code is issued.
-- Token endpoint: membership is read again; an account no longer `Active` gets `invalid_grant` and no tokens.
+- Otherwise: a code is issued.
+- Token endpoint and userinfo: suspension is read again; an account suspended or deleted since gets `invalid_grant` (token) or 403 (userinfo). The logout reconciler ends the sessions of those same accounts; a chat-tier account is never logged out for lacking membership.
 
 ## Back-channel logout
 
 When `BackchannelLogoutUri` is set, a hosted reconciler (`OidcLogoutReconciler`) runs every 30 seconds. It lists the
-subjects holding valid authorizations of the MAS client; for each subject whose membership is not `Active` (the same
-reading the token and userinfo endpoints use; a deleted account or a subject that is not an account id counts as not
-`Active`) it POSTs one OIDC back-channel logout token to MAS, and only after a 2xx revokes that subject's authorizations,
-which also invalidates their tokens. Membership is never written by this path: any way of leaving `Active` (admin
-action, sync, a database edit, a future suspend) is covered because the work is derived from membership state.
+subjects holding valid authorizations of the MAS client; for each subject who may no longer chat (the same
+reading the token and userinfo endpoints use: membership `Suspended`, a deleted account, or a subject that is not an account id; an
+account with no membership or a pending one may chat and is left alone) it POSTs one OIDC back-channel logout token to MAS, and only after a 2xx revokes that subject's authorizations,
+which also invalidates their tokens. Membership is never written by this path: any way of being suspended or deleted (admin
+action, sync, a database edit) is covered because the work is derived from membership state.
 
 The token is an ES256 JWT signed with the issuer key, header `typ` `logout+jwt`, with `iss` as the id_token carries it,
 `aud` the MAS client id, `sub` the account id, `iat`, `exp` two minutes later, a fresh `jti` and the
@@ -142,8 +146,6 @@ Checked against the Window B list (2026-11-11). Present and tested: discovery, J
 the one client, claims to a Matrix-legal localpart (`[a-z0-9._-]`, 3-80, lower case), reserved names at creation and now at
 issuance, back-channel logout. Not present:
 
-- **Non-member sign-in.** The gate is `Active` membership, so an account with no membership gets `access_denied`. A "Users"
-  tier for chat registration, with no vote, is a policy choice not yet made; nothing here writes membership or votes.
 - **MAS upstream block.** `gamecult-ops` `chat/matrix-auth/config.yaml` has no `upstream_oauth2` (provider ULID,
   `on_conflict: fail`, `on_backchannel_logout: logout_all`, the redirect URI above); that lives in the ops repo.
 

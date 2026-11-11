@@ -107,20 +107,74 @@ public sealed class OidcIssuerTests : IClassFixture<OidcWebApplicationFactory>
         Assert.Equal("Second Name", second.Claim("name"));
     }
 
-    [Theory]
-    [InlineData(MembershipStatus.Authenticated)]
-    [InlineData(MembershipStatus.PendingApproval)]
-    [InlineData(MembershipStatus.Suspended)]
-    public async Task A_member_who_is_not_active_is_refused_with_access_denied_and_no_code(MembershipStatus status)
+    [Fact]
+    public async Task A_suspended_account_is_refused_with_access_denied_and_no_code()
     {
-        var (client, _) = await SignedInAsync(status, "Not Active");
+        var (client, _) = await SignedInAsync(MembershipStatus.Suspended, "Suspended One");
         var request = NewRequest();
 
         var final = await DriveAsync(client, request);
 
         var redirect = AssertRedirectToClient(final, request.State);
         Assert.Equal("access_denied", redirect["error"]);
-        Assert.Equal(Bifrost.Web.Features.Oidc.OidcEndpoints.NotActiveDescription, redirect["error_description"]);
+        Assert.Equal(Bifrost.Web.Features.Oidc.OidcEndpoints.SuspendedDescription, redirect["error_description"]);
+        Assert.False(redirect.ContainsKey("code"));
+    }
+
+    [Theory]
+    [InlineData(MembershipStatus.Authenticated)]
+    [InlineData(MembershipStatus.PendingApproval)]
+    public async Task A_non_member_gets_a_chat_only_token_and_writes_no_membership_or_vote(MembershipStatus status)
+    {
+        var (client, identity) = await SignedInAsync(status, "Chat Only");
+        var accountId = _factory.AccountId(identity);
+        var before = await _factory.RowCountsAsync();
+
+        var tokens = await CompleteFlowAsync(client);
+
+        var verified = await ValidateIdTokenAsync(tokens.IdToken, tokens.Request.Nonce);
+        Assert.Equal(accountId.ToString("D"), verified.Claim("sub"));
+        Assert.Equal(identity, verified.Claim("preferred_username"));
+
+        // The issuer wrote nothing about membership or votes, and the status is exactly what it was.
+        Assert.Equal(before, await _factory.RowCountsAsync());
+        Assert.Equal(status, await _factory.MembershipStatusAsync(identity));
+        Assert.Equal(0, (await _factory.RowCountsAsync()).Votes);
+
+        // Neither the session that signed in to chat nor its token opens a member or governance surface.
+        foreach (var path in new[] { "/eve/governance/surface", "/api/sealed-motions", "/App" })
+        {
+            using var viaSession = await client.GetAsync(path);
+            Assert.NotEqual(HttpStatusCode.OK, viaSession.StatusCode);
+
+            using var viaToken = new HttpRequestMessage(HttpMethod.Get, path);
+            viaToken.Headers.Authorization = new AuthenticationHeaderValue("Bearer", tokens.AccessToken);
+            using var bearer = await NewClient().SendAsync(viaToken);
+            Assert.NotEqual(HttpStatusCode.OK, bearer.StatusCode);
+        }
+
+        using var desk = new HttpRequestMessage(HttpMethod.Get, "/api/desk/forks");
+        desk.Headers.Authorization = new AuthenticationHeaderValue("Bearer", tokens.AccessToken);
+        using var deskResponse = await NewClient().SendAsync(desk);
+        Assert.NotEqual(HttpStatusCode.OK, deskResponse.StatusCode);
+
+        // Last, because userinfo answers 500 on a .NET 10 runtime (the six known failures), and the rest must still run there.
+        using var userinfo = await UserInfoAsync(tokens.AccessToken);
+        Assert.Equal(HttpStatusCode.OK, userinfo.StatusCode);
+        var info = JsonDocument.Parse(await userinfo.Content.ReadAsStringAsync()).RootElement;
+        Assert.Equal(["name", "preferred_username", "sub"], info.EnumerateObject().Select(x => x.Name).Order().ToArray());
+    }
+
+    [Fact]
+    public async Task A_chat_tier_account_with_a_reserved_identity_is_still_refused()
+    {
+        using var factory = new OidcFixedIdentityFactory("eureka", MembershipStatus.Authenticated);
+        using var client = factory.CreateClient(ClientOptions());
+        await RegisterAsync(client, $"cookie-{Guid.NewGuid():N}");
+        var request = NewRequest();
+
+        var redirect = AssertRedirectToClient(await DriveAsync(client, request), request.State);
+        Assert.Equal("access_denied", redirect["error"]);
         Assert.False(redirect.ContainsKey("code"));
     }
 
@@ -619,11 +673,9 @@ public sealed class OidcIssuerTests : IClassFixture<OidcWebApplicationFactory>
     }
 
     [Theory]
-    [InlineData(MembershipStatus.Authenticated)]
-    [InlineData(MembershipStatus.PendingApproval)]
     [InlineData(MembershipStatus.Suspended)]
     [InlineData(null)]
-    public async Task A_member_no_longer_active_after_authorize_gets_no_tokens(MembershipStatus? status)
+    public async Task An_account_suspended_or_gone_after_authorize_gets_no_tokens(MembershipStatus? status)
     {
         var (client, identity) = await SignedInAsync(MembershipStatus.Active, "Soon Gone");
         var request = NewRequest();
@@ -640,11 +692,9 @@ public sealed class OidcIssuerTests : IClassFixture<OidcWebApplicationFactory>
     }
 
     [Theory]
-    [InlineData(MembershipStatus.Authenticated)]
-    [InlineData(MembershipStatus.PendingApproval)]
     [InlineData(MembershipStatus.Suspended)]
     [InlineData(null)]
-    public async Task Userinfo_refuses_an_access_token_whose_member_is_no_longer_active(MembershipStatus? status)
+    public async Task Userinfo_refuses_an_access_token_whose_account_is_suspended_or_gone(MembershipStatus? status)
     {
         var (client, identity) = await SignedInAsync(MembershipStatus.Active, "Soon Gone");
         var tokens = await CompleteFlowAsync(client);
