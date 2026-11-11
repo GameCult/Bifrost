@@ -63,6 +63,7 @@ const DELIVERED_INDEX = 4000; // delivered event ids remembered so a read report
 const DM_SCAN = 200; // joined rooms read when looking for an existing DM with a person
 const NOT_E2EE = "This room is not end-to-end encrypted: the homeserver can read what is said here.";
 const dayOf = ms => new Date(ms).toISOString().slice(0, 10);
+const TAIL_TTL_MS = 15 * 1000;
 const HEAD_PAGE = 50; // the room head a gated send reads; also the most ids a RoomMoved receipt names
 
 // The kind of an event for a delivery: an edit (m.replace) and an automated notice (m.notice) are not messages anyone is addressed by.
@@ -141,6 +142,8 @@ export function createMouth({
   let started = false;
   let lastPresence = null; // 'online' | 'unavailable' | 'offline' | null: command-only, suppresses repeat presence PUTs
   let activeUntil = 0; // her last sign of life in a turn, plus the grace
+  const ackedThrough = new Map(); // room id -> { ts, ids }: the newest delivery she has acked there, ids those at exactly that time; the tail is what lies past it
+  const tailReads = new Map(); // room id -> { at, lines }: a room's tail read, kept TAIL_TTL_MS or until a sync brings the room news or an ack moves the cursor
   const delivered = new Map(); // event id -> { roomId, roomAlias, seq }: what the mouth handed her, newest last, bounded
   const readThrough = new Map(); // room id -> { seq, eventId } of the last receipt that landed
   const readTails = new Map(); // room id -> the read report in flight: reports for one room run one at a time
@@ -209,6 +212,8 @@ export function createMouth({
     }
   }
   const unjoined = () => joinedAliases.size < rooms.length;
+  // The rooms this Persona may speak in: a configured room she has joined, or one of her DMs. One rule for send and for the tail.
+  const speakableRoomId = alias => joinedAliases.has(alias) ? roomIdByAlias.get(alias) : directRooms.has(alias) ? alias : null;
 
   // Join the configured rooms the account is not in, only while the brake is released.
   // One room failing is logged and retried on the next round; it never stops the others.
@@ -294,11 +299,11 @@ export function createMouth({
   // thread under, an event her account wrote, so her Self run's words count as hers), "room" (an @room mention). In that order; null
   // when none holds. Her names, her projects' names and the sender's role are the heartbeat's to match (Huginn address.rs), never the
   // mouth's. A reply target that cannot be read is null and logged: unknown, not "not hers".
-  async function basisOf(roomId, event) {
+  async function basisOf(roomId, event, lookup = true) {
     if (directRooms.has(roomId)) return "direct";
     const mentions = event.content["m.mentions"];
     if (Array.isArray(mentions?.user_ids) ? mentions.user_ids.includes(selfId) : mentions === undefined && pillFor(event.content.formatted_body)) return "tag";
-    if (formOf(event.content) === "message" && await repliesToMe(roomId, event.content["m.relates_to"])) return "reply"; // an edit or a notice wakes no one: no fetch for it
+    if (lookup && formOf(event.content) === "message" && await repliesToMe(roomId, event.content["m.relates_to"])) return "reply"; // an edit or a notice wakes no one: no fetch for it
     return mentions?.room === true ? "room" : null;
   }
   // A pill is an anchor whose href is exactly her matrix.to link; a longer id, an attribute that merely contains one and a quoted reply do not count.
@@ -379,6 +384,7 @@ export function createMouth({
         const shown = event.content?.displayname;
         if (event.type === "m.room.member" && typeof event.state_key === "string" && typeof shown === "string" && shown !== "") displayNames.set(event.state_key, docs.clip(shown, docs.limits.displayBytes));
       }
+      if ((room.timeline?.events ?? []).length > 0) tailReads.delete(roomId);
       for (const event of room.timeline?.events ?? []) {
         if (event.type !== "m.room.message" || typeof event.content?.body !== "string") continue;
         if (typeof event.sender !== "string" || event.sender === "" || typeof event.event_id !== "string" || event.event_id === "") continue;
@@ -466,10 +472,46 @@ export function createMouth({
   }
 
   async function ack(throughSeq) {
+    for (const d of pending) if (d.seq <= throughSeq) {
+      const through = ackedThrough.get(d.roomId);
+      if (!through || d.atUnixMs > through.ts) ackedThrough.set(d.roomId, { ts: d.atUnixMs, ids: new Set([d.eventId]) });
+      else if (d.atUnixMs === through.ts) through.ids.add(d.eventId);
+    }
     pending = pending.filter(d => d.seq > throughSeq);
+    tailReads.clear();
     images?.acked(throughSeq);
     await commit(pending.length ? pending[0].seq - 1 : seqCounter);
     touch();
+  }
+
+  // Her rooms' recent talk, for a reader that was not woken for it: in each room she may speak in, the newest tailPerRoom lines past
+  // her ack cursor there (a room she has acked nothing in yields its recent lines), the newest tailTotal over all rooms, oldest
+  // first. From the same /messages read as a delivery's context, as her account, bodies clipped as context lines are. The basis is
+  // what Matrix says on the event itself (no reply lookup: nil is unproven). A room that cannot be read is logged and absent.
+  async function tail() {
+    if (!started) return [];
+    const targets = new Set();
+    for (const alias of [...joinedAliases, ...directRooms]) { const id = speakableRoomId(alias); if (id) targets.add(id); }
+    const perRoom = await Promise.all([...targets].map(async roomId => {
+      let read = tailReads.get(roomId);
+      if (!read || now() - read.at >= TAIL_TTL_MS) {
+        read = { at: now(), lines: roomEvents(roomId).catch(error => { say(`tail for ${roomId} not fetched: ${error.message}`); return null; }) };
+        tailReads.set(roomId, read);
+      }
+      const events = await read.lines;
+      if (events === null) { if (tailReads.get(roomId) === read) tailReads.delete(roomId); return []; }
+      const through = ackedThrough.get(roomId);
+      const alias = aliasByRoomId.get(roomId) ?? roomId;
+      const lines = [];
+      for (const e of events) {
+        const at = Number.isSafeInteger(e.origin_server_ts) && e.origin_server_ts >= 0 ? e.origin_server_ts : 0;
+        if (through && (at < through.ts || (at === through.ts && through.ids.has(e.event_id)))) continue;
+        if (typeof e.event_id !== "string" || e.event_id === "") continue;
+        lines.push({ roomAlias: alias, eventId: e.event_id, atUnixMs: at, sender: e.sender, form: formOf(e.content), basis: await basisOf(roomId, e, false), text: bodyText(e.content, docs.limits.contextBytes) });
+      }
+      return lines.slice(-docs.limits.tailPerRoom);
+    }));
+    return perRoom.flat().sort((a, b) => a.atUnixMs - b.atUnixMs).slice(-docs.limits.tailTotal);
   }
 
   function pendingAfter(afterSeq) {
@@ -497,7 +539,7 @@ export function createMouth({
     if (typeof text !== "string" || text.trim() === "") return refuse("EmptyText");
     try {
       if (!started || unjoined()) await start();
-      const roomId = joinedAliases.has(roomAlias) ? roomIdByAlias.get(roomAlias) : directRooms.has(roomAlias) ? roomAlias : null;
+      const roomId = speakableRoomId(roomAlias);
       if (!roomId) return refuse("UnknownRoom");
       const result = await gate.run(roomId, async () => {
         if (basis) {
@@ -626,7 +668,7 @@ export function createMouth({
     }
   }
 
-  return { start, syncOnce, ack, read, pendingAfter, send, openDirect, run, get userId() { return selfId; }, get pendingCount() { return pending.length; } };
+  return { start, syncOnce, ack, read, pendingAfter, tail, send, openDirect, run, get userId() { return selfId; }, get pendingCount() { return pending.length; } };
 }
 
 // Replace every secret in a message. `secrets` is one string or a list.
@@ -671,7 +713,8 @@ export function connectionIdFor(connectionKey) {
 // The reply to a chat_pending_request: deliveries oldest first, each encoded on its own so one that
 // will not encode is skipped and logged without silencing the rest, up to the reply byte budget.
 // The caller acks what it has read and asks again.
-export function pageOf(persona, deliveries, msgpack, log = () => {}, v3 = false) {
+// A v3 reply also carries `tail` (room lines, oldest first), trimmed oldest first to what the byte budget has left after the deliveries.
+export function pageOf(persona, deliveries, msgpack, log = () => {}, v3 = false, tail = []) {
   const page = [];
   let bytes = 0;
   for (const delivery of deliveries) {
@@ -684,7 +727,19 @@ export function pageOf(persona, deliveries, msgpack, log = () => {}, v3 = false)
     page.push(tuple);
     bytes += size;
   }
-  return [persona, page];
+  if (!v3) return [persona, page];
+  const lines = [];
+  for (const line of tail.slice().reverse()) {
+    let tuple, size;
+    try { tuple = docs.tailLineTuple(line); size = msgpack.encode(tuple).length; } catch (error) {
+      log(`tail line ${line?.eventId} skipped: ${error?.message ?? error}`);
+      continue;
+    }
+    if (bytes + size > docs.limits.replyBytes) break;
+    lines.unshift(tuple);
+    bytes += size;
+  }
+  return [persona, page, lines];
 }
 
 // CultNet RUDP endpoint on loopback, one for every Persona in `mouths` (persona -> mouth).
@@ -726,7 +781,8 @@ export async function startChatEndpoint({ mouths, runtime, port, connectionKey, 
         const request = docs.parsePendingRequest(tuple);
         const mouth = mouths.get(request.persona);
         if (!mouth) return refuseUnknown(peer, request.persona);
-        respond(peer, request.persona, v3 ? docs.kinds.pendingV3 : docs.kinds.pending, request.persona, pageOf(request.persona, mouth.pendingAfter(request.afterSeq), msgpack, log, v3));
+        const tail = v3 ? await mouth.tail().catch(error => { log(`tail not read: ${error?.message ?? error}`); return []; }) : [];
+        respond(peer, request.persona, v3 ? docs.kinds.pendingV3 : docs.kinds.pending, request.persona, pageOf(request.persona, mouth.pendingAfter(request.afterSeq), msgpack, log, v3, tail));
       } else if (document.schemaId === docs.kinds.ack) {
         const request = docs.parseAck(tuple);
         const mouth = mouths.get(request.persona);

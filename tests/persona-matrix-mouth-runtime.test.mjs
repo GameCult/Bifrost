@@ -20,6 +20,7 @@ const runtime = loadRuntime(cultLibRoot);
 const { msgpack } = runtime;
 const fixtureDir = resolve(import.meta.dirname, "fixtures", "persona-chat-v1");
 
+const tailLine = { roomAlias: "#operator:gamecult.org", eventId: "$t1", atUnixMs: 1_700_000_000_000, sender: "@meta:gamecult.org", form: "message", basis: null, text: "earlier" };
 const delivery = {
   seq: 7, roomAlias: "#operator:gamecult.org", roomId: "!abc:gamecult.org", eventId: "$e1", sender: "@meta:gamecult.org", senderDisplay: "Meta",
   text: "hello eureka", atUnixMs: 1761700000000,
@@ -93,6 +94,7 @@ test("the brake reader reads a real CultCache control store", async () => {
 test("two clients served at once each get their own answer on their own session", async () => {
   const mouth = {
     pendingAfter: () => [],
+    tail: async () => [],
     ack: async () => {},
     // Slow enough that the two requests are in flight together.
     send: async request => { await new Promise(r => setTimeout(r, 150)); return { requestId: request.requestId, eventId: `$${request.requestId}`, refusal: null }; },
@@ -138,6 +140,7 @@ test("the RUDP endpoint serves pending, ack and send over CultNet, and answers a
   const calls = { acks: [], sends: [], reads: [] };
   const mouth = {
     pendingAfter: after => (after < 7 ? [delivery] : []),
+    tail: async () => [tailLine],
     ack: async through => { calls.acks.push(through); },
     read: async request => { calls.reads.push(request); return null; },
     send: async request => { calls.sends.push(request); return request.text === "muted" ? { requestId: request.requestId, eventId: null, refusal: "Brake" } : { requestId: request.requestId, eventId: "$sent", refusal: null }; },
@@ -177,7 +180,9 @@ test("the RUDP endpoint serves pending, ack and send over CultNet, and answers a
     put(docs.kinds.pendingRequestV3, "eureka", docs.pendingRequestTuple({ persona: "eureka", afterSeq: 0 }));
     document = await reply;
     assert.equal(document.schemaId, docs.kinds.pendingV3, "the kind asked by names the answer");
-    assert.deepEqual(docs.parsePendingV3(msgpack.decode(document.payload)).deliveries[0], { ...delivery, basis: null, form: "message" });
+    const v3 = docs.parsePendingV3(msgpack.decode(document.payload));
+    assert.deepEqual(v3.deliveries[0], { ...delivery, basis: null, form: "message" });
+    assert.deepEqual(v3.tail, [tailLine], "the v3 answer carries the room tail");
 
     put(docs.kinds.ack, "eureka:7", docs.ackTuple({ persona: "eureka", throughSeq: 7 }));
     reply = nextReply();
@@ -322,6 +327,10 @@ const v5Dir = resolve(root, "tests", "fixtures", "persona-chat-v5");
 const v5Samples = {
   "gamecult.persona.chat_pending_request.v2": { tuple: docs.pendingRequestTuple({ persona: "eureka", afterSeq: 3 }), parse: docs.parsePendingRequest },
   "gamecult.persona.chat_pending.v3.tag": { tuple: docs.pendingV3Tuple({ persona: "eureka", deliveries: [{ ...delivery, isDirect: false, basis: "tag", form: "message" }] }), parse: docs.parsePendingV3 },
+  "gamecult.persona.chat_pending.v3.tail": { tuple: docs.pendingV3Tuple({ persona: "eureka", deliveries: [], tail: [
+    { roomAlias: "#operator:gamecult.org", eventId: "$e0", atUnixMs: 1_700_000_000_000, sender: "@meta:gamecult.org", form: "message", basis: null, text: "earlier" },
+    { roomAlias: "#operator:gamecult.org", eventId: "$e1", atUnixMs: 1_700_000_001_000, sender: "@meta:gamecult.org", form: "notice", basis: "tag", text: "hello eureka" },
+  ] }), parse: docs.parsePendingV3 },
   "gamecult.persona.chat_pending.v3.unproven-notice": { tuple: docs.pendingV3Tuple({ persona: "eureka", deliveries: [{ ...delivery, isDirect: false, mentions: [], basis: null, form: "notice" }] }), parse: docs.parsePendingV3 },
 };
 for (const [name, { tuple, parse }] of Object.entries(v5Samples)) {
@@ -331,7 +340,9 @@ for (const [name, { tuple, parse }] of Object.entries(v5Samples)) {
     if (process.env.UPDATE_FIXTURES === "1") { await mkdir(v5Dir, { recursive: true }); await writeFile(file, bytes); }
     assert.deepEqual(bytes, await readFile(file), "wire bytes changed: Huginn decodes these fixtures");
     assert.deepEqual(parse(msgpack.decode(bytes)), parse(tuple));
-    if (name.includes("pending.v3")) assert.equal(msgpack.decode(bytes)[1][0].length, 14);
+    if (name.includes("pending.v3")) assert.equal(msgpack.decode(bytes).length, 3, "persona, deliveries, tail");
+    if (name.endsWith("v3.tag") || name.endsWith("unproven-notice")) assert.equal(msgpack.decode(bytes)[1][0].length, 14);
+    if (name.endsWith("v3.tail")) assert.equal(msgpack.decode(bytes)[2][0].length, 7);
   });
 }
 
@@ -370,7 +381,7 @@ test("RoomMoved is v2 only, and the v2 documents are strict about arity and newe
 
 test("the RUDP endpoint answers a v1 send with the three-field receipt and a v2 send with the four-field one", async () => {
   const seen = [];
-  const mouth = { pendingAfter: () => [], ack: async () => {}, send: async request => {
+  const mouth = { pendingAfter: () => [], tail: async () => [], ack: async () => {}, send: async request => {
     seen.push(request);
     return request.basis ? { requestId: request.requestId, eventId: null, refusal: "RoomMoved", newer: ["$a"] } : { requestId: request.requestId, eventId: "$sent", refusal: null, newer: [] };
   } };

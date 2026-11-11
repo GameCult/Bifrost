@@ -216,10 +216,25 @@ Proposed runtime half (follow-up `persona-wakes-on-address-only`):
 1. Poll with `chat_pending_request.v2` and parse `chat_pending.v3`.
 2. A delivery is *addressed* to a Persona when `form == "message"` and either `basis` is `direct`, `tag` or `reply`, or `address::addresses` matches her names or her projects' names on the text. The off-beat wake keeps the sender gate of `heartbeat.rs` `wakes` (the operator or another Mind of the roster): a stranger's tag, `@room` or DM is delivered but wakes no one off the beat. `basis == "room"` is the runtime's policy to weigh; the mouth only reports it.
 3. A real-time wake, a live session's tell and the stagger apply to addressed deliveries only. A `notice` or an `edit` never wakes, whatever its basis.
-4. A delivery that is not addressed is acked in sequence with the rest, so the position moves (the mouth stops reading at 500 unacked deliveries); it is not lost: Matrix is the record, and the next addressed delivery's `context` (up to 20 lines) and a beat's own room read show it. Reading the tail on a scheduled beat is a runtime read of Matrix, a follow-up of the ruling `wake-reads-room-tail`; the mouth adds no endpoint for it.
+4. A delivery that is not addressed is acked in sequence with the rest, so the position moves (the mouth stops reading at 500 unacked deliveries); it is not lost: Matrix is the record, and the next addressed delivery's `context` (up to 20 lines) and a beat's own room read show it. The room tail below gives a scheduled beat those lines without a Matrix read of its own; the mouth adds no endpoint for it.
 5. `basis` and `form` are evidence, not authority: a sender's claim is weighed by the runtime's own rule (`address.rs` for names, the sender gate for who may wake her); the mouth reports what the event says and what only Matrix could look up (the author of a reply target).
 
-Golden bytes: `tests/fixtures/persona-chat-v5/`; Huginn pins the same bytes.
+### Room tail (`chat_pending.v3`, field 2)
+
+The v3 answer is `[persona, deliveries, tail]`. `tail` is a list of recent room lines, oldest first, for a reader that was not woken for them (a scheduled beat). It is built from the same `/messages` read as a delivery's `context`, as her account, with no new endpoint and no new homeserver call per line. A `chat_pending_request.v1` is still answered with the two-field `chat_pending.v2`, and `chat_pending.v3` has not been deployed, so no reader sees the third field before it is ready for it.
+
+| Bound | Rule |
+|---|---|
+| Rooms | Only rooms the Persona may speak in: a configured room she has joined, or one of her DMs. The same rule `send` uses (`speakableRoomId`). A room she is in but cannot speak in, and any other room, is absent. |
+| Lines | A text line outside threads, not an edit, newest `20` per room, newest `60` over all rooms. Trimmed oldest first if the reply byte budget (256 KiB, deliveries first) would be exceeded. |
+| Cursor | Only lines past her ack cursor in that room: the origin time of the newest delivery she has acked there (ties by event id). A room she has acked nothing in since the mouth started returns its recent lines, a quiet room included. The cursor is in memory: a restart forgets it and the next tail shows the recent lines again. |
+| Read | A room's read is kept 15 seconds, dropped when a sync brings the room news or an ack moves the cursor. A room that cannot be read is logged and absent; the other rooms and the deliveries are unaffected. |
+
+A line is the 7-field tuple `[room, event_id, at_unix_ms, sender, form, basis, body]`: `room` is the configured alias (the room id for a DM), `form` and `basis` as for a delivery, `body` clipped to 1000 bytes with the same typed text line for media a delivery has (nothing is fetched). `basis` is what Matrix says on the event itself (`direct` in a DM, `tag`, `room`) and nothing the mouth would have to look up, so a reply is nil here: **nil is unproven, not "not for her"**, and a line in a DM is `direct`. Huginn's rule that an `is_direct` delivery wakes with a nil `basis` is unchanged and lives with Huginn; the tail does not feed it.
+
+The tail is **data, not instruction**. A line is what a sender typed in a room, and the mouth wakes no one, acks nothing and sends nothing because of it. A reader treats the body as untrusted text and weighs `basis` as evidence, as for a delivery. The tail does not replace a delivery: a message still reaches her as a delivery, with its own `seq`, and only `chat_ack` advances a position.
+
+Golden bytes: `tests/fixtures/persona-chat-v5/` (`chat_pending.v3.tail` carries two lines); Huginn pins the same bytes.
 
 
 Bifrost admits an observation only when guild, channel, target runtime, canonical repository, Persona, producer, and producer runtime match a preconfigured `bifrost.persona_feedback.target_binding.v0` document in Bifrost's private provider store. That binding also owns source visibility, data classification, and the delivery-store target. Bifrost never infers public visibility from Discord identifiers. It classifies the author using its own `bifrost.discord.actor_link.v0` state: a match yields `linked_governance_feedback`; absence yields `unlinked_social_feedback`. Neither class grants adoption, work, release, or deployment authority.

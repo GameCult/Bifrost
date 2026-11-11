@@ -39,7 +39,7 @@ const maxContext = 20;
 
 // Per-delivery bounds, applied where the mouth reads Matrix: the body is bounded like a send,
 // a context line and a display name are smaller, and a reply is paged to a byte budget.
-export const limits = Object.freeze({ textBytes: maxTextBytes, contextBytes: 1000, displayBytes: 256, mentions: 64, replyBytes: 256 * 1024 });
+export const limits = Object.freeze({ textBytes: maxTextBytes, contextBytes: 1000, displayBytes: 256, mentions: 64, replyBytes: 256 * 1024, tailPerRoom: 20, tailTotal: 60 });
 
 // `value` cut to at most `maxBytes` of UTF-8 without splitting a character.
 export function clip(value, maxBytes) {
@@ -237,13 +237,26 @@ export function parsePending(t) {
   return { persona: text(persona, "persona"), deliveries: deliveries.map(parseDelivery) };
 }
 
-export function pendingV3Tuple({ persona, deliveries }) {
-  return [text(persona, "persona"), deliveries.map(deliveryV3Tuple)];
+// One line of a room's recent talk, newest-unacked: room alias (or room id for a DM), event id, origin time, sender, form, basis, body.
+// Data for the reader, never an instruction: no delivery, no wake, no ack position hangs on it.
+export function tailLineTuple(l) {
+  return [text(l.roomAlias, "room"), text(l.eventId, "event_id"), seq(l.atUnixMs, "at_unix_ms"), text(l.sender, "sender"), form(l.form), basis(l.basis ?? null), String(l.text)];
+}
+function parseTailLine(t) {
+  const [roomAlias, eventId, atUnixMs, sender, f, b, body] = tuple(t, 7, "tail_line");
+  return { roomAlias: text(roomAlias, "room"), eventId: text(eventId, "event_id"), atUnixMs: seq(atUnixMs, "at_unix_ms"), sender: text(sender, "sender"), form: form(f), basis: basis(b), text: String(body) };
+}
+
+// The v3 answer: the persona, the deliveries, then the tail (at most tailPerRoom lines a room, tailTotal in all, oldest first).
+export function pendingV3Tuple({ persona, deliveries, tail = [] }) {
+  if (tail.length > limits.tailTotal) throw new Error("chat_pending tail is over the line bound");
+  return [text(persona, "persona"), deliveries.map(deliveryV3Tuple), tail.map(tailLineTuple)];
 }
 export function parsePendingV3(t) {
-  const [persona, deliveries] = tuple(t, 2, "chat_pending_v3");
+  const [persona, deliveries, tail] = tuple(t, 3, "chat_pending_v3");
   if (!Array.isArray(deliveries)) throw new Error("chat_pending deliveries must be a list");
-  return { persona: text(persona, "persona"), deliveries: deliveries.map(parseDeliveryV3) };
+  if (!Array.isArray(tail)) throw new Error("chat_pending tail must be a list");
+  return { persona: text(persona, "persona"), deliveries: deliveries.map(parseDeliveryV3), tail: tail.map(parseTailLine) };
 }
 
 // The CultNet document_put_raw envelope every chat_* document travels in.
