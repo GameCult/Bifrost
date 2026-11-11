@@ -16,6 +16,15 @@ public sealed class OidcIssuerOptions
 
     public OidcClientsOptions Clients { get; init; } = new();
 
+    public OidcLimitsOptions Limits { get; init; } = new();
+
+    /// <summary>
+    /// Optional path of the issuer's brake marker. While a file exists there, /connect/* answers 503 and nothing is issued;
+    /// remove it to release. Checked on every request (one stat), so engaging and releasing need no restart.
+    /// Unset: the issuer has no marker brake (removing this section and restarting is the other off switch).
+    /// </summary>
+    public string BrakePath { get; init; } = string.Empty;
+
     /// <summary>Null when the section is absent.</summary>
     public static OidcIssuerOptions? FromConfiguration(IConfiguration configuration)
     {
@@ -41,4 +50,26 @@ public sealed class OidcClientOptions
 
     /// <summary>MAS's back-channel logout URL for this provider. Empty: no logout is sent and no session is ended.</summary>
     public string BackchannelLogoutUri { get; init; } = string.Empty;
+}
+
+/// <summary>
+/// Budgets on /connect/authorize, /connect/token and /connect/userinfo, and the bound on what the anonymous authorize
+/// endpoint can park. Per source address and per client id, one fixed window; a refused caller gets 429 with Retry-After.
+/// The defaults suit one client (MAS) behind one proxy.
+/// </summary>
+public sealed class OidcLimitsOptions
+{
+    public int PerAddressPermits { get; init; } = 30;
+
+    public int PerClientPermits { get; init; } = 300;
+
+    public TimeSpan Window { get; init; } = TimeSpan.FromMinutes(1);
+
+    public int MaxTrackedKeys { get; init; } = 10_000;
+
+    /// <summary>The most OpenIddict token rows (parked authorize requests, codes, access tokens) allowed to exist; a new authorize request beyond it is refused until the prune frees room.</summary>
+    public int MaxTokenRows { get; init; } = 20_000;
+
+    /// <summary>How often expired and orphaned authorizations and tokens are deleted.</summary>
+    public TimeSpan PruneInterval { get; init; } = TimeSpan.FromMinutes(5);
 }

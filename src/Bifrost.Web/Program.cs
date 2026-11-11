@@ -285,6 +285,11 @@ if (!app.Environment.IsDevelopment())
 
 app.UseHttpLogging();
 app.UseHttpsRedirection();
+if (oidcOptions is not null)
+{
+    app.UseMiddleware<OidcGuardMiddleware>(); // before authentication: OpenIddict answers /connect/* inside it
+}
+
 app.UseStaticFiles();
 app.UseRouting();
 app.UseConceptTallyCors();

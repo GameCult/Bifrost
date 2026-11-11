@@ -92,7 +92,10 @@ public sealed class OidcTestKit : IDisposable
         ["Bifrost:Oidc:EncryptionKeyPath"] = EncryptionKeyPath,
         ["Bifrost:Oidc:Clients:Mas:ClientId"] = ClientId,
         ["Bifrost:Oidc:Clients:Mas:ClientSecretPath"] = ClientSecretPath,
-        ["Bifrost:Oidc:Clients:Mas:RedirectUri"] = RedirectUri
+        ["Bifrost:Oidc:Clients:Mas:RedirectUri"] = RedirectUri,
+        // The shared test client has no remote address, so every request is one caller: the budgets are out of the way unless a test sets them.
+        ["Bifrost:Oidc:Limits:PerAddressPermits"] = "100000",
+        ["Bifrost:Oidc:Limits:PerClientPermits"] = "100000"
     };
 
     public void Dispose()
@@ -113,6 +116,11 @@ public sealed class OidcTestClock : TimeProvider
     private DateTimeOffset _now = DateTimeOffset.UtcNow;
 
     public override DateTimeOffset GetUtcNow() => _now;
+
+    // The monotonic reading follows the moved time, so a budget's window can be aged the same way as a parked request.
+    public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+
+    public override long GetTimestamp() => _now.UtcTicks;
 
     public void Advance(TimeSpan by) => _now += by;
 }
@@ -255,6 +263,27 @@ public sealed class OidcFixedIdentityFactory(string identity) : OidcWebApplicati
                 DisplayName = "Fixed Identity",
                 Membership = new Bifrost.Web.Domain.Membership { Status = MembershipStatus.Active }
             }));
+    }
+}
+
+/// <summary>An OIDC host with extra settings (limits, a brake path) applied after the kit's own.</summary>
+public sealed class OidcSettingsFactory(IReadOnlyDictionary<string, string?> settings) : OidcWebApplicationFactory
+{
+    protected override void ConfigureWebHost(IWebHostBuilder builder)
+    {
+        base.ConfigureWebHost(builder);
+        foreach (var (key, value) in settings)
+        {
+            builder.UseSetting(key, value);
+        }
+    }
+
+    public Task PruneAsync() => Services.GetRequiredService<Bifrost.Web.Features.Oidc.OidcPruner>().PruneAsync(CancellationToken.None);
+
+    public async Task<long> TokenRowsAsync()
+    {
+        using var scope = Services.CreateScope();
+        return await scope.ServiceProvider.GetRequiredService<OpenIddict.Abstractions.IOpenIddictTokenManager>().CountAsync();
     }
 }
 
