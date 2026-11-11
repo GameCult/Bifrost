@@ -5,7 +5,9 @@
 // from another sender becomes a delivery kept in memory, carrying its sender id,
 // its m.mentions user ids and whether the room is a DM. The /sync position
 // (next_batch) is persisted only when an ack covers it, so a restart before the
-// ack re-delivers instead of losing. Reading wakes nothing: the heartbeat polls
+// ack re-delivers instead of losing. A v3 delivery also carries what Matrix proves about why it is for her (basis: direct, tag,
+// reply, room; form: message, notice, edit); names and roles are the heartbeat's to match, not the mouth's (docs/bridge.md,
+// "Addressing facts"). Reading wakes nothing: the heartbeat polls
 // with a non-consuming chat_pending_request and decides who runs. An ack posts nothing to Matrix. Her public
 // m.read receipt follows a chat_read document from Huginn, sent when a delivery has gone into the model's
 // input: the mouth posts m.read at that event id only, for an event it delivered to her, never behind one
@@ -62,6 +64,9 @@ const DM_SCAN = 200; // joined rooms read when looking for an existing DM with a
 const NOT_E2EE = "This room is not end-to-end encrypted: the homeserver can read what is said here.";
 const dayOf = ms => new Date(ms).toISOString().slice(0, 10);
 const HEAD_PAGE = 50; // the room head a gated send reads; also the most ids a RoomMoved receipt names
+
+// The kind of an event for a delivery: an edit (m.replace) and an automated notice (m.notice) are not messages anyone is addressed by.
+const formOf = content => content?.["m.relates_to"]?.rel_type === "m.replace" ? "edit" : content?.msgtype === "m.notice" ? "notice" : "message";
 
 // A message line: a text event with a sender, not an edit.
 const isLine = e => e?.type === "m.room.message" && typeof e.content?.body === "string" && typeof e.sender === "string" && e.sender !== "" && e.content?.["m.relates_to"]?.rel_type !== "m.replace";
@@ -284,6 +289,43 @@ export function createMouth({
     return lines;
   }
 
+  // Why a delivered event is for this Persona, from what Matrix says and nothing else: "direct" (a DM), "tag" (m.mentions lists her
+  // id, or, from a client that sends no m.mentions at all, the body links her matrix.to pill), "reply" (it replies to, or sits in a
+  // thread under, an event her account wrote, so her Self run's words count as hers), "room" (an @room mention). In that order; null
+  // when none holds. Her names, her projects' names and the sender's role are the heartbeat's to match (Huginn address.rs), never the
+  // mouth's. A reply target that cannot be read is null and logged: unknown, not "not hers".
+  async function basisOf(roomId, event) {
+    if (directRooms.has(roomId)) return "direct";
+    const mentions = event.content["m.mentions"];
+    if (Array.isArray(mentions?.user_ids) ? mentions.user_ids.includes(selfId) : mentions === undefined && pillFor(event.content.formatted_body)) return "tag";
+    if (formOf(event.content) === "message" && await repliesToMe(roomId, event.content["m.relates_to"])) return "reply"; // an edit or a notice wakes no one: no fetch for it
+    return mentions?.room === true ? "room" : null;
+  }
+  // A pill is an anchor whose href is exactly her matrix.to link; a longer id, an attribute that merely contains one and a quoted reply do not count.
+  const pillFor = html => typeof html === "string" && [...html.replace(/<mx-reply>[\s\S]*?<\/mx-reply>/gi, "").matchAll(/<a\s[^>]*?href\s*=\s*(["'])(.*?)\1/gi)].some(([, , href]) => [selfId, encodeURIComponent(selfId)].some(id => href === `https://matrix.to/#/${id}`));
+  const authors = new Map(); // `${room id} ${event id}` -> { sender, at }: read results, a failure kept for NEGATIVE_MS, bounded; the key holds the room so another room's reply cannot borrow a hit
+  const NEGATIVE_MS = 60 * 1000;
+  async function authorOf(roomId, eventId) {
+    const key = `${roomId} ${eventId}`;
+    const known = authors.get(key);
+    if (known && (known.sender !== null || now() - known.at < NEGATIVE_MS)) return known.sender;
+    let sender = null;
+    try {
+      const target = await matrix("GET", `/rooms/${encodeURIComponent(roomId)}/event/${encodeURIComponent(eventId)}`, undefined, API, AbortSignal.timeout(sendTimeoutMs));
+      if (target?.room_id === undefined || target.room_id === roomId) sender = typeof target?.sender === "string" ? target.sender : null; // an id from another room is not an answer about this one
+    } catch (error) {
+      say(`reply target ${eventId} not read: ${error.message}`);
+    }
+    authors.set(key, { sender, at: now() });
+    if (authors.size > DELIVERED_INDEX) authors.delete(authors.keys().next().value);
+    return sender;
+  }
+  async function repliesToMe(roomId, relates) {
+    const targets = new Set([relates?.["m.in_reply_to"]?.event_id, relates?.rel_type === "m.thread" ? relates.event_id : undefined].filter(id => typeof id === "string" && id !== ""));
+    for (const id of targets) if (await authorOf(roomId, id) === selfId) return true;
+    return false;
+  }
+
   // The image of one delivered m.image event: { image } (a stored reference) or { refused } (a reason word). With no
   // store nothing is attempted and nothing is said. The url is the event's own content.url; encrypted events and
   // anything the checks refuse leave only the text line.
@@ -351,12 +393,13 @@ export function createMouth({
           const { image = null, refused = null } = await imageOf(roomId, event.content);
           if (refused !== null) say(`image refused: ${refused}`);
           const mentioned = event.content["m.mentions"]?.user_ids;
+          const basis = await basisOf(roomId, event);
           made.push({
             seq: ++seqCounter, roomAlias: alias, roomId, eventId: event.event_id, sender: event.sender,
             senderDisplay: displayNames.get(event.sender) ?? localpart(event.sender), text: bodyText(event.content, docs.limits.textBytes, refused), atUnixMs,
             context, image,
             mentions: Array.isArray(mentioned) ? mentioned.filter(id => typeof id === "string" && id !== "" && id.length <= 255).slice(0, docs.limits.mentions) : [],
-            isDirect: directRooms.has(roomId),
+            isDirect: directRooms.has(roomId), basis, form: formOf(event.content),
           });
           if (image) images.hold(image.path, seqCounter);
         }
@@ -628,12 +671,12 @@ export function connectionIdFor(connectionKey) {
 // The reply to a chat_pending_request: deliveries oldest first, each encoded on its own so one that
 // will not encode is skipped and logged without silencing the rest, up to the reply byte budget.
 // The caller acks what it has read and asks again.
-export function pageOf(persona, deliveries, msgpack, log = () => {}) {
+export function pageOf(persona, deliveries, msgpack, log = () => {}, v3 = false) {
   const page = [];
   let bytes = 0;
   for (const delivery of deliveries) {
     let tuple, size;
-    try { tuple = docs.deliveryTuple(delivery); size = msgpack.encode(tuple).length; } catch (error) {
+    try { tuple = (v3 ? docs.deliveryV3Tuple : docs.deliveryTuple)(delivery); size = msgpack.encode(tuple).length; } catch (error) {
       log(`delivery ${delivery?.seq} skipped: ${error?.message ?? error}`);
       continue;
     }
@@ -661,7 +704,7 @@ export async function startChatEndpoint({ mouths, runtime, port, connectionKey, 
   const respond = (peer, persona, kind, recordKey, tuple) => server.send(peer, "schema", msgpack.encode(cultnet.encodeCultNetMessageForWire(
     docs.envelope({ kind, recordKey, payload: msgpack.encode(tuple), sourceRuntimeId: runtimeId, sourceAgentId: persona, sourceRole: "bifrost-persona-matrix-mouth" }), "cultnet.schema.v0")));
   const refuseUnknown = (peer, persona) => respond(peer, persona, docs.kinds.refusal, persona, docs.refusalTuple({ persona, refusal: "UnknownPersona" }));
-  const served = [docs.kinds.pendingRequest, docs.kinds.ack, docs.kinds.read, docs.kinds.sendRequest, docs.kinds.sendRequestV2, docs.kinds.openDirectRequest];
+  const served = [docs.kinds.pendingRequest, docs.kinds.pendingRequestV3, docs.kinds.ack, docs.kinds.read, docs.kinds.sendRequest, docs.kinds.sendRequestV2, docs.kinds.openDirectRequest];
   const handle = async ({ peer, channelId, payload }) => {
     try {
       if (channelId !== "schema") throw new Error("chat request arrived on a foreign channel");
@@ -678,11 +721,12 @@ export async function startChatEndpoint({ mouths, runtime, port, connectionKey, 
         const mouth = mouths.get(request.persona);
         const receipt = mouth ? await mouth.openDirect(request) : { requestId: request.requestId, outcome: "UnknownPersona", roomId: null, eventId: null };
         respond(peer, request.persona, docs.kinds.openDirectReceipt, receipt.requestId, docs.openDirectReceiptTuple(receipt));
-      } else if (document.schemaId === docs.kinds.pendingRequest) {
+      } else if (document.schemaId === docs.kinds.pendingRequest || document.schemaId === docs.kinds.pendingRequestV3) {
+        const v3 = document.schemaId === docs.kinds.pendingRequestV3; // the kind asked by names the answer: v1 gets the 12-field v2 answer, as before
         const request = docs.parsePendingRequest(tuple);
         const mouth = mouths.get(request.persona);
         if (!mouth) return refuseUnknown(peer, request.persona);
-        respond(peer, request.persona, docs.kinds.pending, request.persona, pageOf(request.persona, mouth.pendingAfter(request.afterSeq), msgpack, log));
+        respond(peer, request.persona, v3 ? docs.kinds.pendingV3 : docs.kinds.pending, request.persona, pageOf(request.persona, mouth.pendingAfter(request.afterSeq), msgpack, log, v3));
       } else if (document.schemaId === docs.kinds.ack) {
         const request = docs.parseAck(tuple);
         const mouth = mouths.get(request.persona);

@@ -173,6 +173,12 @@ test("the RUDP endpoint serves pending, ack and send over CultNet, and answers a
     assert.deepEqual(pending.deliveries.map(d => d.eventId), ["$e1"]);
     assert.deepEqual(pending.deliveries[0], delivery, "sender, mentions and the DM flag cross the wire exactly");
 
+    reply = nextReply();
+    put(docs.kinds.pendingRequestV3, "eureka", docs.pendingRequestTuple({ persona: "eureka", afterSeq: 0 }));
+    document = await reply;
+    assert.equal(document.schemaId, docs.kinds.pendingV3, "the kind asked by names the answer");
+    assert.deepEqual(docs.parsePendingV3(msgpack.decode(document.payload)).deliveries[0], { ...delivery, basis: null, form: "message" });
+
     put(docs.kinds.ack, "eureka:7", docs.ackTuple({ persona: "eureka", throughSeq: 7 }));
     reply = nextReply();
     put(docs.kinds.sendRequest, "req-2", docs.sendRequestTuple({ requestId: "req-2", persona: "eureka", roomAlias: "#operator:gamecult.org", text: "muted" }));
@@ -308,6 +314,24 @@ for (const [name, { tuple, parse }] of Object.entries(v3Samples)) {
     assert.deepEqual(bytes, await readFile(file), "wire bytes changed: Huginn decodes these fixtures");
     assert.deepEqual(parse(msgpack.decode(bytes)), parse(tuple));
     assert.equal(msgpack.decode(bytes)[1][0].length, 12);
+  });
+}
+
+// The pending answer v3 (ChatDelivery v4, basis and form): the bytes Huginn pins in its crates/mind-body/tests/fixtures/persona-chat-v5/.
+const v5Dir = resolve(root, "tests", "fixtures", "persona-chat-v5");
+const v5Samples = {
+  "gamecult.persona.chat_pending_request.v2": { tuple: docs.pendingRequestTuple({ persona: "eureka", afterSeq: 3 }), parse: docs.parsePendingRequest },
+  "gamecult.persona.chat_pending.v3.tag": { tuple: docs.pendingV3Tuple({ persona: "eureka", deliveries: [{ ...delivery, isDirect: false, basis: "tag", form: "message" }] }), parse: docs.parsePendingV3 },
+  "gamecult.persona.chat_pending.v3.unproven-notice": { tuple: docs.pendingV3Tuple({ persona: "eureka", deliveries: [{ ...delivery, isDirect: false, mentions: [], basis: null, form: "notice" }] }), parse: docs.parsePendingV3 },
+};
+for (const [name, { tuple, parse }] of Object.entries(v5Samples)) {
+  test(`golden fixture: ${name} is byte-stable and parses back`, async () => {
+    const bytes = Buffer.from(msgpack.encode(tuple));
+    const file = resolve(v5Dir, `${name}.msgpack`);
+    if (process.env.UPDATE_FIXTURES === "1") { await mkdir(v5Dir, { recursive: true }); await writeFile(file, bytes); }
+    assert.deepEqual(bytes, await readFile(file), "wire bytes changed: Huginn decodes these fixtures");
+    assert.deepEqual(parse(msgpack.decode(bytes)), parse(tuple));
+    if (name.includes("pending.v3")) assert.equal(msgpack.decode(bytes)[1][0].length, 14);
   });
 }
 

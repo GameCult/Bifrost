@@ -9,6 +9,8 @@ import { IMAGE_PATH, MAX_BYTES, MIMES, extensionOf } from "./persona-chat-images
 export const kinds = Object.freeze({
   pendingRequest: "gamecult.persona.chat_pending_request.v1",
   pending: "gamecult.persona.chat_pending.v2",
+  pendingRequestV3: "gamecult.persona.chat_pending_request.v2", // the same tuple as v1; asking by this kind is asking for the v3 answer
+  pendingV3: "gamecult.persona.chat_pending.v3",
   ack: "gamecult.persona.chat_ack.v1",
   read: "gamecult.persona.chat_read.v1",
   sendRequest: "gamecult.persona.chat_send_request.v1",
@@ -52,6 +54,12 @@ export function parsePendingRequest(t) {
   const [persona, afterSeq] = tuple(t, 2, "chat_pending_request");
   return { persona: text(persona, "persona"), afterSeq: seq(afterSeq, "after_seq") };
 }
+
+// What the mouth can establish about a delivery from Matrix alone, for the Persona it is delivered to (see docs/bridge.md, "Addressing facts").
+// `basis` is why the message is for her, or null when the mouth has no proof (not that it is not for her: her names, her projects' names and
+// the sender's role are not the mouth's to know). `form` is the event's kind: only a "message" can address anyone.
+export const bases = Object.freeze(["direct", "tag", "reply", "room"]);
+export const forms = Object.freeze(["message", "notice", "edit"]);
 
 export function ackTuple({ persona, throughSeq }) {
   return [text(persona, "persona"), seq(throughSeq, "through_seq")];
@@ -190,6 +198,23 @@ function parseImage(t) {
   imageTuple({ path, mime, size, sha256 });
   return { path, mime, size, sha256 };
 }
+// The v3 delivery: the 12 fields above, then basis and form.
+export function deliveryV3Tuple(d) {
+  return [...deliveryTuple(d), basis(d.basis ?? null), form(d.form ?? "message")];
+}
+export function parseDeliveryV3(t) {
+  const fields = tuple(t, 14, "delivery_v3");
+  return { ...parseDelivery(fields.slice(0, 12)), basis: basis(fields[12]), form: form(fields[13]) };
+}
+function basis(v) {
+  if (v !== null && !bases.includes(v)) throw new Error(`unknown delivery basis ${String(v)}`);
+  return v;
+}
+function form(v) {
+  if (!forms.includes(v)) throw new Error(`unknown delivery form ${String(v)}`);
+  return v;
+}
+
 export function parseDelivery(t) {
   const [s, roomAlias, roomId, eventId, sender, senderDisplay, body, atUnixMs, context, mentions, isDirect, image] = tuple(t, 12, "delivery");
   if (!Array.isArray(context)) throw new Error("delivery context must be a list");
@@ -210,6 +235,15 @@ export function parsePending(t) {
   const [persona, deliveries] = tuple(t, 2, "chat_pending");
   if (!Array.isArray(deliveries)) throw new Error("chat_pending deliveries must be a list");
   return { persona: text(persona, "persona"), deliveries: deliveries.map(parseDelivery) };
+}
+
+export function pendingV3Tuple({ persona, deliveries }) {
+  return [text(persona, "persona"), deliveries.map(deliveryV3Tuple)];
+}
+export function parsePendingV3(t) {
+  const [persona, deliveries] = tuple(t, 2, "chat_pending_v3");
+  if (!Array.isArray(deliveries)) throw new Error("chat_pending deliveries must be a list");
+  return { persona: text(persona, "persona"), deliveries: deliveries.map(parseDeliveryV3) };
 }
 
 // The CultNet document_put_raw envelope every chat_* document travels in.

@@ -10,7 +10,7 @@ import { createImageStore, RETAIN_MS } from "../tools/persona-chat-images.mjs";
 import { personaStoreRoot } from "./image-bytes.mjs";
 import * as docs from "../tools/persona-chat-documents.mjs";
 import { gif, png, svg } from "./image-bytes.mjs";
-import { createMouth, bodyText, createBrakeReader, guarded, redact, roomsFor, projectRoomsVariable } from "../tools/persona-matrix-mouth.mjs";
+import { createMouth, pageOf, bodyText, createBrakeReader, guarded, redact, roomsFor, projectRoomsVariable } from "../tools/persona-matrix-mouth.mjs";
 
 const TOKEN = "syt_SECRET_TOKEN_9f3";
 const HS_NAME = "gamecult.test";
@@ -1302,4 +1302,176 @@ test("a read report that throws does not wedge the room: the next report still p
   } finally { process.off("unhandledRejection", note); }
   assert.deepEqual(unhandled, [], "no rejection escapes the tail's cleanup");
   assert.equal(hs.receipts().length, 1);
+});
+
+// Addressing facts (docs/bridge.md, "Addressing facts"): why a delivery is for this Persona, as the heartbeat reads it.
+// Each case is one message as a room member sends it, with the basis and form the mouth hands the consumer.
+const META = `@meta:${HS_NAME}`;
+const withContent = (id, sender, content, ts = 3000) => ({ type: "m.room.message", event_id: id, sender, origin_server_ts: ts, content: { msgtype: "m.text", ...content } });
+async function deliver(events, { persona = {}, preload } = {}) {
+  const hs = await fakeHomeserver({
+    preload,
+    sync: since => since === null ? { next_batch: "b0" } : { next_batch: "b1", ...joined({ [ROOM]: { timeline: { events } } }) },
+  });
+  try {
+    const mouth = mouthFor(hs, persona);
+    await mouth.syncOnce();
+    return { made: await mouth.syncOnce(), hs, mouth };
+  } finally { await hs.close(); }
+}
+const facts = made => made.map(d => [d.eventId, d.basis, d.form]);
+
+test("addressing facts: the operator speaking untagged proves nothing, tagged proves a tag, and the tag outranks @room", async () => {
+  const { made } = await deliver([
+    withContent("$plain", META, { body: "everyone, status?" }),
+    withContent("$tag", META, { body: "eureka, status?", "m.mentions": { user_ids: [SELF] } }),
+    withContent("$both", META, { body: "all hands", "m.mentions": { user_ids: [SELF], room: true } }),
+    withContent("$room", META, { body: "@room standup", "m.mentions": { room: true } }),
+  ]);
+  assert.deepEqual(facts(made), [["$plain", null, "message"], ["$tag", "tag", "message"], ["$both", "tag", "message"], ["$room", "room", "message"]]);
+});
+
+test("addressing facts: a tag of another Mind is no basis for this one, and is one for that one", async () => {
+  const hs = await fakeHomeserver({
+    users: { [TOKEN]: SELF, [TOKEN_NOVA]: NOVA },
+    sync: since => since === null ? { next_batch: "b0", ...joined({ [ROOM]: { timeline: { events: [] } } }) } : { next_batch: "b1", ...joined({ [ROOM]: { timeline: { events: [withContent("$n", META, { body: "nova?", "m.mentions": { user_ids: [NOVA] } })] } } }) },
+  });
+  try {
+    const eureka = mouthFor(hs);
+    const nova = mouthFor(hs, { persona: "nova", token: TOKEN_NOVA });
+    for (const m of [eureka, nova]) await m.syncOnce();
+    assert.deepEqual([facts(await eureka.syncOnce()), facts(await nova.syncOnce())], [[["$n", null, "message"]], [["$n", "tag", "message"]]]);
+  } finally { await hs.close(); }
+});
+
+test("addressing facts: a name in the text is not a basis; the mouth does not know names, so every casing and alias reaches the heartbeat with null", async () => {
+  const bodies = ["Eureka, look", "EUREKA", "eureka's PR", "@eureka:gamecult.test please", "Bifrost needs a look"];
+  const { made } = await deliver(bodies.map((body, i) => withContent(`$n${i}`, META, { body })));
+  assert.deepEqual(made.map(d => d.basis), [null, null, null, null, null]);
+  assert.deepEqual(made.map(d => d.text), bodies, "the text is delivered whole for the heartbeat's own name match");
+});
+
+test("addressing facts: a DM is direct whatever it says or carries, a notice in it included", async () => {
+  const DM = "!dm:gamecult.test";
+  const hs = await fakeHomeserver({
+    direct: { [META]: [DM] },
+    sync: since => since === null ? { next_batch: "b0" } : { next_batch: "b1", ...joined({ [DM]: { timeline: { events: [withContent("$dm", META, { body: "hi" }), withContent("$dmn", META, { msgtype: "m.notice", body: "automated" })] } } }) },
+  });
+  try {
+    const mouth = mouthFor(hs);
+    await mouth.syncOnce();
+    assert.deepEqual(facts(await mouth.syncOnce()), [["$dm", "direct", "message"], ["$dmn", "direct", "notice"]]);
+  } finally { await hs.close(); }
+});
+
+test("addressing facts: a notice that tags her carries the tag and the notice form, so the consumer can refuse to wake on it", async () => {
+  const { made } = await deliver([withContent("$w", `@root-watch:${HS_NAME}`, { msgtype: "m.notice", body: "disk 91%", "m.mentions": { user_ids: [SELF] } })]);
+  assert.deepEqual(facts(made), [["$w", "tag", "notice"]]);
+});
+
+test("addressing facts: an edit is its own form and is never read as a new message", async () => {
+  const { made } = await deliver([withContent("$e", META, { body: "* fixed", "m.new_content": { msgtype: "m.text", body: "fixed" }, "m.relates_to": { rel_type: "m.replace", event_id: "$orig" } })]);
+  assert.deepEqual(facts(made), [["$e", null, "edit"]]);
+});
+
+test("addressing facts: a reply to her own words is a reply, in a room and in a thread, and her Self run's words are hers", async () => {
+  const mine = withContent("$mine", SELF, { body: "my earlier say" }, 1000);
+  const theirs = withContent("$theirs", `@nibu:${HS_NAME}`, { body: "someone else's" }, 1001);
+  const reply = to => ({ "m.relates_to": { "m.in_reply_to": { event_id: to } } });
+  const thread = (root, fallback) => ({ "m.relates_to": { rel_type: "m.thread", event_id: root, "m.in_reply_to": { event_id: fallback }, is_falling_back: true } });
+  const { made } = await deliver([
+    withContent("$r1", META, { body: "yes", ...reply("$mine") }),
+    withContent("$r2", META, { body: "no", ...reply("$theirs") }),
+    withContent("$r3", META, { body: "in thread under mine", ...thread("$mine", "$theirs") }),
+    withContent("$r4", META, { body: "in thread under theirs", ...thread("$theirs", "$theirs") }),
+    withContent("$r5", META, { body: "reply, and tagged", ...reply("$mine"), "m.mentions": { user_ids: [SELF] } }),
+  ], { preload: { [ROOM]: [mine, theirs] } });
+  assert.deepEqual(facts(made), [["$r1", "reply", "message"], ["$r2", null, "message"], ["$r3", "reply", "message"], ["$r4", null, "message"], ["$r5", "tag", "message"]]);
+});
+
+test("addressing facts: a reply target the homeserver will not give is null and logged without the token, never a guess", async () => {
+  const logs = [];
+  const { made } = await deliver([withContent("$r", META, { body: "re", "m.relates_to": { "m.in_reply_to": { event_id: "$gone" } } })], { persona: { log: l => logs.push(l) } });
+  assert.deepEqual(facts(made), [["$r", null, "message"]]);
+  assert.ok(logs.some(l => l.includes("reply target $gone not read")) && logs.every(l => !l.includes(TOKEN)));
+});
+
+test("addressing facts: a client that sends no m.mentions is a tag when its body links her matrix.to pill; one that sends m.mentions without her is not", async () => {
+  const pill = id => `<a href="https://matrix.to/#/${id}">Eureka</a>: look`;
+  const { made } = await deliver([
+    withContent("$p1", META, { body: "Eureka: look", format: "org.matrix.custom.html", formatted_body: pill(SELF) }),
+    withContent("$p2", META, { body: "Eureka: look", format: "org.matrix.custom.html", formatted_body: pill(encodeURIComponent(SELF)) }),
+    withContent("$p3", META, { body: "Nova: look", format: "org.matrix.custom.html", formatted_body: pill(NOVA) }),
+    withContent("$p4", META, { body: "Eureka: look", format: "org.matrix.custom.html", formatted_body: pill(SELF), "m.mentions": {} }),
+  ]);
+  assert.deepEqual(made.map(d => d.basis), ["tag", "tag", null, null]);
+});
+
+test("addressing facts: her own messages are no delivery at all, so no basis can wake her on her own words", async () => {
+  const { made } = await deliver([withContent("$self", SELF, { body: "my own", "m.mentions": { user_ids: [SELF] } })]);
+  assert.deepEqual(made, []);
+});
+
+test("addressing facts: the v3 answer carries basis and form; the v2 answer a v1 request gets is the unchanged 12 fields", async () => {
+  const { made } = await deliver([withContent("$t", META, { body: "x", "m.mentions": { user_ids: [SELF] } })]);
+  const pack = { encode: v => Buffer.from(JSON.stringify(v)) };
+  assert.equal(docs.parsePendingV3(pageOf("eureka", made, pack, () => {}, true)).deliveries[0].basis, "tag");
+  const v2 = pageOf("eureka", made, pack);
+  assert.equal(v2[1][0].length, 12);
+  assert.equal(docs.parsePending(v2).deliveries[0].basis, undefined);
+  assert.throws(() => docs.parseDeliveryV3([...docs.deliveryTuple(made[0]), "tag", "poem"]), /unknown delivery form/);
+  assert.throws(() => docs.parseDeliveryV3([...docs.deliveryTuple(made[0]), "everyone", "message"]), /unknown delivery basis/);
+  assert.throws(() => docs.parseDeliveryV3(docs.deliveryTuple(made[0])), /14-field/);
+});
+
+test("addressing facts: a hit read for a reply in one room is not lent to a reply in another room, and a target the server places elsewhere is null", async () => {
+  const mine = { ...withContent("$mine", SELF, { body: "mine" }, 1000), room_id: ROOM };
+  const reply = id => withContent(id, META, { body: "re", "m.relates_to": { "m.in_reply_to": { event_id: "$mine" } } });
+  const hs = await fakeHomeserver({
+    preload: { [ROOM]: [mine], "!operator:gamecult.test": [{ ...mine, room_id: "!elsewhere:gamecult.test" }] },
+    sync: since => since === null ? { next_batch: "b0" } : { next_batch: "b1", ...joined({ [ROOM]: { timeline: { events: [reply("$prime")] } }, "!operator:gamecult.test": { timeline: { events: [reply("$spoof")] } } }) },
+  });
+  try {
+    const mouth = mouthFor(hs);
+    await mouth.syncOnce();
+    assert.deepEqual(facts(await mouth.syncOnce()), [["$prime", "reply", "message"], ["$spoof", null, "message"]]);
+  } finally { await hs.close(); }
+});
+
+test("addressing facts: a pill is her exact matrix.to anchor: a longer id, a non-link attribute and a quoted reply are no tag", async () => {
+  const html = h => ({ body: "x", format: "org.matrix.custom.html", formatted_body: h });
+  const { made } = await deliver([
+    withContent("$a", META, html(`<a href="https://matrix.to/#/${SELF}.evil.org">x</a>`)),
+    withContent("$b", META, html(`<span data-x="https://matrix.to/#/${SELF}">x</span>`)),
+    withContent("$c", META, html(`<a class="x" href='https://matrix.to/#/${SELF}'>Eureka</a>`)),
+    withContent("$d", META, html(`<mx-reply><blockquote><a href="https://matrix.to/#/${SELF}">her</a> said</blockquote></mx-reply>ok`)),
+  ]);
+  assert.deepEqual(made.map(d => d.basis), [null, null, "tag", null]);
+});
+
+test("addressing facts: an edit or a notice replying to her costs no target fetch", async () => {
+  const to = id => ({ "m.relates_to": { "m.in_reply_to": { event_id: id } } });
+  const { made, hs } = await deliver([
+    withContent("$n", META, { msgtype: "m.notice", body: "n", ...to("$noticed") }),
+    withContent("$e", META, { body: "* e", "m.relates_to": { rel_type: "m.replace", event_id: "$orig", "m.in_reply_to": { event_id: "$edited" } } }),
+  ]);
+  assert.deepEqual(facts(made), [["$n", null, "notice"], ["$e", null, "edit"]]);
+  assert.equal(hs.seen.filter(r => r.path.includes("/event/")).length, 0);
+});
+
+test("addressing facts: a target that failed is not refetched within a minute, and is after it", async () => {
+  let t = 1_000_000;
+  const rel = { "m.relates_to": { "m.in_reply_to": { event_id: "$gone" } } };
+  const round = id => joined({ [ROOM]: { timeline: { events: [withContent(id, META, { body: id, ...rel })] } } });
+  const script = { null: { next_batch: "b0" }, b0: { next_batch: "b1", ...round("$r1") }, b1: { next_batch: "b2", ...round("$r2") }, b2: { next_batch: "b3", ...round("$r3") } };
+  const hs = await fakeHomeserver({ sync: since => script[since] ?? { next_batch: since } });
+  const fetched = () => hs.seen.filter(r => r.path.includes("/event/")).length;
+  try {
+    const mouth = mouthFor(hs, { now: () => t });
+    await mouth.syncOnce(); await mouth.syncOnce();
+    t += 59_000; await mouth.syncOnce();
+    assert.equal(fetched(), 1, "inside the minute: not refetched");
+    t += 2_000; await mouth.syncOnce();
+    assert.equal(fetched(), 2, "past the minute: read again");
+  } finally { await hs.close(); }
 });
