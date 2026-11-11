@@ -4,7 +4,7 @@ using System.Text.Json.Serialization;
 namespace Bifrost.Web.Features.Desk;
 
 // The fork-desk documents Bifrost reads or writes, spelled as CultLib's contracts/cultnet/governance/fork-card.md
-// (commit f6c9bf5f) spells them: snake_case keys, every key written (nil where absent), declared in the
+// (commit de8a062a) spells them: snake_case keys, every key written (nil where absent), declared in the
 // contract's key order. Bifrost authors only DeskRefusal and DeskUnavailable. AnswerRequest is the client's body;
 // ForkCard, DeskAnswerDocument and AnswerResult are Huginn's documents, typed here so they pass through unchanged.
 

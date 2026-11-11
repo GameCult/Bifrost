@@ -110,6 +110,54 @@ public sealed class DeskAnswerTests
     }
 
     [Fact]
+    public async Task A_stale_answer_over_an_oversize_fork_follows_the_vector_fresh_and_replayed()
+    {
+        var rows = DeskVectors.Rows("transport", "answerTooLarge").ToList();
+        Assert.Single(rows);
+        foreach (var row in rows)
+        {
+            var (factory, token) = await ArrangeAsync();
+            using (factory)
+            {
+                var request = row["request"]!;
+                var forkId = (string)row["fork_id"]!;
+                Assert.Equal(forkId, (string)request["fork_id"]!);
+                var stale = new AnswerResult(
+                    DeskSchemas.AnswerResult,
+                    new DeskAnswerDocument(
+                        DeskSchemas.DeskAnswer, "n1", forkId, (string)row["outcome"]!, null, null, (string)row["code"]!,
+                        (string)request["options_hash"]!, (string?)request["answer"]!["choice"], (string?)request["answer"]!["note"],
+                        (string)request["answered_at"]!, "2026-11-12T19:02:05Z", false, DeskWebApplicationFactory.Alice, "Operator",
+                        (string)request["request_id"]!),
+                    null,
+                    null);
+                factory.Door.AnswerScript = (_, _, _) => new DeskAnswerOutcome.Answered(stale);
+                factory.Door.ReadScript = (_, id) => new DeskReadOutcome.ForkTooLarge(id);
+                var body = DeskVectors.Bytes(request);
+                var target = DeskReplay.Target("answer", "gamecult-chat", null);
+
+                var fresh = await factory.SendAsync("POST", target, body, token);
+                var replay = await factory.SendAsync("POST", target, body, token);
+
+                foreach (var reply in new[] { fresh, replay })
+                {
+                    Assert.Equal((int)row["httpStatus"]!, reply.Status);
+                    var doc = JsonNode.Parse(reply.Body);
+                    Assert.True(DeskVectors.SameRefusal(doc, row["refusal"], forkId, null), (string)row["name"]!);
+                    Assert.Null(doc!["card"]);
+                }
+
+                Assert.Equal(fresh.Body, replay.Body);
+                // The door got the client's bytes untouched, stored nothing counted, and was asked for the card twice.
+                Assert.All(factory.Door.Calls.Where(c => c.Kind == "answer"), c => Assert.Equal(body, c.Body));
+                Assert.Equal(forkId, factory.Door.Calls.First(c => c.Kind == "read").ForkId);
+                Assert.False((bool)row["counted"]!);
+                Assert.NotEqual("Counted", stale.Answer.Outcome);
+            }
+        }
+    }
+
+    [Fact]
     public async Task Card_read_failure_is_unavailable()
     {
         foreach (var failure in new[] { "throws", "refuses" })
