@@ -318,7 +318,9 @@ export function createMouth({
   let replyReads = 0;
   const cachedTarget = key => {
     const known = authors.get(key);
-    return known && (now() - known.at < TARGET_TTL_MS || (!replyLink && known.sender !== null)) ? known : null;
+    if (!known) return null;
+    if (known.good !== undefined && now() - known.good > KEEP_HIT_MS) return null; // a renewed hit is never served past KEEP_HIT_MS after its last good read, whatever its age
+    return now() - known.at < TARGET_TTL_MS || (!replyLink && known.sender !== null) ? known : null;
   };
   // The quoted text, as a single line (invisible and format characters removed; still untrusted text): nil when the event is redacted (the homeserver strips its content), is not text, or is edited
   // (an edit target, or one with an m.replace bundled: the original body is the pre-edit text, which its author replaced), or is nothing but

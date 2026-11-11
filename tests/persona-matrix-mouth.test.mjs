@@ -1994,3 +1994,29 @@ test("reply link: the fixture excerpts (persona-chat-v6 reply-to-scrubbed and re
   ]);
   assert.deepEqual(made.map(d => d.replyTo.excerpt), ["ignorethisline", "ok\u{1F44D}fine"]);
 });
+
+test("reply link: a kept hit's sender is not served past 10 minutes from the last good read, even by a renewed entry", async () => {
+  const clock = { t: 1_000_000 };
+  let down = false;
+  const hs = await fakeHomeserver({ preload: { [ROOM]: [target("$hers", SELF, "my words")] }, sync: since => since === null ? { next_batch: "b0" } : { next_batch: `b${since}x`, ...joined({ [ROOM]: { timeline: { events: [quoting(`$q${since}`, "$hers")] } } }) } });
+  try {
+    const fetch = (u, o) => (down && String(u).includes("/event/") ? Promise.resolve(new Response("{}", { status: 503 })) : hs.fetch(u, o));
+    const mouth = mouthFor(hs, { replyLink: true, now: () => clock.t, fetch });
+    await mouth.syncOnce();
+    await mouth.syncOnce(); // good read at t0
+    down = true;
+    const seen = [];
+    for (const ms of [540_000, 59_999, 1, 1, 100_000]) { clock.t += ms; seen.push((await mouth.syncOnce())[0].replyTo?.sender ?? null); } // 9:00, 9:59.999, 10:00, 10:00.001, 11:40
+    assert.deepEqual(seen, [SELF, SELF, SELF, null, null]);
+  } finally { await hs.close(); }
+});
+
+test("reply link: the scrub removes U+2065, U+FFF0-FFF8, U+E0080-E00FF and U+E01F0-E0FFF", async () => {
+  const { made } = await linked([quoting("$a", "$t1"), quoting("$b", "$t2"), quoting("$c", "$t3"), quoting("$d", "$t4")], [
+    target("$t1", ALICE_ID, "a\u2065b"),
+    target("$t2", ALICE_ID, "c\uFFF0d\uFFF8e"),
+    target("$t3", ALICE_ID, "f\u{E0080}g\u{E00FF}h"),
+    target("$t4", ALICE_ID, "i\u{E01F0}j\u{E0FFF}k"),
+  ]);
+  assert.deepEqual(made.map(d => d.replyTo.excerpt), ["ab", "cde", "fgh", "ijk"]);
+});

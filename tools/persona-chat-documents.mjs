@@ -229,7 +229,7 @@ export function parseDeliveryV4(t) {
 }
 // A Matrix id as the tuple carries it: its sigil, a non-empty rest, at most 255 bytes, no Unicode whitespace, control, format or private-use characters and no unpaired surrogates.
 // The mouth applies the same test to what a homeserver returned, so a hostile id is no reply_to rather than a skipped delivery.
-export const isMatrixId = (sigil, v) => typeof v === "string" && Buffer.byteLength(v) <= 255 && v.length > 1 && v[0] === sigil && !/[\p{White_Space}\p{Cc}\p{Cf}\p{Co}\uD800-\uDFFF]/u.test(v);
+export const isMatrixId = (sigil, v) => typeof v === "string" && Buffer.byteLength(v) <= 255 && v.length > 1 && v[0] === sigil && !/[\p{White_Space}\p{Cc}\p{Cf}\p{Co}\p{Default_Ignorable_Code_Point}\uD800-\uDFFF]/u.test(v);
 function replyTo(r) {
   if (r === null) return null;
   const { eventId, sender, excerpt = null } = r;
