@@ -231,6 +231,33 @@ public sealed class OidcNoIdentityFactory : OidcWebApplicationFactory
     }
 }
 
+/// <summary>
+/// An OIDC host whose actor accessor reports an Active account holding the given Bifrost identity: how a row minted before
+/// reserved names were refused at creation (or any identity the test needs) reaches the authorize endpoint, since
+/// registration itself now refuses a reserved name.
+/// </summary>
+public sealed class OidcFixedIdentityFactory(string identity) : OidcWebApplicationFactory
+{
+    protected override void ConfigureActors(IServiceCollection services)
+    {
+        services.RemoveAll<ICurrentBifrostActorAccessor>();
+        services.AddScoped<ICurrentBifrostActorAccessor>(_ => new FixedIdentity(identity));
+    }
+
+    private sealed class FixedIdentity(string identity) : ICurrentBifrostActorAccessor
+    {
+        public Task<CurrentBifrostActor> GetAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(new CurrentBifrostActor(true, new UserAccount
+            {
+                Id = Guid.NewGuid(),
+                BifrostIdentity = identity,
+                NormalizedBifrostIdentity = identity, // as given: the guard, not the fixture, must fold case
+                DisplayName = "Fixed Identity",
+                Membership = new Bifrost.Web.Domain.Membership { Status = MembershipStatus.Active }
+            }));
+    }
+}
+
 /// <summary>An OIDC host whose public base URL differs from the origin its requests arrive on, so the issuer cannot be request-derived.</summary>
 public sealed class OidcForeignIssuerFactory : OidcWebApplicationFactory
 {

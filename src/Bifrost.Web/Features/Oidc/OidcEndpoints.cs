@@ -2,6 +2,7 @@ using System.Security.Claims;
 using Microsoft.AspNetCore;
 using Bifrost.Web.Data;
 using Bifrost.Web.Domain;
+using Bifrost.Web.Features.Membership;
 using Bifrost.Web.Features.Shared;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Authentication;
@@ -21,6 +22,7 @@ public static class OidcEndpoints
 {
     public const string NotActiveDescription = "The account is not an active GameCult member.";
     public const string NoIdentityDescription = "The account has no Bifrost identity.";
+    public const string ReservedIdentityDescription = "The account's Bifrost identity is reserved.";
 
     private const string OpenIddictScheme = OpenIddictServerAspNetCoreDefaults.AuthenticationScheme;
     private const string IdentityAuthenticationType = "Bifrost.Oidc";
@@ -56,6 +58,13 @@ public static class OidcEndpoints
         if (string.IsNullOrWhiteSpace(account.NormalizedBifrostIdentity))
         {
             return Deny(Errors.AccessDenied, NoIdentityDescription);
+        }
+
+        // The identity becomes the Matrix localpart. Creation refuses reserved names (BifrostIdentityService), but a row minted
+        // before that refusal may hold one, and there is no rename path: the issuer never vouches for a Mind's or a system's localpart.
+        if (BifrostIdentityService.IsReserved(account.NormalizedBifrostIdentity))
+        {
+            return Deny(Errors.AccessDenied, ReservedIdentityDescription);
         }
 
         var identity = new ClaimsIdentity(IdentityAuthenticationType, Claims.Name, Claims.Role);

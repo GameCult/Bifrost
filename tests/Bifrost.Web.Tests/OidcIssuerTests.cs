@@ -140,6 +140,45 @@ public sealed class OidcIssuerTests : IClassFixture<OidcWebApplicationFactory>
     }
 
     [Theory]
+    [InlineData("meta")] // an operator's or a Mind's Matrix localpart
+    [InlineData("eureka")]
+    [InlineData("admin")]
+    [InlineData("system")] // a system name
+    [InlineData("Heimdall")] // the row's casing does not matter
+    public async Task An_active_member_whose_identity_is_a_reserved_localpart_gets_no_code(string reserved)
+    {
+        using var factory = new OidcFixedIdentityFactory(reserved);
+        using var client = factory.CreateClient(ClientOptions());
+        await RegisterAsync(client, $"cookie-{Guid.NewGuid():N}"); // any session: the actor is the fixed account
+        var request = NewRequest();
+
+        var final = await DriveAsync(client, request);
+
+        var redirect = AssertRedirectToClient(final, request.State);
+        Assert.Equal("access_denied", redirect["error"]);
+        Assert.Equal(Bifrost.Web.Features.Oidc.OidcEndpoints.ReservedIdentityDescription, redirect["error_description"]);
+        Assert.False(redirect.ContainsKey("code"));
+    }
+
+    [Theory]
+    [InlineData("meta2")] // look-alikes are ordinary names
+    [InlineData("admins")]
+    [InlineData("kiko-fan")]
+    public async Task A_name_that_only_resembles_a_reserved_localpart_is_given_a_code(string ordinary)
+    {
+        using var factory = new OidcFixedIdentityFactory(ordinary);
+        using var client = factory.CreateClient(ClientOptions());
+        await RegisterAsync(client, $"cookie-{Guid.NewGuid():N}");
+        var request = NewRequest();
+
+        var final = await DriveAsync(client, request);
+
+        var redirect = AssertRedirectToClient(final, request.State);
+        Assert.True(redirect.ContainsKey("code"));
+        Assert.False(redirect.ContainsKey("error"));
+    }
+
+    [Theory]
     [InlineData("unknown-client", OidcTestKit.RedirectUri, true)]
     [InlineData(OidcTestKit.ClientId, "https://evil.example.test/callback", true)]
     [InlineData(OidcTestKit.ClientId, OidcTestKit.RedirectUri, false)]

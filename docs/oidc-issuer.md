@@ -70,6 +70,10 @@ The authorize endpoint reads the cookie session and the same actor facts the `/A
   `error_description=The account is not an active GameCult member.`
 - Signed in, `Active`, but `NormalizedBifrostIdentity` empty: `error=access_denied` with
   `error_description=The account has no Bifrost identity.`
+- Signed in, `Active`, but the identity is a reserved localpart (`BifrostIdentityService.IsReserved`: the 13 Synapse
+  accounts and the system names, the same 28 as MAS `banned_usernames`): `error=access_denied` with
+  `error_description=The account's Bifrost identity is reserved.` Creation refuses these names, but a row minted before
+  that refusal may hold one and there is no rename path, so the issuer never vouches for a Mind's or a system's localpart. The refusal is at authorize only: a code or access token issued for such a row before this check deployed stays redeemable until it expires (minutes), and token and userinfo re-read membership, not the name. Whether any such row exists is not known from the code; one query of `UserAccounts` against the 28 names would say.
 - Signed in and `Active`: a code is issued.
 - Token endpoint: membership is read again; an account no longer `Active` gets `invalid_grant` and no tokens.
 
@@ -106,6 +110,22 @@ Configure MAS's upstream provider with the issuer above, the client id and secre
 `client_secret_basic`, the id_token signing algorithm `ES256`, scope `openid profile`, and a localpart claim import
 from `preferred_username`. MAS mints the Matrix localpart on first sign-in, so the claim must never change for an
 account.
+
+## Not built
+
+Checked against the Window B list (2026-11-11). Present and tested: discovery, JWKS, authorize/token/userinfo, PKCE S256,
+the one client, claims to a Matrix-legal localpart (`[a-z0-9._-]`, 3-80, lower case), reserved names at creation and now at
+issuance, back-channel logout. Not present:
+
+- **Rate limits and pruning.** No limiter sits on `/connect/*`, and expired OpenIddict rows (parked authorize requests,
+  tokens, authorizations) are never deleted. The authorize endpoint is anonymous and its client id and redirect URI are
+  public, so a caller can park rows without bound. Needs a budget (`FixedWindowBudget`) and a prune.
+- **A brake.** The Bifrost process has none; the deploy brake belongs to Idunn. The only off switch is removing
+  `Bifrost:Oidc` and restarting, or membership leaving `Active` (the reconciler then logs the person out).
+- **Non-member sign-in.** The gate is `Active` membership, so an account with no membership gets `access_denied`. A "Users"
+  tier for chat registration, with no vote, is a policy choice not yet made; nothing here writes membership or votes.
+- **MAS upstream block.** `gamecult-ops` `chat/matrix-auth/config.yaml` has no `upstream_oauth2` (provider ULID,
+  `on_conflict: fail`, `on_backchannel_logout: logout_all`, the redirect URI above); that lives in the ops repo.
 
 ## Remaining scar
 
