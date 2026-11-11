@@ -85,6 +85,29 @@ public sealed class DeskAnswerTests
     }
 
     [Fact]
+    public async Task A_replayed_request_id_that_is_stale_again_takes_the_same_reread_and_gets_the_same_422()
+    {
+        var (factory, token) = await ArrangeAsync();
+        using (factory)
+        {
+            // The door's stored Refused(stale_fork) for this request_id, returned on every replay while the fork stays oversize.
+            factory.Door.AnswerScript = (_, _, _) => new DeskAnswerOutcome.Answered(Stale(DeskReplay.ChatFork));
+            factory.Door.ReadScript = (_, id) => new DeskReadOutcome.ForkTooLarge(id);
+            var body = DeskReplay.AnswerBody(DeskReplay.ChatFork);
+            var target = DeskReplay.Target("answer", "gamecult-chat", null);
+
+            var first = await factory.SendAsync("POST", target, body, token);
+            var replay = await factory.SendAsync("POST", target, body, token);
+
+            Assert.Equal(422, first.Status);
+            Assert.Equal(first.Status, replay.Status);
+            Assert.Equal(first.Body, replay.Body);
+            Assert.Equal(2, factory.Door.Calls.Count(c => c.Kind == "answer"));
+            Assert.Equal(2, factory.Door.Calls.Count(c => c.Kind == "read"));
+        }
+    }
+
+    [Fact]
     public async Task Card_read_failure_is_unavailable()
     {
         foreach (var failure in new[] { "throws", "refuses" })
