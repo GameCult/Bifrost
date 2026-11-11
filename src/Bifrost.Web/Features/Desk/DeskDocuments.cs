@@ -9,7 +9,8 @@ namespace Bifrost.Web.Features.Desk;
 // DeskAnswerDocument, ForkList and AnswerResult are Huginn's documents, typed here so they pass through unchanged.
 // The card (gamecult.fork.card.v0) is deliberately NOT typed: the Huginn door owns what a reader's card holds (the
 // decider view carries ids, the non-decider view withholds them and keeps decider_count), and Bifrost neither reads
-// nor edits it, so it is an opaque JsonElement that keeps every key, number and key order.
+// nor edits it, so it is an opaque JsonElement that keeps every key, key order and integer. The door refuses a float,
+// a binary or an extension value anywhere in a reply (the contract has none), so no number is ever rewritten.
 
 public static class DeskSchemas
 {

@@ -14,14 +14,17 @@ namespace Bifrost.Web.Features.Desk;
 // `unavailable`; this is the one type the client throws for every one of those, so a failure is never an empty page.
 public sealed class DeskDoorException(string message, Exception? inner = null) : Exception(message, inner);
 
-// The production IDeskDoor: a client of Huginn's desk door (Huginn docs/desk-feed-door.md at 9dde93e). One new
+// The production IDeskDoor: a client of Huginn's desk door (Huginn docs/desk-feed-door.md at 79d954c). One new
 // connection per call, one request frame, one reply frame, closed after, all inside one deadline. The client holds no
 // connection state, so a dead socket fails only the calls addressed to that Mind.
 //
 //   frame   = u32 big-endian length || CultNet message (MessagePack map), at most 65536 bytes each way
 //   payload = standard base64 of the named MessagePack of Huginn's externally tagged DeskRequest / DeskResponse
 //
-// The reply is decoded by key, never by position. The card inside an entry is not read: it stays an opaque JsonElement.
+// The reply is decoded by key, never by position, and strictly: every contract document is a closed map whose keys are
+// all present with the right type, a key written twice anywhere is a failure, and so is a float, a binary or an
+// extension value (the contract has none; integers keep every digit). The card inside an entry is not read beyond
+// being a map: it stays an opaque JsonElement, so whatever keys and integers Huginn wrote leave unchanged.
 public sealed partial class UnixSocketDeskDoor : IDeskDoor
 {
     public const int MaxFrameBytes = 65536;
@@ -76,11 +79,7 @@ public sealed partial class UnixSocketDeskDoor : IDeskDoor
         switch (variant)
         {
             case "Answered":
-                var answer = Document<DeskAnswerDocument>(value, "answer");
-                if (answer is null || answer.SchemaVersion != DeskSchemas.DeskAnswer)
-                {
-                    throw new DeskDoorException("the answered document is not gamecult.desk_answer.v0");
-                }
+                var answer = AnswerDocument(value, "answer");
 
                 // Huginn's reply carries no card: a stale_fork answer gets the current card from the edge's read.
                 return new DeskAnswerOutcome.Answered(new AnswerResult(
@@ -114,13 +113,7 @@ public sealed partial class UnixSocketDeskDoor : IDeskDoor
         switch (variant)
         {
             case "Fork":
-                var entry = Document<ForkEntry>(value, "entry");
-                if (entry is null || entry.SchemaVersion != "gamecult.fork.entry.v0" || !IsWholeEntry(entry))
-                {
-                    throw new DeskDoorException("the entry is not gamecult.fork.entry.v0");
-                }
-
-                return new DeskReadOutcome.Found(entry);
+                return new DeskReadOutcome.Found(Entry(Required(value, "entry"), "entry"));
             case "NotStored":
                 var code = RefusalCode(value);
                 // The route's fork id, never the refusal's informational text.
@@ -155,14 +148,10 @@ public sealed partial class UnixSocketDeskDoor : IDeskDoor
         switch (variant)
         {
             case "Forks":
-                var list = Document<ForkList>(value, "list");
-                if (list is null || list.SchemaVersion != "gamecult.fork.list.v0" || list.Mind is null || list.Stamp is null
-                    || list.Forks is null || !list.Forks.All(IsWholeEntry))
-                {
-                    throw new DeskDoorException("the list is not gamecult.fork.list.v0");
-                }
-
-                return new DeskListOutcome.Listed(list);
+                var list = List(Required(value, "list"));
+                return list.Mind == context.Mind
+                    ? new DeskListOutcome.Listed(list)
+                    : throw new DeskDoorException("the list is for another Mind");
             case "NotStored":
                 var code = RefusalCode(value);
                 if (code != DeskRefusals.ForkTooLarge)
@@ -188,21 +177,113 @@ public sealed partial class UnixSocketDeskDoor : IDeskDoor
     [GeneratedRegex(@"\Afork_too_large: fork (?<id>\S+) at order (?<order>0|[1-9][0-9]*) is past the page budget(?:[ ;][^\r\n]*)?\z", RegexOptions.CultureInvariant)]
     private static partial Regex ListTooLarge();
 
-    private static bool IsWholeEntry(ForkEntry entry) =>
-        entry.Card.ValueKind == JsonValueKind.Object && entry.Record is { Answers: not null };
+    // ---- strict documents: a closed map, every key present with its type, then bound to the typed record ----
+
+    private enum Kind
+    {
+        Text,
+        TextOrNull,
+        Flag,
+        Count,
+        Map,
+        Items,
+    }
+
+    private static readonly (string, Kind)[] AnswerKeys =
+    [
+        ("schemaVersion", Kind.Text), ("answer_id", Kind.Text), ("fork_id", Kind.Text), ("outcome", Kind.Text),
+        ("of", Kind.TextOrNull), ("retracts", Kind.TextOrNull), ("code", Kind.TextOrNull), ("options_hash", Kind.Text),
+        ("choice", Kind.TextOrNull), ("note", Kind.TextOrNull), ("answered_at", Kind.Text), ("received_at", Kind.Text),
+        ("claim_in_future", Kind.Flag), ("answerer", Kind.TextOrNull), ("authority", Kind.Text), ("request_id", Kind.Text),
+    ];
+
+    private static void Closed(JsonElement map, string what, string schema, params (string Key, Kind Kind)[] keys)
+    {
+        if (map.ValueKind != JsonValueKind.Object || map.EnumerateObject().Count() != keys.Length)
+        {
+            throw new DeskDoorException($"{what} is not a closed map of {keys.Length} keys");
+        }
+
+        foreach (var (key, kind) in keys)
+        {
+            var ok = Property(map, key) is { } v && kind switch
+            {
+                Kind.Text => v.ValueKind == JsonValueKind.String,
+                Kind.TextOrNull => v.ValueKind is JsonValueKind.String or JsonValueKind.Null,
+                Kind.Flag => v.ValueKind is JsonValueKind.True or JsonValueKind.False,
+                Kind.Count => v.ValueKind == JsonValueKind.Number && v.TryGetInt32(out var n) && n >= 0,
+                Kind.Map => v.ValueKind == JsonValueKind.Object,
+                _ => v.ValueKind == JsonValueKind.Array,
+            };
+            if (!ok)
+            {
+                throw new DeskDoorException($"{what}.{key} is missing or not the contract's type");
+            }
+        }
+
+        if (schema.Length > 0 && Property(map, "schemaVersion")!.Value.GetString() != schema)
+        {
+            throw new DeskDoorException($"{what} is not {schema}");
+        }
+    }
+
+    private static DeskAnswerDocument AnswerDocument(JsonElement value, string what)
+    {
+        var map = Required(value, what);
+        Closed(map, what, DeskSchemas.DeskAnswer, AnswerKeys);
+        return Bind<DeskAnswerDocument>(map, what);
+    }
+
+    private static ForkEntry Entry(JsonElement map, string what)
+    {
+        Closed(map, what, "gamecult.fork.entry.v0", ("schemaVersion", Kind.Text), ("card", Kind.Map), ("record", Kind.Map));
+        var record = Property(map, "record")!.Value;
+        Closed(record, what + ".record", "gamecult.fork.record.v0",
+            ("schemaVersion", Kind.Text), ("fork_id", Kind.Text), ("options_hash", Kind.Text), ("counted_answer_id", Kind.TextOrNull),
+            ("answerer_count", Kind.Count), ("answers", Kind.Items));
+        foreach (var answer in Property(record, "answers")!.Value.EnumerateArray())
+        {
+            Closed(answer, what + ".record.answers[]", DeskSchemas.DeskAnswer, AnswerKeys);
+        }
+
+        return Bind<ForkEntry>(map, what);
+    }
+
+    private static ForkList List(JsonElement map)
+    {
+        Closed(map, "list", "gamecult.fork.list.v0",
+            ("schemaVersion", Kind.Text), ("mind", Kind.Text), ("stamp", Kind.Text), ("open_count", Kind.Count),
+            ("recorded_count", Kind.Count), ("forks", Kind.Items), ("next_cursor", Kind.TextOrNull));
+        foreach (var entry in Property(map, "forks")!.Value.EnumerateArray())
+        {
+            Entry(entry, "list.forks[]");
+        }
+
+        return Bind<ForkList>(map, "list");
+    }
+
+    private static T Bind<T>(JsonElement map, string what)
+    {
+        try
+        {
+            return map.Deserialize<T>(DeskJson.Options) ?? throw new DeskDoorException($"{what} does not decode");
+        }
+        catch (JsonException e)
+        {
+            throw new DeskDoorException($"{what} does not decode", e);
+        }
+    }
+
+    private static JsonElement Required(JsonElement map, string name) =>
+        Property(map, name) ?? throw new DeskDoorException($"{name} is missing");
 
     private static DeskDoorException Unexpected(string variant) =>
         new($"the door answered with {(variant == "Refused" ? "a Mind refusal" : "a variant this call does not take")}");
 
     private static string RefusalCode(JsonElement refusal)
     {
-        if (RequiredString(refusal, "schemaVersion") != DeskSchemas.Refusal)
-        {
-            throw new DeskDoorException("the refusal is not gamecult.fork.refusal.v0");
-        }
-
+        Closed(refusal, "the refusal", DeskSchemas.Refusal, ("schemaVersion", Kind.Text), ("code", Kind.Text), ("error", Kind.Text));
         var code = RequiredString(refusal, "code");
-        _ = RequiredString(refusal, "error");
         return code is DeskRefusals.ForkUnknown or DeskRefusals.BodyInvalid or DeskRefusals.RequestIdConflict or DeskRefusals.ForkTooLarge
             ? code
             : throw new DeskDoorException("the refusal code is not one the contract names");
@@ -363,13 +444,24 @@ public sealed partial class UnixSocketDeskDoor : IDeskDoor
                 throw new DeskDoorException("the reply carries no desk response");
             }
 
-            var payload = new byte[(RequiredString(root, "payload").Length * 3 / 4) + 3];
-            if (!Convert.TryFromBase64String(RequiredString(root, "payload"), payload, out var written))
+            // Strict standard base64: Convert would skip whitespace, so the text must be the canonical encoding of what it decodes to.
+            var text = RequiredString(root, "payload");
+            byte[] payload;
+            try
             {
-                throw new DeskDoorException("the payload is not base64");
+                payload = Convert.FromBase64String(text);
+            }
+            catch (FormatException e)
+            {
+                throw new DeskDoorException("the payload is not base64", e);
             }
 
-            using var body = ToJson(payload.AsMemory(0, written));
+            if (Convert.ToBase64String(payload) != text)
+            {
+                throw new DeskDoorException("the payload is not strict standard base64");
+            }
+
+            using var body = ToJson(payload);
             if (body.RootElement.ValueKind != JsonValueKind.Object)
             {
                 throw new DeskDoorException("the payload is not a tagged variant");
@@ -407,45 +499,100 @@ public sealed partial class UnixSocketDeskDoor : IDeskDoor
         }
     }
 
+    // MessagePack to JSON text by walking the reader: the JSON writer escapes every control character, keys keep their
+    // order, integers keep every digit. A map key that is not text, a key written twice, a float, a binary, an
+    // extension, invalid UTF-8 or nesting past 64 is a failure; none is in the contract.
     private static JsonDocument ToJson(ReadOnlyMemory<byte> messagePack)
     {
         var reader = new MessagePackReader(messagePack);
-        var json = new StringWriter(CultureInfo.InvariantCulture);
-        MessagePackSerializer.ConvertToJson(ref reader, json);
+        var json = new ArrayBufferWriter<byte>();
+        using (var writer = new Utf8JsonWriter(json, new JsonWriterOptions { MaxDepth = 64 }))
+        {
+            Walk(ref reader, writer, 0);
+        }
+
         if (!reader.End)
         {
             throw new DeskDoorException("bytes follow the message");
         }
 
-        return JsonDocument.Parse(json.ToString(), new JsonDocumentOptions { MaxDepth = 64 });
+        return JsonDocument.Parse(json.WrittenMemory, new JsonDocumentOptions { MaxDepth = 64 });
     }
 
-    private static T? Document<T>(JsonElement map, string name)
+    private static void Walk(ref MessagePackReader reader, Utf8JsonWriter writer, int depth)
     {
-        try
+        if (depth > 64)
         {
-            return (Property(map, name) ?? throw new DeskDoorException($"{name} is missing")).Deserialize<T>(DeskJson.Options);
+            throw new DeskDoorException("the message nests past 64");
         }
-        catch (JsonException e)
+
+        switch (reader.NextMessagePackType)
         {
-            throw new DeskDoorException($"{name} does not decode", e);
+            case MessagePackType.Nil:
+                reader.ReadNil();
+                writer.WriteNullValue();
+                break;
+            case MessagePackType.Boolean:
+                writer.WriteBooleanValue(reader.ReadBoolean());
+                break;
+            case MessagePackType.Integer:
+                if (reader.NextCode == MessagePackCode.UInt64)
+                {
+                    writer.WriteNumberValue(reader.ReadUInt64());
+                }
+                else
+                {
+                    writer.WriteNumberValue(reader.ReadInt64());
+                }
+
+                break;
+            case MessagePackType.String:
+                writer.WriteStringValue(Text(ref reader));
+                break;
+            case MessagePackType.Array:
+                var items = reader.ReadArrayHeader();
+                writer.WriteStartArray();
+                for (var i = 0; i < items; i++)
+                {
+                    Walk(ref reader, writer, depth + 1);
+                }
+
+                writer.WriteEndArray();
+                break;
+            case MessagePackType.Map:
+                var pairs = reader.ReadMapHeader();
+                var seen = new HashSet<string>(StringComparer.Ordinal);
+                writer.WriteStartObject();
+                for (var i = 0; i < pairs; i++)
+                {
+                    if (reader.NextMessagePackType != MessagePackType.String)
+                    {
+                        throw new DeskDoorException("a map key is not text");
+                    }
+
+                    var key = Text(ref reader);
+                    if (!seen.Add(key))
+                    {
+                        throw new DeskDoorException($"{key} is written twice");
+                    }
+
+                    writer.WritePropertyName(key);
+                    Walk(ref reader, writer, depth + 1);
+                }
+
+                writer.WriteEndObject();
+                break;
+            default:
+                throw new DeskDoorException("the message holds a float, binary or extension value, which the contract does not use");
         }
     }
 
-    // A key's value by name; a key written twice is a fault, not a choice.
-    private static JsonElement? Property(JsonElement map, string name)
-    {
-        JsonElement? found = null;
-        foreach (var property in map.EnumerateObject())
-        {
-            if (property.Name == name)
-            {
-                found = found is null ? property.Value : throw new DeskDoorException($"{name} is written twice");
-            }
-        }
+    private static string Text(ref MessagePackReader reader) =>
+        StrictUtf8.GetString(reader.ReadStringSequence() ?? throw new DeskDoorException("text is nil"));
 
-        return found;
-    }
+    // A key's value by name; a key written twice never gets here (the walk refuses it).
+    private static JsonElement? Property(JsonElement map, string name) =>
+        map.ValueKind == JsonValueKind.Object && map.TryGetProperty(name, out var value) ? value : null;
 
     private static string RequiredString(JsonElement map, string name) =>
         Property(map, name) is { ValueKind: JsonValueKind.String } value
