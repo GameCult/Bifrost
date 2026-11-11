@@ -177,6 +177,8 @@ public sealed class IndexModel(
         }
         else if (!(user.Id == Actor.UserAccount.Id && role == MemberRole.PlatformAdmin))
         {
+            // Out of the collection too, so the flags below derive from the roles as they will stand after the save.
+            user.Membership.RoleAssignments.Remove(existingAssignment);
             dbContext.RoleAssignments.Remove(existingAssignment);
         }
 
