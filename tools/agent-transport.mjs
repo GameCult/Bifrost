@@ -21,13 +21,15 @@ const defaultPersonaName = "Bifrost";
 const defaultPersonaAvatarUrl =
   "https://raw.githubusercontent.com/GameCult/Bifrost/main/src/Bifrost.Web/wwwroot/img/bifrost-profile.png";
 
+const cultLibRoot = resolve(process.env.VOIDBOT_CULTLIB_ROOT || resolve(projectsRoot, "CultLib"));
+
 const cultCachePackagePath = resolveFirstExisting("CultCache TypeScript runtime", [
-  resolve(projectsRoot, "CultLib", "packages", "cultcache-ts", "package.json"),
+  resolve(cultLibRoot, "packages", "cultcache-ts", "package.json"),
   resolve(projectsRoot, "CultCacheTS", "package.json"),
   resolve(projectsRoot, "CultCacheTS", "node_modules", "cultcache-ts", "package.json"),
 ]);
 const cultNetPackagePath = resolveFirstExisting("CultNet TypeScript runtime", [
-  resolve(projectsRoot, "CultLib", "packages", "cultnet-ts", "package.json"),
+  resolve(cultLibRoot, "packages", "cultnet-ts", "package.json"),
   resolve(projectsRoot, "CultNetTS", "package.json"),
 ]);
 const cultCacheRequire = createRequire(cultCachePackagePath);

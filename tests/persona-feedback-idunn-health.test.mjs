@@ -8,7 +8,8 @@ import { resolve } from "node:path";
 import { enrollBifrostFeedbackIdentity, providerHealthIdentity, signFeedbackAdmission } from "../tools/bifrost-feedback-identity.mjs";
 import { createPersonaFeedbackHealthPublisher, createSignedHealthRawPut, createSignedPersonaFeedbackHealth, signedHealthSourceRole } from "../tools/persona-feedback-idunn-health.mjs";
 
-const root=resolve(import.meta.dirname,".."),cult=resolve(root,"..","CultLib"),require=createRequire(resolve(cult,"packages","cultnet-ts","package.json")),{encode,decode}=require("@msgpack/msgpack");
+import { cultLibRoot } from "./cultlib-root.mjs";
+const root=resolve(import.meta.dirname,".."),cult=cultLibRoot,require=createRequire(resolve(cult,"packages","cultnet-ts","package.json")),{encode,decode}=require("@msgpack/msgpack");
 const idDomain=Buffer.from("gamecult.provider-health.identity.v1\0"),signatureDomain=Buffer.from("gamecult.provider-health.signature.v1\0"),purpose=Buffer.from("idunn.signed_daemon_health.v1");
 
 test("Persona-feedback emits the exact canonical signed daemon-health tuple",async()=>{

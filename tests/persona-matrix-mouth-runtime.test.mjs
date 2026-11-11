@@ -1,9 +1,10 @@
 // The parts of the Matrix mouth that sit on CultLib: the chat_* wire documents, the
 // CultCache cursor and brake stores, and the CultNet RUDP endpoint. Needs the built
-// CultLib TypeScript packages (CULTLIB_ROOT, else ../CultLib), like the other Bifrost tests. CultLib's dist/ is gitignored:
+// CultLib TypeScript packages (VOIDBOT_CULTLIB_ROOT, else ../CultLib), like the other Bifrost tests. CultLib's dist/ is gitignored:
 // run `npm ci && npm run build:ts` there first. Since CultLib 286a9af the packages are @gamecult/cultcache-ts,
 // @gamecult/cultnet-ts and @gamecult/cultmesh-ts; the directories under packages/ keep their short names.
 import test from "node:test";
+import { cultLibRoot } from "./cultlib-root.mjs";
 import assert from "node:assert/strict";
 import dgram from "node:dgram";
 import { createServer } from "node:http";
@@ -15,7 +16,7 @@ import * as docs from "../tools/persona-chat-documents.mjs";
 import { createMouth, cultcacheState, connectionIdFor, createBrakeReader, loadRuntime, pageOf, startChatEndpoint } from "../tools/persona-matrix-mouth.mjs";
 
 const root = resolve(import.meta.dirname, "..");
-const runtime = loadRuntime(resolve(process.env.CULTLIB_ROOT ?? resolve(root, "..", "CultLib")));
+const runtime = loadRuntime(cultLibRoot);
 const { msgpack } = runtime;
 const fixtureDir = resolve(import.meta.dirname, "fixtures", "persona-chat-v1");
 
@@ -256,7 +257,7 @@ test("one process serves N Personas from systemd credentials: each token only in
   probe.close();
   const child = spawn(process.execPath, [resolve(root, "tools", "persona-matrix-mouth.mjs")], {
     env: {
-      PATH: process.env.PATH, CULTLIB_ROOT: resolve(process.env.CULTLIB_ROOT ?? resolve(root, "..", "CultLib")), PERSONAS: "eureka,nova", CREDENTIALS_DIRECTORY: creds, CONTROL_ROOT: control,
+      PATH: process.env.PATH, CULTLIB_ROOT: cultLibRoot, PERSONAS: "eureka,nova", CREDENTIALS_DIRECTORY: creds, CONTROL_ROOT: control,
       STATE_DIRECTORY: stateDir, MATRIX_HOMESERVER: `http://127.0.0.1:${hs.address().port}`, MATRIX_ROOMS: "#swarm:t", MATRIX_SERVER_NAME: "t", CHAT_RUDP_LISTEN: `127.0.0.1:${port}`,
     },
   });
