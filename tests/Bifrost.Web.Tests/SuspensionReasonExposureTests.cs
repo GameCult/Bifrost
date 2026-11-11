@@ -65,7 +65,7 @@ public sealed class SuspensionReasonExposureTests
             return model.Users;
         }
 
-        Assert.All(await UsersSeenBy(admin: false), u => Assert.DoesNotContain(Canary, u.SuspensionReason));
+        Assert.All(await UsersSeenBy(admin: false), u => Assert.Equal(string.Empty, u.SuspensionReason)); // not even the legacy-row marker leaves the projection for a non-admin
         Assert.Contains(await UsersSeenBy(admin: true), u => u.SuspensionReason == Canary);
     }
 

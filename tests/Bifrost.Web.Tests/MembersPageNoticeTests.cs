@@ -229,7 +229,7 @@ public sealed class MembersPageNoticeTests(TestWebApplicationFactory factory) : 
         using (var scope = factory.Services.CreateScope())
         {
             legacyRows = await scope.ServiceProvider.GetRequiredService<BifrostDbContext>().Memberships
-                .CountAsync(x => x.Status == MembershipStatus.Suspended && (x.SuspensionReason == null || x.SuspensionReason == ""));
+                .CountAsync(x => x.Status == MembershipStatus.Suspended && (x.SuspensionReason == null || x.SuspensionReason.Trim() == ""));
         }
 
         Assert.Contains("Suspended before reasons were recorded", html);
@@ -257,6 +257,52 @@ public sealed class MembersPageNoticeTests(TestWebApplicationFactory factory) : 
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.DoesNotContain("before reasons were recorded", html);
+    }
+
+    [Theory]
+    [InlineData("ToggleRole")]
+    [InlineData("SetTier")]
+    public async Task ToggleRole_and_SetTier_on_an_unknown_account_are_refused_with_a_notice_and_write_nothing(string handler)
+    {
+        using var client = Client();
+        _ = await SignedInAdminIdAsync(client);
+        var before = await RowCountsAsync();
+        int receipts;
+        using (var scope = factory.Services.CreateScope())
+        {
+            receipts = await scope.ServiceProvider.GetRequiredService<BifrostDbContext>().AuditEvents.CountAsync();
+        }
+
+        var html = await PostThenFollowAsync(client, handler, Guid.NewGuid(), "", role: "Producer");
+
+        Assert.Contains("does not exist", Alert.Match(html).Groups[1].Value);
+        Assert.Equal(before, await RowCountsAsync());
+        using var after = factory.Services.CreateScope();
+        Assert.Equal(receipts, await after.ServiceProvider.GetRequiredService<BifrostDbContext>().AuditEvents.CountAsync());
+    }
+
+    [Fact]
+    public async Task A_whitespace_only_stored_reason_shows_the_neutral_text_to_an_admin()
+    {
+        using var client = Client();
+        _ = await SignedInAdminIdAsync(client);
+        var member = await SeedMemberAsync(MembershipStatus.Suspended);
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
+            (await db.Memberships.SingleAsync(x => x.UserAccountId == member)).SuspensionReason = "   ";
+            await db.SaveChangesAsync();
+        }
+
+        var html = await client.GetStringAsync("/App/Members");
+
+        Assert.DoesNotContain("Suspended:    <", html);
+        using var check = factory.Services.CreateScope();
+        var db2 = check.ServiceProvider.GetRequiredService<BifrostDbContext>();
+        var whitespaceRows = await db2.Memberships.CountAsync(x => x.Status == MembershipStatus.Suspended && x.SuspensionReason != null && x.SuspensionReason.Trim() == "");
+        Assert.True(whitespaceRows >= 1);
+        Assert.Equal(await db2.Memberships.CountAsync(x => x.Status == MembershipStatus.Suspended && (x.SuspensionReason == null || x.SuspensionReason.Trim() == "")),
+            Regex.Matches(html, "Suspended before reasons were recorded").Count);
     }
 
     [Fact]

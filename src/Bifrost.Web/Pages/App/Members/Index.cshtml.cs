@@ -190,7 +190,13 @@ public sealed class IndexModel(
         var user = await dbContext.UserAccounts
             .Include(x => x.Membership!)
                 .ThenInclude(x => x.RoleAssignments)
-            .SingleAsync(x => x.Id == userAccountId, cancellationToken);
+            .SingleOrDefaultAsync(x => x.Id == userAccountId, cancellationToken);
+
+        if (user is null)
+        {
+            Notice = RefusalNotices[SuspensionOutcome.NoSuchAccount];
+            return RedirectToPage();
+        }
 
         if (user.Membership is null)
         {
@@ -268,7 +274,13 @@ public sealed class IndexModel(
         var user = await dbContext.UserAccounts
             .Include(x => x.Membership!)
                 .ThenInclude(x => x.TierSnapshots)
-            .SingleAsync(x => x.Id == userAccountId, cancellationToken);
+            .SingleOrDefaultAsync(x => x.Id == userAccountId, cancellationToken);
+
+        if (user is null)
+        {
+            Notice = RefusalNotices[SuspensionOutcome.NoSuchAccount];
+            return RedirectToPage();
+        }
 
         if (user.Membership is null)
         {
