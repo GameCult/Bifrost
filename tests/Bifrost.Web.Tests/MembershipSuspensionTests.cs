@@ -94,6 +94,33 @@ public sealed class MembershipSuspensionTests : IClassFixture<TestWebApplication
         Assert.Equal(MembershipStatus.Active, await StatusAsync(seed.OtherAdminId));
     }
 
+    [Fact]
+    public async Task A_suspension_reason_does_not_reach_the_member_dashboard_snapshot()
+    {
+        var seed = await SeedAsync();
+        await SuspendAsync(seed.AdminId, seed.MemberId, "private-reason-canary");
+
+        var snapshot = await InScopeAsync(async (sp, _) => await sp.GetRequiredService<DashboardSnapshotService>().GetAsync(seed.OrdinaryId, CancellationToken.None));
+
+        Assert.DoesNotContain(snapshot.RecentActivity, x => x.Detail.Contains("private-reason-canary"));
+        Assert.Contains(await AuditAsync("membership.suspended"), x => x.Detail.Contains("private-reason-canary"));
+    }
+
+    [Fact]
+    public async Task A_role_granted_admin_is_protected_like_a_flagged_one()
+    {
+        var seed = await SeedAsync();
+        await InScopeAsync(async (_, db) =>
+        {
+            var membership = await db.Memberships.SingleAsync(x => x.UserAccountId == seed.MemberId);
+            db.RoleAssignments.Add(new RoleAssignment { MembershipId = membership.Id, Role = MemberRole.PlatformAdmin });
+            await db.SaveChangesAsync();
+            return 0;
+        });
+
+        Assert.Equal(SuspensionOutcome.ProtectedAccount, await SuspendAsync(seed.AdminId, seed.MemberId, "role admin"));
+    }
+
     [Theory]
     [InlineData(true, MembershipStatus.Active)]
     [InlineData(false, MembershipStatus.Authenticated)]

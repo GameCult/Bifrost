@@ -363,7 +363,8 @@ public sealed class Membership
 
 public sealed class RoleAssignment
 {
-    public Guid Id { get; set; } = Guid.NewGuid();
+    // Left empty until saved: a key preset on a row added to an already-saved membership makes EF treat it as existing and fail the save.
+    public Guid Id { get; set; }
 
     public Guid MembershipId { get; set; }
 

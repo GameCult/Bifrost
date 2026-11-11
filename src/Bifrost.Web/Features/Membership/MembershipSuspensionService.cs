@@ -21,7 +21,7 @@ public enum SuspensionOutcome
 /// sign-in leave a Suspended membership as it is). Unsuspending restores Active for an account that was once approved,
 /// Authenticated for one that never was; a pending request is not remembered.
 /// </summary>
-public sealed class MembershipSuspensionService(BifrostDbContext dbContext, AuditTrailService auditTrailService, TimeProvider timeProvider)
+public sealed class MembershipSuspensionService(BifrostDbContext dbContext, AuditTrailService auditTrailService)
 {
     public const int MaxReasonLength = 500;
 
@@ -43,14 +43,15 @@ public sealed class MembershipSuspensionService(BifrostDbContext dbContext, Audi
             return SuspensionOutcome.NoReason;
         }
 
-        var user = await dbContext.UserAccounts.Include(x => x.Membership).SingleOrDefaultAsync(x => x.Id == userAccountId, cancellationToken);
+        var user = await dbContext.UserAccounts.Include(x => x.Membership!).ThenInclude(x => x.RoleAssignments).SingleOrDefaultAsync(x => x.Id == userAccountId, cancellationToken);
         if (user?.Membership is not { } membership)
         {
             return SuspensionOutcome.NoSuchAccount;
         }
 
-        // An admin cannot suspend themselves or another platform admin here: bootstrap admins are re-promoted at sign-in by configuration.
-        if (suspend && (user.Id == actor.UserAccount.Id || membership.IsPlatformAdmin))
+        // An admin cannot suspend themselves or another platform admin here (the same derivation that makes an actor an admin):
+        // bootstrap admins are re-promoted to Active at sign-in by configuration, so the suspension would be undone without a receipt.
+        if (suspend && (user.Id == actor.UserAccount.Id || new CurrentBifrostActor(true, user).IsPlatformAdmin))
         {
             return SuspensionOutcome.ProtectedAccount;
         }
@@ -65,7 +66,7 @@ public sealed class MembershipSuspensionService(BifrostDbContext dbContext, Audi
             ? MembershipStatus.Suspended
             : membership.ApprovedAtUtc is null ? MembershipStatus.Authenticated : MembershipStatus.Active;
         var clipped = reason.Trim().Length > MaxReasonLength ? reason.Trim()[..MaxReasonLength] : reason.Trim();
-        await dbContext.SaveChangesAsync(cancellationToken);
+        // One save: the status change and its receipt stand or fall together (RecordAsync saves the shared context).
         await auditTrailService.RecordAsync(
             actor.UserAccount.Id,
             nameof(Membership),

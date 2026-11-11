@@ -865,10 +865,8 @@ public sealed class HeimdallCompletionTests
         }
     }
 
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task A_suspended_account_stays_suspended_through_a_sign_in_with_or_without_the_member_claim(bool asksForMemberAccess)
+    [Fact]
+    public async Task A_suspended_account_stays_suspended_and_gains_no_role_through_a_sign_in_with_the_member_claim()
     {
         using var host = new HeimdallHost();
         var accountId = HeimdallShapes.NewAccountId();
@@ -881,10 +879,28 @@ public sealed class HeimdallCompletionTests
             return 0;
         });
 
-        var again = await Genuine(host, await host.StartAsync(member: asksForMemberAccess), accountId, ["member_access"]);
+        var rolesBefore = (await host.Account(accountId))!.Membership!.RoleAssignments.Count;
+        var again = await Genuine(host, await host.StartAsync(member: true), accountId, ["member_access"]);
 
         Assert.True(again.SignedIn);
-        Assert.Equal(MembershipStatus.Suspended, (await host.Account(accountId))!.Membership!.Status);
+        var after = (await host.Account(accountId))!.Membership!;
+        Assert.Equal(MembershipStatus.Suspended, after.Status);
+        Assert.Equal(rolesBefore, after.RoleAssignments.Count);
+    }
+
+    [Fact]
+    public async Task A_chat_only_account_that_later_signs_in_with_member_access_becomes_a_member()
+    {
+        using var host = new HeimdallHost();
+        var accountId = HeimdallShapes.NewAccountId();
+        Assert.True((await Genuine(host, await host.StartAsync(member: false), accountId)).SignedIn);
+        Assert.Equal(MembershipStatus.Authenticated, (await host.Account(accountId))!.Membership!.Status);
+
+        Assert.True((await Genuine(host, await host.StartAsync(member: true), accountId, ["member_access"])).SignedIn);
+
+        var account = (await host.Account(accountId))!;
+        Assert.Equal(MembershipStatus.Active, account.Membership!.Status);
+        Assert.Contains(account.Membership.RoleAssignments, x => x.Role == MemberRole.StandardMember);
     }
 
     [Fact]
