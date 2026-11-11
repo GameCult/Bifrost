@@ -334,6 +334,9 @@ public sealed class Membership
 
     public MembershipStatus Status { get; set; } = MembershipStatus.Authenticated;
 
+    /// <summary>Why an admin suspended the account; set and cleared only by <c>MembershipSuspensionService</c> and projected only to admins.</summary>
+    public string? SuspensionReason { get; set; }
+
     public bool IsPlatformAdmin { get; set; }
 
     public bool CanManageProjects { get; set; }
