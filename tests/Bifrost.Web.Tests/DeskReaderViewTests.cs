@@ -5,7 +5,7 @@ using Bifrost.Web.Tests.Support;
 
 namespace Bifrost.Web.Tests;
 
-// CultLib 3a51bbab's reader views, as Bifrost meets them: the 17-key card (raised_at, decider_count) stays opaque,
+// CultLib d3025d3c's reader views (append-only on 3a51bbab), as Bifrost meets them: the 17-key card (raised_at, decider_count) stays opaque,
 // the record is typed with answerer_count, and answerer is nil in a non-decider's view.
 public sealed class DeskReaderViewTests
 {
@@ -43,6 +43,7 @@ public sealed class DeskReaderViewTests
     public void The_options_hash_vectors_are_the_15_and_Bifrost_computes_no_hash()
     {
         Assert.Equal(15, DeskVectors.Array("optionsHash").Count);
+        Assert.Equal(9, DeskVectors.Array("bodyDigests").Count);
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
         while (directory is not null && !Directory.Exists(Path.Combine(directory.FullName, "src", "Bifrost.Web", "Features", "Desk")))
         {
@@ -62,8 +63,10 @@ public sealed class DeskReaderViewTests
     public void Stored_answers_round_trip_and_every_variant_carries_a_nil_answerer_with_the_key_written()
     {
         var rows = DeskVectors.Rows("deskAnswer", "valid").ToList();
-        Assert.Equal(6, rows.Count);
+        Assert.Equal(8, rows.Count);
         Assert.Contains(rows, r => (string)r["name"]! == "withheld_answerer");
+        Assert.Contains(rows, r => (string)r["name"]! == "withheld_answerer_revision" && (string)r["message"]!["outcome"]! == "Revision");
+        Assert.Contains(rows, r => (string)r["name"]! == "withheld_answerer_retraction" && (string)r["message"]!["outcome"]! == "Retraction");
         var outcomes = new HashSet<string>();
         foreach (var row in rows)
         {
@@ -87,7 +90,7 @@ public sealed class DeskReaderViewTests
     public void Entries_in_both_views_round_trip_and_the_shape_faults_Bifrost_can_see_are_refused()
     {
         var valid = DeskVectors.Rows("transport", "entry", "valid").ToList();
-        Assert.Equal(6, valid.Count);
+        Assert.Equal(8, valid.Count);
         foreach (var row in valid)
         {
             var message = row["message"]!;

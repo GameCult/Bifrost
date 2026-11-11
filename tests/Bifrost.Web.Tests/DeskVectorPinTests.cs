@@ -6,8 +6,9 @@ namespace Bifrost.Web.Tests;
 public sealed class DeskVectorPinTests
 {
     [Fact]
-    public void Vectors_are_cultlib_3a51bbab()
+    public void Vectors_are_cultlib_d3025d3c()
     {
+        Assert.StartsWith("d3025d3c", DeskVectors.SourceCommit, StringComparison.Ordinal);
         var sha = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(DeskVectors.Path))).ToLowerInvariant();
 
         Assert.True(

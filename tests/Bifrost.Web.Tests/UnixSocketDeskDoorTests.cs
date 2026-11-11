@@ -8,7 +8,7 @@ using Bifrost.Web.Tests.Support;
 
 namespace Bifrost.Web.Tests;
 
-// The production door against a real unix socket and Huginn's golden frames (fixtures at Huginn 79d954c).
+// The production door against a real unix socket and Huginn's golden frames (fixtures at Huginn b299d6f7, vectors at CultLib d3025d3c).
 public sealed class UnixSocketDeskDoorTests
 {
     private const string Fork = "eureka-substrate:question:desk-listing-authority";
@@ -242,134 +242,168 @@ public sealed class UnixSocketDeskDoorTests
 
     // ---- (c2) both reader views through the door and the edge ----
 
-    // Huginn's fragments at 79d954c, as JSON. record-whole is the decider's view as Huginn sent it before
-    // answerer_count existed; record-non-decider.proposed is a PROPOSED mirror type built in Huginn's test (the
-    // non-decider view, every answerer nil, answerer_count 2); card-viewers-*.synthetic are SYNTHETIC two-key
-    // fragments, not cards. Bifrost reads none of them as anything but what they are: a record, and two keys a card
-    // carries.
+    // What each piece of the fixtures directory is (its two READMEs):
+    //  - record-whole is HUGINN's own encoder output at b299d6f7: gamecult.fork.record.v0 with all four answer variants
+    //    by three accounts, notes and ids whole. It has 5 keys and NO answerer_count: what the door sends today.
+    //  - cultlib-3a51bbab/*.msgpack are CULTLIB's bytes (twelve vectors pinned to 3a51bbab, each a vector's
+    //    messagePackHex decoded), vendored unedited. They are NOT Huginn output; Huginn's types do not carry those
+    //    shapes yet. Bifrost reads them as the contract (vectors file d3025d3c, append-only on 3a51bbab) spells them.
     private static JsonObject Fragment(string name) =>
         JsonNode.Parse(MessagePackSerializer.ConvertToJson(File.ReadAllBytes(
             Path.Combine(DeskFeedFixturePinTests.Directory, name + ".payload.msgpack"))))!.AsObject();
 
-    // The decider's view as the CultLib 3a51bbab contract spells it: record-whole with answerer_count (the number of
-    // distinct ids over its two answers) in the contract's place, after counted_answer_id. Huginn's record-whole does
-    // not carry it yet.
-    private static JsonObject DeciderRecord()
+    private static byte[] CultLib(string name) =>
+        File.ReadAllBytes(Path.Combine(DeskFeedFixturePinTests.Directory, "cultlib-3a51bbab", name + ".msgpack"));
+
+    private static JsonObject CultLibJson(string name) => JsonNode.Parse(MessagePackSerializer.ConvertToJson(CultLib(name)))!.AsObject();
+
+    // file, vector section, vector name (the vector whose messagePackHex the file holds)
+    public static TheoryData<string, string, string> CultLibFiles() => new()
     {
-        var whole = Fragment("record-whole");
-        var record = new JsonObject();
-        foreach (var (key, value) in whole.ToList())
+        { "card-operator-fork", "card/valid", "operator_fork" },
+        { "card-raised-at-nil", "card/valid", "raised_at_nil" },
+        { "card-withheld-deciders", "card/valid", "withheld_deciders" },
+        { "answer-counted", "deskAnswer/valid", "counted" },
+        { "answer-revision", "deskAnswer/valid", "revision" },
+        { "answer-retraction", "deskAnswer/valid", "retraction" },
+        { "answer-withheld-answerer", "deskAnswer/valid", "withheld_answerer" },
+        { "answer-refused-stale", "deskAnswer/valid", "refused_stale" },
+        { "entry-open-counted", "transport/entry/valid", "open_counted" },
+        { "entry-withheld-open-counted", "transport/entry/valid", "withheld_open_counted" },
+        { "entry-closed-with-ruling-and-a-refusal", "transport/entry/valid", "closed_with_ruling_and_a_refusal" },
+        { "entry-withheld-closed-with-ruling-and-a-refusal", "transport/entry/valid", "withheld_closed_with_ruling_and_a_refusal" },
+    };
+
+    [Theory]
+    [MemberData(nameof(CultLibFiles))]
+    public void Each_CultLib_file_is_its_vectors_wire_bytes_in_the_vendored_vectors_file(string file, string section, string name)
+    {
+        var vector = DeskVectors.Rows(section.Split('/')).Single(r => (string)r["name"]! == name);
+
+        Assert.Equal((string)vector["messagePackHex"]!, Convert.ToHexString(CultLib(file)), ignoreCase: true);
+        Assert.True(DeskVectors.SameShape(vector["message"], CultLibJson(file)), file);
+    }
+
+    [Fact]
+    public void The_CultLib_files_are_the_shapes_their_README_names()
+    {
+        // Card: 18 keys (DE 00 12), raised_at a string / nil with the key kept, deciders whole or withheld with the count.
+        Assert.Equal([0xde, 0x00, 0x12], CultLib("card-operator-fork")[..3]);
+        Assert.Equal(1, (int)CultLibJson("card-operator-fork")["decider_count"]!);
+        Assert.NotEmpty(CultLibJson("card-operator-fork")["deciders"]!.AsArray());
+        Assert.Equal(JsonValueKind.String, CultLibJson("card-operator-fork")["raised_at"]!.GetValueKind());
+        Assert.True(CultLibJson("card-raised-at-nil").ContainsKey("raised_at"));
+        Assert.Null(CultLibJson("card-raised-at-nil")["raised_at"]);
+        Assert.Empty(CultLibJson("card-withheld-deciders")["deciders"]!.AsArray());
+        Assert.Equal(2, (int)CultLibJson("card-withheld-deciders")["decider_count"]!);
+
+        // Answers: 16 keys (DE 00 10), answerer a string except the withheld one.
+        foreach (var answer in new[] { "answer-counted", "answer-revision", "answer-retraction", "answer-refused-stale", "answer-withheld-answerer" })
         {
-            whole.Remove(key);
-            record[key] = value;
-            if (key == "counted_answer_id")
-            {
-                record["answerer_count"] = 2;
-            }
+            Assert.Equal([0xde, 0x00, 0x10], CultLib(answer)[..3]);
+            Assert.Equal(answer == "answer-withheld-answerer", CultLibJson(answer)["answerer"] is null);
         }
 
-        return record;
+        // Entries: header 83, record header 86 with answerer_count the fifth key; the decider view names every answerer,
+        // its non-decider twin none, and the count is the same in both.
+        foreach (var (decider, withheld) in new[] { ("entry-open-counted", "entry-withheld-open-counted"), ("entry-closed-with-ruling-and-a-refusal", "entry-withheld-closed-with-ruling-and-a-refusal") })
+        {
+            Assert.Equal(0x83, CultLib(decider)[0]);
+            var (whole, hidden) = (CultLibJson(decider), CultLibJson(withheld));
+            Assert.Equal("answerer_count", whole["record"]!.AsObject().ElementAt(4).Key);
+            Assert.Equal(6, whole["record"]!.AsObject().Count);
+            Assert.NotEmpty(whole["card"]!["deciders"]!.AsArray());
+            Assert.All(whole["record"]!["answers"]!.AsArray(), a => Assert.NotNull(a!["answerer"]));
+            Assert.Empty(hidden["card"]!["deciders"]!.AsArray());
+            Assert.All(hidden["record"]!["answers"]!.AsArray(), a => Assert.Null(a!["answerer"]));
+            Assert.Equal((int)whole["record"]!["answerer_count"]!, (int)hidden["record"]!["answerer_count"]!);
+            Assert.Equal((int)whole["card"]!["decider_count"]!, (int)hidden["card"]!["decider_count"]!);
+        }
+
+        Assert.Equal(1, (int)CultLibJson("entry-open-counted")["record"]!["answerer_count"]!);
+        Assert.Equal(2, (int)CultLibJson("entry-closed-with-ruling-and-a-refusal")["record"]!["answerer_count"]!);
     }
 
-    // The vector card with its two reader-view keys replaced by a fragment's, in the card's own key order.
-    private static string ViewCard(string fragment)
+    [Fact]
+    public void Every_account_id_in_record_whole_is_a_lowercase_D_format_uuid_and_the_record_is_what_the_README_says()
     {
-        var card = JsonNode.Parse(DeskVectors.Rows("card", "valid").First(r => (string)r["name"]! == "operator_fork")["message"]!.ToJsonString())!.AsObject();
-        var view = Fragment(fragment);
-        card["fork_id"] = Fork;
-        card["deciders"] = view["deciders"]!.DeepClone();
-        card["decider_count"] = view["decider_count"]!.DeepClone();
-        return card.ToJsonString(DeskJson.Options);
+        var whole = Fragment("record-whole");
+        // Huginn's own record: 5 keys, no answerer_count (the README says so; the contract wants a sixth).
+        Assert.Equal(["schemaVersion", "fork_id", "options_hash", "counted_answer_id", "answers"], whole.Select(p => p.Key));
+        Assert.Equal(["Counted", "Revision", "Refused", "Retraction"], whole["answers"]!.AsArray().Select(a => (string)a!["outcome"]!).Distinct());
+
+        var grammar = new System.Text.RegularExpressions.Regex("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$");
+        var accounts = whole["answers"]!.AsArray().Select(a => (string)a!["answerer"]!).ToList();
+        Assert.All(accounts, id => Assert.Matches(grammar, id));
+        Assert.Equal(3, accounts.Distinct().Count());
     }
 
-    private static string EntryOf(string card, JsonObject record) =>
-        $$$"""{"schemaVersion":"gamecult.fork.entry.v0","card":{{{card}}},"record":{{{record.ToJsonString(DeskJson.Options)}}}}""";
+    // A decider's entry and its non-decider twin, each served through the real door as a list page: the card (18 keys,
+    // raised_at, decider_count) and the record (answerer_count) leave exactly as CultLib wrote them.
+    [Theory]
+    [InlineData("entry-open-counted")]
+    [InlineData("entry-withheld-open-counted")]
+    [InlineData("entry-closed-with-ruling-and-a-refusal")]
+    [InlineData("entry-withheld-closed-with-ruling-and-a-refusal")]
+    public async Task A_CultLib_entry_in_either_view_comes_through_the_door_unchanged(string file)
+    {
+        var entry = CultLibJson(file);
+        using var huginn = new FakeHuginnSocket(FakeHuginnSocket.Answer((_, _) => ListOf(entry.ToJsonString(DeskJson.Options))));
+
+        var listed = Assert.IsType<DeskListOutcome.Listed>(await List(new UnixSocketDeskDoor(), huginn.Path));
+
+        var got = Assert.Single(listed.List.Forks);
+        Assert.Equal(DeskServe.Text(entry), DeskServe.Text(got));
+        var withheld = file.Contains("withheld", StringComparison.Ordinal);
+        Assert.Equal(withheld, got.Card.GetProperty("deciders").GetArrayLength() == 0);
+        Assert.All(got.Record.Answers, a => Assert.Equal(withheld, a.Answerer is null));
+    }
 
     private static string ListOf(string entry, string mind = "eureka") =>
         $$$"""{"Forks":{"list":{"schemaVersion":"gamecult.fork.list.v0","mind":"{{{mind}}}","stamp":"s7","open_count":1,"recorded_count":0,"forks":[{{{entry}}}],"next_cursor":null},"as_of":7}}""";
 
     [Fact]
-    public void Every_account_id_in_the_fixtures_is_a_lowercase_D_format_uuid_and_the_non_decider_fragments_name_none()
+    public async Task A_decider_entry_keeps_its_ids_and_notes_and_a_non_decider_entry_has_nil_answerers_the_count_and_no_notes_through_the_edge()
     {
-        var grammar = new System.Text.RegularExpressions.Regex("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$");
-        foreach (var id in Fragment("card-viewers-decider.synthetic")["deciders"]!.AsArray().Select(d => (string)d!)
-                     .Concat(Fragment("record-whole")["answers"]!.AsArray().Select(a => (string)a!["answerer"]!)))
-        {
-            Assert.Matches(grammar, id);
-        }
-
-        var nonDeciderCard = Fragment("card-viewers-non-decider.synthetic");
-        Assert.Empty(nonDeciderCard["deciders"]!.AsArray());
-        Assert.Equal(2, (int)nonDeciderCard["decider_count"]!);
-        Assert.All(Fragment("record-non-decider.proposed")["answers"]!.AsArray(), a => Assert.Null(a!["answerer"]));
-    }
-
-    [Theory]
-    [InlineData("card-viewers-decider.synthetic")]
-    [InlineData("card-viewers-non-decider.synthetic")]
-    public async Task A_card_in_either_view_comes_through_the_door_byte_for_byte(string view)
-    {
-        var card = ViewCard(view);
-        var nonDecider = view.Contains("non-decider", StringComparison.Ordinal);
-        var record = nonDecider ? Fragment("record-non-decider.proposed") : DeciderRecord();
-        using var huginn = new FakeHuginnSocket(FakeHuginnSocket.Answer((_, _) => ListOf(EntryOf(card, record))));
-
-        var listed = Assert.IsType<DeskListOutcome.Listed>(await List(new UnixSocketDeskDoor(), huginn.Path));
-
-        var entry = Assert.Single(listed.List.Forks);
-        // The card is opaque: raised_at (a string), decider_count and the withheld or whole deciders leave as they came.
-        Assert.Equal(card, JsonSerializer.Serialize(entry.Card, DeskJson.Options));
-        Assert.Equal(nonDecider, entry.Card.GetProperty("deciders").GetArrayLength() == 0);
-        Assert.Equal(2, entry.Card.GetProperty("decider_count").GetInt32());
-        Assert.Equal(JsonValueKind.String, entry.Card.GetProperty("raised_at").ValueKind);
-        Assert.Equal(2, entry.Record.AnswererCount);
-        Assert.Equal(record.ToJsonString(DeskJson.Options), JsonSerializer.Serialize(entry.Record, DeskJson.Options));
-        Assert.All(entry.Record.Answers, a => Assert.Equal(nonDecider, a.Answerer is null));
-    }
-
-    [Fact]
-    public async Task A_decider_record_keeps_its_ids_and_a_non_decider_record_comes_through_with_nil_answerers_and_the_count()
-    {
-        var nonDecider = Fragment("record-non-decider.proposed");
-        using var huginn = new FakeHuginnSocket(FakeHuginnSocket.Answer((_, _) => ListOf(EntryOf(ViewCard("card-viewers-non-decider.synthetic"), nonDecider), "gamecult-chat")));
+        var withheld = CultLibJson("entry-withheld-closed-with-ruling-and-a-refusal");
+        using var huginn = new FakeHuginnSocket(FakeHuginnSocket.Answer((_, _) => ListOf(withheld.ToJsonString(DeskJson.Options), "gamecult-chat")));
         using var factory = new DeskWebApplicationFactory(ConfigurationWith(huginn.Path, FakeHuginnSocket.Absent()), fakeDoor: false);
         await factory.EnsureAccountAsync(DeskWebApplicationFactory.Member, true);
         var reply = await factory.SendAsync("GET", "/api/desk/gamecult-chat/forks", token: factory.Token(DeskWebApplicationFactory.Member, "bifrost-desk", "desk.read"));
 
         // Huginn withheld the ids; Bifrost invents none, and nils the notes (the one thing it strips).
         Assert.Equal(200, reply.Status);
-        var forks = JsonNode.Parse(reply.Text)!["forks"]!.AsArray();
-        var record = forks[0]!["record"]!;
-        Assert.Equal(2, (int)record["answerer_count"]!);
-        Assert.All(record["answers"]!.AsArray(), a =>
+        var shown = JsonNode.Parse(reply.Text)!["forks"]![0]!;
+        Assert.Equal(2, (int)shown["record"]!["answerer_count"]!);
+        Assert.All(shown["record"]!["answers"]!.AsArray(), a =>
         {
             Assert.True(a!.AsObject().ContainsKey("answerer"));
             Assert.Null(a["answerer"]);
             Assert.Null(a["note"]);
         });
-        Assert.Empty(forks[0]!["card"]!["deciders"]!.AsArray());
-        Assert.Equal(2, (int)forks[0]!["card"]!["decider_count"]!);
-        Assert.DoesNotContain("The asker lists her own forks.", reply.Text);
+        Assert.Empty(shown["card"]!["deciders"]!.AsArray());
+        Assert.Equal((int)withheld["card"]!["decider_count"]!, (int)shown["card"]!["decider_count"]!);
 
-        // The decider's view, as the contract spells it, keeps every id and every note.
-        var decider = DeciderRecord();
-        using var huginn2 = new FakeHuginnSocket(FakeHuginnSocket.Answer((_, _) => ListOf(EntryOf(ViewCard("card-viewers-decider.synthetic"), decider), "gamecult-chat")));
+        // The decider's view keeps every id and every note.
+        var decider = CultLibJson("entry-closed-with-ruling-and-a-refusal");
+        using var huginn2 = new FakeHuginnSocket(FakeHuginnSocket.Answer((_, _) => ListOf(decider.ToJsonString(DeskJson.Options), "gamecult-chat")));
         using var factory2 = new DeskWebApplicationFactory(ConfigurationWith(huginn2.Path, FakeHuginnSocket.Absent()), fakeDoor: false);
         await factory2.EnsureAccountAsync(DeskWebApplicationFactory.Alice, true);
         var own = await factory2.SendAsync("GET", "/api/desk/gamecult-chat/forks", token: factory2.Token(DeskWebApplicationFactory.Alice, "bifrost-desk", "desk.read"));
 
         Assert.Equal(200, own.Status);
-        var shown = JsonNode.Parse(own.Text)!["forks"]![0]!["record"]!;
-        Assert.Equal(decider.ToJsonString(DeskJson.Options), shown.ToJsonString(DeskJson.Options));
+        Assert.Equal(DeskServe.Text(decider), DeskServe.Text(JsonNode.Parse(own.Text)!["forks"]![0]!));
     }
 
-    // Huginn's record-whole at 79d954c has no answerer_count, which the 3a51bbab contract requires. The door refuses it
-    // as a reply that does not decode; it does not write the 0 it could have made up. When Huginn's fixture gains the
-    // key this test is the one to retire.
+    // Huginn's record-whole at b299d6f7 still has no answerer_count, which the contract requires (the README says "what
+    // the door sends today"; the real types follow in cut-desk-feed-listing). The door refuses it as a reply that does
+    // not decode; it does not write the 0 it could have made up. When Huginn's record gains the key this test is the
+    // one to retire.
     [Fact]
     public async Task Huginns_record_without_answerer_count_is_a_fault_not_a_zero()
     {
-        var entry = EntryOf(ViewCard("card-viewers-decider.synthetic"), Fragment("record-whole"));
+        var card = CultLibJson("entry-open-counted")["card"]!;
+        var entry = $$$"""{"schemaVersion":"gamecult.fork.entry.v0","card":{{{card.ToJsonString(DeskJson.Options)}}},"record":{{{Fragment("record-whole").ToJsonString(DeskJson.Options)}}}}""";
         using var huginn = new FakeHuginnSocket(FakeHuginnSocket.Answer((_, _) => ListOf(entry)));
 
         var failure = await Assert.ThrowsAsync<DeskDoorException>(() => List(new UnixSocketDeskDoor(), huginn.Path));
