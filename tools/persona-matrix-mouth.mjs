@@ -288,6 +288,7 @@ export function createMouth({
     const lines = [];
     let bytes = 0;
     for (const e of events.slice(0, cut).reverse()) {
+      if (!docs.isMatrixId("@", e.sender)) continue; // a line the tuple would refuse is left out, not the whole delivery
       const l = lineOf(e);
       const size = Buffer.byteLength(l.text) + Buffer.byteLength(l.sender);
       if (lines.length >= CONTEXT_LINES || bytes + size > CONTEXT_BYTES) break;
@@ -313,7 +314,7 @@ export function createMouth({
   const pillFor = html => typeof html === "string" && [...html.replace(/<mx-reply>[\s\S]*?<\/mx-reply>/gi, "").matchAll(/<a\s[^>]*?href\s*=\s*(["'])(.*?)\1/gi)].some(([, , href]) => [selfId, encodeURIComponent(selfId)].some(id => href === `https://matrix.to/#/${id}`));
   const authors = new Map(); // `${room id} ${event id}` -> { sender, excerpt, at }: read results, kept TARGET_TTL_MS, bounded; the key holds the room so another room's reply cannot borrow a hit
   const TARGET_TTL_MS = 60 * 1000; // how long a read of a target is kept: a failure always; a hit only with replyLink (without it a hit is kept until bounded out, as before v4)
-  const REPLY_READS_PER_ROUND = 8; // distinct uncached targets replyToOf may read in one sync round; past it reply_to is nil (the tuple needs a sender, which only a read gives)
+  const REPLY_READS_PER_ROUND = 8; // target GETs one sync round may make, whoever asks (basis or reply_to): an event whose uncached targets would pass it waits for the next round
   const KEEP_HIT_MS = 10 * 60 * 1000; // how long transient failures may keep a hit's sender alive after its last good read
   let replyReads = 0;
   const cachedTarget = key => {
@@ -353,6 +354,7 @@ export function createMouth({
     if (cached) return cached; // with replyLink a hit is short too: a later redaction or edit of the target must show at a re-read
     const known = authors.get(key);
     let sender = null, excerpt = null, transient = false;
+    replyReads++;
     try {
       const target = await matrix("GET", `/rooms/${encodeURIComponent(roomId)}/event/${encodeURIComponent(eventId)}`, undefined, API, AbortSignal.timeout(sendTimeoutMs));
       if (target?.room_id === undefined || target.room_id === roomId) { // an id from another room is not an answer about this one: no sender, no text
@@ -374,16 +376,18 @@ export function createMouth({
   const authorOf = async (roomId, eventId) => (await targetOf(roomId, eventId)).sender;
   // The event a message replies to: its own m.in_reply_to, unless that is a thread's fallback pointer (is_falling_back), which
   // names no one. nil when the target cannot be read or sits in another room.
-  const DEFER = Symbol("defer"); // replyToOf's answer when the round's read cap is spent: the delivery waits for the next round, as at the pending cap
+  // The GETs an event could cost in targetOf: its uncached reply target and thread root. An over-count is harmless (the event waits a round); an under-count would pass the cap.
+  const targetsToRead = (roomId, event) => {
+    const relates = event.content["m.relates_to"];
+    if (!replyLink || formOf(event.content) !== "message") return 0;
+    const ids = new Set([relates?.["m.in_reply_to"]?.event_id, relates?.rel_type === "m.thread" ? relates.event_id : undefined].filter(id => typeof id === "string" && id !== ""));
+    return [...ids].filter(id => !cachedTarget(`${roomId} ${id}`)).length;
+  };
   async function replyToOf(roomId, event) {
     if (!replyLink || formOf(event.content) !== "message") return null;
     const r = event.content["m.relates_to"]?.["m.in_reply_to"];
     const id = r?.event_id;
     if (typeof id !== "string" || id === "" || event.content["m.relates_to"]["is_falling_back"] === true) return null;
-    if (!cachedTarget(`${roomId} ${id}`)) {
-      if (replyReads >= REPLY_READS_PER_ROUND) { say(`reply target ${id} not read: round cap, the rest of the round waits for the next`); return DEFER; }
-      replyReads++;
-    }
     const { sender, excerpt } = await targetOf(roomId, id);
     return sender === null || !docs.isMatrixId("$", id) ? null : { eventId: id, sender, excerpt };
   }
@@ -450,15 +454,15 @@ export function createMouth({
       if ((room.timeline?.events ?? []).length > 0) tailReads.delete(roomId);
       for (const event of room.timeline?.events ?? []) {
         if (event.type !== "m.room.message" || typeof event.content?.body !== "string") continue;
-        if (typeof event.sender !== "string" || event.sender === "" || typeof event.event_id !== "string" || event.event_id === "") continue;
+        if (!docs.isMatrixId("@", event.sender) || !docs.isMatrixId("$", event.event_id)) continue; // an id the tuple would refuse is no event: it could not be delivered, and one such event must not wedge the round
         if (processed.has(event.event_id)) continue; // read already in a round the cap kept from advancing
         const ts = event.origin_server_ts;
         const atUnixMs = Number.isSafeInteger(ts) && ts >= 0 ? ts : now();
         const deliverable = !baseline && !freshRooms.has(roomId) && event.sender !== selfId;
         if (deliverable && pending.length + made.length >= maxPending) { truncated = true; break rounds; }
+        if (deliverable && replyLink && replyReads + targetsToRead(roomId, event) > REPLY_READS_PER_ROUND) { say(`event ${event.event_id} not read: round cap on target reads, the rest of the round waits for the next`); truncated = true; break rounds; } // not processed: the next round meets it again, with its read count reset
         const basis = deliverable ? await basisOf(roomId, event) : null;
         const replyTo = deliverable ? await replyToOf(roomId, event) : null;
-        if (replyTo === DEFER) { truncated = true; break rounds; } // not processed: the next round meets this event again, with its read count reset
         processed.add(event.event_id);
         if (deliverable) {
           const context = await contextFor(roomId, event, round);
@@ -469,7 +473,7 @@ export function createMouth({
             seq: ++seqCounter, roomAlias: alias, roomId, eventId: event.event_id, sender: event.sender,
             senderDisplay: displayNames.get(event.sender) ?? localpart(event.sender), text: bodyText(event.content, docs.limits.textBytes, refused), atUnixMs,
             context, image,
-            mentions: Array.isArray(mentioned) ? mentioned.filter(id => typeof id === "string" && id !== "" && id.length <= 255).slice(0, docs.limits.mentions) : [],
+            mentions: Array.isArray(mentioned) ? mentioned.filter(id => docs.isMatrixId("@", id)).slice(0, docs.limits.mentions) : [],
             isDirect: directRooms.has(roomId), basis, form: formOf(event.content), replyTo,
           });
           if (image) images.hold(image.path, seqCounter);
@@ -576,7 +580,7 @@ export function createMouth({
       if (truncated || events.length > docs.limits.tailPerRoom) gapped.add(alias);
       const lines = [];
       for (const e of events.slice(-docs.limits.tailPerRoom)) {
-        if (typeof e.event_id !== "string" || e.event_id === "") { gapped.add(alias); continue; }
+        if (!docs.isMatrixId("$", e.event_id) || !docs.isMatrixId("@", e.sender)) { gapped.add(alias); continue; }
         const at = Number.isSafeInteger(e.origin_server_ts) && e.origin_server_ts >= 0 ? e.origin_server_ts : 0;
         lines.push({ roomAlias: alias, eventId: e.event_id, atUnixMs: at, sender: e.sender, form: formOf(e.content), basis: await basisOf(roomId, e, false), text: bodyText(e.content, docs.limits.contextBytes) });
       }

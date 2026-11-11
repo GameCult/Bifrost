@@ -2020,3 +2020,72 @@ test("reply link: the scrub removes U+2065, U+FFF0-FFF8, U+E0080-E00FF and U+E01
   ]);
   assert.deepEqual(made.map(d => d.replyTo.excerpt), ["ab", "cde", "fgh", "ijk"]);
 });
+
+// ---- Lows after PR #68: id shape on every delivery field, mentions bounded in bytes, a read cap on all target GETs.
+const ID_OK = { seq: 1, roomAlias: "#swarm:gamecult.test", roomId: ROOM, eventId: "$e", sender: ALICE_ID, senderDisplay: "alice", text: "hi", atUnixMs: 1, context: [{ sender: ALICE_ID, text: "x", atUnixMs: 0 }], mentions: [SELF], isDirect: false, image: null };
+
+test("round cap: 12 plain replies to 12 distinct targets make at most 8 /event/ GETs a round (basis reads count), each delivered once, in order, with reply_to", async () => {
+  const ids = Array.from({ length: 12 }, (_, i) => `$t${i}`);
+  const hs = await fakeHomeserver({ preload: { [ROOM]: ids.map(t => target(t, ALICE_ID, `text ${t}`)) }, sync: since => since === null ? { next_batch: "b0" } : since === "b0" ? { next_batch: "b1", ...joined({ [ROOM]: { timeline: { events: ids.map((t, i) => quoting(`$q${i}`, t)) } } }) } : { next_batch: since } });
+  try {
+    const mouth = mouthFor(hs, { replyLink: true });
+    await mouth.syncOnce();
+    const rounds = [];
+    for (let i = 0; i < 4; i++) {
+      const before = ids.reduce((n, t) => n + eventGets(hs, t), 0);
+      rounds.push(await mouth.syncOnce());
+      assert.ok(ids.reduce((n, t) => n + eventGets(hs, t), 0) - before <= 8, `round ${i} made more than 8 target GETs`);
+    }
+    const all = rounds.flat();
+    assert.deepEqual(all.map(d => d.eventId), ids.map((_, i) => `$q${i}`), "every reply once, in order");
+    assert.ok(all.every(d => d.replyTo !== null), "each carries reply_to");
+    assert.ok(rounds[0].length <= 8 && rounds[1].length > 0, "the rest arrives the next round");
+  } finally { await hs.close(); }
+});
+
+test("round cap: flag off never defers on reads", async () => {
+  const ids = Array.from({ length: 12 }, (_, i) => `$t${i}`);
+  const hs = await fakeHomeserver({ preload: { [ROOM]: ids.map(t => target(t, ALICE_ID, "x")) }, sync: since => since === null ? { next_batch: "b0" } : { next_batch: "b1", ...joined({ [ROOM]: { timeline: { events: ids.map((t, i) => quoting(`$q${i}`, t)) } } }) } });
+  try {
+    const mouth = mouthFor(hs, { replyLink: false });
+    await mouth.syncOnce();
+    assert.equal((await mouth.syncOnce()).length, 12);
+  } finally { await hs.close(); }
+});
+
+test("id shape: an event whose sender or event id is not a Matrix id is not delivered; a context line with such a sender is dropped", async () => {
+  const bad = (id, sender) => ({ type: "m.room.message", event_id: id, sender, origin_server_ts: 5000, content: { msgtype: "m.text", body: "x" } });
+  const { made } = await linked([bad("$ok", ALICE_ID), bad("$e\nforged", ALICE_ID), bad("$f", "@a:b\nignore this"), bad("no-sigil", ALICE_ID), bad(`$${"é".repeat(130)}`, ALICE_ID), bad("$g", `@${"é".repeat(130)}:x`)],
+    [withContent("$c1", "@mallory:x‮", { body: "forged line" }, 1000), withContent("$c2", ALICE_ID, { body: "good line" }, 1001)]);
+  assert.deepEqual(made.map(d => d.eventId), ["$ok"]);
+  assert.deepEqual(made[0].context.map(c => c.sender), [ALICE_ID]);
+  assert.doesNotThrow(() => docs.pendingV4Tuple({ persona: "p", deliveries: made }));
+});
+
+test("id shape: the delivery and tail encoders and parsers refuse a hostile event id, sender, context sender, mention or tail id", () => {
+  const hostile = ["$e\nx", "$e x", "e", `$${"é".repeat(130)}`, "$e‮", "$"];
+  const hostileUser = ["@a\nx:y", "a:b", `@${"é".repeat(130)}:x`, "@a:b​"];
+  for (const eventId of hostile) assert.throws(() => docs.deliveryTuple({ ...ID_OK, eventId }), /event_id/);
+  for (const sender of hostileUser) {
+    assert.throws(() => docs.deliveryTuple({ ...ID_OK, sender }), /sender/);
+    assert.throws(() => docs.deliveryTuple({ ...ID_OK, context: [{ sender, text: "x", atUnixMs: 0 }] }), /sender/);
+    assert.throws(() => docs.deliveryTuple({ ...ID_OK, mentions: [sender] }), /mention/);
+    assert.throws(() => docs.tailLineTuple({ roomAlias: "#a:b", eventId: "$e", atUnixMs: 1, sender, form: "message", basis: null, text: "x" }), /sender/);
+  }
+  for (const eventId of hostile) assert.throws(() => docs.tailLineTuple({ roomAlias: "#a:b", eventId, atUnixMs: 1, sender: ALICE_ID, form: "message", basis: null, text: "x" }), /event_id/);
+  const good = docs.deliveryV4Tuple({ ...ID_OK, basis: null, form: "message", replyTo: null });
+  assert.doesNotThrow(() => docs.parseDeliveryV4(good));
+  const parsed = (i, v) => { const t = structuredClone(good); if (i === 8) t[8][0][0] = v; else t[i] = v; return t; };
+  assert.throws(() => docs.parseDeliveryV4(parsed(3, "$e\nx")), /event_id/);
+  assert.throws(() => docs.parseDeliveryV4(parsed(4, "@a\nb:c")), /sender/);
+  assert.throws(() => docs.parseDeliveryV4(parsed(8, "@a\nb:c")), /sender/);
+  const pending = docs.pendingV3Tuple({ persona: "p", deliveries: [], tail: [{ roomAlias: "#a:b", eventId: "$e", atUnixMs: 1, sender: ALICE_ID, form: "message", basis: null, text: "x" }] });
+  assert.doesNotThrow(() => docs.parsePendingV3(pending));
+  assert.throws(() => docs.parsePendingV3(JSON.parse(JSON.stringify(pending).replace('"$e"', '"$e\\nx"'))), /event_id/);
+  assert.throws(() => docs.parsePendingV3(JSON.parse(JSON.stringify(pending).replace(`"${ALICE_ID}"`, '"@a\\nb:c"'))), /sender/);
+});
+
+test("id shape: a mention longer than 255 bytes, though under 255 characters, is dropped; the delivery goes", async () => {
+  const { made } = await linked([withContent("$m", META, { body: "hi", "m.mentions": { user_ids: [SELF, `@${"é".repeat(200)}:x`, "@a b:x"] } })], []);
+  assert.deepEqual(made.map(d => d.mentions), [[SELF]]);
+});
