@@ -285,8 +285,8 @@ public sealed class UnixSocketDeskDoorTests
     private static string EntryOf(string card, JsonObject record) =>
         $$$"""{"schemaVersion":"gamecult.fork.entry.v0","card":{{{card}}},"record":{{{record.ToJsonString(DeskJson.Options)}}}}""";
 
-    private static string ListOf(string entry) =>
-        $$$"""{"Forks":{"list":{"schemaVersion":"gamecult.fork.list.v0","mind":"gamecult-chat","stamp":"s7","open_count":1,"recorded_count":0,"forks":[{{{entry}}}],"next_cursor":null},"as_of":7}}""";
+    private static string ListOf(string entry, string mind = "eureka") =>
+        $$$"""{"Forks":{"list":{"schemaVersion":"gamecult.fork.list.v0","mind":"{{{mind}}}","stamp":"s7","open_count":1,"recorded_count":0,"forks":[{{{entry}}}],"next_cursor":null},"as_of":7}}""";
 
     [Fact]
     public void Every_account_id_in_the_fixtures_is_a_lowercase_D_format_uuid_and_the_non_decider_fragments_name_none()
@@ -330,10 +330,8 @@ public sealed class UnixSocketDeskDoorTests
     [Fact]
     public async Task A_decider_record_keeps_its_ids_and_a_non_decider_record_comes_through_with_nil_answerers_and_the_count()
     {
-        var chat = DeskWebApplicationFactory.SocketOf("gamecult-chat");
-        _ = chat; // the edge below talks to a real socket, not the fake door's table
         var nonDecider = Fragment("record-non-decider.proposed");
-        using var huginn = new FakeHuginnSocket(FakeHuginnSocket.Answer((_, _) => ListOf(EntryOf(ViewCard("card-viewers-non-decider.synthetic"), nonDecider))));
+        using var huginn = new FakeHuginnSocket(FakeHuginnSocket.Answer((_, _) => ListOf(EntryOf(ViewCard("card-viewers-non-decider.synthetic"), nonDecider), "gamecult-chat")));
         using var factory = new DeskWebApplicationFactory(ConfigurationWith(huginn.Path, FakeHuginnSocket.Absent()), fakeDoor: false);
         await factory.EnsureAccountAsync(DeskWebApplicationFactory.Member, true);
         var reply = await factory.SendAsync("GET", "/api/desk/gamecult-chat/forks", token: factory.Token(DeskWebApplicationFactory.Member, "bifrost-desk", "desk.read"));
@@ -355,7 +353,7 @@ public sealed class UnixSocketDeskDoorTests
 
         // The decider's view, as the contract spells it, keeps every id and every note.
         var decider = DeciderRecord();
-        using var huginn2 = new FakeHuginnSocket(FakeHuginnSocket.Answer((_, _) => ListOf(EntryOf(ViewCard("card-viewers-decider.synthetic"), decider))));
+        using var huginn2 = new FakeHuginnSocket(FakeHuginnSocket.Answer((_, _) => ListOf(EntryOf(ViewCard("card-viewers-decider.synthetic"), decider), "gamecult-chat")));
         using var factory2 = new DeskWebApplicationFactory(ConfigurationWith(huginn2.Path, FakeHuginnSocket.Absent()), fakeDoor: false);
         await factory2.EnsureAccountAsync(DeskWebApplicationFactory.Alice, true);
         var own = await factory2.SendAsync("GET", "/api/desk/gamecult-chat/forks", token: factory2.Token(DeskWebApplicationFactory.Alice, "bifrost-desk", "desk.read"));
@@ -376,7 +374,7 @@ public sealed class UnixSocketDeskDoorTests
 
         var failure = await Assert.ThrowsAsync<DeskDoorException>(() => List(new UnixSocketDeskDoor(), huginn.Path));
 
-        Assert.Contains("does not decode", failure.Message);
+        Assert.Contains("closed map", failure.Message);
     }
 
     // ---- (d) one dead Mind fails only itself, through the HTTP edge ----

@@ -50,6 +50,15 @@ public sealed class FakeHuginnSocket : IDisposable
             await socket.SendAsync(reply, SocketFlags.None, token);
         };
 
+    // Answers each request with a frame the test builds from the request's message id and operation.
+    public static Func<Socket, byte[], CancellationToken, Task> Build(Func<string, string, byte[]> frameOf) =>
+        async (socket, request, token) =>
+        {
+            using var envelope = DeskWire.Envelope(request);
+            var root = envelope.RootElement;
+            await socket.SendAsync(frameOf(root.GetProperty("messageId").GetString()!, root.GetProperty("operation").GetString()!), SocketFlags.None, token);
+        };
+
     private async Task AcceptLoopAsync()
     {
         while (!stop.IsCancellationRequested)
@@ -143,21 +152,26 @@ public static class DeskWire
         return JsonDocument.Parse(json.ToString());
     }
 
-    // A reply frame in operation-message key order. `mutate` edits the text fields before they are written.
+    // A reply frame in operation-message key order. `mutate` edits the text fields (a pair can be added twice) before
+    // they are written; `trailing` rides inside the frame's one message, after the map.
     public static byte[] ResponseFrame(
-        string messageId, string operation, string status, string variantJson, Action<SortedDictionary<string, string>>? mutate = null)
+        string messageId, string operation, string status, string variantJson, Action<List<(string Key, string Value)>>? mutate = null) =>
+        ResponseFrame(messageId, operation, status, MessagePackSerializer.ConvertFromJson(variantJson), mutate);
+
+    public static byte[] ResponseFrame(
+        string messageId, string operation, string status, byte[] payload, Action<List<(string Key, string Value)>>? mutate = null, byte[]? trailing = null)
     {
-        var fields = new SortedDictionary<string, string>(StringComparer.Ordinal)
+        var fields = new List<(string Key, string Value)>
         {
-            ["messageId"] = messageId,
-            ["operation"] = operation,
-            ["payload"] = Convert.ToBase64String(MessagePackSerializer.ConvertFromJson(variantJson)),
-            ["payloadEncoding"] = "messagepack-base64",
-            ["payloadSchema"] = "huginn.desk_response.v1",
-            ["schemaVersion"] = "cultnet.operation_response.v0",
-            ["serviceId"] = "huginn.desk",
-            ["sourceRuntimeId"] = "huginn-test",
-            ["status"] = status,
+            ("messageId", messageId),
+            ("operation", operation),
+            ("payload", Convert.ToBase64String(payload)),
+            ("payloadEncoding", "messagepack-base64"),
+            ("payloadSchema", "huginn.desk_response.v1"),
+            ("schemaVersion", "cultnet.operation_response.v0"),
+            ("serviceId", "huginn.desk"),
+            ("sourceRuntimeId", "huginn-test"),
+            ("status", status),
         };
         mutate?.Invoke(fields);
         var buffer = new ArrayBufferWriter<byte>();
@@ -170,7 +184,7 @@ public static class DeskWire
         }
 
         w.Flush();
-        return Frame(buffer.WrittenSpan);
+        return Frame([.. buffer.WrittenSpan, .. trailing ?? []]);
     }
 
     public static byte[] Frame(ReadOnlySpan<byte> message)
