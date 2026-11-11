@@ -79,4 +79,34 @@ public static class DeskServe
     public static string Text<T>(T value) => JsonSerializer.SerializeToNode(value, DeskJson.Options)!.ToJsonString(DeskJson.Options);
 
     public static string Text(JsonNode node) => node.ToJsonString(DeskJson.Options);
+
+    // The app's own configuration with one Mind on the socket double and every other Mind on a path no one listens on.
+    public static Dictionary<string, string?> ConfigurationOn(string mind, string socket)
+    {
+        var configuration = DeskWebApplicationFactory.DefaultConfiguration();
+        foreach (var key in configuration.Keys.Where(k => k.EndsWith(":Id", StringComparison.Ordinal)).ToList())
+        {
+            configuration[key[..^2] + "Socket"] = configuration[key] == mind ? socket : FakeHuginnSocket.Absent();
+        }
+
+        return configuration;
+    }
+
+    // An entry map whose card and record bytes are the given ones, untouched.
+    public static byte[] EntryOf(byte[] card, byte[] record)
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var w = new MessagePackWriter(buffer);
+        w.WriteMapHeader(3);
+        w.Write("schemaVersion");
+        w.Write("gamecult.fork.entry.v0");
+        w.Write("card");
+        w.WriteRaw(card);
+        w.Write("record");
+        w.WriteRaw(record);
+        w.Flush();
+        return buffer.WrittenSpan.ToArray();
+    }
+
+    public static byte[] FromJson(JsonNode node) => MessagePackSerializer.ConvertFromJson(node.ToJsonString(DeskJson.Options));
 }

@@ -5,8 +5,9 @@ using Bifrost.Web.Tests.Support;
 
 namespace Bifrost.Web.Tests;
 
-// CultLib d3025d3c's reader views (append-only on 3a51bbab), as Bifrost meets them: the 17-key card (raised_at, decider_count) stays opaque,
-// the record is typed with answerer_count, and answerer is nil in a non-decider's view.
+// CultLib d3025d3c's reader views (append-only on 3a51bbab), as Bifrost meets them: the 18-key card, DE0012 (raised_at, decider_count) stays opaque,
+// the record is typed with answerer_count, and answerer is nil in a non-decider's view. Entries, records, list pages and
+// stored answers are replayed from their wire bytes through the real door in DeskVectorWireTests.
 public sealed class DeskReaderViewTests
 {
     private static readonly string[] CardKeys =
@@ -84,68 +85,5 @@ public sealed class DeskReaderViewTests
         }
 
         Assert.Superset(new HashSet<string> { "Counted", "Revision", "Retraction", "Refused" }, outcomes);
-    }
-
-    [Fact]
-    public void Entries_in_both_views_round_trip_and_the_shape_faults_Bifrost_can_see_are_refused()
-    {
-        var valid = DeskVectors.Rows("transport", "entry", "valid").ToList();
-        Assert.Equal(8, valid.Count);
-        foreach (var row in valid)
-        {
-            var message = row["message"]!;
-            Assert.True(DeskVectors.SameShape(message, JsonSerializer.SerializeToNode(message.Deserialize<ForkEntry>(DeskJson.Options), DeskJson.Options)), (string)row["name"]!);
-        }
-
-        // Missing or null answerer_count is not a count Bifrost may invent; the other invalid entries are rules of the
-        // contract's validators (CultLib) and Huginn's door, which Bifrost does not judge.
-        foreach (var name in new[] { "answerer_count_missing", "answerer_count_null" })
-        {
-            var row = DeskVectors.Rows("transport", "entry", "invalid").First(r => (string)r["name"]! == name);
-            Assert.ThrowsAny<JsonException>(() => row["message"].Deserialize<ForkEntry>(DeskJson.Options));
-        }
-    }
-
-    [Fact]
-    public void Every_scenario_record_is_the_6_key_record_and_decodes_typed()
-    {
-        var count = 0;
-        foreach (var scenario in DeskVectors.Rows("scenarios"))
-        {
-            var record = scenario["record"]!;
-            Assert.StartsWith("86", (string)scenario["recordHex"]!, StringComparison.Ordinal);
-            Assert.True(DeskVectors.SameShape(record, JsonSerializer.SerializeToNode(record.Deserialize<ForkRecord>(DeskJson.Options), DeskJson.Options)), (string)scenario["name"]!);
-            count++;
-        }
-
-        Assert.Equal(63, count);
-    }
-
-    [Fact]
-    public async Task The_non_decider_page_leaves_the_edge_with_notes_nil_and_ids_withheld_untouched()
-    {
-        var scenario = DeskVectors.Rows("transport", "listScenarios").First(s => (string)s["name"]! == "non_decider_page");
-        using var factory = new DeskWebApplicationFactory();
-        await factory.EnsureAccountAsync(DeskWebApplicationFactory.Member, true);
-        var step = scenario["steps"]![0]!;
-        var response = step["response"]!.AsObject();
-        factory.Door.ListScript = (_, _) => new DeskListOutcome.Listed(response.Deserialize<ForkList>(DeskJson.Options)!);
-        var request = step["request"]!;
-
-        var reply = await factory.SendAsync(
-            "GET", $"/api/desk/{(string)request["mind"]!}/forks?status={(string?)request["status"]}&cursor={(string?)request["cursor"]}&limit={(int)request["limit"]!}",
-            null, factory.Token(DeskWebApplicationFactory.Member, "bifrost-desk", "desk.read"));
-
-        Assert.Equal(200, reply.Status);
-        var expected = JsonNode.Parse(response.ToJsonString())!;
-        foreach (var fork in expected["forks"]!.AsArray())
-        {
-            foreach (var answer in fork!["record"]!["answers"]!.AsArray())
-            {
-                answer!["note"] = null;
-            }
-        }
-
-        Assert.True(DeskVectors.SameShape(JsonNode.Parse(reply.Body), expected));
     }
 }
