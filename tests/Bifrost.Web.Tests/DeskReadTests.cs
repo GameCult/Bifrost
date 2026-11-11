@@ -150,7 +150,7 @@ public sealed class DeskReadTests
     }
 
     [Fact]
-    public async Task fork_too_large_is_list_only_elsewhere_the_door_saying_it_is_unavailable()
+    public async Task fork_too_large_as_a_bare_door_code_is_unavailable_only_the_typed_outcomes_are_the_refusal()
     {
         using var factory = new DeskWebApplicationFactory();
         await factory.EnsureAccountAsync(DeskWebApplicationFactory.Alice, true);
@@ -162,6 +162,24 @@ public sealed class DeskReadTests
             var reply = await factory.SendAsync("GET", target, null, ReadToken(factory));
             Assert.Equal(503, reply.Status);
         }
+    }
+
+    [Fact]
+    public async Task A_read_of_an_oversize_fork_is_the_same_422_naming_the_fork_with_no_order_or_cursor()
+    {
+        using var factory = new DeskWebApplicationFactory();
+        await factory.EnsureAccountAsync(DeskWebApplicationFactory.Alice, true);
+        factory.Door.ReadScript = (_, id) => new DeskReadOutcome.ForkTooLarge(id);
+
+        var reply = await factory.SendAsync("GET", DeskReplay.Target("read", "nibu", "nibu:question:huge"), null, ReadToken(factory));
+
+        var doc = JsonNode.Parse(reply.Body)!;
+        Assert.Equal(422, reply.Status);
+        Assert.Equal("fork_too_large", (string?)doc["code"]);
+        var error = (string)doc["error"]!;
+        Assert.Contains("nibu:question:huge", error);
+        Assert.DoesNotContain("order", error);
+        Assert.DoesNotContain("cursor", error);
     }
 
     [Fact]
