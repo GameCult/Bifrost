@@ -328,9 +328,9 @@ public sealed class RegistrationGateTests(RegistrationGateFactory factory) : ICl
     [InlineData(0, false)]
     [InlineData(1, true)]
     [InlineData(18, true)]
-    [InlineData(30, true)]
-    [InlineData(31, false)]
-    public void Difficulty_outside_one_to_thirty_is_refused_at_startup(int difficulty, bool valid)
+    [InlineData(24, true)]
+    [InlineData(25, false)]
+    public void Difficulty_outside_one_to_twenty_four_is_refused_at_startup(int difficulty, bool valid)
     {
         var options = new RegistrationOptions { Captcha = new RegistrationCaptchaOptions { Difficulty = difficulty } };
         Action validate = () => new StartupConfigurationValidator(

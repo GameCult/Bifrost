@@ -59,7 +59,7 @@ There are no development or ephemeral keys in the host. Key files are provisione
 | `preferred_username` | `NormalizedBifrostIdentity` (minted once; there is no rename path) |
 | `name` | `DisplayName`, else `BifrostIdentity` |
 
-No e-mail, no Heimdall id, no GitHub id, and no membership detail leaves Bifrost.
+No e-mail, no Heimdall id, no GitHub id, and no membership detail leaves Bifrost. A native account's verified address, once that is built, stays inside Bifrost as sign-in recovery and is never a claim (`registration-gates.md`, Email verification).
 
 ## Who may sign in
 

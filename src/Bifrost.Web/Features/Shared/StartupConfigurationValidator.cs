@@ -1,5 +1,6 @@
 using Bifrost.Web.Configuration;
 using Bifrost.Web.Features.ConceptVotes;
+using Bifrost.Web.Features.Registration;
 using Microsoft.Extensions.Options;
 
 namespace Bifrost.Web.Features.Shared;
@@ -55,10 +56,22 @@ public sealed class StartupConfigurationValidator(
             failures.Add($"Bifrost:Registration:Captcha:Difficulty must be between {RegistrationOptions.MinDifficulty} and {RegistrationOptions.MaxDifficulty}.");
         }
 
+        var wait = registrationOptions.Value.Captcha.FallbackWaitSeconds;
+        if (wait < RegistrationOptions.MinFallbackWaitSeconds || wait > RegistrationOptions.MaxFallbackWaitSeconds ||
+            wait >= RegistrationChallengeService.Lifetime.TotalSeconds)
+        {
+            failures.Add($"Bifrost:Registration:Captcha:FallbackWaitSeconds must be between {RegistrationOptions.MinFallbackWaitSeconds} and {RegistrationOptions.MaxFallbackWaitSeconds} and shorter than the challenge lifetime ({RegistrationChallengeService.Lifetime.TotalSeconds:0} seconds).");
+        }
+
         var limits = registrationOptions.Value.Limits;
         if (limits.PerAddressPermits < 1 || limits.Window <= TimeSpan.Zero || limits.MaxTrackedKeys < 1)
         {
             failures.Add("Bifrost:Registration:Limits:PerAddressPermits and MaxTrackedKeys must be at least 1 and Window must be positive.");
+        }
+
+        if (limits.FallbackPermits < 1 || limits.FallbackWindow <= TimeSpan.Zero)
+        {
+            failures.Add("Bifrost:Registration:Limits:FallbackPermits must be at least 1 and FallbackWindow must be positive.");
         }
 
         if (hostEnvironment.IsDevelopment() || hostEnvironment.IsEnvironment("Testing"))

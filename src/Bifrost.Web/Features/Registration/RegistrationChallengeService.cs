@@ -50,58 +50,101 @@ public sealed class RegistrationChallengeService(
         var expiresAt = now + Lifetime;
         var difficulty = Difficulty;
         var id = Convert.ToHexString(RandomNumberGenerator.GetBytes(16));
-        var challenge = protector.Protect($"{id}.{expiresAt.ToUnixTimeMilliseconds()}.{difficulty}");
+        var challenge = protector.Protect($"{id}.{expiresAt.ToUnixTimeMilliseconds()}.{difficulty}.{now.ToUnixTimeMilliseconds()}");
         return new RegistrationChallenge(challenge, difficulty, expiresAt);
     }
 
+    /// <summary>Proof-of-work path: the nonce must meet the difficulty the challenge was issued with. Spends the challenge.</summary>
     public bool TryConsume(string? challenge, string? nonce)
     {
-        if (string.IsNullOrEmpty(challenge) || !IsNonce(nonce))
-        {
-            return false;
-        }
-
-        string id;
-        int difficulty;
-        DateTimeOffset expiresAt;
-        try
-        {
-            var payload = protector.Unprotect(challenge).Split('.');
-            if (payload.Length != 3)
-            {
-                return false;
-            }
-
-            id = payload[0];
-            difficulty = int.Parse(payload[2], System.Globalization.CultureInfo.InvariantCulture);
-            expiresAt = DateTimeOffset.FromUnixTimeMilliseconds(long.Parse(payload[1], System.Globalization.CultureInfo.InvariantCulture));
-        }
-        catch (Exception)
-        {
-            return false;
-        }
-
-        var now = clock.GetUtcNow();
-        if (now >= expiresAt)
+        if (!IsNonce(nonce) || Open(challenge) is not { } open)
         {
             return false;
         }
 
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(challenge + ":" + nonce));
-        if (LeadingZeroBits(hash) < difficulty)
+        return LeadingZeroBits(hash) >= open.Difficulty && Spend(open);
+    }
+
+    /// <summary>
+    /// Time-lock path, step one: how long until a <c>waited</c> submission of this challenge is accepted. Null when the
+    /// token is not a live challenge of ours; zero when the wait is over. Spends nothing.
+    /// </summary>
+    public TimeSpan? WaitRemaining(string? challenge)
+    {
+        if (Open(challenge) is not { } open)
+        {
+            return null;
+        }
+
+        var remaining = open.IssuedAt + TimeSpan.FromSeconds(options.Value.Captcha.FallbackWaitSeconds) - clock.GetUtcNow();
+        return remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero;
+    }
+
+    /// <summary>Time-lock path, step two: spends the challenge if its wait is over. No proof of work is checked.</summary>
+    public bool TryConsumeWaited(string? challenge) =>
+        WaitRemaining(challenge) == TimeSpan.Zero && Open(challenge) is { } open && Spend(open);
+
+    /// <summary>True when the token is ours, unexpired and not yet spent, so a form may carry it into its next attempt.</summary>
+    public bool IsLive(string? challenge)
+    {
+        if (Open(challenge) is not { } open)
         {
             return false;
         }
 
         lock (gate)
         {
+            return !consumed.Contains(open.Id);
+        }
+    }
+
+    private sealed record OpenChallenge(string Id, int Difficulty, DateTimeOffset ExpiresAt, DateTimeOffset IssuedAt);
+
+    /// <summary>The payload of a challenge that we protected and that has not expired; null otherwise.</summary>
+    private OpenChallenge? Open(string? challenge)
+    {
+        if (string.IsNullOrEmpty(challenge))
+        {
+            return null;
+        }
+
+        OpenChallenge open;
+        try
+        {
+            var payload = protector.Unprotect(challenge).Split('.');
+            if (payload.Length != 4)
+            {
+                return null;
+            }
+
+            var culture = System.Globalization.CultureInfo.InvariantCulture;
+            open = new OpenChallenge(
+                payload[0],
+                int.Parse(payload[2], culture),
+                DateTimeOffset.FromUnixTimeMilliseconds(long.Parse(payload[1], culture)),
+                DateTimeOffset.FromUnixTimeMilliseconds(long.Parse(payload[3], culture)));
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+
+        return clock.GetUtcNow() >= open.ExpiresAt ? null : open;
+    }
+
+    private bool Spend(OpenChallenge open)
+    {
+        var now = clock.GetUtcNow();
+        lock (gate)
+        {
             Purge(now);
-            if (consumed.Count >= MaxConsumed || !consumed.Add(id))
+            if (consumed.Count >= MaxConsumed || !consumed.Add(open.Id))
             {
                 return false;
             }
 
-            expiries.Enqueue(id, expiresAt);
+            expiries.Enqueue(open.Id, open.ExpiresAt);
             return true;
         }
     }

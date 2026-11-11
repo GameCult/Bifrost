@@ -12,11 +12,11 @@ public sealed partial class BifrostIdentityService(
     BifrostDbContext dbContext,
     TimeProvider timeProvider)
 {
-    public async Task<UserAccount> RegisterNativeAsync(
-        string identity,
-        string? displayName,
-        int noticeVersion,
-        CancellationToken cancellationToken)
+    /// <summary>
+    /// The one rule set for a new native identity: well formed, not reserved, not taken. Returns the normalized identity or
+    /// throws <see cref="BifrostIdentityException"/>. Spends nothing; the unique index at insert stays the race backstop.
+    /// </summary>
+    public async Task<string> CheckAvailableAsync(string identity, CancellationToken cancellationToken)
     {
         var normalizedIdentity = NormalizeIdentity(identity);
         if (IsReserved(normalizedIdentity))
@@ -24,13 +24,21 @@ public sealed partial class BifrostIdentityService(
             throw new BifrostIdentityException("That Bifrost identity is reserved.");
         }
 
-        var exists = await dbContext.UserAccounts.AnyAsync(
-            x => x.NormalizedBifrostIdentity == normalizedIdentity,
-            cancellationToken);
-        if (exists)
+        if (await dbContext.UserAccounts.AnyAsync(x => x.NormalizedBifrostIdentity == normalizedIdentity, cancellationToken))
         {
             throw new BifrostIdentityException("That Bifrost identity is already registered.");
         }
+
+        return normalizedIdentity;
+    }
+
+    public async Task<UserAccount> RegisterNativeAsync(
+        string identity,
+        string? displayName,
+        int noticeVersion,
+        CancellationToken cancellationToken)
+    {
+        var normalizedIdentity = await CheckAvailableAsync(identity, cancellationToken);
 
         var now = timeProvider.GetUtcNow();
         var publicIdentity = ToPublicIdentity(normalizedIdentity);
@@ -66,8 +74,29 @@ public sealed partial class BifrostIdentityService(
             NoticeVersion = noticeVersion,
             AcceptedAtUtc = now
         });
-        await dbContext.SaveChangesAsync(cancellationToken);
+        try
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateException)
+        {
+            // Only a lost race on the unique index is the caller's mistake; anything else is a fault and propagates.
+            if (!await IdentityTakenAsync(normalizedIdentity))
+            {
+                throw;
+            }
+
+            throw new BifrostIdentityException("That Bifrost identity is already registered.");
+        }
+
         return userAccount;
+    }
+
+    // A lost race on the unique index: the tracked insert is dropped and the identity is read fresh.
+    private async Task<bool> IdentityTakenAsync(string normalizedIdentity)
+    {
+        dbContext.ChangeTracker.Clear();
+        return await dbContext.UserAccounts.AnyAsync(x => x.NormalizedBifrostIdentity == normalizedIdentity);
     }
 
     public async Task EnsureIdentityAsync(
