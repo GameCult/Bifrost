@@ -22,7 +22,7 @@ Ratatoskr's Desk row per Mind is empty "until Bifrost feeds it" (FACT `src/app/f
 FACT today: a signed-in member holds only the cookie `__Host-bifrost_session`; the default scheme is Cookie (`Program.cs:189-200`); no `AddValidation` exists, so no access token authenticates any `/api/*` route; the desk handler is `.AllowAnonymous()` and judges its own bearer (`DeskEndpoints.cs`, `MapDesk`), and the cookie scheme cannot authenticate `/api/desk/*`. **A signed-in member can call nothing on the desk today.** Chat.gamecult.org never holds the `__Host-` cookie, so "the Heimdall session" cannot be sent by the browser to Bifrost from chat.
 
 So the session is used as PR #37 uses it: the **sign-in leg of an OIDC code+PKCE flow** (`/connect/authorize` resumes on the Heimdall-backed session, FACT `OidcEndpoints.cs:44-70`, which admits any account that is not Suspended and has an identity: membership is neither required nor written, so the sign-in leg does not prove Active. It works for `desk.read` only because the desk re-checks Active on every request) mints a short access token. Reuse, exactly:
-1. Token: PR #37's second public PKCE client (Ratatoskr) and `BifrostBearer` OpenIddict validation (PR #37 section 5, handler `IDeskCredential` production impl, labelled H4 in the desk cut map). Request scope `desk.read` only, audience `bifrost-desk`. No `desk.answer`, no `votes.*`.
+1. Token: PR #37's second public PKCE client (Ratatoskr) and `BifrostBearer` OpenIddict validation (PR #37 section 5, handler `IDeskCredential` production impl, the credential port; H4 in the desk cut map, a label used only there). Request scope `desk.read` only, audience `bifrost-desk`. No `desk.answer`, no `votes.*`.
 2. Judgment: unchanged `DeskEndpoints.HandleAsync`: audience, scope, then `OidcEndpoints.ActiveMemberIdAsync(db, sub)` re-read every request (non-Active gets 403 `forbidden`).
 3. CORS: existing `DeskCors` (exactly `Desk:AllowedOrigin`, GET and POST, no credentials).
 Rejected: a cookie-authenticated same-origin JSON route (works for a Bifrost page, not for the chat origin; a second auth path on the same data), and letting chat present its Matrix/MAS token (Bifrost does not validate it; INFERENCE per PR #37 section 1).
@@ -40,7 +40,7 @@ Huginn is the truth. A fork is a question record with options, a derived status,
 - **Staleness:** none added. A live read, `Cache-Control: no-store` (FACT), with Huginn's `stamp` (`s<N>`, same stamp same state) as the change signal; a client polls, or `limit=0` for the cheap probe. Bifrost may cache by stamp later; it need not.
 - **Failure:** per Mind and per call. A dead socket, timeout or unknown outcome is 503 `unavailable` with `Retry-After` (FACT `WriteUnavailableAsync`); the other Minds' rows are unaffected because the client asks per Mind. The mouth being down is irrelevant. Nothing is served from a stale copy that could mislead.
 - **Mouth overlap:** none, which is the point. Chat plane (mouth) and fork plane (door) stay two owners.
-- **Not yet existing:** `UnixSocketDeskDoor` (H5) and the Huginn side of the list wire. Eureka owns that wire (binding file section 5, "The door wire is Eureka's"). I found no definition of the list/read request bytes; this note does not invent one.
+- **Not yet existing:** `UnixSocketDeskDoor` (the door port's production impl; H5 in the desk cut map) and the Huginn side of the list wire. Eureka owns that wire (binding file section 5, "The door wire is Eureka's"). I found no definition of the list/read request bytes; this note does not invent one.
 
 ## 5. Meaning of "open" and "age"
 
@@ -66,14 +66,14 @@ Two different "D1"s exist: the ruling cited for this feed is the fork-desk answe
 | D6 | rate limits | **decided** (section 14 D6): 120 requests/min per account for `desk.read`, in configuration. A 429 has no refusal code in the contract (Q3 of the desk cut map): not decided there |
 | D7 | order against the MAS rollout | **decided** (section 14 D7): independent; the Ratatoskr client is seeded only when configured. The feed still needs Bifrost OIDC live, which it is not (PR #37 section 1) |
 
-Already ruled: the answer-binding D1 above, visibility ruling c (any `desk.read` holder sees the cards and outcomes the door says that member may see; the door decides visibility and the list wire carries only visible cards; notes only for deciders), D2/answer-binding (decider list authored in Bifrost admin, Mind read-only).
+Already ruled: the answer-binding D1 above, visibility ruling c (any `desk.read` holder sees cards and outcomes; notes only for deciders), read with Bifrost's requirement that the door returns only cards this member may see, D2/answer-binding (decider list authored in Bifrost admin, Mind read-only).
 
 ## 8. Privacy: what a member may see per Mind
 
-- **Filter owner: Huginn.** The door call carries the viewer (`subject`, `authority`, that Mind's `deciders`); Huginn projects "for this viewer" under the door's visibility policy, recorded in the Huginn door spec (Eureka's): a card is hidden unless the door says a member may see it. Bifrost holds NO audience rule: no filter on which forks appear, no per-card visibility rule, no copy of the policy (two copies would drift). Bifrost's acts are the per-request Active check, the `desk.read` bearer, and answerer masking on what the door returns (below), plus two already built: it nils every `note` for a non-decider (`DeskNotes.Strip`), and it resolves `{mind}` only against the configured list (unknown Mind and unknown fork return the same 404 bytes, so Minds are not probeable).
+- **Filter owner: Huginn.** The door call carries the viewer (`subject`, `authority`, that Mind's `deciders`); Huginn projects "for this viewer". Bifrost REQUIRES of the door that the list wire carry only cards this member may see; the policy and its wording are Eureka's to write in the door spec (not yet written, so nothing here quotes it; the intended policy is that a card is hidden unless the door says a member may see it). Bifrost holds NO audience rule: no filter on which forks appear, no per-card visibility rule, no copy of the policy (two copies would drift). Bifrost's three new acts are the per-request Active check, the `desk.read` bearer, and answerer masking on what the door returns (below), beside two already built: it nils every `note` for a non-decider (`DeskNotes.Strip`), and it resolves `{mind}` only against the configured list (unknown Mind and unknown fork return the same 404 bytes, so Minds are not probeable).
 - **Fields safe for a member:** `fork_id`, `title`, `options`, `recommendation`, `depends`, `status`, `order`, `options_hash`, counts, `stamp`, and `raised_at` (string or nil). **Not safe, and not in the feed:** `note` (stripped), the decider list beyond ids already on the card, anything from the mind that is not a fork card (follow-ups, findings, research, persona state, room text).
 - **Answerer ids (X3, closed by the steward in PR #37 section 14):** `ForkEntry.record.answers[]` carries each answerer's account id (a Bifrost `UserAccount.Id`) to any `desk.read` holder; ruling c permits cards and outcomes, but a member list of who answered what is more than a feed needs. The feed does not need `record` at all. Decided: Bifrost masks `answerer` for what it serves (small, consistent with `DeskNotes`) until a record-free list exists.
-- **Content privacy:** a fork's `context` and `title` are Mind-authored prose and may name people or private matter. The door is the only gate: the list wire carries only door-visible cards, Bifrost passes them through and masks answerer ids. The audience policy lives in Huginn's door spec, not here. The feed ships no free text Bifrost wrote.
+- **Content privacy:** a fork's `context` and `title` are Mind-authored prose and may name people or private matter. The door is the only gate: Bifrost requires the list wire to carry only cards the member may see, passes them through and masks answerer ids. The audience policy is Eureka's to put in the door spec, not here. The feed ships no free text Bifrost wrote.
 - **Consent and receipts:** reading creates no member record, so no receipt and no consent object; the member's act is the token grant (read-only, implicit). Answer receipts and the append-only record belong to the answer path and stay out. Audit: log client id and `sub`, not the response.
 
 ## 9. Failure modes
@@ -93,9 +93,12 @@ Bearer unjudgeable: 503 `unavailable` (not a refusal of the caller). Not Active:
 
 | file | lines |
 |---|---|
-| Bifrost `Features/Desk/UnixSocketDeskDoor.cs` (list only, H5; read/answer added by the answer cut) | ~180 |
-| Bifrost `Features/Oidc/*` bearer validation, `desk.read` scope, audience, second client seed (shared with PR #37 H4) | ~150 |
+| Bifrost `Features/Desk/UnixSocketDeskDoor.cs` (list only; read/answer added by the answer cut) | ~180 |
+| Bifrost `Features/Oidc/*` bearer validation, `desk.read` scope, audience, second client seed (shared with PR #37) | ~150 |
 | Bifrost `IDeskCredential` production impl (validates the bearer, returns `DeskToken`) + wiring in `Program.cs`; no audience or visibility logic | ~60 |
+| Bifrost sweep revoking the Ratatoskr/desk client's authorizations for subjects failing the chat-tier test (PR #37 section 8; derived from membership, no outbound POST) | ~80 |
+| Bifrost `OidcGuard` match extended to `/api/desk` (D5 brake) and the desk-only deployment settlement | ~30 |
+| Bifrost per-audience token lifetime at authorize (D3: 60 minutes for `desk.read`-only; probe 7 first) | ~30 |
 | Bifrost `DeskNotes` extension: mask `answerer` for non-deciders | ~15 |
 | Bifrost re-vendor `tests/Bifrost.Web.Tests/Fixtures/fork-card-vectors.json` (17-key card, new CultLib commit) + `DeskVectors.cs:9,11` pin + `ForkCard` 17th member `RaisedAt`, string or nil (`DeskDocuments.cs:64-80`) + `DeskDocumentTests`/`DeskScenarioTests` updates | ~60 |
 | CultLib `fork-card.md` + schema + card vectors for `raised_at` (17-key card; `options_hash` vectors unchanged) | ~40 |
