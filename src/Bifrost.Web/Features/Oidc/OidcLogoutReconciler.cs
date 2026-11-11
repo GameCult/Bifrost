@@ -11,7 +11,7 @@ using static OpenIddict.Abstractions.OpenIddictConstants;
 namespace Bifrost.Web.Features.Oidc;
 
 /// <summary>
-/// Ends the chat sessions of a subject who is no longer an Active member. Each tick it lists the subjects holding valid
+/// Ends the chat sessions of a subject who is no longer allowed to chat (suspended, or the account gone). Each tick it lists the subjects holding valid
 /// authorizations of the configured client; for each one the shared active-member reading refuses, it POSTs one signed
 /// OIDC back-channel logout token to MAS and, only after a 2xx, revokes that subject's authorizations. The
 /// authorizations table is the queue: nothing is stored, so a restart, a MAS outage or a later-set URI resumes from it.
@@ -127,7 +127,7 @@ public sealed class OidcLogoutReconciler(
     {
         await using var scope = scopeFactory.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
-        if (await OidcEndpoints.IsStillActiveMemberAsync(db, subject, cancellationToken))
+        if (await OidcEndpoints.IsStillChatEligibleAsync(db, subject, cancellationToken))
         {
             _backoff.Remove(subject);
             return;
