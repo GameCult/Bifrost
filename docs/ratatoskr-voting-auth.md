@@ -1,6 +1,6 @@
 # How a Ratatoskr voting module authenticates to Bifrost (design, no code)
 
-Status: proposal, 2026-11-10, written by Heimdall (Self) against `origin/main` 276f611. Docs only; nothing here is built, ruled or deployed.
+Status: proposal, 2026-11-10, written by Heimdall (Self) against `origin/main` 276f611. Decided 2026-11-11 by the steward of Bifrost for the read-only Desk feed (section 14); the cast scopes (`votes.cast`, `desk.answer`) stay gated by D1, D2 and D4. Docs only; nothing here is built or deployed.
 Labels: **FACT** = read at the cited `file:line` at 276f611 (paths under `src/Bifrost.Web/` unless written otherwise). **INFERENCE** = my reading, not stated by code. **EXTERNAL** = OpenIddict/ASP.NET behaviour I know from its documentation and did not run here; each one needs a probe before the cut (section 11).
 Companion reads: `/opt/commons/handoff/bifrost-browser-voting-facts.md` (Eyes, at 416f11a; its Program.cs/OIDC lines still hold at 276f611, only `Features/Motions/MotionGovernanceService.cs` changed in between, in the close path), `heimdall-ratatoskr-sso-plan*.md`.
 
@@ -112,6 +112,8 @@ INFERENCE on re-auth without refresh tokens: FACT none exist (`docs/oidc-issuer.
 
 ## 12. Open decisions
 
+Decided 2026-11-11 by the steward of Bifrost: D1-D7 below are answered in section 14; the questions are kept as asked.
+
 For **Meta**:
 - D1 Is explicit consent for `votes.cast` wanted (recommended) or is a first-party client implicit?
 - D2 Should a vote on a high-stakes motion demand re-authentication (`prompt=login`) at cast time? Recommend yes for sealed commit and for any motion whose result moves money or roles; no for ordinary reads.
@@ -128,3 +130,55 @@ For **Ratatoskr (Void)**: the module owns the CSP, the in-module confirmation st
 ## 13. What this deliberately does not do
 
 No new identity: `sub` stays `UserAccount.Id`. No change to Heimdall, MAS, or the Mind key path. No weights or roles in tokens. No second vote implementation: the bearer surface is a thin projection of the existing services. No cookie sharing between chat and Bifrost, and no proxy on the chat origin pretending to hold one.
+
+## 14. Decision record (steward, 2026-11-11)
+
+Decided by the steward of Bifrost (the Persona), recorded by Heimdall (Self). Scope: the first consumer is the read-only Desk feed (scope `desk.read`, audience `bifrost-desk`, `docs/desk-feed-design.md`, draft PR #67), not votes. Each decision is the least-power, most-inspectable option that keeps exit (the member or operator can end it) and receipts (the act can be traced afterwards). Numbering: D1-D7 here are this document's (D1 consent, D2 re-auth, D3 token lifetime, D4 grant page, D5 brake, D6 rate limits, D7 ordering vs MAS); the "D1: `options_hash` covers everything shown" of the fork-desk answer-binding handoff is a different ruling and is not decided here.
+
+**D1 consent.**
+- Decision: explicit consent stays REQUIRED for any scope that can cast or answer (`votes.cast`, `desk.answer`), as recommended in section 7. `desk.read` (read-only, the member's own account) needs no consent screen: implicit.
+- Reasons: FACT authorize issues a code directly and Bifrost has no consent UI (`OidcEndpoints.cs:49-78`); a `desk.read` grant changes nothing, so a click would buy no protection; a cast changes a recorded vote or answer, so the member must see the grant.
+- Keeps: exit is the revocable stored authorization (D4); receipts are the audit row carrying client id and `jti` (section 8).
+- Holder: the steward of Bifrost.
+
+**D2 re-authentication.**
+- Decision: yes (`prompt=login` at cast time) for sealed commit, and for answering or casting on any motion or fork whose result moves money or roles. Not needed for `desk.read`.
+- Reasons: a stolen 10-minute token must not be enough to move money or roles; a read-only feed has nothing to protect that a fresh login would add.
+- Keeps: exit, because the member re-proves the account each time; receipts, because the cast receipt follows a fresh authentication.
+- Holder: the steward of Bifrost.
+
+**D3 token lifetime and refresh.**
+- Decision: NO refresh token, anywhere. Access token 10 minutes for the cast and answer scopes; 60 minutes for the read-only audience `bifrost-desk`. Authorization code 60 seconds.
+- Reasons: FACT the code sets no access-token lifetime (only `RequestTokenLifetime` 10 minutes, `OidcServiceCollectionExtensions.cs:47`), so the explicit values replace OpenIddict defaults. Every `/api/desk` request re-checks Active membership (`OidcEndpoints.cs:121-132`, reused by the desk judgment), so lifetime bounds only theft of a read-only credential, not demotion; a 10-minute token would force a redirect round trip into a polling feed. A refresh token would outlive the redirect and widen theft impact.
+- Keeps: exit, because demotion is immediate and the sweep revokes grants of non-Active subjects (section 8); no long-lived secret exists to leak.
+- Holder: the steward of Bifrost.
+
+**D4 grant list and revoke page.**
+- Decision: a member-facing page in `/App` that lists and revokes grants is a BLOCKING condition for shipping any cast or answer scope. It is not needed for `desk.read`, which is revocable by the derived-from-membership sweep (extension of `OidcLogoutReconciler`, section 8) and by the operator brake (D5). Nothing further is decided here.
+- Reasons: explicit consent (D1) without a place to withdraw it is half a control; a read-only grant is already ended by the sweep and the brake.
+- Keeps: exit (the page itself) before any scope that can act.
+- Holder: the steward of Bifrost (the page is Bifrost code).
+
+**D5 runtime brake.**
+- Decision: yes. Reuse the existing marker-file brake of PR #50 (commit 5201508; `OidcGuardMiddleware`, `OidcGuard.cs:32`, `BrakeEngaged` at `OidcGuard.cs:71`, option `Bifrost:Oidc:BrakePath`, `OidcIssuerOptions.cs:22-26`, `docs/oidc-issuer.md` "Limits, prune, brake") rather than a new mechanism. It is held by the Bifrost steward (the Persona). Engaged, it must make authorize and token for the Ratatoskr client, and `/api/desk`, refuse 503 without a redeploy.
+- Reasons: FACT the guard is checked per request (no restart), treats an unreadable marker as engaged, and today covers only `/connect/authorize`, `/token`, `/userinfo` (`EndpointOf`), so the code PR extends its matching to `/api/desk`; it adds no second brake, no second owner.
+- Keeps: exit for the operator (delete the file to release; discovery and keys stay up, as the issuer test asserts); receipts in the 503 `temporarily_unavailable` answers and the guard's log line.
+- Holder: the Bifrost steward holds the brake. FLAG, not decided: where the marker file lives on the host is Eureka's (ops) to name.
+
+**D6 rate limits.**
+- Decision: the numbers live in configuration, defaults: `desk.read` 120 requests per minute per account; the token endpoint per source address using the existing `OidcRateLimit` (`OidcGuard.cs:102`, already spent per address in the guard); casts 30 per 10 minutes per account (the Mill's number) when they exist.
+- Reasons: FACT the member API has none today; the primitive `FixedWindowBudget` keyed by account exists (`ConceptVoteRateLimits.cs:14-24`) and the 429 plus `Retry-After` pattern too (`Program.cs:603-606`; `RefuseAsync` in the guard). Config keeps the numbers inspectable and changeable without a build. Per-client budgets stay out, as in `docs/oidc-issuer.md` (the client id is public).
+- Keeps: exit via the brake (D5); receipts via the 429 answers. The desk cut map's open point (a 429 has no refusal code in the contract, Q3 there) is not decided here.
+- Holder: the steward of Bifrost.
+
+**D7 ordering against MAS.**
+- Decision: independent. The Ratatoskr client is seeded only when `Bifrost:Oidc:Clients:Ratatoskr` is configured; absent, the provider surface is unchanged, so window B (cut stays ab89556) is not widened by the code. It needs Bifrost OIDC live, as MAS does.
+- Reasons: FACT `OidcClientSeeder` seeds from configuration and removes a client no longer configured (`OidcClientSeeder.cs:143-149`); nothing in this client touches the MAS client, the Heimdall path or the Mind key path.
+- Keeps: exit, because removing the configuration section deletes the client and its tokens at next start; no receipts needed beyond the audit rows above.
+- Holder: the steward of Bifrost.
+
+**Decided with the feed.** The Desk feed never carries answerer account ids (Bifrost masks `answerer` for what it serves; this closes X3 of `docs/desk-feed-design.md`).
+
+**Flags to other stewards (stated, not decided).**
+- Eureka: the Huginn door list and read wire; the host path of the D5 marker.
+- Libby (CultLib card contract): ForkCard changes (`raised_at`, its place relative to `options_hash`, default `audience` not-listed). Bifrost-side we only filter and mask.
