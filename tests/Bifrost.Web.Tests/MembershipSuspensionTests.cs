@@ -57,6 +57,12 @@ public sealed class MembershipSuspensionTests : IClassFixture<TestWebApplication
     private Task<MembershipStatus> StatusAsync(Guid id) => InScopeAsync(async (_, db) =>
         (await db.Memberships.AsNoTracking().SingleAsync(x => x.UserAccountId == id)).Status);
 
+    private Task<string?> ReasonAsync(Guid id) => InScopeAsync(async (_, db) =>
+        (await db.Memberships.AsNoTracking().SingleAsync(x => x.UserAccountId == id)).SuspensionReason);
+
+    private Task<Guid> MembershipIdAsync(Guid id) => InScopeAsync(async (_, db) =>
+        (await db.Memberships.AsNoTracking().SingleAsync(x => x.UserAccountId == id)).Id);
+
     private Task<List<AuditEvent>> AuditAsync(string action) => InScopeAsync((_, db) =>
         db.AuditEvents.AsNoTracking().Where(x => x.Action == action).ToListAsync());
 
@@ -78,9 +84,12 @@ public sealed class MembershipSuspensionTests : IClassFixture<TestWebApplication
 
         Assert.Equal(SuspensionOutcome.Done, await SuspendAsync(seed.AdminId, seed.MemberId, "spam in chat"));
         Assert.Equal(MembershipStatus.Suspended, await StatusAsync(seed.MemberId));
-        var receipt = Assert.Single(await AuditAsync("membership.suspended"), x => x.Detail.Contains("spam in chat"));
+        var membershipId = (await MembershipIdAsync(seed.MemberId)).ToString();
+        var receipt = Assert.Single(await AuditAsync("membership.suspended"), x => x.EntityId == membershipId);
         Assert.Equal(seed.AdminId, receipt.ActorUserAccountId);
         Assert.Contains("Active -> Suspended", receipt.Detail);
+        Assert.DoesNotContain("spam in chat", receipt.Detail);
+        Assert.Equal("spam in chat", await ReasonAsync(seed.MemberId));
     }
 
     [Fact]
@@ -95,7 +104,7 @@ public sealed class MembershipSuspensionTests : IClassFixture<TestWebApplication
     }
 
     [Fact]
-    public async Task A_suspension_reason_does_not_reach_the_member_dashboard_snapshot()
+    public async Task A_suspension_reason_is_on_the_membership_row_not_the_audit_trail_or_the_member_dashboard_snapshot()
     {
         var seed = await SeedAsync();
         await SuspendAsync(seed.AdminId, seed.MemberId, "private-reason-canary");
@@ -103,7 +112,8 @@ public sealed class MembershipSuspensionTests : IClassFixture<TestWebApplication
         var snapshot = await InScopeAsync(async (sp, _) => await sp.GetRequiredService<DashboardSnapshotService>().GetAsync(seed.OrdinaryId, CancellationToken.None));
 
         Assert.DoesNotContain(snapshot.RecentActivity, x => x.Detail.Contains("private-reason-canary"));
-        Assert.Contains(await AuditAsync("membership.suspended"), x => x.Detail.Contains("private-reason-canary"));
+        Assert.DoesNotContain(await AuditAsync("membership.suspended"), x => x.Detail.Contains("private-reason-canary"));
+        Assert.Equal("private-reason-canary", await ReasonAsync(seed.MemberId));
     }
 
     [Fact]
@@ -132,9 +142,16 @@ public sealed class MembershipSuspensionTests : IClassFixture<TestWebApplication
         Assert.Equal(SuspensionOutcome.NoReason, await UnsuspendAsync(seed.AdminId, seed.MemberId, null));
         Assert.Equal(MembershipStatus.Suspended, await StatusAsync(seed.MemberId));
 
+        await InScopeAsync(async (_, db) =>
+        {
+            (await db.Memberships.SingleAsync(x => x.UserAccountId == seed.MemberId)).SuspensionReason = "old reason";
+            await db.SaveChangesAsync();
+            return 0;
+        });
         Assert.Equal(SuspensionOutcome.Done, await UnsuspendAsync(seed.AdminId, seed.MemberId, "appeal upheld"));
         Assert.Equal(restored, await StatusAsync(seed.MemberId));
-        Assert.Contains(await AuditAsync("membership.unsuspended"), x => x.Detail.Contains("appeal upheld") && x.ActorUserAccountId == seed.AdminId);
+        Assert.Contains(await AuditAsync("membership.unsuspended"), x => x.ActorUserAccountId == seed.AdminId && !x.Detail.Contains("appeal upheld"));
+        Assert.Null(await ReasonAsync(seed.MemberId));
         Assert.Equal(SuspensionOutcome.NotApplicable, await UnsuspendAsync(seed.AdminId, seed.MemberId, "again"));
     }
 

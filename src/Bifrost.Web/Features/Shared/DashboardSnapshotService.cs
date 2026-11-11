@@ -92,7 +92,7 @@ public sealed class DashboardSnapshotService(BifrostDbContext dbContext, TimePro
         var recentActivity = await dbContext.AuditEvents
             .AsNoTracking()
             .Include(x => x.ActorUserAccount)
-            .Where(x => !x.Action.StartsWith("membership.suspended") && !x.Action.StartsWith("membership.unsuspended")) // a reason is for admins, not the member dashboard
+            .Where(x => !x.Action.StartsWith("membership.suspended") && !x.Action.StartsWith("membership.unsuspended") && x.Action != "membership.bootstrap-promoted") // suspension reasons and the bootstrap-admin promotion are for admins, not the member dashboard
             .OrderByDescending(x => x.OccurredAtUtc)
             .Take(8)
             .Select(x => new DashboardActivity(

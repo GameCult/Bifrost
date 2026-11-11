@@ -11,7 +11,7 @@ This page scopes the three that did not exist, says where each lives, and record
 | Rate limits and brake | `OidcGuardMiddleware` (`docs/oidc-issuer.md`) | Merged. Covers `/connect/*` only, not the register endpoint. |
 | Reserved names | `BifrostIdentityService.IsReserved`, 28 names | Merged, at creation and at authorize. |
 | Chat tier, no vote | `Authenticated` / `PendingApproval` accounts chat and open no member or governance surface | Merged. |
-| Suspension | `MembershipSuspensionService` | Merged. |
+| Suspension | `MembershipSuspensionService` | Merged. The reason is `Membership.SuspensionReason`, written with the status change and its receipt, cleared on unsuspend, projected only to admins on the members page; the receipt (`AuditEvent.Detail`) holds no reason text. Receipts written before the column existed still hold their reasons as history; the member dashboard keeps filtering suspension receipts out. An unsuspend still requires a reason, but nothing stores it. |
 | CAPTCHA | `Features/Registration/RegistrationChallengeService` | Built here. |
 | Consent receipt | `ConsentReceipt`, `TrainingNotice` | Built here. |
 | Email verification | nowhere | Scoped below, not built. |

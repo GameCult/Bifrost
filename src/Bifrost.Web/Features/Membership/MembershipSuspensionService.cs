@@ -17,7 +17,7 @@ public enum SuspensionOutcome
 
 /// <summary>
 /// The one place a membership becomes Suspended or stops being. Only a platform admin may call it, every use leaves an audit
-/// receipt naming the admin, the account and the reason, and no sign-in path writes or lifts a suspension (Heimdall and GitHub
+/// receipt naming the admin and the account (the reason is kept on the membership row, readable by admins only), and no sign-in path writes or lifts a suspension (Heimdall and GitHub
 /// sign-in leave a Suspended membership as it is). Unsuspending restores Active for an account that was once approved,
 /// Authenticated for one that never was; a pending request is not remembered.
 /// </summary>
@@ -65,14 +65,16 @@ public sealed class MembershipSuspensionService(BifrostDbContext dbContext, Audi
         membership.Status = suspend
             ? MembershipStatus.Suspended
             : membership.ApprovedAtUtc is null ? MembershipStatus.Authenticated : MembershipStatus.Active;
+        // The reason is a column on the membership, for admins; the receipt names who and what changed, never why.
         var clipped = reason.Trim().Length > MaxReasonLength ? reason.Trim()[..MaxReasonLength] : reason.Trim();
-        // One save: the status change and its receipt stand or fall together (RecordAsync saves the shared context).
+        membership.SuspensionReason = suspend ? clipped : null;
+        // One save: the status change, the reason and the receipt stand or fall together (RecordAsync saves the shared context).
         await auditTrailService.RecordAsync(
             actor.UserAccount.Id,
             nameof(Membership),
             membership.Id,
             suspend ? "membership.suspended" : "membership.unsuspended",
-            $"{(suspend ? "Suspended" : "Unsuspended")} {user.DisplayName} ({before} -> {membership.Status}): {clipped}",
+            $"{(suspend ? "Suspended" : "Unsuspended")} {user.DisplayName} ({before} -> {membership.Status}).",
             cancellationToken);
         return SuspensionOutcome.Done;
     }

@@ -14,10 +14,17 @@ public sealed class OidcClientSeeder(
     IServiceScopeFactory scopeFactory,
     OidcIssuerOptions options,
     OidcKeyMaterial material,
-    IOptions<OpenIddictServerOptions> serverOptions) : IHostedService
+    IOptions<OpenIddictServerOptions> serverOptions,
+    ILogger<OidcClientSeeder> logger) : IHostedService
 {
     public async Task StartAsync(CancellationToken cancellationToken)
     {
+        if (string.IsNullOrWhiteSpace(options.Clients.Mas.BackchannelLogoutUri))
+        {
+            logger.LogWarning(
+                "Bifrost:Oidc:Clients:Mas:BackchannelLogoutUri is not set: suspending an account stops new sign-ins and token refresh but does not end its existing chat sessions.");
+        }
+
         // Reading the server options now runs their configuration, so a bad issuer stops startup rather than the first request.
         _ = serverOptions.Value;
 

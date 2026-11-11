@@ -821,6 +821,9 @@ namespace Bifrost.Web.Data.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<string>("SuspensionReason")
+                        .HasColumnType("text");
+
                     b.Property<Guid>("UserAccountId")
                         .HasColumnType("uuid");
 

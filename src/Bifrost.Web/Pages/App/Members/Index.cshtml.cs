@@ -22,6 +22,23 @@ public sealed class IndexModel(
     [BindProperty]
     public UpdateProfileInput Profile { get; set; } = new();
 
+    /// <summary>Why the last membership action did nothing; one of <see cref="RefusalNotices"/>, carried across the redirect.</summary>
+    [TempData]
+    public string? Notice { get; set; }
+
+    private static readonly IReadOnlyDictionary<SuspensionOutcome, string> RefusalNotices = new Dictionary<SuspensionOutcome, string>
+    {
+        [SuspensionOutcome.NoReason] = "Nothing changed: a reason is required to suspend or unsuspend an account.",
+        [SuspensionOutcome.ProtectedAccount] = "Nothing changed: you cannot suspend yourself or another platform admin.",
+        [SuspensionOutcome.NoSuchAccount] = "Nothing changed: that account or its membership does not exist.",
+        [SuspensionOutcome.NotApplicable] = "Nothing changed: the account is already in that state."
+    };
+
+    internal const string ApproveSuspendedNotice = "Nothing changed: a suspended account can only be lifted with Unsuspend.";
+    internal const string NoMembershipNotice = "Nothing changed: that account has no membership yet.";
+    internal const string OwnAdminRoleNotice = "Nothing changed: you cannot remove or change your own platform admin role.";
+    internal const string RoleOnSuspendedNotice = "Nothing changed: a suspended account's roles cannot be changed until it is unsuspended.";
+
     public CurrentBifrostActor Actor { get; private set; } = CurrentBifrostActor.Anonymous;
 
     public IReadOnlyList<MemberDirectoryItem> Users { get; private set; } = [];
@@ -106,7 +123,8 @@ public sealed class IndexModel(
 
         if (user.Membership!.Status == MembershipStatus.Suspended)
         {
-            return RedirectToPage(); // only Unsuspend lifts a suspension
+            Notice = ApproveSuspendedNotice; // only Unsuspend lifts a suspension
+            return RedirectToPage();
         }
 
         user.Membership.Status = MembershipStatus.Active;
@@ -143,7 +161,13 @@ public sealed class IndexModel(
         var outcome = suspend
             ? await suspension.SuspendAsync(Actor, userAccountId, reason, cancellationToken)
             : await suspension.UnsuspendAsync(Actor, userAccountId, reason, cancellationToken);
-        return outcome == SuspensionOutcome.NotAdmin ? Forbid() : RedirectToPage();
+        if (outcome == SuspensionOutcome.NotAdmin)
+        {
+            return Forbid();
+        }
+
+        Notice = RefusalNotices.GetValueOrDefault(outcome);
+        return RedirectToPage();
     }
 
     public async Task<IActionResult> OnPostToggleRoleAsync(Guid userAccountId, MemberRole role, CancellationToken cancellationToken)
@@ -161,6 +185,19 @@ public sealed class IndexModel(
 
         if (user.Membership is null)
         {
+            Notice = NoMembershipNotice;
+            return RedirectToPage();
+        }
+
+        if (user.Id == Actor.UserAccount.Id && role == MemberRole.PlatformAdmin)
+        {
+            Notice = OwnAdminRoleNotice;
+            return RedirectToPage();
+        }
+
+        if (user.Membership.Status == MembershipStatus.Suspended)
+        {
+            Notice = RoleOnSuspendedNotice;
             return RedirectToPage();
         }
 
@@ -175,8 +212,10 @@ public sealed class IndexModel(
                 Notes = "Assigned from the member admin page."
             });
         }
-        else if (!(user.Id == Actor.UserAccount.Id && role == MemberRole.PlatformAdmin))
+        else
         {
+            // Out of the collection too, so the flags below derive from the roles as they will stand after the save.
+            user.Membership.RoleAssignments.Remove(existingAssignment);
             dbContext.RoleAssignments.Remove(existingAssignment);
         }
 
@@ -339,6 +378,7 @@ public sealed class IndexModel(
                 user.MemberProfile?.Skills ?? string.Empty,
                 user.MemberProfile?.Availability ?? string.Empty,
                 user.Membership?.Status ?? MembershipStatus.Authenticated,
+                Actor.CanManageMembership ? user.Membership?.SuspensionReason ?? string.Empty : string.Empty,
                 user.Membership?.RoleAssignments.Select(x => x.Role).OrderBy(x => x.ToString()).ToArray() ?? [],
                 patronTier?.Label ?? string.Empty,
                 patronTier?.Weight ?? 0m,
@@ -426,6 +466,7 @@ public sealed class IndexModel(
         string Skills,
         string Availability,
         MembershipStatus Status,
+        string SuspensionReason,
         IReadOnlyList<MemberRole> Roles,
         string PatronTierLabel,
         decimal PatronTierWeight,
