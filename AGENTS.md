@@ -30,7 +30,7 @@
 ## Locked Technical Defaults
 
 - stack: ASP.NET Core 8 LTS
-- UI: Razor Pages + HTMX
+- UI: Razor Pages
 - database: PostgreSQL
 - hosting target: `bifrost.gamecult.org` on Yggdrasil
 - deployment pattern: nginx + systemd + localhost-only Postgres, matching `E:\Projects\gamecult-ops`

@@ -17,7 +17,7 @@
     <link rel="stylesheet" href="~/css/site.css" asp-append-version="true" />
     <link rel="stylesheet" href="~/Bifrost.Web.styles.css" asp-append-version="true" />
 </head>
-<body hx-boost="true">
+<body>
     <div class="shell">
         <header class="topbar">
             <a class="brand" asp-page="/Index">
@@ -62,7 +62,6 @@
         </main>
     </div>
 
-    <script src="https://unpkg.com/htmx.org@1.9.12"></script>
     <script src="~/js/site.js" asp-append-version="true"></script>
     @await RenderSectionAsync("Scripts", required: false)
 </body>
