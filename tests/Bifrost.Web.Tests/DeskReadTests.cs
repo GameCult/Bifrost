@@ -197,6 +197,22 @@ public sealed class DeskReadTests
     }
 
     [Fact]
+    public async Task request_id_conflict_is_the_answers_alone_on_read_and_list_it_is_a_door_fault()
+    {
+        using var factory = new DeskWebApplicationFactory();
+        await factory.EnsureAccountAsync(DeskWebApplicationFactory.Alice, true);
+
+        factory.Door.ReadScript = (_, _) => new DeskReadOutcome.NotFound(DeskRefusals.RequestIdConflict);
+        factory.Door.ListScript = (_, _) => new DeskListOutcome.NotListed(DeskRefusals.RequestIdConflict);
+        foreach (var target in new[] { "/api/desk/nibu/forks", DeskReplay.Target("read", "nibu", "nibu:question:glow-order") })
+        {
+            var reply = await factory.SendAsync("GET", target, null, ReadToken(factory));
+            Assert.Equal(503, reply.Status);
+            Assert.Equal("unavailable", (string?)JsonNode.Parse(reply.Body)!["code"]);
+        }
+    }
+
+    [Fact]
     public async Task Door_failure_on_list_and_read_is_unavailable()
     {
         using var factory = new DeskWebApplicationFactory();

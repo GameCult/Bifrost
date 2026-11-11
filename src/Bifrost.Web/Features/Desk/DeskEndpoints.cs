@@ -173,7 +173,7 @@ public static class DeskEndpoints
                     {
                         await WriteJsonAsync(http, DeskRefusals.ForkTooLargeStatus, DeskRefusals.ForkTooLargeDocument(largeId, largeOrder));
                     }
-                    else if (listed is DeskListOutcome.NotListed(var listCode) && DoorMayRefuse(listCode))
+                    else if (listed is DeskListOutcome.NotListed(var listCode) && DoorMayRefuse(listCode) && listCode != DeskRefusals.RequestIdConflict)
                     {
                         await WriteRefusalAsync(http, ReadListCode(listCode));
                     }
@@ -189,7 +189,7 @@ public static class DeskEndpoints
                     {
                         await WriteJsonAsync(http, 200, IsDecider(context) ? entry : DeskNotes.Strip(entry));
                     }
-                    else if (found is DeskReadOutcome.NotFound(var readCode) && DoorMayRefuse(readCode))
+                    else if (found is DeskReadOutcome.NotFound(var readCode) && DoorMayRefuse(readCode) && readCode != DeskRefusals.RequestIdConflict)
                     {
                         await WriteRefusalAsync(http, ReadListCode(readCode));
                     }
@@ -251,6 +251,8 @@ public static class DeskEndpoints
         code is not (DeskRefusals.Unauthenticated or DeskRefusals.InsufficientScope or DeskRefusals.Forbidden) &&
         DeskRefusals.IsKnown(code);
 
+    // request_id_conflict is the answer's alone (Libby): a read or list carries no request_id, so the door saying it
+    // there is a door fault and the edge says `unavailable`.
     // A read or list sends no body. A door that refuses one for its body (an `authority` field among them) is
     // refusing the request, which is request_invalid; it is not an outage.
     private static string ReadListCode(string code) =>
