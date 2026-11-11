@@ -1855,12 +1855,12 @@ test("reply link: a mouth built without the option has it off, and only the exac
 
 // ---- Fixes after PR #63: the target cache, the excerpt scrub, the per-round read cap.
 const eventGets = (hs, id) => hs.seen.filter(r => r.method === "GET" && r.path.endsWith(`/event/${id}`)).length;
-async function replyAcrossTtl(replyLink) {
+async function replyAcrossTtl(replyLink, failure = 500) {
   const clock = { t: 1_000_000 };
   let down = false, attempts = 0;
   const hs = await fakeHomeserver({ preload: { [ROOM]: [target("$hers", SELF, "my words")] }, sync: since => since === null ? { next_batch: "b0" } : { next_batch: `b${since}x`, ...joined({ [ROOM]: { timeline: { events: [quoting(`$q${since}`, "$hers")] } } }) } });
   try {
-    const fetch = (u, o) => (String(u).includes("/event/%24hers") && attempts++, down && String(u).includes("/event/") ? Promise.resolve(new Response("{}", { status: 500 })) : hs.fetch(u, o));
+    const fetch = (u, o) => (String(u).includes("/event/%24hers") && attempts++, down && String(u).includes("/event/") ? (failure === "timeout" ? Promise.reject(new Error("timed out")) : Promise.resolve(new Response("{}", { status: failure }))) : hs.fetch(u, o));
     const mouth = mouthFor(hs, { replyLink, now: () => clock.t, fetch });
     await mouth.syncOnce();
     const first = await mouth.syncOnce();
@@ -1909,4 +1909,15 @@ test("reply link: at most 8 uncached targets are read for reply_to per sync roun
     assert.equal(ids.filter(t => eventGets(hs, t) > 0).length, 8);
     assert.deepEqual(made.map(d => d.replyTo === null), [false, false, false, false, false, false, false, false, true, true]);
   } finally { await hs.close(); }
+});
+
+test("target cache: flag on, 500, 429 and a timeout keep the earlier hit at the re-read; 403 and 404 drop it (reply_to nil, basis as the failure case)", async () => {
+  for (const failure of [500, 429, "timeout"]) {
+    const r = await replyAcrossTtl(true, failure);
+    assert.deepEqual([r.later.basis, r.later.replyTo?.excerpt], ["reply", "my words"], String(failure));
+  }
+  for (const failure of [403, 404]) {
+    const r = await replyAcrossTtl(true, failure);
+    assert.deepEqual([r.first.basis, r.later.basis, r.later.replyTo, r.again.replyTo], ["reply", null, null, null], String(failure));
+  }
 });

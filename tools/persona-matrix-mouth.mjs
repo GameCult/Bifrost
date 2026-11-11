@@ -166,7 +166,7 @@ export function createMouth({
     } catch (error) {
       throw new Error(`homeserver unreachable: ${redact(error?.message ?? String(error), token)}`);
     }
-    if (!response.ok) throw new Error(`homeserver answered ${response.status} for ${method} ${path.split("?")[0]}`);
+    if (!response.ok) throw Object.assign(new Error(`homeserver answered ${response.status} for ${method} ${path.split("?")[0]}`), { status: response.status });
     return response.json();
   }
 
@@ -349,7 +349,7 @@ export function createMouth({
     const cached = cachedTarget(key);
     if (cached) return cached; // with replyLink a hit is short too: a later redaction or edit of the target must show at a re-read
     const known = authors.get(key);
-    let sender = null, excerpt = null;
+    let sender = null, excerpt = null, transient = false;
     try {
       const target = await matrix("GET", `/rooms/${encodeURIComponent(roomId)}/event/${encodeURIComponent(eventId)}`, undefined, API, AbortSignal.timeout(sendTimeoutMs));
       if (target?.room_id === undefined || target.room_id === roomId) { // an id from another room is not an answer about this one: no sender, no text
@@ -357,9 +357,10 @@ export function createMouth({
         if (sender !== null) excerpt = excerptOf(target);
       }
     } catch (error) {
+      transient = error.status === undefined || error.status >= 500 || error.status === 429; // network, timeout, 5xx, 429: the answer is unknown; 403, 404 and any other refusal are an answer
       say(`reply target ${eventId} not read: ${error.message}`);
     }
-    const entry = sender === null && known?.sender != null ? { ...known, at: now() } : { sender, excerpt, at: now() }; // a failed re-read keeps the earlier hit: only its age is renewed
+    const entry = sender === null && transient && known?.sender != null ? { ...known, at: now() } : { sender, excerpt, at: now() }; // a re-read that fails transiently (network, timeout, 5xx, 429) keeps the earlier hit and renews only its age; any other failure (403, 404, wrong room, no sender) replaces it with the failure entry
     authors.set(key, entry);
     if (authors.size > DELIVERED_INDEX) authors.delete(authors.keys().next().value);
     return entry;
