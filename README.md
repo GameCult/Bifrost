@@ -36,7 +36,7 @@ It is closer to deployable now, but it is still not a finished internet-facing m
 ## Chosen Stack
 
 - ASP.NET Core 8 LTS
-- Razor Pages + HTMX
+- Razor Pages
 - PostgreSQL
 - Bifrost-native identity registration
 - GitHub OAuth for linked sign-in and repository integration

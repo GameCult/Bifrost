@@ -18,11 +18,4 @@ public sealed class IndexModel(
         Actor = await actorAccessor.GetAsync(cancellationToken);
         Snapshot = await snapshotService.GetAsync(Actor.UserAccount?.Id, cancellationToken);
     }
-
-    public async Task<PartialViewResult> OnGetSummaryAsync(CancellationToken cancellationToken)
-    {
-        Actor = await actorAccessor.GetAsync(cancellationToken);
-        Snapshot = await snapshotService.GetAsync(Actor.UserAccount?.Id, cancellationToken);
-        return Partial("_SummaryCards", Snapshot);
-    }
 }

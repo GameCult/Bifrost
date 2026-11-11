@@ -14,12 +14,7 @@
                 governance pressure, and recent team activity in one place.
             </p>
         </div>
-        <button class="button secondary"
-                hx-get="@Url.Page("/App/Index", "Summary")"
-                hx-target="#summary-cards"
-                hx-swap="outerHTML">
-            Refresh snapshot
-        </button>
+        <a class="button secondary" href="@Url.Page("/App/Index")">Refresh snapshot</a>
     </div>
 
     <div id="summary-cards">

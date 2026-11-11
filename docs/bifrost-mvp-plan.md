@@ -4,7 +4,7 @@
 
 - Create Bifrost as a separate GameCult app repo and deploy it on Yggdrasil.
 - Build a member alpha, not a public launch.
-- Use ASP.NET Core 8 with Razor Pages + HTMX and PostgreSQL.
+- Use ASP.NET Core 8 with Razor Pages and PostgreSQL.
 - Support invite-only GitHub-linked members, GitHub-backed and internal work items, app-native governance, Reddit organizing threads, and internal ledgers.
 - Preserve the Labor Platform loop: user/member/patron demand raises work priority and reward pressure, contributors pick up valuable work, maintainers accept completion artifacts, and Bifrost credits the contributor plus any bounty/reward allocation.
 - Do not include Ethereum, wallets, DAO mechanics, or payout execution in v1.
@@ -13,7 +13,7 @@
 ## System Shape
 
 - One ASP.NET web app process for v1.
-- Server-rendered UI with HTMX for progressive interactions.
+- Server-rendered UI; no client-side framework or third-party script.
 - PostgreSQL as the system of record.
 - Bifrost-native identity registration for login, with GitHub OAuth available as a linked external identity.
 - GitHub App plus webhooks for issue and pull request lifecycle sync.
