@@ -29,6 +29,7 @@ public sealed class DeskWebApplicationFactory : TestWebApplicationFactory
     private readonly Dictionary<string, string?>? configuration;
     private readonly bool registerPorts;
     private readonly bool realCredential;
+    private readonly bool fakeDoor;
 
     // A configured desk needs Bifrost:Oidc (its credential validates against the local issuer): generated keys per factory.
     private readonly OidcTestKit oidcKit = new();
@@ -36,9 +37,12 @@ public sealed class DeskWebApplicationFactory : TestWebApplicationFactory
     // The chat client's secret, for a test that holds the chat client's own token.
     public string OidcSecret => oidcKit.ClientSecret;
 
-    public DeskWebApplicationFactory(Dictionary<string, string?>? configuration = null, bool configured = true, bool registerPorts = true, bool realCredential = false)
+    // fakeDoor false leaves the door to the app's own wiring (UnixSocketDeskDoor), for tests that stand a socket up.
+    public DeskWebApplicationFactory(
+        Dictionary<string, string?>? configuration = null, bool configured = true, bool registerPorts = true, bool realCredential = false, bool fakeDoor = true)
     {
         this.realCredential = realCredential;
+        this.fakeDoor = fakeDoor;
         this.configuration = configured ? configuration ?? DefaultConfiguration() : null;
         this.registerPorts = registerPorts;
     }
@@ -141,7 +145,10 @@ public sealed class DeskWebApplicationFactory : TestWebApplicationFactory
             builder.ConfigureServices(services =>
             {
                 services.AddSingleton<IDeskCredential>(Credential);
-                services.AddSingleton<IDeskDoor>(Door);
+                if (fakeDoor)
+                {
+                    services.AddSingleton<IDeskDoor>(Door);
+                }
             });
         }
     }
