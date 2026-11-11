@@ -163,8 +163,8 @@ to 15 minutes; a 400 (token refused) or 404 (unknown provider ULID) is a configu
 and retried at the 15 minute cap. Nothing is revoked until MAS answers 2xx. A restart loses the backoff and nothing
 else: the authorizations table is the queue, so a later-set URI also catches up on earlier demotions.
 
-Without `BackchannelLogoutUri` none of this runs: suspension stops new sign-ins and token refresh (the authorize, token and userinfo
-endpoints refuse a suspended account) but does not end a chat session that is already live, and the issuer logs one warning at
+Without `BackchannelLogoutUri` none of this runs: suspension stops new chat tokens (the authorize, token and userinfo
+endpoints refuse a suspended account; there is no refresh token, and MAS does not call userinfo) but does not end a chat session that is already live, which runs to its natural expiry, and the issuer logs one warning at
 startup saying so. The other lever is MAS admin deactivation of the user (ops, not built here).
 
 Tradeoff: delivery latency is up to one tick, and a member demoted and re-promoted inside one tick keeps their sessions.
