@@ -174,6 +174,91 @@ public sealed class MembersPageNoticeTests(TestWebApplicationFactory factory) : 
         Assert.Contains("has no membership yet", Alert.Match(html).Groups[1].Value);
     }
 
+    private async Task<(int Memberships, int Roles, int ApprovalReceipts)> RowCountsAsync()
+    {
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
+        return (await db.Memberships.CountAsync(), await db.RoleAssignments.CountAsync(), await db.AuditEvents.CountAsync(x => x.Action == "membership.approved"));
+    }
+
+    [Fact]
+    public async Task Approving_an_account_without_a_membership_is_refused_with_a_notice_and_writes_nothing()
+    {
+        using var client = Client();
+        _ = await SignedInAdminIdAsync(client);
+        var account = await SeedMemberAsync(MembershipStatus.Active, withMembership: false);
+        var before = await RowCountsAsync();
+
+        var html = await PostThenFollowAsync(client, "Approve", account, "");
+
+        Assert.Contains("has no membership yet", Alert.Match(html).Groups[1].Value);
+        Assert.Equal(before, await RowCountsAsync());
+        using var scope = factory.Services.CreateScope();
+        Assert.False(await scope.ServiceProvider.GetRequiredService<BifrostDbContext>().Memberships.AnyAsync(x => x.UserAccountId == account));
+    }
+
+    [Fact]
+    public async Task Approving_an_unknown_account_is_refused_with_a_notice_and_writes_nothing()
+    {
+        using var client = Client();
+        _ = await SignedInAdminIdAsync(client);
+        var before = await RowCountsAsync();
+
+        var html = await PostThenFollowAsync(client, "Approve", Guid.NewGuid(), "");
+
+        Assert.Contains("does not exist", Alert.Match(html).Groups[1].Value);
+        Assert.Equal(before, await RowCountsAsync());
+    }
+
+    [Fact]
+    public async Task An_admin_sees_the_neutral_text_for_a_legacy_suspended_row_and_the_stored_reason_otherwise()
+    {
+        using var client = Client();
+        _ = await SignedInAdminIdAsync(client);
+        var legacy = await SeedMemberAsync(MembershipStatus.Suspended);
+        var withReason = await SeedMemberAsync(MembershipStatus.Suspended);
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
+            (await db.Memberships.SingleAsync(x => x.UserAccountId == withReason)).SuspensionReason = "spam-ring-5521";
+            await db.SaveChangesAsync();
+        }
+
+        var html = await client.GetStringAsync("/App/Members");
+        int legacyRows;
+        using (var scope = factory.Services.CreateScope())
+        {
+            legacyRows = await scope.ServiceProvider.GetRequiredService<BifrostDbContext>().Memberships
+                .CountAsync(x => x.Status == MembershipStatus.Suspended && (x.SuspensionReason == null || x.SuspensionReason == ""));
+        }
+
+        Assert.Contains("Suspended before reasons were recorded", html);
+        Assert.Contains("Suspended: spam-ring-5521", html);
+        Assert.Equal(legacyRows, Regex.Matches(html, "Suspended before reasons were recorded").Count); // the reasoned row shows its reason, not the neutral text
+    }
+
+    [Fact]
+    public async Task A_non_admin_sees_neither_the_neutral_text_nor_a_reason()
+    {
+        using var client = Client();
+        var legacy = await SeedMemberAsync(MembershipStatus.Suspended);
+        var viewer = $"plain-{Guid.NewGuid():N}"[..20];
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
+            db.UserAccounts.Add(new UserAccount { DisplayName = viewer, BifrostIdentity = viewer, NormalizedBifrostIdentity = viewer, Membership = new Bifrost.Web.Domain.Membership { Status = MembershipStatus.Active, ApprovedAtUtc = DateTimeOffset.UtcNow } });
+            await db.SaveChangesAsync();
+        }
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/App/Members");
+        request.Headers.Add("X-Test-Bifrost-Identity", viewer);
+        using var response = await client.SendAsync(request);
+        var html = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.DoesNotContain("before reasons were recorded", html);
+    }
+
     [Fact]
     public async Task An_admin_toggling_their_own_platform_admin_role_is_refused_and_keeps_the_role()
     {

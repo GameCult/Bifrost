@@ -191,9 +191,9 @@
 
                                 @if (Model.Actor.CanManageMembership)
                                 {
-                                    @if (user.Status == MembershipStatus.Suspended && !string.IsNullOrEmpty(user.SuspensionReason))
+                                    @if (user.Status == MembershipStatus.Suspended)
                                     {
-                                        <div class="muted" style="margin-top: 0.8rem;">Suspended: @user.SuspensionReason</div>
+                                        <div class="muted" style="margin-top: 0.8rem;">@(string.IsNullOrEmpty(user.SuspensionReason) ? Bifrost.Web.Pages.App.Members.IndexModel.LegacySuspensionText : "Suspended: " + user.SuspensionReason)</div>
                                     }
                                     <form method="post" asp-page-handler="@(user.Status == MembershipStatus.Suspended ? "Unsuspend" : "Suspend")" style="margin-top: 0.8rem;">
                                         <input type="hidden" name="userAccountId" value="@user.UserAccountId" />
