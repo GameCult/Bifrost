@@ -45,14 +45,14 @@ Huginn is the truth. A fork is a question record with options, a derived status,
 ## 5. Meaning of "open" and "age"
 
 - **open** = the card's `status` is `open` as Huginn derives it (`ForkCard.status`; `?status=open` filter). Bifrost does not decide it. The count is `open_count` of the same response, so the number and the rows come from one stamp. `recorded_count` (closed with a ruling) is not part of the feed.
-- **age** = now minus when the question was raised. **The contract cannot give this today.** FACT `ForkCard` has `order` (a position), `raised_in` (a reference) and no timestamp; answers carry `answered_at`/`received_at` but an unanswered fork has none. Options: (i) add `raised_at` to the card (CultLib contract change, Huginn emits the question's admission time, new vectors, Bifrost record gains one field); (ii) ship the feed with `order` and no age. **Recommend (i), decision X1 below; (ii) is the fallback and loses nothing else.** Age is then computed by the client from `raised_at`; Bifrost computes nothing.
+- **age** = now minus when the question was raised. **The contract cannot give this today.** FACT `ForkCard` has `order` (a position), `raised_in` (a reference) and no timestamp; answers carry `answered_at`/`received_at` but an unanswered fork has none. Ruled 2026-11-11 by Libby (CultLib steward): the card gains `raised_at`, a REQUIRED key whose value is an RFC3339 string or nil (the card goes from 16 to 17 keys; its hex changes). Huginn emits the question's admission time, or nil when it has none. Bifrost's record gains one field that must accept string or nil. Age derives from `raised_at` and is computed by the client; Bifrost computes nothing; nil means age unknown and the row shows no age. Until the contract lands the feed ships without age (the fallback loses nothing else).
 
 ## 6. D1 (options_hash) and the feed
 
 Two different "D1"s exist: the ruling cited for this feed is the fork-desk answer-binding D1 (2026-11-10: `options_hash` covers title, context, options with ids, recommendation and depends; `fork_id` is bound beside it). PR #37 also has a D1 (consent). This section is the first; section 7 the second.
 - Feed rows carry the card as Huginn returns it, `options_hash` included. Bifrost never computes or corrects a hash (FACT binding file). A row's identity is `(fork_id, options_hash)`: an edit to a shown title changes the hash, so the row changes with it.
 - The feed shows title, which the hash covers, so feed and detail cannot disagree about it.
-- **Age is not decision content.** It is immutable metadata about the question, so keeping `raised_at` outside the hash needs no re-pin of the hash vectors, but "covers everything shown" read literally would put it inside if the card renders it. X2: steward says whether `raised_at` is a card attribute outside the hash (recommended: it does not change what a decider is deciding) or inside it (re-pin Void's `optionsHash.ts` vectors and CultLib's).
+- **Age is not decision content.** Ruled by Libby (X2, my earlier "inside the hash" option is withdrawn): `raised_at` stays OUT of `options_hash`, which keeps exactly five members (title, context, options, recommendation, depends), so the hash digests and Void's `optionsHash.ts` vectors do not change. Only the card's own bytes change, by the added key.
 
 ## 7. PR #37 decisions, what this feed needs
 
@@ -71,7 +71,7 @@ Already ruled: the answer-binding D1 above, visibility ruling c (any `desk.read`
 ## 8. Privacy: what a member may see per Mind
 
 - **Filter owner: Huginn.** The door call carries the viewer (`subject`, `authority`, that Mind's `deciders`); Huginn projects "for this viewer" and applies the card's `audience`. Bifrost adds no second filter on which forks appear; two filters would let them drift. Bifrost's own privacy acts are exactly two, both already built: it nils every `note` for a non-decider (`DeskNotes.Strip`), and it resolves `{mind}` only against the configured list (unknown Mind and unknown fork return the same 404 bytes, so Minds are not probeable).
-- **Fields safe for a member:** `fork_id`, `title`, `options`, `recommendation`, `depends`, `status`, `order`, `options_hash`, counts, `stamp`, and `raised_at` if X1. **Not safe, and not in the feed:** `note` (stripped), the decider list beyond ids already on the card, anything from the mind that is not a fork card (follow-ups, findings, research, persona state, room text).
+- **Fields safe for a member:** `fork_id`, `title`, `options`, `recommendation`, `depends`, `status`, `order`, `options_hash`, counts, `stamp`, and `raised_at` (string or nil). **Not safe, and not in the feed:** `note` (stripped), the decider list beyond ids already on the card, anything from the mind that is not a fork card (follow-ups, findings, research, persona state, room text).
 - **Leak to close (X3):** `ForkEntry.record.answers[]` carries each answerer's account id (a Bifrost `UserAccount.Id`) to any `desk.read` holder; ruling c permits cards and outcomes, but a member list of who answered what is more than a feed needs. The feed does not need `record` at all. Options: (i) accept; (ii) strip `answerer` for non-deciders at the door like notes (small, consistent with `DeskNotes`); (iii) a list shape without records. Recommend (ii) until a record-free list exists.
 - **Content privacy:** a fork's `context` and `title` are Mind-authored prose and may name people or private matter. Huginn's `audience` is the only gate; if a card lacks one, the default must be not-listed, which is Huginn's rule to state (X4). The feed ships no free text Bifrost wrote.
 - **Consent and receipts:** reading creates no member record, so no receipt and no consent object; the member's act is the token grant (read-only, implicit). Answer receipts and the append-only record belong to the answer path and stay out. Audit: log client id and `sub`, not the response.
@@ -97,7 +97,7 @@ Bearer unjudgeable: 503 `unavailable` (not a refusal of the caller). Not Active:
 | Bifrost `Features/Oidc/*` bearer validation, `desk.read` scope, audience, second client seed (shared with PR #37 H4) | ~150 |
 | Bifrost `IDeskCredential` production impl + wiring in `Program.cs` | ~60 |
 | Bifrost `DeskNotes` extension for X3(ii) | ~15 |
-| CultLib `fork-card.md` + schema + vectors for `raised_at` (X1) | ~40 |
+| CultLib `fork-card.md` + schema + card vectors for `raised_at` (17-key card; `options_hash` vectors unchanged) | ~40 |
 | Huginn: list wire handler and `raised_at` (Eureka's) | not estimated |
 | Ratatoskr list reader + token redirect + stale holder (Void's) | ~250 |
 | Bifrost tests (items 2, 3, 6) | ~250 |
@@ -107,8 +107,8 @@ Subtraction: no new route, no store, no migration, no DTO type beyond one field.
 
 ## 12. Open decisions
 
-- **X1** (Eureka, CultLib): add `raised_at` to the card for age, or ship order-only.
-- **X2** (steward): `raised_at` in or out of `options_hash`.
+- **X1** (CultLib, ruled 2026-11-11, Libby): `raised_at` is a required card key, RFC3339 string or nil; 16 to 17 keys. Huginn's emission of it is Eureka's, still to build.
+- **X2** (withdrawn): `raised_at` is out of `options_hash`, digests unchanged (Libby).
 - **X3** (steward): answerer ids visible to every `desk.read` holder: accept or mask.
 - **X4** (Eureka/Huginn): what a card's `audience` defaults to; the default must be not-listed.
 - **PR #37 D3, D5, D6, D7** as in section 7; D1, D2, D4 not needed.
