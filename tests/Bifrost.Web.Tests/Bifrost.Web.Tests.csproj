@@ -23,6 +23,7 @@
   <ItemGroup>
     <None Include="Fixtures\*.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="Fixtures\*.cjs" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="Fixtures\desk-feed\*" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>
