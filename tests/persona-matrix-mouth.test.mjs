@@ -2124,3 +2124,9 @@ test("display name: a sender with an empty localpart is delivered under its own 
   assert.equal(rounds[0][0].senderDisplay, "@:evil.test");
   assert.doesNotThrow(() => docs.pendingV4Tuple({ persona: "p", deliveries: rounds[0] }));
 });
+
+test("round cap: a pin serves only the event whose check made it: a later event's target past its 60 s keep is read again, as counted", async () => {
+  const { rounds, gets } = await capRun([quoting("$e1", "$x"), quoting("$e2", "$r"), quoting("$e3", "$x")], { lapseOnR: 2000 });
+  assert.deepEqual(rounds.flat().map(d => d.eventId), ["$e1", "$e2", "$e3"]);
+  assert.equal(gets("$x"), 2, "the read at t0 and one re-read for $e3");
+});

@@ -317,7 +317,7 @@ export function createMouth({
   const REPLY_READS_PER_ROUND = 8; // target GETs one sync round may make, whoever asks (basis or reply_to): an event whose uncached targets would pass it waits for the next round
   const KEEP_HIT_MS = 10 * 60 * 1000; // how long transient failures may keep a hit's sender alive after its last good read
   let replyReads = 0;
-  const held = new Map(); // key -> entry: targets the round's cap check counted as cached, kept for the round so the 60 s keep cannot lapse between the check and the read and spend a GET the check did not count
+  const held = new Map(); // key -> entry: targets the round's cap check counted as cached, kept for that event so the 60 s keep cannot lapse between the check and the read and spend a GET the check did not count
   const cachedTarget = key => {
     const known = authors.get(key);
     if (!known) return null;
@@ -382,6 +382,7 @@ export function createMouth({
     const relates = event.content["m.relates_to"];
     if (!replyLink || formOf(event.content) !== "message") return 0;
     const ids = new Set([relates?.["m.in_reply_to"]?.event_id, relates?.rel_type === "m.thread" ? relates.event_id : undefined].filter(id => typeof id === "string" && id !== ""));
+    held.clear(); // events run one at a time: a pin serves only the event whose check made it
     let reads = 0;
     for (const id of ids) {
       const key = `${roomId} ${id}`, hit = cachedTarget(key);
