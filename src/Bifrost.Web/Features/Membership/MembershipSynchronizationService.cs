@@ -12,7 +12,9 @@ public sealed class MembershipSynchronizationService(
     BifrostDbContext dbContext,
     BifrostIdentityService bifrostIdentityService,
     IOptions<BootstrapOptions> bootstrapOptions,
-    TimeProvider timeProvider)
+    TimeProvider timeProvider,
+    AuditTrailService auditTrailService,
+    ILogger<MembershipSynchronizationService> logger)
 {
     public async Task SynchronizeAsync(ClaimsPrincipal principal, CancellationToken cancellationToken)
     {
@@ -109,9 +111,14 @@ public sealed class MembershipSynchronizationService(
             invitation.AcceptedAtUtc = now;
         }
 
+        MembershipStatus? promotedFrom = null;
         if (IsBootstrapAdmin(gitHubLogin, bootstrapOptions.Value))
         {
-            PromoteToBootstrapAdmin(userAccount.Membership!, now);
+            promotedFrom = userAccount.Membership!.Status;
+            if (!ApplicationBootstrapper.TryPromoteBootstrapAdmin(userAccount, now, logger))
+            {
+                promotedFrom = null;
+            }
         }
         else if (userAccount.Membership!.Status == MembershipStatus.Active)
         {
@@ -125,20 +132,14 @@ public sealed class MembershipSynchronizationService(
 
         userAccount.MemberProfile!.UpdatedAtUtc = now;
 
+        if (promotedFrom is { } before && before != userAccount.Membership!.Status)
+        {
+            // One save: the promotion and its receipt stand or fall together.
+            await ApplicationBootstrapper.RecordPromotionAsync(auditTrailService, userAccount, before, cancellationToken);
+            return;
+        }
+
         await dbContext.SaveChangesAsync(cancellationToken);
-    }
-
-    private static void PromoteToBootstrapAdmin(Bifrost.Web.Domain.Membership membership, DateTimeOffset now)
-    {
-        membership.Status = MembershipStatus.Active;
-        membership.IsPlatformAdmin = true;
-        membership.CanManageProjects = true;
-        membership.CanManageLedger = true;
-        membership.CanModerateMotions = true;
-        membership.ApprovedAtUtc ??= now;
-
-        ApplicationBootstrapper.EnsureRole(membership, MemberRole.PlatformAdmin, null, now, "Bootstrap admin");
-        ApplicationBootstrapper.EnsureRole(membership, MemberRole.StandardMember, null, now, "Default active member role");
     }
 
     private static bool TryReadGitHubIdentity(
