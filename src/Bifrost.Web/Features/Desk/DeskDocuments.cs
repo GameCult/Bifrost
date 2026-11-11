@@ -6,7 +6,9 @@ namespace Bifrost.Web.Features.Desk;
 // The fork-desk documents Bifrost reads or writes, spelled as CultLib's contracts/cultnet/governance/fork-card.md
 // (commit de8a062a) spells them: snake_case keys, every key written (nil where absent), declared in the
 // contract's key order. Bifrost authors only DeskRefusal and DeskUnavailable. AnswerRequest is the client's body;
-// ForkCard, DeskAnswerDocument and AnswerResult are Huginn's documents, typed here so they pass through unchanged.
+// DeskAnswerDocument, ForkList and AnswerResult are Huginn's documents, typed here so they pass through unchanged.
+// The card (gamecult.fork.card.v0) is deliberately NOT typed: its shape is still moving in CultLib (raised_at), and
+// Bifrost neither reads nor edits it, so it is an opaque JsonElement that keeps every key, number and key order.
 
 public static class DeskSchemas
 {
@@ -53,32 +55,6 @@ public sealed record DeskUnavailable(
     [property: JsonPropertyName("error")] string Error,
     [property: JsonPropertyName("retryAfterSeconds")] int? RetryAfterSeconds);
 
-public sealed record ForkOption(
-    [property: JsonPropertyName("id")] string Id,
-    [property: JsonPropertyName("text")] string Text);
-
-public sealed record ForkRef(
-    [property: JsonPropertyName("kind")] string Kind,
-    [property: JsonPropertyName("id")] string Id);
-
-public sealed record ForkCard(
-    [property: JsonPropertyName("schemaVersion")] string SchemaVersion,
-    [property: JsonPropertyName("fork_id")] string ForkId,
-    [property: JsonPropertyName("title")] string Title,
-    [property: JsonPropertyName("context")] string Context,
-    [property: JsonPropertyName("options")] ForkOption[] Options,
-    [property: JsonPropertyName("recommendation")] string Recommendation,
-    [property: JsonPropertyName("depends")] string[] Depends,
-    [property: JsonPropertyName("leans")] string? Leans,
-    [property: JsonPropertyName("flag")] string? Flag,
-    [property: JsonPropertyName("raised_in")] ForkRef? RaisedIn,
-    [property: JsonPropertyName("deciders")] string[] Deciders,
-    [property: JsonPropertyName("status")] string Status,
-    [property: JsonPropertyName("ruling")] string? Ruling,
-    [property: JsonPropertyName("ruled_from")] string[] RuledFrom,
-    [property: JsonPropertyName("order")] long Order,
-    [property: JsonPropertyName("options_hash")] string OptionsHash);
-
 // One stored answer: Counted, Revision, Retraction or Refused, told apart by Outcome and Code.
 public sealed record DeskAnswerDocument(
     [property: JsonPropertyName("schemaVersion")] string SchemaVersion,
@@ -107,7 +83,7 @@ public sealed record ForkRecord(
 
 public sealed record ForkEntry(
     [property: JsonPropertyName("schemaVersion")] string SchemaVersion,
-    [property: JsonPropertyName("card")] ForkCard Card,
+    [property: JsonPropertyName("card")] JsonElement Card,
     [property: JsonPropertyName("record")] ForkRecord Record);
 
 public sealed record ForkList(
@@ -122,7 +98,7 @@ public sealed record ForkList(
 public sealed record AnswerResult(
     [property: JsonPropertyName("schemaVersion")] string SchemaVersion,
     [property: JsonPropertyName("answer")] DeskAnswerDocument Answer,
-    [property: JsonPropertyName("card")] ForkCard? Card,
+    [property: JsonPropertyName("card")] JsonElement? Card,
     [property: JsonPropertyName("counted_answer_id")] string? CountedAnswerId);
 
 // The refusal codes Bifrost itself writes, each with its one status and message (vectors doorRefusals).
