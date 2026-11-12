@@ -55,7 +55,7 @@ permits, windows and `MaxTrackedKeys`.
 New since the live release, and not read by the validator:
 
 - **`Heimdall__AppSecretFile`**: the preferred way to give Bifrost the app secret below. A path to a file holding it (one
-  trailing newline is trimmed), for example `%d/heimdall-app-secret` under systemd `LoadCredential=`, so the secret never
+  trailing newlines are trimmed), for example `%d/heimdall-app-secret` under systemd `LoadCredential=`, so the secret never
   rides in the process environment. When set, the file wins over `Heimdall__AppSecret`; a missing, unreadable or empty file
   stops startup in every environment, with a message that names the option and path and never the value. Ops steps:
   `docs/heimdall-app-secret-file.md`.

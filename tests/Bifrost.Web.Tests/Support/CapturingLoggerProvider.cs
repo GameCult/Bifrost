@@ -5,6 +5,19 @@ namespace Bifrost.Web.Tests.Support;
 public sealed class CapturingLoggerProvider : ILoggerProvider
 {
     private readonly List<string> _lines = [];
+    private readonly List<string> _warnings = [];
+
+    /// <summary>Lines logged at Warning or above, to pin that an operator-facing notice reaches the journal.</summary>
+    public IReadOnlyList<string> WarningLines
+    {
+        get
+        {
+            lock (_lines)
+            {
+                return _warnings.ToArray();
+            }
+        }
+    }
 
     public IReadOnlyList<string> Lines
     {
@@ -38,7 +51,12 @@ public sealed class CapturingLoggerProvider : ILoggerProvider
         {
             lock (owner._lines)
             {
-                owner._lines.Add(formatter(state, exception) + (exception is null ? string.Empty : "\n" + exception));
+                var line = formatter(state, exception) + (exception is null ? string.Empty : "\n" + exception);
+                owner._lines.Add(line);
+                if (logLevel >= LogLevel.Warning)
+                {
+                    owner._warnings.Add(line);
+                }
             }
         }
     }

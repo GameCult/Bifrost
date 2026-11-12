@@ -4,7 +4,7 @@
 `x-heimdall-app-secret` header. Set through the environment it rides in the process environment. `Heimdall:AppSecretFile`
 (`Heimdall__AppSecretFile`) names a file holding it instead.
 
-- File set: Bifrost reads it once at startup and one trailing newline is trimmed. The file wins over `Heimdall__AppSecret`.
+- File set: Bifrost reads it once at startup and trailing newlines are trimmed. The file wins over `Heimdall__AppSecret`.
 - File set but missing, unreadable, a directory, or empty: startup fails in every environment. The message names
   `Heimdall:AppSecretFile` and the path, never the secret.
 - Only `Heimdall__AppSecret` set: still works; startup logs a deprecation warning (without the value).

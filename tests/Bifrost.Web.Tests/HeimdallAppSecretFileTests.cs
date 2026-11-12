@@ -45,7 +45,7 @@ public sealed class HeimdallAppSecretFileTests : IDisposable
     [InlineData("")]
     [InlineData("\n")]
     [InlineData("\r\n")]
-    public void The_file_is_the_secret_with_only_the_trailing_newline_trimmed(string ending)
+    public void The_file_is_the_secret_with_only_trailing_newlines_trimmed(string ending)
     {
         var options = Resolve(appSecretFile: Write(FileSecret + ending));
 
@@ -67,7 +67,7 @@ public sealed class HeimdallAppSecretFileTests : IDisposable
         var options = Resolve(EnvSecret, Write(FileSecret + "\n"));
 
         Assert.Equal(FileSecret, options.AppSecret);
-        Assert.Contains(_logs.Lines, line => line.Contains("deprecated"));
+        Assert.Contains(_logs.WarningLines, line => line.Contains("deprecated"));
         AssertNoSecretLogged();
     }
 
@@ -110,7 +110,7 @@ public sealed class HeimdallAppSecretFileTests : IDisposable
         var options = Resolve(EnvSecret);
 
         Assert.Equal(EnvSecret, options.AppSecret);
-        Assert.Single(_logs.Lines, line => line.Contains("deprecated") && line.Contains("Heimdall:AppSecretFile"));
+        Assert.Single(_logs.WarningLines, line => line.Contains("deprecated") && line.Contains("Heimdall:AppSecretFile"));
         AssertNoSecretLogged();
     }
 
