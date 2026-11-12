@@ -64,6 +64,10 @@ const DM_SCAN = 200; // joined rooms read when looking for an existing DM with a
 const NOT_E2EE = "This room is not end-to-end encrypted: the homeserver can read what is said here.";
 const dayOf = ms => new Date(ms).toISOString().slice(0, 10);
 const TAIL_TTL_MS = 15 * 1000;
+const FETCH_DEADLINE_MS = 15000; // one fetch, whole: it ends before Huginn's 20 s wait
+const FETCH_PER_HOUR = 30; // fetches one Persona may ask in an hour
+const RELATION_PAGES = 3; // pages of a receipt target's relations read before the answer is called unproven
+const PLATFORM = ["disc", "ord"].join(""); // the bridged platform's name, as Huginn's room_scope spells it: never written out whole
 const HEAD_PAGE = 50; // the room head a gated send reads; also the most ids a RoomMoved receipt names
 
 // The kind of an event for a delivery: an edit (m.replace) and an automated notice (m.notice) are not messages anyone is addressed by.
@@ -121,7 +125,7 @@ export function createRoomGate() {
 export function createMouth({
   persona, homeserver, serverName, rooms, token, fetch: httpFetch = globalThis.fetch, state, brake,
   now = Date.now, log = () => {}, syncTimeoutMs = 30000, maxPending = MAX_PENDING, gate = createRoomGate(), sendTimeoutMs = SEND_TIMEOUT_MS,
-  presenceGraceMs = PRESENCE_GRACE_MS,
+  presenceGraceMs = PRESENCE_GRACE_MS, fetchDeadlineMs = FETCH_DEADLINE_MS,
   replyLink = false, // resolve each reply's quoted event into delivery.replyTo (the v4 answer; one more event read per reply to a non-Mind)
   images = null, // this Persona's image store (createImageStore), or null: images stay the typed text line
   isServed = async () => false, // (async) whether a Matrix user id is an account this process speaks for: a Mind is not a person to open a DM with
@@ -152,6 +156,7 @@ export function createMouth({
   const processed = new Set(); // event ids read since the position last advanced
   const noticed = new Set(); // rooms this mouth created where the not-E2EE first line has gone out
   const personTails = new Map(); // person's user id -> the open in flight: opens for one person run one at a time
+  const fetchTimes = []; // when this Persona's recent fetches began: display-only rate count, reset by a restart
   const openedOn = new Map(); // person's user id -> the UTC day this process last created a room for them: one creation per person per day
 
   async function matrix(method, path, body, prefix = API, signal) {
@@ -747,6 +752,128 @@ export function createMouth({
     }
   }
 
+  // A top-level refusal of the event itself, ported from Huginn's room_scope refuse_event: a sender whose localpart (after leading
+  // underscores) starts with the platform's name, or has it after an underscore, or followed by `bot` or an underscore; or a content
+  // key naming it. Identifier rules, not language reading.
+  const platformEvent = event => {
+    const local = String(event?.sender ?? "").replace(/^@+/, "").split(":")[0].toLowerCase();
+    return local.replace(/^_+/, "").startsWith(PLATFORM) || local.includes(`_${PLATFORM}`) || local.includes(`${PLATFORM}bot`) || local.includes(`${PLATFORM}_`)
+      || Object.keys(event?.content ?? {}).some(key => key.toLowerCase().includes(PLATFORM));
+  };
+  const IMAGE_WORD = { "no-url": "NoAttachment", encrypted: "TypeRefused", "wrong-type": "TypeRefused", "bad-header": "TypeRefused", "too-many-pixels": "TooLarge", "too-big": "TooLarge", "fetch-failed": "FetchFailed", "store-failed": "StoreFailed" };
+
+  // A Persona asks her mouth to keep one named Matrix file. The request is a room and an event id; the mouth reads the event, takes
+  // its content.url, fetches and checks the bytes, stores them, and posts the contract's inert receipt as her. One deadline owns the
+  // whole of it. The answer is one fixed outcome word and, for a stored file, the resolved room id and the store reference.
+  async function fetchAttachment({ requestId, persona: asked, room, eventId }) {
+    const deadline = AbortSignal.timeout(fetchDeadlineMs);
+    const seen = { room: "-", event: "-", size: "-", type: "-", sha256: "-" };
+    const idOr = (sigil, v) => docs.isFetchId(sigil, v) ? v : "-"; // a hostile id never reaches the log
+    let answered = false; // one log line per fetch: a gate step that finishes after the deadline answered is silent
+    const done = (outcome, { image = null, roomId = null, receipt = null, logged = "skipped", cause = null } = {}) => {
+      if (!answered) say(`fetch persona=${persona} room=${seen.room} event=${seen.event} outcome=${outcome} size=${seen.size} type=${seen.type} sha256=${seen.sha256} receipt=${logged}${cause === null ? "" : ` cause=${cause}`}`);
+      answered = true;
+      return { requestId, outcome, roomId, image, receipt };
+    };
+    if (asked !== persona) return done("PersonaMismatch");
+    if (!(await released())) return done("Brake");
+    if (!images) return done("StoreFailed");
+    const at = now();
+    while (fetchTimes.length > 0 && at - fetchTimes[0] >= 3_600_000) fetchTimes.shift();
+    if (fetchTimes.length >= FETCH_PER_HOUR) return done("RateLimited");
+    fetchTimes.push(at);
+    seen.event = idOr("$", eventId);
+    if (!docs.isFetchId("$", eventId)) return done("NoAttachment");
+    if (!docs.isFetchId("!", room) && !docs.isFetchId("#", room)) return done("NotAMember");
+    let stored = false; // images.put has run: a deadline after it leaves a file and no receipt
+    const aborted = new Promise((_, reject) => deadline.addEventListener("abort", () => reject(deadline.reason), { once: true }));
+    aborted.catch(() => {});
+    const within = promise => Promise.race([promise, aborted]);
+    try {
+      if (!started || unjoined()) await within(start());
+      const roomId = speakableRoomId(room) ?? room;
+      if (!docs.isFetchId("!", roomId) && !docs.isFetchId("#", roomId)) return done("NotAMember"); // an alias the directory answered with a strange id
+      seen.room = idOr("!", roomId);
+      return await within(gate.run(roomId, async () => {
+        deadline.throwIfAborted(); // re-checked after the gate wait: a queued fetch does not run past its deadline
+        if (!(await released())) return done("Brake"); // nor past a brake placed while it waited
+        const read = (method, path, body, prefix = API) => matrix(method, path, body, prefix, deadline);
+        const enc = encodeURIComponent;
+        const member = (await read("GET", "/joined_rooms")).joined_rooms;
+        if (!Array.isArray(member) || !member.includes(roomId)) return done("NotAMember");
+        const state = await read("GET", `/rooms/${enc(roomId)}/state`);
+        if (!Array.isArray(state)) return done("FetchFailed");
+        if (state.some(e => e?.type === "m.bridge" || e?.type === "uk.half-shot.bridge")) return done("BridgedRoom");
+        if (state.some(e => e?.type === "m.room.encryption")) return done("TypeRefused");
+        let event;
+        try { event = await read("GET", `/rooms/${enc(roomId)}/event/${enc(eventId)}`); } catch (error) {
+          if (error.status === 403 || error.status === 404) return done("NotAMember");
+          throw error;
+        }
+        if (event?.room_id !== roomId) return done("NotAMember");
+        if (!docs.isFetchId("$", event.event_id)) return done("NoAttachment"); // the receipt names the event the homeserver returned, not the one asked for
+        if (platformEvent(event)) return done("BridgedRoom");
+        const content = event.content;
+        if (event.type === "m.room.encrypted") return done("TypeRefused");
+        const relates = content?.["m.relates_to"];
+        if (event.type !== "m.room.message" || content === null || typeof content !== "object" || Object.keys(content).length === 0 || relates?.rel_type === "m.replace") return done("NoAttachment");
+        if (content.file !== undefined) return done("TypeRefused");
+        if (content.msgtype === "m.audio" || content.msgtype === "m.video") return done("TypeRefused");
+        if (content.msgtype !== "m.image" && content.msgtype !== "m.file") return done("NoAttachment");
+        if (typeof content.url !== "string" || !content.url.startsWith("mxc://")) return done("NoAttachment");
+        // The album root is the sender's word: it names a URL path below, so it must be an event id or nothing is built from it.
+        const albumRoot = relates?.rel_type === "m.thread" ? relates.event_id : null;
+        if (relates?.rel_type === "m.thread" && !docs.isFetchId("$", albumRoot)) return done("NoAttachment");
+        const got = await fetchImage({ fetch: httpFetch, homeserver, token, mxc: content.url, signal: deadline });
+        deadline.throwIfAborted();
+        if (got.refusal) return done(IMAGE_WORD[got.refusal] ?? "FetchFailed");
+        const computed = createHash("sha256").update(got.bytes).digest("hex");
+        Object.assign(seen, { size: got.bytes.length, type: got.mime, sha256: computed });
+        const info = content.info;
+        const claimed = info !== null && typeof info === "object" && !Array.isArray(info) && Object.hasOwn(info, "sha256");
+        if (claimed && info.sha256 !== computed) return done("HashMismatch");
+        deadline.throwIfAborted();
+        let image;
+        try { image = images.put(roomId, got.bytes, got.mime); } catch (error) { return done("StoreFailed", { cause: causeOf(error) }); }
+        stored = true;
+        if (!claimed) return done("StoredUnverified", { image, roomId });
+        const { receipt, word, cause } = await postFileReceipt(roomId, albumRoot, event.event_id, computed, got.bytes.length, deadline);
+        return done("Stored", { image, roomId, receipt, logged: word, cause });
+      }));
+    } catch (error) {
+      return done("FetchFailed", { logged: stored ? "failed" : "skipped", cause: causeOf(error) });
+    }
+  }
+
+  // The contract's receipt for a file the mouth stored, posted as her own user: a thread reply when the file is in an album thread,
+  // else a plain event referencing the file. Idempotence is Matrix's: her own earlier receipt in the target's relations. A relations
+  // read or a PUT that fails, a held brake, proves nothing and posts nothing: the file stays stored and the receipt is nil. A deadline
+  // is not such a failure and leaves the caller (it throws).
+  async function postFileReceipt(roomId, albumRoot, fileEventId, sha256, size, deadline) {
+    const none = (word, cause = null) => ({ receipt: null, word, cause });
+    try {
+      const room = encodeURIComponent(roomId);
+      const [target, relation] = albumRoot === null ? [fileEventId, "m.reference"] : [albumRoot, "m.thread"];
+      let from = null, exhausted = false;
+      for (let page = 0; page < RELATION_PAGES && !exhausted; page++) {
+        const reply = await matrix("GET", `/rooms/${room}/relations/${encodeURIComponent(target)}/${relation}/${docs.fileReceivedType}?dir=b&limit=100${from === null ? "" : `&from=${encodeURIComponent(from)}`}`, undefined, V1, deadline);
+        const mine = (reply?.chunk ?? []).some(e => e?.type === docs.fileReceivedType && e.sender === selfId && !e.unsigned?.redacted_because && e.content?.[docs.fileReceivedType]?.event_id === fileEventId);
+        if (mine) return { receipt: "Existing", word: "existing" };
+        if (typeof reply?.next_batch === "string" && reply.next_batch !== "") from = reply.next_batch; else exhausted = true;
+      }
+      if (!exhausted) return none("failed"); // three pages and more remain: not proven
+      if (!(await released())) return none("skipped"); // read again immediately before the PUT, as send does inside its gate
+      deadline.throwIfAborted();
+      const relates = albumRoot === null ? { rel_type: "m.reference", event_id: fileEventId } : { rel_type: "m.thread", event_id: albumRoot };
+      const txn = `fr-${createHash("sha256").update(`${persona}|${fileEventId}`).digest("hex")}`;
+      await matrix("PUT", `/rooms/${room}/send/${docs.fileReceivedType}/${txn}`, { "m.relates_to": relates, [docs.fileReceivedType]: { event_id: fileEventId, sha256, size } }, API, deadline);
+      return { receipt: "Posted", word: "posted" };
+    } catch (error) {
+      if (deadline.aborted) throw error;
+      return none("failed", causeOf(error));
+    }
+  }
+
   async function run(signal) {
     const pause = ms => new Promise(r => { const t = setTimeout(r, ms); signal?.addEventListener("abort", () => { clearTimeout(t); r(); }, { once: true }); });
     while (!signal?.aborted) {
@@ -760,7 +887,12 @@ export function createMouth({
     }
   }
 
-  return { start, syncOnce, ack, read, pendingAfter, tail, speakableRooms, send, openDirect, run, get userId() { return selfId; }, get pendingCount() { return pending.length; } };
+  return { start, syncOnce, ack, read, pendingAfter, tail, speakableRooms, send, openDirect, fetchAttachment, run, get userId() { return selfId; }, get pendingCount() { return pending.length; } };
+}
+
+// The log's word for a failure: error class and HTTP status only, never the message (it can hold a URL, an mxc or a sender-chosen id).
+function causeOf(error) {
+  return `${/^[A-Za-z]{1,32}$/.test(error?.name) ? error.name : "Error"}/${Number.isInteger(error?.status) ? error.status : "-"}`;
 }
 
 // Replace every secret in a message. `secrets` is one string or a list.
@@ -845,7 +977,7 @@ export function pageOf(persona, deliveries, msgpack, log = () => {}, v3 = false,
 // session, and a request is answered on the session it arrived on. Requests arrive as
 // document_put_raw messages. A request naming a Persona this
 // process does not serve is answered with a typed UnknownPersona refusal.
-export async function startChatEndpoint({ mouths, runtime, port, connectionKey, runtimeId, socketFactory = createSocket, host = "127.0.0.1", log = () => {}, replyLink = false }) {
+export async function startChatEndpoint({ mouths, runtime, port, connectionKey, runtimeId, socketFactory = createSocket, host = "127.0.0.1", log = () => {}, replyLink = false, fetchEnabled = false }) {
   if (!/^127\.\d+\.\d+\.\d+$/.test(host)) throw new Error("the chat endpoint listens on loopback only");
   const { msgpack, cultnet } = runtime;
   const socket = socketFactory("udp4");
@@ -857,7 +989,7 @@ export async function startChatEndpoint({ mouths, runtime, port, connectionKey, 
   const respond = (peer, persona, kind, recordKey, tuple) => server.send(peer, "schema", msgpack.encode(cultnet.encodeCultNetMessageForWire(
     docs.envelope({ kind, recordKey, payload: msgpack.encode(tuple), sourceRuntimeId: runtimeId, sourceAgentId: persona, sourceRole: "bifrost-persona-matrix-mouth" }), "cultnet.schema.v0")));
   const refuseUnknown = (peer, persona) => respond(peer, persona, docs.kinds.refusal, persona, docs.refusalTuple({ persona, refusal: "UnknownPersona" }));
-  const served = [docs.kinds.pendingRequest, docs.kinds.pendingRequestV3, ...(replyLink ? [docs.kinds.pendingRequestV4] : []), docs.kinds.ack, docs.kinds.read, docs.kinds.sendRequest, docs.kinds.sendRequestV2, docs.kinds.openDirectRequest];
+  const served = [docs.kinds.pendingRequest, docs.kinds.pendingRequestV3, ...(replyLink ? [docs.kinds.pendingRequestV4] : []), docs.kinds.ack, docs.kinds.read, docs.kinds.sendRequest, docs.kinds.sendRequestV2, docs.kinds.openDirectRequest, ...(fetchEnabled ? [docs.kinds.fetchRequest] : [])];
   const handle = async ({ peer, channelId, payload }) => {
     try {
       if (channelId !== "schema") throw new Error("chat request arrived on a foreign channel");
@@ -874,6 +1006,11 @@ export async function startChatEndpoint({ mouths, runtime, port, connectionKey, 
         const mouth = mouths.get(request.persona);
         const receipt = mouth ? await mouth.openDirect(request) : { requestId: request.requestId, outcome: "UnknownPersona", roomId: null, eventId: null };
         respond(peer, request.persona, docs.kinds.openDirectReceipt, receipt.requestId, docs.openDirectReceiptTuple(receipt));
+      } else if (document.schemaId === docs.kinds.fetchRequest) { // only reachable with fetchEnabled: `served` drops it otherwise
+        const request = docs.parseFetchRequest(tuple);
+        const mouth = mouths.get(request.persona);
+        const receipt = mouth ? await mouth.fetchAttachment(request) : { requestId: request.requestId, outcome: "UnknownPersona", roomId: null, image: null, receipt: null };
+        respond(peer, request.persona, docs.kinds.fetchReceipt, receipt.requestId, docs.fetchReceiptTuple(receipt));
       } else if (document.schemaId === docs.kinds.pendingRequest || document.schemaId === docs.kinds.pendingRequestV3 || document.schemaId === docs.kinds.pendingRequestV4) {
         const v4 = document.schemaId === docs.kinds.pendingRequestV4; // only reachable with replyLink: `served` drops it otherwise
         const v3 = v4 || document.schemaId === docs.kinds.pendingRequestV3; // the kind asked by names the answer: v1 gets the 12-field v2 answer, as before
@@ -935,6 +1072,8 @@ export function loadRuntime(cultRoot) {
 
 // The v4 flag: on only for exactly "1"; unset, "0", "true", "yes" and anything else are off.
 export const replyLinkFromEnv = env => env.CHAT_PENDING_V4 === "1";
+// The fetch flag, the same way: on only for exactly "1". Off, the fetch request kind is an unknown kind.
+export const fetchFromEnv = env => env.CHAT_FETCH === "1";
 
 function required(env, name) {
   if (!env[name]) throw new Error(`${name} is required`);
@@ -983,6 +1122,7 @@ export async function main(env = process.env) {
     const controlRoot = env.CONTROL_ROOT ?? "/etc/gamecult/minds";
     const imageRoot = env.IMAGE_STORE_ROOT ? resolve(env.IMAGE_STORE_ROOT) : null; // unset: chat images stay the typed text line
     const gate = createRoomGate(); // one for every Persona: two Minds in one room take turns
+    const fetchEnabled = fetchFromEnv(env);
     const replyLink = replyLinkFromEnv(env); // default off: Huginn pins the v3 tuple bytes until it reads v4
     const mouths = new Map(personas.map(persona => {
       mkdirSync(join(stateRoot, persona), { recursive: true });
@@ -995,7 +1135,7 @@ export async function main(env = process.env) {
     }));
     const listen = required(env, "CHAT_RUDP_LISTEN"); // host:port, loopback
     const colon = listen.lastIndexOf(":");
-    await startChatEndpoint({ mouths, runtime, host: listen.slice(0, colon), port: Number(listen.slice(colon + 1)), connectionKey: chatKey, runtimeId: "bifrost-persona-mouth", log, replyLink });
+    await startChatEndpoint({ mouths, runtime, host: listen.slice(0, colon), port: Number(listen.slice(colon + 1)), connectionKey: chatKey, runtimeId: "bifrost-persona-mouth", log, replyLink, fetchEnabled });
     await Promise.all([...mouths.values()].map(mouth => mouth.run()));
   });
 }

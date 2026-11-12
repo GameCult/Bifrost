@@ -87,10 +87,10 @@ export function classify(bytes) {
 // GET the attachment named by `mxc` as this Persona: its token, its homeserver, the authenticated media path. The
 // body is read stream-wise and abandoned the moment it passes the cap, whatever Content-Length said.
 // Returns { bytes, mime, ext } or { refusal }.
-export async function fetchImage({ fetch: httpFetch, homeserver, token, mxc, timeoutMs = FETCH_TIMEOUT_MS }) {
+export async function fetchImage({ fetch: httpFetch, homeserver, token, mxc, timeoutMs = FETCH_TIMEOUT_MS, signal: outer }) {
   const named = typeof mxc === "string" ? MXC.exec(mxc) : null;
   if (!named) return { refusal: "no-url" };
-  const signal = AbortSignal.timeout(timeoutMs);
+  const signal = outer ? AbortSignal.any([AbortSignal.timeout(timeoutMs), outer]) : AbortSignal.timeout(timeoutMs); // `outer`: the caller's deadline, joined with this fetch's own
   try {
     const response = await httpFetch(`${homeserver}/_matrix/client/v1/media/download/${named[1]}/${named[2]}`, {
       method: "GET", headers: { authorization: `Bearer ${token}` }, redirect: "error", signal,
