@@ -19,6 +19,13 @@ withhold an answer from its Mind in an emergency, with a logged receipt (section
 client with an audience, as the desk does (section 4b). Eureka's decisions on forks 2 to 5 of 2026-11-12 (`/opt/commons/handoff/bifrost-10-forks-2-5-recs-20261112.md`)
 are folded into sections 2, 4b, 6a, 7a and 9 and close those forks, except where section 9 says a point is still open.
 
+## Rulings of the steward (Heimdall, 2026-11-12)
+
+Two of this doc's forks are the Bifrost steward's. Meta's, Eureka's and Libby's items are not ruled here.
+
+1. **Ratatoskr's client for people: reading 2a, with no third client.** The one public PKCE client the desk-credential cut seeds for Ratatoskr (only when `Bifrost:Oidc:Clients:Ratatoskr` is configured, so absent config changes nothing) also gets a scope `feedback.answer` that puts audience `bifrost-feedback-page` on the token. Authorization code with PKCE only, exact redirect URIs, no refresh token, the token only in an `Authorization` header and never in a URL, a query or a log. The audience is distinct from the Mind's `bifrost-feedback`, so a person's token never opens a Mind endpoint and a Mind's never opens the page (least privilege). Reading 2b, a Matrix token checked at the homeserver, is refused: it is a bearer for the person's whole Matrix account. The receiver writes a text-free receipt per accepted submission (receipts).
+2. **Token lifetimes are explicit, short, and set in the issuer change.** `feedback.answer` access token: 15 minutes, because the Bifrost session cookie re-issues it silently. The Mind's `client_credentials` token: 10 minutes, one call to renew. No refresh token for either. The desk's lifetime is its own decision and is not touched here. Until the issuer change lands the OpenIddict default applies; this doc no longer relies on it.
+
 ## 1. What the receiver owns
 
 | Concern | Owner | Receiver's part |
@@ -217,7 +224,7 @@ line or a log. The seeder stores the hash Bifrost holds; the plaintext is handed
 | Receipt | none for a desk token (`OidcEndpoints.cs:104`) | none: a Mind is not a person entering text |
 
 Rejected (Eureka): reusing the mouth's signed envelope per request. It is motion-bound (`verb` is commit/reveal, `MotionId` in the signed text) and would need a new verb set.
-Token lifetime is OpenIddict's default, believed one hour and unverified; set it explicitly in the issuer change.
+Token lifetimes: ruled in Rulings of the steward (15 and 10 minutes, set explicitly in the issuer change).
 
 ## 5. Account-kind lookup
 
