@@ -116,7 +116,16 @@ public sealed partial class UnixSocketDeskDoor : IDeskDoor
         {
             case "Fork":
                 Closed(value, "Fork", string.Empty, ("entry", Kind.Map), ("as_of", Kind.Unsigned));
-                return new DeskReadOutcome.Found(Entry(Required(value, "entry"), "entry"));
+                var entry = Entry(Required(value, "entry"), "entry");
+                // The route asked for one fork. An entry whose card names another is not the answer to it. (That the record
+                // agrees with the card is a rule of the entry, CultLib's validators' and Huginn's, not the door's.)
+                if (!entry.Card.TryGetProperty("fork_id", out var cardFork) || cardFork.ValueKind != JsonValueKind.String
+                    || cardFork.GetString() != forkId)
+                {
+                    throw new DeskDoorException("the entry is not for the fork asked");
+                }
+
+                return new DeskReadOutcome.Found(entry);
             case "NotStored":
                 var code = RefusalCode(value);
                 // The route's fork id, never the refusal's informational text.

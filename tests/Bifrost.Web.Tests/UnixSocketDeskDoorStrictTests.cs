@@ -240,6 +240,64 @@ public sealed class UnixSocketDeskDoorStrictTests
         await Faults(() => List(variant));
     }
 
+    // The payload is one tagged variant. A second key beside it, whatever it is called, is not a reply the door reads.
+    [Theory]
+    [InlineData("X")]
+    [InlineData("Refused")]
+    [InlineData("Forks2")]
+    public async Task A_payload_with_a_second_key_beside_the_variant_is_a_failure(string second)
+    {
+        var twoKeys = Forks(ListJson($"[{EntryJson()}]"))[..^1] + $",\"{second}\":\"Unavailable\"}}";
+        using var huginn = ReplyingBytes(MessagePackSerializer.ConvertFromJson(twoKeys));
+
+        await Faults(() => List(huginn));
+    }
+
+    // The envelope is an operation response or nothing: a different schemaVersion is not read as one.
+    [Theory]
+    [InlineData("cultnet.operation_response.v1")]
+    [InlineData("cultnet.operation_response.v")]
+    [InlineData("")]
+    [InlineData("CULTNET.OPERATION_RESPONSE.V0")]
+    public async Task An_envelope_with_another_schemaVersion_is_a_failure(string schemaVersion)
+    {
+        using var huginn = ReplyingBytes(ListPayload(), fields =>
+        {
+            var at = fields.FindIndex(f => f.Key == "schemaVersion");
+            fields[at] = ("schemaVersion", schemaVersion);
+        });
+
+        await Faults(() => List(huginn));
+    }
+
+    // The route names the fork; an entry for another fork is not the answer to the question asked, however well formed.
+    [Fact]
+    public async Task A_read_that_returns_another_forks_entry_is_a_failure()
+    {
+        var other = Card.Replace("x:question:a", "x:question:b", StringComparison.Ordinal);
+        var record = RecordJson().Replace("\"fork_id\":\"x:question:a\"", "\"fork_id\":\"x:question:b\"", StringComparison.Ordinal);
+        using var huginn = Replying($$$"""{"Fork":{"entry":{{{EntryJson(other, record)}}},"as_of":1}}""");
+
+        await Faults(() => Read(huginn));
+    }
+
+    [Fact]
+    public async Task A_read_whose_record_disagrees_with_its_card_is_not_the_doors_rule()
+    {
+        var record = RecordJson().Replace("\"fork_id\":\"x:question:a\"", "\"fork_id\":\"x:question:b\"", StringComparison.Ordinal);
+        using var huginn = Replying($$$"""{"Fork":{"entry":{{{EntryJson(record: record)}}},"as_of":1}}""");
+
+        Assert.IsType<DeskReadOutcome.Found>(await Read(huginn));
+    }
+
+    [Fact]
+    public async Task A_read_of_the_named_fork_is_found()
+    {
+        using var huginn = Replying($$$"""{"Fork":{"entry":{{{EntryJson()}}},"as_of":1}}""");
+
+        Assert.IsType<DeskReadOutcome.Found>(await Read(huginn));
+    }
+
     private static byte[] BinaryList()
     {
         var w = new System.Buffers.ArrayBufferWriter<byte>();

@@ -64,7 +64,10 @@ public static class DeskServe
     public static async Task<ForkEntry> ReadAsync(byte[] entryBytes)
     {
         using var huginn = Socket(Fork(entryBytes));
-        var outcome = await new UnixSocketDeskDoor().ReadAsync(huginn.Path, Context, "gamecult-chat:question:slot-mark-consent", CancellationToken.None);
+        // The route names the fork the entry's card names, which is what a real caller's route is.
+        var forkId = JsonNode.Parse(MessagePackSerializer.ConvertToJson(entryBytes)) is JsonObject { } entry
+            && entry["card"] is JsonObject { } card && (string?)card["fork_id"] is { } named ? named : OpenCountedFork;
+        var outcome = await new UnixSocketDeskDoor().ReadAsync(huginn.Path, Context, forkId, CancellationToken.None);
         return Assert.IsType<DeskReadOutcome.Found>(outcome).Entry;
     }
 
@@ -128,8 +131,11 @@ public static class DeskServe
     public static async Task<DeskReadOutcome> ReadPayloadAsync(byte[] payload)
     {
         using var huginn = Socket(payload);
-        return await new UnixSocketDeskDoor().ReadAsync(huginn.Path, Context, "gamecult-chat:question:slot-mark-consent", CancellationToken.None);
+        return await new UnixSocketDeskDoor().ReadAsync(huginn.Path, Context, OpenCountedFork, CancellationToken.None);
     }
+
+    // The fork the vectors' entry-open-counted names: the route of a read whose reply is a canned payload.
+    private static string OpenCountedFork => (string)Entry("entry-open-counted")["card"]!["fork_id"]!;
 
     public static async Task<DeskAnswerOutcome> AnswerPayloadAsync(byte[] payload)
     {
