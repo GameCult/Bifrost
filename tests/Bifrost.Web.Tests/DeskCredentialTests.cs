@@ -259,7 +259,7 @@ public sealed class DeskCredentialTests : IDisposable
         const string secretAnswerer = "0badc0de-0000-4000-8000-00000000000d"; // not on any decider list, so no card carries it
         var entry = DeskReplay.Entry(DeskReplay.Card(DeskReplay.ChatFork));
         var answer = new DeskAnswerDocument(
-            DeskSchemas.DeskAnswer, "n1", DeskReplay.ChatFork, "Counted", null, null, null, entry.Card.OptionsHash, "a", "private words",
+            DeskSchemas.DeskAnswer, "n1", DeskReplay.ChatFork, "Counted", null, null, null, entry.Card.GetProperty("options_hash").GetString(), "a", "private words",
             "2026-11-12T19:00:00Z", "2026-11-12T19:00:01Z", false, secretAnswerer, "Steward", "r-1");
         entry = entry with { Record = entry.Record with { Answers = [answer] } };
         factory.Door.ListScript = (_, r) => new DeskListOutcome.Listed(new ForkList("gamecult.fork.list.v0", r.Mind, "s1", 1, 0, [entry], null));

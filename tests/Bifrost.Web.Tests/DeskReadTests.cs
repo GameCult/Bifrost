@@ -430,7 +430,7 @@ public sealed class DeskReadTests
         foreach (var account in new[] { DeskWebApplicationFactory.Member, DeskWebApplicationFactory.Alice })
         {
             var reply = await factory.SendAsync("GET", "/api/desk/gamecult-chat/forks", null, factory.Token(account, "bifrost-desk", "desk.read"));
-            Assert.Equal(forks.Select(f => f.Card.ForkId), JsonNode.Parse(reply.Body)!["forks"]!.AsArray().Select(f => (string?)f!["card"]!["fork_id"]));
+            Assert.Equal(forks.Select(f => f.Card.GetProperty("fork_id").GetString()), JsonNode.Parse(reply.Body)!["forks"]!.AsArray().Select(f => (string?)f!["card"]!["fork_id"]));
         }
     }
 
