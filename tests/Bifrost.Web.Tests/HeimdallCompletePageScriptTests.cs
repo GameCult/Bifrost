@@ -15,7 +15,7 @@ public sealed class HeimdallCompletePageScriptTests
 
     private sealed record Run(string Name, string[] Events, Submit? Submit);
 
-    private sealed record Submit(string Attempt, string Code, string Href, string Hash);
+    private sealed record Submit(string Attempt, string Code, string Href, string Hash, string PendingLinkId);
 
     private static async Task<Dictionary<string, Run>> RunScenariosAsync()
     {
@@ -81,13 +81,35 @@ public sealed class HeimdallCompletePageScriptTests
     {
         var runs = await RunScenariosAsync();
 
-        Assert.Equal(new Submit("NONCE", "CODE123", "/auth/heimdall/complete?attempt=NONCE", ""), runs["success"].Submit);
+        Assert.Equal(new Submit("NONCE", "CODE123", "/auth/heimdall/complete?attempt=NONCE", "", ""), runs["success"].Submit);
         Assert.Equal("CODE123", runs["success-with-decoy-query-code"].Submit!.Code);
 
         var queryOnly = runs["code-in-query-only"];
         Assert.Null(queryOnly.Submit);
         Assert.DoesNotContain("submit", queryOnly.Events);
         Assert.Equal(ErrorTarget, queryOnly.Events[^1]);
+    }
+
+    [Fact]
+    public async Task A_pending_link_id_is_read_only_from_the_fragment_and_posted_without_a_code()
+    {
+        var runs = await RunScenariosAsync();
+
+        foreach (var name in new[] { "link-return", "link-return-with-decoy-query-id" })
+        {
+            var run = runs[name];
+            Assert.Equal(new Submit("NONCE", "", run.Submit!.Href, "", "PEND1"), run.Submit);
+            Assert.DoesNotContain("PEND1", run.Submit.Href);
+            Assert.StartsWith("replaceState:", run.Events[0]);
+            Assert.DoesNotContain("PEND1", run.Events[0]);
+            Assert.DoesNotContain("#", run.Events[0]);
+            Assert.Equal("submit", run.Events[1]);
+        }
+
+        Assert.Null(runs["link-pending-id-in-query-only"].Submit);
+        Assert.Equal(ErrorTarget, runs["link-pending-id-in-query-only"].Events[^1]);
+        Assert.Null(runs["link-error-with-pending-id"].Submit);
+        Assert.Equal(ErrorTarget, runs["link-error-with-pending-id"].Events[^1]);
     }
 
     [Theory]

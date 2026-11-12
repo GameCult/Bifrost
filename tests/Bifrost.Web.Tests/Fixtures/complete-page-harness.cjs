@@ -35,12 +35,13 @@ function run(name, search, hash) {
     },
   };
   const form = {
-    elements: { attempt: { value: "" }, code: { value: "" } },
+    elements: { attempt: { value: "" }, code: { value: "" }, pendingLinkId: { value: "" } },
     submit() {
       events.push("submit");
       submit = {
         attempt: form.elements.attempt.value,
         code: form.elements.code.value,
+        pendingLinkId: form.elements.pendingLinkId.value,
         href: location.href,
         hash: location.hash,
       };
@@ -59,6 +60,10 @@ console.log(
     run("error-status-with-code", "?attempt=NONCE", "#heimdall_status=error&heimdall_error=denied" + complete),
     run("no-code", "?attempt=NONCE", "#heimdall_status=success"),
     run("no-attempt", "", "#heimdall_status=success" + complete),
+    run("link-return", "?attempt=NONCE", "#heimdall_status=success&heimdall_pending_link_id=PEND1"),
+    run("link-return-with-decoy-query-id", "?attempt=NONCE&heimdall_pending_link_id=QPEND", "#heimdall_status=success&heimdall_pending_link_id=PEND1"),
+    run("link-error-with-pending-id", "?attempt=NONCE", "#heimdall_status=error&heimdall_error=denied&heimdall_pending_link_id=PEND1"),
+    run("link-pending-id-in-query-only", "?attempt=NONCE&heimdall_pending_link_id=QPEND", ""),
     run("code-in-query-only", "?attempt=NONCE&heimdall_completion_code=QCODE", ""),
   ]),
 );
