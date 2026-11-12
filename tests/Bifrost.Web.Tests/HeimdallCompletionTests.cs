@@ -1115,7 +1115,7 @@ public sealed class HeimdallCompletionTests
     }
 
     [Theory]
-    [InlineData(HttpStatusCode.InternalServerError, "{}", "Heimdall rejected the auth start.")]
+    [InlineData(HttpStatusCode.InternalServerError, "{}", "Heimdall rejected the auth start (HTTP 500).")]
     [InlineData(HttpStatusCode.OK, "{}", "Heimdall auth start returned no authorization URL.")]
     [InlineData(HttpStatusCode.OK, "{\"authorizationUrl\":\" \"}", "Heimdall auth start returned no authorization URL.")]
     public async Task A_start_Heimdall_cannot_serve_issues_no_cookie_and_a_fixed_refusal(HttpStatusCode status, string body, string reason)
@@ -1130,6 +1130,28 @@ public sealed class HeimdallCompletionTests
         Assert.Null(attempt.Cookie);
         Assert.False(attempt.Response.Headers.Contains("Set-Cookie"));
         Assert.Contains("Heimdall start refused: " + reason, string.Join("\n", host.Logs.Lines));
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.Unauthorized, """{"error":"app_auth_required"}""", "Heimdall rejected the auth start (HTTP 401, app_auth_required).")]
+    [InlineData(HttpStatusCode.BadRequest, """{"error":"provider_not_supported_for_app","detail":"free text"}""", "Heimdall rejected the auth start (HTTP 400, provider_not_supported_for_app).")]
+    [InlineData(HttpStatusCode.Unauthorized, """{"error":"<b>Not a code</b> CANARY secret=abc"}""", "Heimdall rejected the auth start (HTTP 401).")]
+    [InlineData(HttpStatusCode.Unauthorized, """{"error":{"nested":"app_auth_required"}}""", "Heimdall rejected the auth start (HTTP 401).")]
+    [InlineData(HttpStatusCode.Unauthorized, "not json at all", "Heimdall rejected the auth start (HTTP 401).")]
+    public async Task A_refused_start_logs_the_status_and_a_well_formed_error_code_and_nothing_else_from_the_body(
+        HttpStatusCode status, string body, string reason)
+    {
+        using var host = new HeimdallHost();
+        host.Heimdall.StartStatus = status;
+        host.Heimdall.StartBody = body;
+
+        var attempt = await host.StartAsync(member: true);
+
+        Assert.Equal(ErrorRedirect, attempt.Response.Headers.Location!.OriginalString);
+        var logs = string.Join("\n", host.Logs.Lines);
+        Assert.Contains("Heimdall start refused: " + reason, logs);
+        Assert.DoesNotContain("CANARY", logs);
+        Assert.DoesNotContain("free text", logs);
     }
 
     [Fact]

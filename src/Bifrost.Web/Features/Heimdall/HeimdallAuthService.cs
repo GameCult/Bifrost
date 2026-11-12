@@ -53,6 +53,32 @@ public sealed class HeimdallAuthService(
         }
     }
 
+    /// <summary>
+    /// Names the HTTP status and, when the body carries one, Heimdall's error code. The code is shown only
+    /// if it is a short snake_case token, so nothing else from the body (free text, tokens) reaches a log.
+    /// </summary>
+    private static async Task<string> RefusedStartMessageAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    {
+        var detail = $"HTTP {(int)response.StatusCode}";
+        try
+        {
+            var body = await response.Content.ReadFromJsonAsync<JsonElement>(cancellationToken);
+            if (body.ValueKind == JsonValueKind.Object
+                && body.TryGetProperty("error", out var error)
+                && error.ValueKind == JsonValueKind.String
+                && error.GetString() is { Length: > 0 and <= 64 } code
+                && code.All(c => c is (>= 'a' and <= 'z') or (>= '0' and <= '9') or '_'))
+            {
+                detail += ", " + code;
+            }
+        }
+        catch (JsonException)
+        {
+        }
+
+        return $"Heimdall rejected the auth start ({detail}).";
+    }
+
     public async Task<HeimdallAuthStartResult> StartAsync(
         string provider,
         string callbackBaseUrl,
@@ -91,7 +117,7 @@ public sealed class HeimdallAuthService(
 
         if (!response.IsSuccessStatusCode)
         {
-            throw new HeimdallAuthException("Heimdall rejected the auth start.");
+            throw new HeimdallAuthException(await RefusedStartMessageAsync(response, cancellationToken));
         }
 
         var payload = await response.Content.ReadFromJsonAsync<HeimdallStartResponse>(cancellationToken);
