@@ -10,7 +10,8 @@ sletz (Faust developer). Aqua decides on `#aquasynth` access, so the first grant
 
 Read at Bifrost `bf8ff62` (`src/Bifrost.Web/Domain/BifrostModels.cs`, `Features/Membership`, `Features/Heimdall`,
 `Features/Oidc`, `Features/Motions`, `Features/ConceptVotes`, `Pages/App/Members`) and Heimdall `575be9c`
-(`src/app-profiles.ts`, `docs/app-profiles/bifrost.md`).
+(`src/app-profiles.ts`, `docs/app-profiles/bifrost.md`). File and line references re-read at Bifrost main `e58e953` and Heimdall main
+`afa1b74` on 2026-11-12; where main moved the subject, the text says so. Nothing in this design has landed on main.
 
 ## The shape in one paragraph
 
@@ -25,14 +26,17 @@ user stay attached.
 - `UserAccount.Id` is the OIDC subject; `NormalizedBifrostIdentity` is `preferred_username` and, through MAS, the
   Matrix localpart (`docs/oidc-issuer.md`). `HeimdallAccountId` is only an authenticator handle.
 - `Membership.Status` is `Authenticated | PendingApproval | Active | Suspended`. `CurrentBifrostActor.IsActiveMember`
-  (`Status == Active`) is the one test behind `/App`, bridge transport (`BridgeActionService` l.492), motion votes
-  (`EffectiveVotingWeight`, `MotionGovernanceService` l.72), concept votes (`VoterIdentity.For`, member versus
-  account class) and the OIDC authorize, token and userinfo endpoints (`OidcEndpoints` l.50, l.131) and the
-  back-channel logout reconciler.
+  (`CurrentBifrostActor.cs:17`, `Status == Active`) is the one test behind `/App`, bridge transport (`BridgeActionService.cs:492`), motion votes
+  (`Membership.EffectiveVotingWeight`, `BifrostModels.cs:361`, read at `MotionGovernanceService.cs:72`), concept votes (`VoterIdentity.For`,
+  `VoterIdentity.cs:20`, member versus account class), Mind moderation (`MindIntakeService.cs:241`) and the fork desk's subject check
+  (`OidcEndpoints.ActiveMemberIdAsync`, `OidcEndpoints.cs:183-194`). The OIDC chat tier is not behind it: main lets any account that is
+  not `Suspended` and holds a live training-notice receipt sign in to chat (`OidcEndpoints.cs:55-65` and `ChatRefusalAsync`, `:164-180`,
+  called at `:127` and `:144`; `docs/oidc-issuer.md` l.72-77), and the back-channel logout reconciler (`OidcLogoutReconciler.cs`, 30 s
+  interval, l.34) ends sessions of suspended or deleted subjects, never of a chat-tier account for lacking membership.
 - `MemberRole` (`StandardMember`, `Producer`, `Maintainer`, `LedgerReviewer`, `PlatformAdmin`) are capability
   roles a member holds in addition. They are not the new field.
-- Invites are `MembershipInvitation`, keyed by GitHub login (`MembershipSynchronizationService` l.37,
-  `Members/Index.cshtml.cs` l.34). A guest may have no GitHub login at all.
+- Invites are `MembershipInvitation`, keyed by GitHub login (`MembershipSynchronizationService.cs:39-41`,
+  `Members/Index.cshtml.cs:69-71`). A guest may have no GitHub login at all.
 - Heimdall sign-in (`HeimdallAuthService.StartAsync`) with `requireMemberAccess = false` already creates an
   identity-only account at `Authenticated`; with member access it creates `Active`.
 - Nothing exists for room grants, leaving, erasing, or any "estate" in code (estates are rulings and research
@@ -47,9 +51,10 @@ Two authorities cannot both say "may this account vote". Today `Status == Active
 - `Membership.Role` (new, non-null, enum `AccountRole`) decides rights. `IsActiveMember` becomes
   `Status == Active && Role == Member`, and is the only place that expression exists. Every current
   `IsActiveMember` caller keeps working unchanged and a guest fails all of them without a per-site edit.
-- OIDC authorize, token, userinfo and the logout reconciler change their test from "Active member" to
-  "`Status == Active`" (any role), so a guest, user or patron can hold a chat session and a member demoted to
-  `Suspended` still loses it. This is the one behavioural change outside new code, and it is the line to review.
+- OIDC needs no change for guests: main already admits any non-`Suspended` account with a live training-notice receipt to chat (see
+  What exists today), so a guest, user or patron holds a chat session, and a member demoted to `Suspended` loses it. The change this
+  design owes is the two new statuses: `Left` and `Erased` must be refused at the same three places (`OidcEndpoints.cs:62`,
+  `ChatRefusalAsync` `:174`) and ended by the reconciler, which today looks for `Suspended` only. That is the line to review.
 - Backfill: `Active` becomes `member`; `Authenticated` and `PendingApproval` become `user`; an account with a
   current `Patron` tier snapshot and not `Active` becomes `patron`. Nobody starts as `guest`.
 
@@ -94,19 +99,21 @@ issuer may not have). The issuer may still restrict `ExpectedProvider`; open for
      are added and the invite is spent. If the existing account is `Left` or `Erased`, refuse.
 4. Bifrost issues its own cookie as for any account. From there the guest reaches chat through the one OIDC client.
 
-Gap, drift found while reading: Bifrost's `AllowedProviders` is `discord, patreon, twitch`
-(`HeimdallAuthService.AllowedProviders`), but Heimdall's `bifrost` app profile allows `discord, patreon, google`
-(`app-profiles.ts`, `bifrostProfile`). Twitch cannot start in Heimdall and Google is refused by Bifrost. A guest with
+Gap, drift found while reading, still true on main: Bifrost's `AllowedProviders` is `discord, patreon, twitch`
+(`HeimdallAuthService.cs:37-42`), but Heimdall's `bifrost` app profile allows `discord, patreon, google`
+(`app-profiles.ts:152`, `bifrostProfile`). Twitch cannot start in Heimdall and Google is refused by Bifrost as a sign-in provider.
+Main's only Google path is the explicit link by an already signed-in member (`HeimdallAttemptPurpose.LinkAwaitGoogle`,
+`HeimdallAuthService.cs:672`, PRs #81 and #82); it never signs anyone in, so it does not close the gap. A guest with
 neither Discord, Patreon nor a Google account cannot sign in, and GitHub is not a Heimdall sign-in provider for
 this app. Which provider sletz uses is unknown to me; align the two lists before the first invite.
 
 ## Guest rights
 
-A guest may: sign in, hold a Bifrost cookie, hold a chat session through OIDC, see and edit their own profile
+A guest may: sign in, hold a Bifrost cookie, hold a chat session through OIDC (after accepting the training notice, as any chat account does on main, `ConsentEndpoints.HasLiveReceiptAsync`, `ConsentEndpoints.cs:146`), see and edit their own profile
 (`MemberProfile`), be in the rooms granted to them, and leave or erase (below). A guest may not:
 
 - vote on motions: `EffectiveVotingWeight` is `0` for any role but `member` (today it is `Max(1, ...)` for
-  `Active`, which would give every guest weight 1; that line must read the role);
+  `Active` (`BifrostModels.cs:361-363`), which would give every guest weight 1; that line must read the role);
 - cast concept-mill appraisals: `VoterIdentity.For` returns no voter for a guest (not even `VoterClass.Account`);
 - appear on any estate roll or in any tally. The charter proposal snapshots each estate's roll at notice (A6);
   `guest` is on no roll, so a guest cannot be counted, cannot make a quorum, and reclassifying a guest after a
@@ -186,8 +193,8 @@ no refresh; the actor is read from the database each request (`CurrentBifrostAct
 Neither exists in Bifrost today. Two different acts:
 
 **Leave** (guest or any role, self-service): sets `Status = Left`, revokes every grant, and expels the account
-from granted rooms through the same effector as grants. The OIDC reconciler already notices a non-`Active`
-subject within 30 seconds and logs MAS out, and the token and userinfo endpoints refuse. The account row and
+from granted rooms through the same effector as grants. Once the reconciler and the chat refusals name `Left` (see Decision),
+it ends the MAS session within its 30 s interval, and the token and userinfo endpoints refuse. The account row and
 `Id` stay, so a later invite can restore it (a `Left` account re-accepting is a role change from itself, receipted).
 Nothing else about the person is deleted by leaving.
 
@@ -265,12 +272,12 @@ No such publisher or witness exists; Bifrost has no `.cc` export for accounts to
 - The Matrix effector for grants, leave and erase does not exist, and no credential for it is provisioned.
 - Synapse cannot cap what a guest does per user; room-creation and invite limits are global (unverified: I did not
   read the live Synapse config).
-- Heimdall has no erase path. Bifrost and Heimdall disagree on provider lists today.
+- Heimdall has no erase path (re-checked at `afa1b74`: no account-delete or unlink route in `src`, and `docs/answer-collector-consent.md`, merged as Heimdall PR #6, redacts by exit and says nothing of guests). Bifrost and Heimdall disagree on provider lists today.
 - No `.cc` witness or CultMesh publisher for accounts or receipts. Bifrost's account state is Postgres only.
 - Matrix id shape (`@<identity>:<server>`) depends on MAS importing `preferred_username` as localpart; the OIDC doc
   says so, I did not check the deployed MAS.
-- Tie to the answer-collector consent doc (Heimdall PR #6): a guest posting in a room may be posting to a sample
-  collector. That doc keys on `member_id`, and says a sender with no linked member is dropped. Whether a guest has a
+- Tie to the answer-collector consent doc (Heimdall PR #6, merged; `docs/answer-collector-consent.md`): a guest posting in a room may be posting to a sample
+  collector. That doc keys on `member_id`, and says a sender with no linked member is dropped (l.197). Whether a guest has a
   `member_id`, and so whether their answers are collected at all, is not decided here. Default: not collected.
 - Erase for member and patron roles (ledger and vote records) is unmapped.
 
