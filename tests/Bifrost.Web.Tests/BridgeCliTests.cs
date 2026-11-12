@@ -1061,18 +1061,16 @@ rl.on("line", (line) => {
             await RunGitAsync(["commit", "-m", "Initial commit"], workDir);
             await RunGitAsync(["remote", "add", "origin", remoteDir], workDir);
 
-            var blocked = await RunCommandAsync(
-                "powershell",
-                ["-NoProfile", "-Command", "git push -u origin main"],
+            var blocked = await RunShellAsync(
+                "git push -u origin main",
                 workDir,
                 BuildDispatchedGitHookEnv());
 
             Assert.NotEqual(0, blocked.ExitCode);
             Assert.Contains("Bifrost blocked git push", blocked.Stderr, StringComparison.OrdinalIgnoreCase);
 
-            var blockedNoVerify = await RunCommandAsync(
-                "powershell",
-                ["-NoProfile", "-Command", "git push --no-verify -u origin main"],
+            var blockedNoVerify = await RunShellAsync(
+                "git push --no-verify -u origin main",
                 workDir,
                 BuildDispatchedGitGateEnv());
 
@@ -1154,19 +1152,13 @@ console.log("https://github.com/GameCult/Bifrost/pull/999");
 
         try
         {
-            var fakeGhPath = Path.Combine(tempDir, "fake-gh.cmd");
-            await File.WriteAllTextAsync(fakeGhPath, """
-@echo off
-echo should-not-run
-exit /b 0
-""", Encoding.UTF8);
+            var fakeGhPath = await WriteFakeGhAsync(tempDir, "should-not-run");
 
             var environment = BuildDispatchedGitGateEnv();
             environment["BIFROST_REAL_GH"] = fakeGhPath;
 
-            var blocked = await RunCommandAsync(
-                "powershell",
-                ["-NoProfile", "-Command", "gh pr comment 42 --body blocked"],
+            var blocked = await RunShellAsync(
+                "gh pr comment 42 --body blocked",
                 RepoRoot,
                 environment);
 
@@ -1188,19 +1180,13 @@ exit /b 0
 
         try
         {
-            var fakeGhPath = Path.Combine(tempDir, "fake-gh.cmd");
-            await File.WriteAllTextAsync(fakeGhPath, """
-@echo off
-echo should-not-run
-exit /b 0
-""", Encoding.UTF8);
+            var fakeGhPath = await WriteFakeGhAsync(tempDir, "should-not-run");
 
             var environment = BuildDispatchedGitGateEnv();
             environment["BIFROST_REAL_GH"] = fakeGhPath;
 
-            var blocked = await RunCommandAsync(
-                "powershell",
-                ["-NoProfile", "-Command", "gh -R GameCult/Bifrost pr comment 42 --body blocked"],
+            var blocked = await RunShellAsync(
+                "gh -R GameCult/Bifrost pr comment 42 --body blocked",
                 RepoRoot,
                 environment);
 
@@ -1222,19 +1208,13 @@ exit /b 0
 
         try
         {
-            var fakeGhPath = Path.Combine(tempDir, "fake-gh.cmd");
-            await File.WriteAllTextAsync(fakeGhPath, """
-@echo off
-echo should-not-run
-exit /b 0
-""", Encoding.UTF8);
+            var fakeGhPath = await WriteFakeGhAsync(tempDir, "should-not-run");
 
             var environment = BuildDispatchedGitGateEnv();
             environment["BIFROST_REAL_GH"] = fakeGhPath;
 
-            var blocked = await RunCommandAsync(
-                "powershell",
-                ["-NoProfile", "-Command", "gh workflow run ci.yml"],
+            var blocked = await RunShellAsync(
+                "gh workflow run ci.yml",
                 RepoRoot,
                 environment);
 
@@ -1256,19 +1236,13 @@ exit /b 0
 
         try
         {
-            var fakeGhPath = Path.Combine(tempDir, "fake-gh.cmd");
-            await File.WriteAllTextAsync(fakeGhPath, """
-@echo off
-echo read-only-ok
-exit /b 0
-""", Encoding.UTF8);
+            var fakeGhPath = await WriteFakeGhAsync(tempDir, "read-only-ok");
 
             var environment = BuildDispatchedGitGateEnv();
             environment["BIFROST_REAL_GH"] = fakeGhPath;
 
-            var allowed = await RunCommandAsync(
-                "powershell",
-                ["-NoProfile", "-Command", "gh -R GameCult/Bifrost pr view 42"],
+            var allowed = await RunShellAsync(
+                "gh -R GameCult/Bifrost pr view 42",
                 RepoRoot,
                 environment);
 
@@ -1449,26 +1423,76 @@ import('./tools/bifrost-crossing-documents.mjs')
     private static Dictionary<string, string?> BuildDispatchedGitHookEnv()
     {
         var hooksPath = Path.Combine(RepoRoot, "tools", "git-hooks");
+        var nodePath = ResolveExecutable("node");
         var gatePath = Path.Combine(RepoRoot, "tools", "git-gate");
-        var path = Environment.GetEnvironmentVariable("Path")
-            ?? Environment.GetEnvironmentVariable("PATH")
-            ?? string.Empty;
-        var nextPath = string.IsNullOrWhiteSpace(path)
-            ? gatePath
-            : $"{gatePath};{path}";
-        return new Dictionary<string, string?>
+        var environment = new Dictionary<string, string?>
         {
             ["BIFROST_ENFORCE_GITHUB_GATE"] = "true",
-            ["BIFROST_GIT_EXECUTABLE"] = Path.Combine(gatePath, "git.cmd"),
-            ["BIFROST_GH_EXECUTABLE"] = Path.Combine(gatePath, "gh.cmd"),
-            ["BIFROST_NODE_EXECUTABLE"] = ResolveExecutable("node"),
+            ["BIFROST_NODE_EXECUTABLE"] = nodePath,
             ["GIT_CONFIG_COUNT"] = "1",
             ["GIT_CONFIG_KEY_0"] = "core.hooksPath",
             ["GIT_CONFIG_VALUE_0"] = hooksPath,
-            ["PATH"] = nextPath,
-            ["Path"] = nextPath,
         };
+
+        var path = Environment.GetEnvironmentVariable("Path")
+            ?? Environment.GetEnvironmentVariable("PATH")
+            ?? string.Empty;
+
+        if (OperatingSystem.IsWindows())
+        {
+            // The checked-in gate wrappers are .cmd files that PATH lookup finds as `git` and `gh`.
+            var nextPath = string.IsNullOrWhiteSpace(path) ? gatePath : $"{gatePath};{path}";
+            environment["BIFROST_GIT_EXECUTABLE"] = Path.Combine(gatePath, "git.cmd");
+            environment["BIFROST_GH_EXECUTABLE"] = Path.Combine(gatePath, "gh.cmd");
+            environment["PATH"] = nextPath;
+            environment["Path"] = nextPath;
+            return environment;
+        }
+
+        // Non-Windows has no .cmd wrappers: stand in for them with sh shims that run the same
+        // Node proxies, placed first on PATH. The proxies get the real git by explicit path so
+        // the shim cannot resolve itself.
+        var shimDir = Path.Combine(Path.GetTempPath(), $"bifrost-gate-shims-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(shimDir);
+        var gitShim = WriteShim(shimDir, "git", nodePath, Path.Combine(gatePath, "git-proxy.mjs"));
+        var ghShim = WriteShim(shimDir, "gh", nodePath, Path.Combine(gatePath, "gh-proxy.mjs"));
+        environment["BIFROST_REAL_GIT"] = ResolveExecutable("git");
+        environment["BIFROST_GIT_EXECUTABLE"] = gitShim;
+        environment["BIFROST_GH_EXECUTABLE"] = ghShim;
+        environment["PATH"] = string.IsNullOrEmpty(path) ? shimDir : $"{shimDir}{Path.PathSeparator}{path}";
+        return environment;
     }
+
+    private static string WriteShim(string directory, string name, string nodePath, string script)
+    {
+        var shim = Path.Combine(directory, name);
+        File.WriteAllText(shim, $"#!/bin/sh\nexec '{nodePath}' '{script}' \"$@\"\n", new UTF8Encoding(false));
+        File.SetUnixFileMode(shim, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        return shim;
+    }
+
+    private static async Task<string> WriteFakeGhAsync(string directory, string output)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            var cmd = Path.Combine(directory, "fake-gh.cmd");
+            await File.WriteAllTextAsync(cmd, $"@echo off\r\necho {output}\r\nexit /b 0\r\n", Encoding.UTF8);
+            return cmd;
+        }
+
+        var script = Path.Combine(directory, "fake-gh.sh");
+        await File.WriteAllTextAsync(script, $"#!/bin/sh\necho {output}\nexit 0\n", new UTF8Encoding(false));
+        File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        return script;
+    }
+
+    private static Task<ProcessResult> RunShellAsync(
+        string command,
+        string workingDirectory,
+        IReadOnlyDictionary<string, string?> environment)
+        => OperatingSystem.IsWindows()
+            ? RunCommandAsync("powershell", ["-NoProfile", "-Command", command], workingDirectory, environment)
+            : RunCommandAsync("sh", ["-c", command], workingDirectory, environment);
 
     private static Dictionary<string, string?> BuildDispatchedGitGateEnv() => BuildDispatchedGitHookEnv();
 
@@ -1478,7 +1502,7 @@ import('./tools/bifrost-crossing-documents.mjs')
         {
             StartInfo = new ProcessStartInfo
             {
-                FileName = "where.exe",
+                FileName = OperatingSystem.IsWindows() ? "where.exe" : "which",
                 WorkingDirectory = RepoRoot,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
