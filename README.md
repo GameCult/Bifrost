@@ -89,7 +89,7 @@ For the full staged roadmap, including contribution points, revenue share, patro
 - set `Heimdall:PatronSupportIntakeSecret` before enabling Heimdall patron support intake in production
 - default connection string points at local PostgreSQL
 - build with `dotnet build Bifrost.slnx`
-- test with `DOTNET_ROLL_FORWARD=Major dotnet test Bifrost.slnx` if the machine only has the .NET 10 runtime installed
+- test with `dotnet test Bifrost.slnx`; the suite needs a real .NET 8 runtime (`DOTNET_ROOT`, with a runsettings `DotNetHostPath` if the SDK is newer; .NET 10 roll-forward makes Mvc.Testing 8.0.0 return 500 on every JSON response) and a built CultLib TypeScript runtime (`dist/` and `node_modules`) at `$VOIDBOT_CULTLIB_ROOT`
 - dry-run a Reddit organizing thread with `node tools/bifrost-bridge.mjs reddit-post --title "Thread title" --persona-name Bifrost --content "Thread body" --dry-run true`
 - print the Eve provider advertisement with `node tools/provider-advertisement.mjs print`
 - export the Eve provider store with `node tools/provider-advertisement.mjs export --out .bifrost/provider-store.cc`
