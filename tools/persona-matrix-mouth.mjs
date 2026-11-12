@@ -834,10 +834,7 @@ export function createMouth({
         if (claimed && info.sha256 !== computed) return done("HashMismatch");
         deadline.throwIfAborted();
         let image;
-        try { image = images.put(roomId, got.bytes, got.mime); } catch (error) {
-          say(`image not stored: ${error?.code ?? "write failed"}`);
-          return done("StoreFailed");
-        }
+        try { image = images.put(roomId, got.bytes, got.mime); } catch (error) { return done("StoreFailed", { cause: causeOf(error) }); }
         stored = true;
         if (!claimed) return done("StoredUnverified", { image, roomId });
         const { receipt, word, cause } = await postFileReceipt(roomId, albumRoot, event.event_id, computed, got.bytes.length, deadline);

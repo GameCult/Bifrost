@@ -90,11 +90,11 @@ function synapse({ joined = [ROOM], state = [], events = {}, media = { abc: { by
   return s;
 }
 
-function mouthOn(s, { brake = async () => true, deadline = 5000, store = true, clock, gate } = {}) {
+function mouthOn(s, { brake = async () => true, deadline = 5000, store = true, clock, gate, put } = {}) {
   const root = personaStoreRoot();
   const real = createImageStore({ root });
   const puts = [];
-  const images = store ? { put: (...a) => { puts.push(a); return real.put(...a); } } : null;
+  const images = store ? { put: (...a) => { puts.push(a); return put ? put(...a) : real.put(...a); } } : null;
   const logs = [];
   const mouth = createMouth({
     persona: "eureka", homeserver: "http://hs.test", serverName: HS, rooms: [ALIAS], token: TOKEN, fetch: s.fetch, state: { load: async () => null, save: async () => {} },
@@ -644,4 +644,33 @@ test("a deadline that passes while the brake is re-read before the receipt PUT s
   await new Promise(r => setTimeout(r, 30));
   assert.equal(s.calls.filter(c => c.startsWith("PUT")).length, 0);
   assert.equal(m.puts.length, 1);
+});
+
+test("a store that throws is one fetch line with a fixed cause: its code, message and name text reach no line", async () => {
+  const taint = `/srv/images/secret-path http://hs.test/x mxc://gamecult.org/abc ${TOKEN}`;
+  const s = synapse();
+  const m = mouthOn(s, { put: () => { throw Object.assign(new Error(taint), { code: taint, name: "not a class name" }); } });
+  assert.equal((await m.ask()).outcome, "StoreFailed");
+  assert.equal(m.fetchLines().length, 1);
+  assert.match(m.fetchLines()[0], /outcome=StoreFailed .* cause=Error\/-$/);
+  assert.equal(m.logs.length, m.fetchLines().length, "no other line");
+  for (const line of m.logs) for (const bit of ["secret-path", "http", "mxc", TOKEN, "EACCES"]) assert.ok(!line.includes(bit), `${bit} in: ${line}`);
+  assert.equal(s.calls.filter(c => c.startsWith("PUT")).length, 0, "no receipt for an unstored file");
+});
+
+test("an event id with characters encodeURIComponent changes goes out as one encoded path segment in every request built from it", async () => {
+  const hostile = ["$a+b=c", "$a@b:c", "$a&b", "$a b".replace(" ", "!"), "$a'(b)*", "$a;b,c", "$a$b"];
+  for (const [id, threaded] of hostile.flatMap(h => [[h, true], [h, false]])) {
+    assert.ok(docs.isFetchId("$", id), id);
+    assert.notEqual(encodeURIComponent(id), id, `${id} is changed by encoding`);
+    const s = synapse({ events: { [id]: { type: "m.room.message", event_id: id, room_id: ROOM, sender: OTHER, content: fileContent({ "m.relates_to": threaded ? { rel_type: "m.thread", event_id: id } : undefined }) } } });
+    const m = mouthOn(s);
+    assert.equal((await m.ask({ eventId: id, room: ROOM })).outcome, "Stored", id);
+    const enc = encodeURIComponent(id);
+    const eventGet = s.raw.filter(p => p.includes("/event/"));
+    const relGet = s.raw.filter(p => p.includes("/relations/"));
+    assert.ok(eventGet.length === 1 && eventGet[0] === `/_matrix/client/v3/rooms/${encodeURIComponent(ROOM)}/event/${enc}`, `event GET: ${eventGet}`);
+    assert.ok(relGet.length >= 1 && relGet.every(p => p.startsWith(`/_matrix/client/v1/rooms/${encodeURIComponent(ROOM)}/relations/${enc}/${threaded ? "m.thread" : "m.reference"}/`)), `relations GET: ${relGet}`);
+    assert.ok(s.raw.every(p => !p.split("?")[0].includes(id) || id === enc), "no raw id in a request path");
+  }
 });
