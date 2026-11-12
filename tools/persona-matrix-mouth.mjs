@@ -6,7 +6,7 @@
 // its m.mentions user ids and whether the room is a DM. The /sync position
 // (next_batch) is persisted only when an ack covers it, so a restart before the
 // ack re-delivers instead of losing. A v3 delivery also carries what Matrix proves about why it is for her (basis: direct, tag,
-// reply, room; form: message, notice, edit); names and roles are the heartbeat's to match, not the mouth's (docs/bridge.md,
+// reply, room, and with CHAT_FOLLOW=1 follow; form: message, notice, edit); names and roles are the heartbeat's to match, not the mouth's (docs/bridge.md,
 // "Addressing facts"). Reading wakes nothing: the heartbeat polls
 // with a non-consuming chat_pending_request and decides who runs. An ack posts nothing to Matrix. Her public
 // m.read receipt follows a chat_read document from Huginn, sent when a delivery has gone into the model's
@@ -22,6 +22,10 @@
 // newest room event she saw): inside the room gate, one step per room across every Persona, the mouth
 // reads the room's head from Matrix and answers RoomMoved, naming the messages that moved it, instead
 // of the PUT. A v1 send, and a v2 send with no basis, are not checked; both still pass through the gate.
+//
+// Follow (CHAT_FOLLOW=1, default off; docs/bridge.md "Follow"): her own post that tags or replies to someone opens a 10 minute engagement
+// with that peer in that public room; the peer's next untagged messages inside it carry basis "follow", at most 3 an hour per peer and room.
+// Memory only. Off, no basis "follow" is ever emitted: Huginn's parser refuses it until its Basis::Follow lands.
 //
 // Media: an m.image/m.file/m.audio/m.video event is delivered as one typed line (see bodyText), not its bare filename.
 // An m.image event in a delivered message is also fetched, as this Persona and only when an image store is configured
@@ -68,6 +72,9 @@ const FETCH_DEADLINE_MS = 15000; // one fetch, whole: it ends before Huginn's 20
 const FETCH_PER_HOUR = 30; // fetches one Persona may ask in an hour
 const RELATION_PAGES = 3; // pages of a receipt target's relations read before the answer is called unproven
 const PLATFORM = ["disc", "ord"].join(""); // the bridged platform's name, as Huginn's room_scope spells it: never written out whole
+const FOLLOW_WINDOW_MS = 10 * 60 * 1000; // W: an engagement lasts this long from the Mind's own post; a follow never extends it
+const FOLLOW_PER_HOUR = 3; // K: follow bases given per (Mind, peer, room) in an hour; past it the message keeps the basis it had
+const FOLLOW_ROOM_TTL_MS = 5 * 60 * 1000; // how long a room's public verdict (not encrypted, not bridged) is kept
 const HEAD_PAGE = 50; // the room head a gated send reads; also the most ids a RoomMoved receipt names
 
 // The kind of an event for a delivery: an edit (m.replace) and an automated notice (m.notice) are not messages anyone is addressed by.
@@ -126,6 +133,7 @@ export function createMouth({
   persona, homeserver, serverName, rooms, token, fetch: httpFetch = globalThis.fetch, state, brake,
   now = Date.now, log = () => {}, syncTimeoutMs = 30000, maxPending = MAX_PENDING, gate = createRoomGate(), sendTimeoutMs = SEND_TIMEOUT_MS,
   presenceGraceMs = PRESENCE_GRACE_MS, fetchDeadlineMs = FETCH_DEADLINE_MS,
+  follow = false, // the follow basis (CHAT_FOLLOW): an untagged message from someone she tagged or replied to, within FOLLOW_WINDOW_MS of her own post, is for her
   replyLink = false, // resolve each reply's quoted event into delivery.replyTo (the v4 answer; one more event read per reply to a non-Mind)
   images = null, // this Persona's image store (createImageStore), or null: images stay the typed text line
   isServed = async () => false, // (async) whether a Matrix user id is an account this process speaks for: a Mind is not a person to open a DM with
@@ -303,6 +311,59 @@ export function createMouth({
     return lines;
   }
 
+  // Follow (docs/bridge.md, "Follow"). Memory only: room id -> peer id -> the time her engagement with that peer ends, and room id|peer id ->
+  // the times follows were given. A restart empties both, which only shortens windows. Opened by her own post (seen in /sync, so a post from
+  // any client of her account counts) that tags or replies to a peer; never by a follow delivery; never in a DM, an encrypted room or a bridged room.
+  const engagements = new Map();
+  const followsGiven = new Map();
+  const publicRooms = new Map(); // room id -> { ok, at }
+  const platformId = id => platformEvent({ sender: id });
+  async function publicRoom(roomId) {
+    const known = publicRooms.get(roomId);
+    if (known && now() - known.at < FOLLOW_ROOM_TTL_MS) return known.ok;
+    try {
+      const state = await matrix("GET", `/rooms/${encodeURIComponent(roomId)}/state`, undefined, API, AbortSignal.timeout(sendTimeoutMs));
+      if (!Array.isArray(state)) return false;
+      const ok = !state.some(e => e?.type === "m.room.encryption" || e?.type === "m.bridge" || e?.type === "uk.half-shot.bridge");
+      publicRooms.set(roomId, { ok, at: now() });
+      return ok;
+    } catch (error) {
+      say(`follow: room ${roomId} state not read: ${error.message}`);
+      return false; // unknown is not public
+    }
+  }
+  const eventAt = event => Number.isSafeInteger(event.origin_server_ts) && event.origin_server_ts >= 0 ? event.origin_server_ts : now();
+  // Her own post: whoever it tags (m.mentions) or replies to becomes a peer for W from this post, re-anchoring one she already had.
+  async function noteOwnPost(roomId, event) {
+    if (!follow || directRooms.has(roomId) || formOf(event.content) !== "message" || platformEvent(event)) return;
+    const peers = new Set(Array.isArray(event.content["m.mentions"]?.user_ids) ? event.content["m.mentions"].user_ids : []);
+    const relates = event.content["m.relates_to"];
+    const replied = relates?.["m.in_reply_to"]?.event_id;
+    if (typeof replied === "string" && replied !== "" && relates.is_falling_back !== true) {
+      const author = await authorOf(roomId, replied);
+      if (author !== null) peers.add(author);
+    }
+    const ends = eventAt(event) + FOLLOW_WINDOW_MS;
+    const ids = [...peers].filter(id => docs.isMatrixId("@", id) && id !== selfId && !platformId(id)).slice(0, docs.limits.mentions);
+    if (ids.length === 0 || ends <= now() || !(await publicRoom(roomId))) return;
+    const room = engagements.get(roomId) ?? new Map();
+    for (const [id, until] of room) if (until <= now()) room.delete(id);
+    for (const id of ids) room.set(id, ends);
+    engagements.set(roomId, room);
+  }
+  // Whether this message is a follow, and if so spends one of the peer's K for the hour. Called only for a message that has no better basis.
+  async function followed(roomId, event) {
+    if (!follow || directRooms.has(roomId) || formOf(event.content) !== "message" || platformEvent(event)) return false;
+    const at = eventAt(event);
+    if (!((engagements.get(roomId)?.get(event.sender) ?? 0) > at)) return false;
+    if (!(await publicRoom(roomId))) return false;
+    const key = `${roomId}|${event.sender}`;
+    const recent = (followsGiven.get(key) ?? []).filter(t => at - t < 60 * 60 * 1000);
+    if (recent.length >= FOLLOW_PER_HOUR) { followsGiven.set(key, recent); return false; }
+    followsGiven.set(key, [...recent, at]);
+    return true;
+  }
+
   // Why a delivered event is for this Persona, from what Matrix says and nothing else: "direct" (a DM), "tag" (m.mentions lists her
   // id, or, from a client that sends no m.mentions at all, the body links her matrix.to pill), "reply" (it replies to, or sits in a
   // thread under, an event her account wrote, so her Self run's words count as hers), "room" (an @room mention). In that order; null
@@ -474,7 +535,9 @@ export function createMouth({
         const deliverable = !baseline && !freshRooms.has(roomId) && event.sender !== selfId;
         if (deliverable && pending.length + made.length >= maxPending) { truncated = true; break rounds; }
         if (deliverable && replyLink && replyReads + targetsToRead(roomId, event) > REPLY_READS_PER_ROUND) { say(`event ${event.event_id} not read: round cap on target reads, the rest of the round waits for the next`); truncated = true; break rounds; } // not processed: the next round meets it again, with its read count reset
-        const basis = deliverable ? await basisOf(roomId, event) : null;
+        if (!baseline && !freshRooms.has(roomId) && event.sender === selfId && event.type === "m.room.message") await noteOwnPost(roomId, event);
+        let basis = deliverable ? await basisOf(roomId, event) : null;
+        if (deliverable && (basis === null || basis === "room") && await followed(roomId, event)) basis = "follow";
         const replyTo = deliverable ? await replyToOf(roomId, event) : null;
         processed.add(event.event_id);
         if (deliverable) {
@@ -1074,6 +1137,8 @@ export function loadRuntime(cultRoot) {
 export const replyLinkFromEnv = env => env.CHAT_PENDING_V4 === "1";
 // The fetch flag, the same way: on only for exactly "1". Off, the fetch request kind is an unknown kind.
 export const fetchFromEnv = env => env.CHAT_FETCH === "1";
+// The follow flag, the same way. Off, the mouth never emits basis "follow" (Huginn's parser refuses an unknown basis until its Basis::Follow lands).
+export const followFromEnv = env => env.CHAT_FOLLOW === "1";
 
 function required(env, name) {
   if (!env[name]) throw new Error(`${name} is required`);
@@ -1127,7 +1192,7 @@ export async function main(env = process.env) {
     const mouths = new Map(personas.map(persona => {
       mkdirSync(join(stateRoot, persona), { recursive: true });
       return [persona, createMouth({
-        persona, homeserver, serverName, rooms: roomsByPersona.get(persona), token: tokens.get(persona), gate, replyLink, isServed: async id => { await Promise.all([...mouths.values()].map(m => m.start().catch(() => {}))); return [...mouths.values()].some(m => m.userId === id); }, log: line => log(`${persona}: ${line}`),
+        persona, homeserver, serverName, rooms: roomsByPersona.get(persona), token: tokens.get(persona), gate, replyLink, follow: followFromEnv(env), isServed: async id => { await Promise.all([...mouths.values()].map(m => m.start().catch(() => {}))); return [...mouths.values()].some(m => m.userId === id); }, log: line => log(`${persona}: ${line}`),
         images: imageRoot ? createImageStore({ root: join(imageRoot, persona), log: line => log(`${persona}: ${line}`) }) : null,
         state: cultcacheState({ runtime, path: join(stateRoot, persona, "cursor.cc") }),
         brake: createBrakeReader({ controlPath: join(controlRoot, persona, "control.cc"), readStore: runtime.readSingleFileStore, decode: runtime.msgpack.decode }),

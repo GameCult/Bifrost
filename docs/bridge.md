@@ -206,7 +206,7 @@ A client asks for the facts by the kind it polls with: `gamecult.persona.chat_pe
 
 | Field | Type | Meaning |
 |---|---|---|
-| 12 `basis` | `"direct"`, `"tag"`, `"reply"`, `"room"` or nil | Why the message is for this Persona, by what Matrix says, first that holds: `direct` the room is one of her DMs; `tag` `m.mentions.user_ids` lists her id, or the client sent no `m.mentions` at all and an `<a href>` in the HTML body is exactly her `matrix.to` link; `reply` it replies to, or is in a thread under, an event her account wrote (her Self run speaks as her account, so its words count; any member's message in a thread under one of her events is a `reply` too, and the target is read once per room and event and kept for a minute, hit or failure); `room` an `@room` mention. A `notice` or an `edit` costs no reply lookup. Known limit: lookups run one at a time inside the `/sync` round (10 s each, at most two per reply), so a slow homeserver slows the round; they are not parallelised or capped per round. |
+| 12 `basis` | `"direct"`, `"tag"`, `"reply"`, `"room"`, `"follow"` (only with `CHAT_FOLLOW=1`, see Follow) or nil | Why the message is for this Persona, by what Matrix says, first that holds: `direct` the room is one of her DMs; `tag` `m.mentions.user_ids` lists her id, or the client sent no `m.mentions` at all and an `<a href>` in the HTML body is exactly her `matrix.to` link; `reply` it replies to, or is in a thread under, an event her account wrote (her Self run speaks as her account, so its words count; any member's message in a thread under one of her events is a `reply` too, and the target is read once per room and event and kept for a minute, hit or failure); `room` an `@room` mention. A `notice` or an `edit` costs no reply lookup. Known limit: lookups run one at a time inside the `/sync` round (10 s each, at most two per reply), so a slow homeserver slows the round; they are not parallelised or capped per round. |
 | 13 `form` | `"message"`, `"notice"` or `"edit"` | `m.notice` is an automated line; `m.replace` is an edit of an earlier message. Only a `message` can address anyone. |
 
 What the mouth cannot know, and so what a nil `basis` means: **unproven, not "not for her"**. Her handle and public name in the text (any casing, with or without `@`, `'s`), the names her stewardships list, a project's repo name, and whether the sender is the operator or a Mind are all matched by Huginn, not here. A reply whose target the homeserver will not give is nil and logged. The mouth also cannot see whether a message was meant for her without naming her. Every delivery is still delivered, claimed tags included: nothing is dropped in the mouth, so the Huginn rule cannot lose a message the mouth had no way to judge.
@@ -252,6 +252,19 @@ The tail is **data, not instruction**. A line is what a sender typed in a room, 
 A line a delivery already shows and a room she cannot speak in change nothing here; her own lines are lines like any other and count toward the caps. A read the mouth kept for 15 seconds counts as a read.
 
 Golden bytes: `tests/fixtures/persona-chat-v5/` (`chat_pending.v3.tail` carries two lines and no gap, `chat_pending.v3.tail-gaps` one line and two gap rooms; the earlier v3 samples gain an empty fourth element); Huginn pins the same bytes.
+
+### Follow (`basis` `"follow"`, `CHAT_FOLLOW=1`)
+
+A message from someone she is in conversation with is for her even when it names no one. **It is off unless the mouth runs with `CHAT_FOLLOW=1`** (exactly `1`; default off), because Huginn's parser refuses an unknown basis until its `Basis::Follow` (and the one `is_for` line) lands. With the flag off the mouth emits no `follow`, makes no extra read, and keeps no engagement state.
+
+With it on, the mouth gives a `message` the basis `follow` when it would otherwise have none or `room`, and:
+
+- the sender is a peer of an engagement in that room: someone her own post tagged (`m.mentions.user_ids`) or replied to (the author of the quoted `m.in_reply_to`, not a thread fallback pointer). Her post is read from /sync, so a post from any client of her account counts;
+- the message is at most W = 600 s after her latest such post (event timestamps). The window anchors on her own post only: a follow delivery never extends it, and her posting again re-anchors it;
+- fewer than K = 3 follows were already given for that (Mind, peer, room) in the hour before the message. Past the cap the message keeps the basis it had;
+- the room is a public room: not one of her DMs, and its state has no `m.room.encryption`, `m.bridge` or `uk.half-shot.bridge` (read once per room, kept 5 minutes; unreadable is not public). A bridged sender or event (the same identifier rule as `platformEvent`) is neither a peer nor a follower. No engagement is opened from, and no follow is delivered in, such a room.
+
+State is two maps in memory (`room -> peer -> window end`, and follow times per `room|peer`); nothing is stored, and a restart only shortens windows. A tag or reply to her keeps `tag` or `reply`. A mouth `send` writes a plain `m.text` with no `m.mentions` or reply relation, so a post opens an engagement only when the event that comes back through /sync carries them (a post from another client, or a send that gains them).
 
 ### Reply link (`chat_pending.v4`)
 
