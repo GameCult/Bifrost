@@ -293,7 +293,7 @@ Bifrost's erase (PR #9) blanks the display name and keeps the account id as a to
 5. **Backups: 56 days, restores replay erasures** (Eureka, 2026-11-12). "Append-only" is the receiver's API contract, not a property of the file, so erased text survives in
    backups of it. The stated purge is: **erased text can survive in backups at most 56 days**, the existing Raven tier (newest 14 daily plus the newest of each of 8 Monday-weeks;
    `gamecult-ops` `runbooks/gamecult-state-backup.md`, read at `origin/main`). No backup is changed. The receiver keeps an **erased-id list** (account id and record ids, no text,
-   no hash) beside its store, and **any restore must re-apply it before the receiver serves**. The notice to people says it (R2 of the exceptions draft). If Meta wants shorter, put the
+   no hash) beside its store, and **any restore must re-apply it over `receiver.cc` before the receiver serves, never trusting the two files to be the same generation (section 8)**. The notice to people says it (R2 of the exceptions draft). If Meta wants shorter, put the
    store outside the weekly tier (14 days), a small backup-config edit.
    *Is the store under a backed-up path? Yes, by choice (Eureka, 2026-11-12):* `/var/lib/gamecult/bifrost/feedback-receiver/` (section 8), under `/var/lib/gamecult`, which the nightly
    snapshot takes whole bar Idunn caches and Ghostlight acceptance output. It avoids the excluded `/srv/bifrost/persona-feedback/runtime`, `app`, `log` and `backups`. A file with a sibling
@@ -308,8 +308,22 @@ not the mouth, and not the `bifrost-feedback` user of `bifrost-persona-feedback.
   Directory `bifrost:bifrost`, mode 0750, **created by root at install**: `/var/lib/gamecult/bifrost` is `root:root` 0755 today, so the `bifrost` user cannot create the child itself (or a
   `StateDirectory=gamecult/bifrost/feedback-receiver` in the unit that writes it). `bifrost.service` has no sandbox directives, so it needs nothing more; if it is later hardened with `ProtectSystem=strict`,
   add `ReadWritePaths=/var/lib/gamecult/bifrost/feedback-receiver`. The backup reads as root, so 0750 does not block it.
-- **One writer.** Only the receiver writes these files; its delivery cursor lives in the same store, and Minds pull over HTTPS (section 2), so nothing else opens them.
-- **Open build question:** Bifrost.Web has no CultCache writer today (`CultCache` appears only in a comment in `BifrostModels.cs`); a C# CultCache runtime from `CultLib` is the new dependency this owes, and nobody has checked one fits.
+- **Nothing else opens the files.** There is no Node mouth reader and no Rust writer. The receiver is the only process that opens `receiver.cc` or `erased.cc`; its delivery cursor lives in the same
+  store. The cross-runtime refusals are real and are not worked around: the Rust runtime refuses to write until it has pulled, and the C# runtime refuses to open a store whose records it cannot read
+  (`CultStoreUnreadableException`). The CultCache contract would allow a lock-free stale read or a shared-lock read by another process; **this design takes neither: Mind-side readers get no file
+  access at all, they pull over HTTPS** (section 2).
+- **Two stores, two locks, no pair consistency.** `receiver.cc` and `erased.cc` take independent locks (`receiver.cc.lock`, `erased.cc.lock`; `AcquireLock`, `CultCache.cs:5164-5185`, `FileShare.None`, retry 30 s),
+  so a backup copying under each shared lock can capture them at different generations. The design never trusts the pair to be consistent: **restore re-applies `erased.cc` over `receiver.cc` by
+  design** (section 7a, item 5), whichever generation each came from, and the receiver does not serve until it has.
+- **The C# runtime fit is "needs work" (Eyes).** `CultLib` C# (`src/GameCult.Caching` and `GameCult.Caching.MessagePack`, about 10.6k lines, netstandard2.1, MIT) fits net8.0, but:
+  - **No published package exists**: nuget.org has none, the `cultlib-v` tags stop at 1.0.32, and packaging is a PowerShell local feed (`CultLib` `docs/nuget-packaging.md`). Bifrost has no `nuget.config` and no vendor directory.
+    **The consumption route (checkout `ProjectReference`, local feed, or vendoring) is an open fork for Eureka and Libby.**
+  - **Version conflict (predicted, not run):** `Caching.MessagePack` needs System.Text.Json 9.0.10; Bifrost's Direct pin is `[8.0.5, )` (`packages.lock.json:97-101`), so restore likely fails with NU1605.
+  - **It drags CultMath** (MIT AND MPL-2.0 AND Apache-2.0, shaders) into a web service.
+  - **Writer precedent:** the Node sidecar already writes `/srv/bifrost/persona-feedback/deliveries.cc` (`docs/bridge.md:285`), so the receiver is the second `.cc` writer in the app and the first in C#.
+- **Gaps owed to Libby (CultLib steward); no local workaround is built here:** (1) no consumable C# package; (2) the System.Text.Json pin conflict; (3) the CultMath transitive closure;
+  (4) `src/GameCult.Caching/README.md:310` says single-writer, no competing writers, which contradicts the store-composition contract's lock; (5) no documented stale `.tmp` / crash procedure;
+  (6) no documented backup-while-writing contract for a pair of stores; (7) no cross-runtime test pairing a Linux C# writer with a Rust reader.
 - Session check, account state and role stay in Postgres, where they already are.
 
 I withdraw my earlier lean to Postgres rows: it contradicts the ruled store, and the `.cc` witness it would have owed is what the file is.
