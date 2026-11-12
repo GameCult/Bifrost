@@ -13,6 +13,15 @@ Read at Bifrost `bf8ff62` (`src/Bifrost.Web/Domain/BifrostModels.cs`, `Features/
 (`src/app-profiles.ts`, `docs/app-profiles/bifrost.md`). File and line references re-read at Bifrost main `e58e953` and Heimdall main
 `afa1b74` on 2026-11-12; where main moved the subject, the text says so. Nothing in this design has landed on main.
 
+## Rulings of the steward (Heimdall, 2026-11-12)
+
+These four are the Bifrost steward's; they replace the recommendations further down. Eureka's, Aqua's and Meta's items are not ruled here.
+
+1. **Name and shape: a stored `Membership.Role` (enum `AccountRole`), not a boolean.** One stored field is one reading, and an account with no role is denied by default (least privilege). `MemberRole` keeps its name and meaning; renaming it is not needed, and nothing existing is removed.
+2. **Invite: a single-use code redeemed from a form, never a token in a URL.** The issuer is shown the code once; the guest pastes it into `POST /invite/guest` (a body, not a path or query), so it reaches no log, referrer or browser history. Hashed at rest, seven days, one use, receipted on issue, accept and revoke. The issuer may bind `ExpectedProvider` (optional, narrows the invite). The sign-in return path carries only the Heimdall attempt, never the code.
+3. **Provider lists: Bifrost narrows to the intersection with Heimdall's `bifrost` profile, `discord, patreon`; no widening.** Twitch cannot start in Heimdall, so dropping it removes nothing live; it logs a deprecation warning for one release before the entry goes (deprecate before remove). Google stays link-only (PRs #81, #82) and becomes a sign-in provider only when an issued invite needs it, by a profile change in Heimdall first. Which provider sletz uses is still the issuer's to learn.
+4. **Collector: a guest has no `member_id` and none of their messages are collected.** A sender with no linked member is already dropped (`docs/answer-collector-consent.md` l.197 in Heimdall). A `member_id`, and a consent record under it, exists only on promotion to `member`.
+
 ## The shape in one paragraph
 
 A guest is a `UserAccount` like any other: same `Id` (the OIDC `sub`), same `NormalizedBifrostIdentity` (the Matrix
@@ -73,7 +82,7 @@ approval, not to a guest). Fields:
 | field | rule |
 |---|---|
 | `Id` | Guid. |
-| `TokenHash` | SHA-256 of a 256-bit random token. The token itself is shown to the issuer once, as a link, and never stored. |
+| `CodeHash` | SHA-256 of a 256-bit random code. The code itself is shown to the issuer once and never stored. |
 | `IntendedIdentity` | the localpart the issuer picks (for example `sletz`), validated by `BifrostIdentityService.NormalizeIdentity`, reserved while the invite is open. Minted once on accept; a collision gets the usual `-2` suffix. |
 | `Label` | free note for the issuer ("sletz, Faust developer"). |
 | `RoomGrants` | the rooms to grant on accept (below), as a list of grant requests. |
@@ -81,14 +90,14 @@ approval, not to a guest). Fields:
 | `ExpiresAtUtc` | default seven days. |
 | `AcceptedByUserAccountId`, `AcceptedAtUtc`, `RevokedAtUtc` | one use; revoke before accept ends it. |
 
-The link is a bearer: whoever signs in first with it is the guest. That is the cost of not needing sletz's
-provider handle in advance, and it is why the token is single-use and short-lived and why the accept is shown
-to the issuer. Recommended over binding the invite to a provider handle (which needs a Discord or Google id the
-issuer may not have). The issuer may still restrict `ExpectedProvider`; open fork, see Questions.
+The code is a bearer: whoever redeems it first is the guest. That is the cost of not needing sletz's
+provider handle in advance, and it is why the code is single-use and short-lived and why the accept is shown
+to the issuer. Ruled over binding the invite to a provider handle (which needs a Discord or Google id the
+issuer may not have); the issuer may still set `ExpectedProvider` (see Rulings). It is carried in a form body, never in a URL.
 
 ## Sign-in via Heimdall
 
-1. Guest opens `/invite/guest/<token>`. Bifrost checks hash, expiry, unused, unrevoked, and stores the invite id in
+1. Guest opens `/invite/guest`, pastes the code, and posts it. Bifrost checks hash, expiry, unused, unrevoked, and stores the invite id in
    the existing Heimdall attempt (`HeimdallAuthService` protects attempt state with the data protector).
 2. Bifrost starts Heimdall sign-in with `requireMemberAccess = false` (identity only, no entitlement policy).
    Heimdall authenticates; it does not issue the identity (`docs/jurisdiction-map.md`).
@@ -283,14 +292,9 @@ No such publisher or witness exists; Bifrost has no `.cc` export for accounts to
 
 ## Questions for the deciders
 
-1. **Is `Role` the right name** given `MemberRole`, and is one stored role (this doc) preferred over a boolean
-   `IsGuest`? Recommendation: stored role. Confidence: medium; the boolean is cheaper if user and patron are not
-   yet needed.
-2. **Bearer link or provider-bound invite?** Recommendation: bearer, single use, seven days, optional
-   `ExpectedProvider`. Confidence: medium; this is a trust call about how sletz will be sent the link.
-3. **Which Heimdall provider will sletz sign in with?** Needed before the lists are aligned.
-4. **Do guests get a `member_id` for the answer collector?** Default no. Eureka agrees from the chat side: the
-   Persona turn is not the collector, and presence in a room is the room's decision (Heimdall PR #6 owns the
-   collector).
+1. **Name and shape**: ruled (stored `Role`), see Rulings.
+2. **Bearer link or provider-bound invite?** Ruled (single-use code from a form), see Rulings.
+3. **Which Heimdall provider will sletz sign in with?** The lists are ruled (see Rulings); this is the issuer's to learn before the first invite.
+4. **`member_id` for the answer collector**: ruled (none for a guest), see Rulings.
 5. **Does promotion to member join the Members estate immediately**, or does the charter's notice and snapshot
    rule apply to the roll? The charter text is a proposal, not in force.
