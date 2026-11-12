@@ -64,12 +64,31 @@ public sealed class DeskDocumentTests
     public void Cards_round_trip_with_their_spelling()
     {
         var rows = DeskVectors.Rows("card", "valid").ToList();
-        Assert.Equal(5, rows.Count);
+        Assert.Equal(7, rows.Count);
         foreach (var row in rows)
         {
             var message = row["message"]!;
-            var card = message.Deserialize<ForkCard>(DeskJson.Options)!;
+            var card = message.Deserialize<JsonElement>(DeskJson.Options);
             Assert.True(DeskVectors.SameShape(message, Write(card)), (string)row["name"]!);
         }
+    }
+
+    // The card is opaque: whatever keys, in whatever order, with whatever numbers, leave as they came.
+    [Fact]
+    public void An_unknown_card_passes_through_byte_for_byte()
+    {
+        const string card =
+            "{\"order\":7,\"raised_at\":\"2026-11-11T09:00:00Z\",\"title\":\"It's \u00e9\",\"fork_id\":\"x:question:y\"," +
+            "\"future\":{\"z\":1.50,\"a\":[3,null,1e2],\"big\":12345678901234567890},\"options_hash\":\"ab\",\"leans\":null}";
+        var entryJson =
+            "{\"schemaVersion\":\"gamecult.fork.entry.v0\",\"card\":" + card +
+            ",\"record\":{\"schemaVersion\":\"gamecult.fork.record.v0\",\"fork_id\":\"x:question:y\",\"options_hash\":\"ab\",\"counted_answer_id\":null,\"answerer_count\":0,\"answers\":[]}}";
+
+        var entry = JsonSerializer.Deserialize<ForkEntry>(entryJson, DeskJson.Options)!;
+        var written = JsonSerializer.Serialize(entry, DeskJson.Options);
+        Assert.Equal(entryJson, written);
+
+        var result = new AnswerResult(DeskSchemas.AnswerResult, null!, entry.Card, null);
+        Assert.Contains("\"card\":" + card + ",", JsonSerializer.Serialize(result, DeskJson.Options));
     }
 }

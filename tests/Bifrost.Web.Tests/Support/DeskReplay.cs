@@ -11,18 +11,18 @@ public static class DeskReplay
 
     private static JsonNode BaseCard => DeskVectors.Root["scenarios"]![0]!["card"]!;
 
-    public static ForkCard Card(string forkId, string title = "Slot mark consent")
+    public static JsonElement Card(string forkId, string title = "Slot mark consent")
     {
         var card = JsonNode.Parse(BaseCard.ToJsonString())!.AsObject();
         card["fork_id"] = forkId;
         card["title"] = title;
-        return card.Deserialize<ForkCard>(DeskJson.Options)!;
+        return card.Deserialize<JsonElement>(DeskJson.Options);
     }
 
-    public static ForkEntry Entry(ForkCard card) => new(
+    public static ForkEntry Entry(JsonElement card) => new(
         "gamecult.fork.entry.v0",
         card,
-        new ForkRecord("gamecult.fork.record.v0", card.ForkId, card.OptionsHash, null, []));
+        new ForkRecord("gamecult.fork.record.v0", card.GetProperty("fork_id").GetString()!, card.GetProperty("options_hash").GetString()!, null, 0, []));
 
     // Every fork the vectors say each Mind holds, on that Mind's socket.
     public static void HoldVectorForks(FakeDeskDoor door)

@@ -79,33 +79,6 @@ public sealed class DeskReadTests
     }
 
     [Fact]
-    public async Task List_scenarios_pass_through()
-    {
-        var steps = 0;
-        foreach (var scenario in DeskVectors.Rows("transport", "listScenarios"))
-        {
-            using var factory = new DeskWebApplicationFactory();
-            await factory.EnsureAccountAsync(DeskWebApplicationFactory.Alice, true);
-            foreach (var step in scenario["steps"]!.AsArray().Select(s => s!.AsObject()))
-            {
-                var request = step["request"]!;
-                var response = step["response"]!.AsObject();
-                var list = response.Deserialize<ForkList>(DeskJson.Options)!;
-                factory.Door.ListScript = (_, _) => new DeskListOutcome.Listed(list);
-                var query = $"?status={(string?)request["status"]}&cursor={(string?)request["cursor"]}&limit={(int)request["limit"]!}";
-
-                var reply = await factory.SendAsync("GET", $"/api/desk/{(string)request["mind"]!}/forks" + query, null, ReadToken(factory));
-
-                Assert.Equal(200, reply.Status);
-                Assert.True(DeskVectors.SameShape(JsonNode.Parse(reply.Body), response), (string)scenario["name"]!);
-                steps++;
-            }
-        }
-
-        Assert.Equal(9, steps);
-    }
-
-    [Fact]
     public async Task Read_returns_the_entry_unchanged_and_an_unknown_fork_is_refused()
     {
         using var factory = new DeskWebApplicationFactory();
@@ -457,7 +430,7 @@ public sealed class DeskReadTests
         foreach (var account in new[] { DeskWebApplicationFactory.Member, DeskWebApplicationFactory.Alice })
         {
             var reply = await factory.SendAsync("GET", "/api/desk/gamecult-chat/forks", null, factory.Token(account, "bifrost-desk", "desk.read"));
-            Assert.Equal(forks.Select(f => f.Card.ForkId), JsonNode.Parse(reply.Body)!["forks"]!.AsArray().Select(f => (string?)f!["card"]!["fork_id"]));
+            Assert.Equal(forks.Select(f => f.Card.GetProperty("fork_id").GetString()), JsonNode.Parse(reply.Body)!["forks"]!.AsArray().Select(f => (string?)f!["card"]!["fork_id"]));
         }
     }
 

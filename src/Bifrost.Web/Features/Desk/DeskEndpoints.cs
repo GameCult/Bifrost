@@ -46,6 +46,7 @@ public static class DeskEndpoints
             services.TryAddSingleton<IDeskCredential, OidcDeskCredential>();
         }
 
+        services.TryAddSingleton<IDeskDoor>(_ => new UnixSocketDeskDoor());
         services.AddSingleton(provider => new DeskMindRoutes(provider.GetRequiredService<IOptions<DeskOptions>>().Value.Minds));
         services.AddCors();
         // Exactly the configured origin, no credentials, and only on the routes that require this policy.

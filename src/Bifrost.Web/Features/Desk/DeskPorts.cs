@@ -2,8 +2,9 @@ namespace Bifrost.Web.Features.Desk;
 
 // The two ports the desk stands on. Bifrost owns the edge's order and judgments; these two own what is not
 // Bifrost's yet: validating a bearer token (the OIDC validation scheme) and speaking to a Mind's Huginn on the
-// peer-checked door. No production implementation is registered here: with the Desk section configured and a port
-// missing, startup fails (DeskEndpoints.MapDesk) instead of serving.
+// peer-checked door. The door's production implementation is UnixSocketDeskDoor (registered by AddBifrostDesk unless
+// a test or host registered its own); the credential has none registered here, so with the Desk section configured
+// and a port missing, startup fails (DeskEndpoints.MapDesk) instead of serving.
 
 // What a validated bearer token claims. The credential port verifies the token; the desk judges audience, scope and
 // membership. A null Subject or Audience means the token did not carry one.

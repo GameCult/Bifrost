@@ -22,7 +22,7 @@ public sealed class DeskScenarioTests
         {
             using var factory = new DeskWebApplicationFactory();
             var door = factory.Door;
-            door.Forks[(Socket, DeskReplay.ChatFork)] = DeskReplay.Entry(scenario["card"]!.Deserialize<ForkCard>(DeskJson.Options)!);
+            door.Forks[(Socket, DeskReplay.ChatFork)] = DeskReplay.Entry(scenario["card"]!.Deserialize<JsonElement>(DeskJson.Options));
             var scenarioName = (string)scenario["name"]!;
 
             foreach (var step in scenario["steps"]!.AsArray().Select(s => s!.AsObject()))
@@ -36,7 +36,7 @@ public sealed class DeskScenarioTests
 
                 if (kind == "card")
                 {
-                    door.Forks[(Socket, DeskReplay.ChatFork)] = DeskReplay.Entry(step["card"]!.Deserialize<ForkCard>(DeskJson.Options)!);
+                    door.Forks[(Socket, DeskReplay.ChatFork)] = DeskReplay.Entry(step["card"]!.Deserialize<JsonElement>(DeskJson.Options));
                     continue;
                 }
 
@@ -155,7 +155,7 @@ public sealed class DeskScenarioTests
             var answer = message["answer"]!.Deserialize<DeskAnswerDocument>(DeskJson.Options)!;
             var result = message.Deserialize<AnswerResult>(DeskJson.Options)!;
             factory.Door.Forks[(Socket, answer.ForkId)] = DeskReplay.Entry(
-                message["card"] is { } card ? card.Deserialize<ForkCard>(DeskJson.Options)! : DeskReplay.Card(answer.ForkId));
+                message["card"] is { } card ? card.Deserialize<JsonElement>(DeskJson.Options) : DeskReplay.Card(answer.ForkId));
             factory.Door.AnswerScript = (_, _, _) => new DeskAnswerOutcome.Answered(result with { Card = null });
             await factory.EnsureAccountAsync(DeskWebApplicationFactory.Alice, true);
 
