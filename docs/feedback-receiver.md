@@ -16,7 +16,8 @@ Where source disagrees with either, the section says so.
 Rulings of Meta, 2026-11-12, now written into this doc: erase redacts the answer text in the receiver's store and keeps a text-free record
 (section 7a); the training notice covers any text entered into the app, bar a short exception list Eureka drafts (section 4a); the host may
 withhold an answer from its Mind in an emergency, with a logged receipt (section 6a); Minds authenticate to the receiver through an OIDC
-client with an audience, as the desk does (section 4b).
+client with an audience, as the desk does (section 4b). Eureka's decisions on forks 2 to 5 of 2026-11-12 (`/opt/commons/handoff/bifrost-10-forks-2-5-recs-20261112.md`)
+are folded into sections 2, 4b, 6a, 7a and 9 and close those forks, except where section 9 says a point is still open.
 
 ## 1. What the receiver owns
 
@@ -77,16 +78,20 @@ the mouth's pending/ack path. Source adds one constraint on how it rides:
 
 - **It cannot be a variant inside `chat_pending`.** Each version is a closed positional tuple (twelve, fourteen or fifteen fields) encoded by
   `pageOf` (l.949), so a different tuple in that page breaks every current consumer, and a text frame in `text` is forgeable by any Matrix member.
-- **Option B, kept:** the delivery document rides its own request, page and ack kinds on the same endpoint
-  (`feedback_pending_request`, `feedback_pending`, `feedback_ack`), with its own seq space and a durable cursor over the
-  receiver's store. The Matrix kinds, the Matrix cursor and `MAX_PENDING` are untouched. The endpoint's closed kind list
-  (`served`, l.992) grows by three. Confidence medium: the consumer, which I cannot see, must learn them.
+- **Option B, kept in shape:** the delivery document has its own request, page and ack kinds (`feedback_pending_request`, `feedback_pending`, `feedback_ack`), its own seq space and
+  a durable cursor over the receiver's store. The Matrix kinds, the Matrix cursor and `MAX_PENDING` are untouched. Per the decision below the kinds are served by the receiver over
+  HTTPS, not added to the mouth's `served` list (l.992). Confidence medium: the Persona-side consumer, which I cannot see, must learn them.
 - **Why main's changes reinforce B.** A chat `ack` releases stored images and advances the Matrix `/sync` cursor (l.556-561). A feedback ack must do neither, so it cannot
   share the `chat_ack` kind or its `ack` function. The chat pending answer is already versioned three times, so a new field in that tuple is a new
   document version for every consumer, which a feedback record must not force.
 - Rejected: injecting records into `pending` as synthetic Matrix deliveries (no inlet, forgeable, lost on restart);
   posting to a Matrix room as a bot (wrong identity authority, spam and forgery, and the Mind would read it as chat).
-- **Open against section 4b:** this endpoint is loopback RUDP with no bearer, so a Mind's OIDC credential does not travel on it. See section 9.
+- **Decided (Eureka, 2026-11-12): feedback does not ride the mouth.** The endpoint is loopback RUDP with no bearer and trusts the persona id in the document, so
+  routing feedback through it would make the Matrix organ a bearer-less deputy holding every Mind's authority and would put the receiver's own seq space and durable
+  cursor in a Matrix process. A Mind pulls and acks **directly over HTTPS from her own process to the receiver, with the section 4b bearer**; she admits the text-free
+  record into her own mind afterwards. The three kinds `feedback_pending_request`, `feedback_pending`, `feedback_ack` are therefore HTTP endpoints of the receiver, not
+  kinds added to `served`; Option B's "same endpoint" clause is withdrawn and the mouth is untouched. The delivery document and its seq space are as above. This is a
+  Bifrost HTTP service, a xenos boundary for CultNet, so JSON/HTTP there is the tolerated kind. Pre-deploy test: section 9.
 
 ## 3. Records
 
@@ -173,10 +178,46 @@ A Mind authenticates to the receiver through an OIDC client with an audience, th
 | Subject check | `ActiveMemberIdAsync` on `sub` (`DeskEndpoints.cs:127`) | **the `sub` must be the owning Mind's configured client**, matched against the question's `owner`; a Mind is not a `UserAccount` and has no membership to read |
 | Receipt | none for a desk token (`OidcEndpoints.cs:104`) | none: a Mind is not a person entering text |
 
-Two things main does not give a Mind, and I do not decide them here: the desk's grant is authorization code with a signed-in cookie session, which a Mind
-does not have, and the issuer enables no other grant (`OidcServiceCollectionExtensions.cs:39`). A Mind therefore needs a client that authenticates as itself
-(a confidential client with `client_secret_basic`, which the token endpoint already takes, and a grant for it). That is a change to the issuer's
-one-grant rule and to `docs/oidc-issuer.md`, and it is an open fork (section 9), as is the carrier question in section 2.
+**Decided (Eureka, 2026-11-12): OAuth 2.0 `client_credentials`, one confidential client per Mind.** `client_id = mind-<persona>`; scopes `feedback.read` and
+`feedback.ack` only; audience `bifrost-feedback`. The token's `sub` maps to the Mind's registered persona and is matched against the question's `owner`. The grant
+is RFC 6749 section 4.4 ("using only its client credentials"): short-lived, audience-bound, no refresh token, no cookie session. It is not extended to the desk in the
+same cut.
+
+**The issuer today cannot issue it.** It enables one grant, `server.AllowAuthorizationCodeFlow().RequireProofKeyForCodeExchange()`
+(`OidcServiceCollectionExtensions.cs:39`); the token endpoint accepts `client_secret_basic` only (`:44-46`: `ClientAuthenticationMethods.Clear()`, then `ClientSecretBasic`);
+the seeder creates only the MAS client and deletes every other application at startup (`OidcClientSeeder.cs:35-51`, `:63-75`). **Enabling `client_credentials`
+(`AllowClientCredentialsFlow`), seeding the per-Mind clients and the audience/scope registration is an issuer change this design owes**, with a matching edit to
+`docs/oidc-issuer.md`. Until it lands no Mind token can be issued on main. The audience and scope names are accepted as proposed.
+
+**Client authentication: `private_key_jwt` with the Mind's Ed25519 key is not available on the pinned stack; use a secret.** Finding, read against the pinned packages
+(`src/Bifrost.Web/packages.lock.json`: `OpenIddict.Server`, `.Validation` and the rest at 7.7.1):
+
+- *Supported:* OpenIddict.Server 7.7.1 has `private_key_jwt` client authentication. Its assembly carries the literal `private_key_jwt`, the `client_assertion` and
+  `client_assertion_type` parameters, `OpenIddictServerOptions.ClientAssertionTypes`, and the handlers `ValidateClientAssertion`, `...Issuer`, `...Audience` and `...WellknownClaims`
+  (`OpenIddict.Server.xml`); each application can carry a `JsonWebKeySet` (`OpenIddictApplicationDescriptor.JsonWebKeySet`, `IOpenIddictApplicationManager.GetJsonWebKeySetAsync`, `OpenIddict.Abstractions.xml`).
+  Bifrost does not enable it today: the method list is cleared to `ClientSecretBasic` (`:44-46`).
+- *Not supported with Ed25519:* the assertion is a JWT checked by `Microsoft.IdentityModel` 8.19.2, the version the lock file pulls in. Scanning
+  `Microsoft.IdentityModel.Tokens.dll` for algorithm identifiers finds only `HS256/384/512`, `RS256/384/512`, `PS256/384/512` and `ES256/384/512`; there is no `EdDSA`, `Ed25519`
+  or `OKP` anywhere in it or in `Microsoft.IdentityModel.JsonWebTokens.dll`, and none in `OpenIddict.Server.dll` or `OpenIddict.Abstractions.dll`. So a Mind's existing Ed25519 key
+  (the one moderator-registered through `MindIntakeService.cs`) cannot sign a `client_assertion` this server would accept. (Evidence is a string scan of the shipped assemblies, not a
+  runtime test; I did not run an assertion against a live issuer. Confidence high that it fails, since the algorithm names are absent.)
+- *Consequence:* `private_key_jwt` would need a second, ECDSA P-256 (or RSA) key per Mind registered as the client's key set, which is a new key to custody and no improvement on a secret.
+  Decision: **`client_secret_basic` with one secret per Mind**, the method the token endpoint already takes. If the stack gains EdDSA the choice reopens, and `private_key_jwt`
+  with the existing key is then preferred because it removes the per-Mind secret (RFC 7523 section 2.2).
+
+**The client secret lives only in a file the Mind's process reads** (for example a systemd credential in her own home, mode 0400), never in an environment variable, a command
+line or a log. The seeder stores the hash Bifrost holds; the plaintext is handed to the Mind once, through the same custody path as her other credentials.
+
+| Part | Desk (main) | Receiver (decided) |
+|---|---|---|
+| Audience | `bifrost-desk` (`DeskEndpoints.cs:21`) | `bifrost-feedback` |
+| Scopes | `desk.read`, `desk.answer` (`:22-23`) | `feedback.read` (pull deliveries, read the Mind's own projection) and `feedback.ack` (ack a delivery; also the Mind's acts that pass through the receiver) |
+| Credential port | `OidcDeskCredential`, OpenIddict validation, header only | the same port, a second audience |
+| Subject check | `ActiveMemberIdAsync` on `sub` (`DeskEndpoints.cs:127`) | `sub` is the owning Mind's client; a Mind is not a `UserAccount` and has no membership to read |
+| Receipt | none for a desk token (`OidcEndpoints.cs:104`) | none: a Mind is not a person entering text |
+
+Rejected (Eureka): reusing the mouth's signed envelope per request. It is motion-bound (`verb` is commit/reveal, `MotionId` in the signed text) and would need a new verb set.
+Token lifetime is OpenIddict's default, believed one hour and unverified; set it explicitly in the issuer change.
 
 ## 5. Account-kind lookup
 
@@ -217,14 +258,14 @@ one-grant rule and to `docs/oidc-issuer.md`, and it is an open fork (section 9),
 The host may withhold an answer from its Mind in an emergency, with a logged receipt. It changes **delivery only**.
 
 - **The withhold record** is one more receiver record, append-only, text-free: `recordId` (its own), `answerRecordId` (the answer withheld), `owner` (the Mind),
-  `withheldBy` (the host actor's `UserAccount.Id`, read from Bifrost state, never the body), `time`, `reasonCode` (a closed code from a short list the
-  host sets, for example `Emergency`; no free text, because free text is where content would get in) and, when it ends, a second record, `withholdLifted`, with `liftedBy` and `time`.
-  **No answer text, no choice, no name of the answerer and no excerpt is in either.** It is the log the ruling asks for, readable by the host. Whether the Mind is told that a withhold exists is not ruled (section 9).
+  `withheldBy` (the host actor's `UserAccount.Id`, read from Bifrost state, never the body), `time`, `reasonCode` (closed, exactly `Emergency` (imminent harm), `PersonalData` (the answer contains someone's data) or `Legal` (counsel or a legal request); no free text, because free text is where content would get in; a fourth code needs a ruling) and, when it ends, a second record, `withholdLifted`, with `liftedBy` and `time`.
+  **No answer text, no choice, no name of the answerer and no excerpt is in either.** It is the log the ruling asks for, readable by the host. **Decided (Eureka, 2026-11-12): the Mind and the member both see a text-free `withheld` marker carrying the code**, so silence is not read as "no answer"; the member sees the same marker on their feedback page. The marker carries no text, no choice and no withholder.
 - **What it changes:** the answer's delivery state becomes `withheld`, and the delivery cursor does not pass it silently. The receiver does not put it on the wire to the Mind
   while the withhold is in force. Lifting it makes the answer deliverable again, in its original seq order, unchanged.
 - **What it never changes:** the stored text (it is not redacted, edited or moved: only erase redacts, section 7a); the projection rules of section 7 (a withhold is not a hide);
   and the Mind's own authority over the question: she may still hide the answer, close the question or rule on it by her own acts, and a withhold takes none of that away. She cannot lift it; the host's act is the host's.
-- **Who may do it** is the host's operator role in Bifrost; which role is not ruled (section 9). The act is refused to anyone else and to the Mind herself.
+- **Who may do it: `PlatformAdmin` only** (`CanManageMembership`, `CurrentBifrostActor.cs:30`, the check suspension uses; no new role). The act is refused to anyone else and to the Mind herself. **The withholder's identity (`withheldBy`, `liftedBy`) appears in the audit receipt only**, never on the marker the Mind or the member sees.
+  Open: whether the member should be told in a safety case (for example a threat) is Meta's call (Eureka 60%); the default written here is that the member is told.
 - A withheld answer is not erased, and an erase of its author redacts the text as in 7a; the withhold record stays, because it carries none.
 
 ## 7. Projection read
@@ -249,9 +290,15 @@ Bifrost's erase (PR #9) blanks the display name and keeps the account id as a to
 3. The receiver delivers an erase notice, and the Persona admits a `feedback_hide` of reason `ErasedAuthor`: the Mind's acknowledgement, not a moderation call.
 4. **The honest residue:** a Mind's own memory or ruling may already quote an answer, and Huginn cannot redact it. That the Persona cites record ids and
    never text is a prompt, not an invariant. Erase does not reach what she already holds.
-5. **Backups.** "Append-only" is the receiver's API contract, not a property of the file; erasing the live file leaves the text in every backup of it.
-   **A stated purge or expiry for the receiver's backups is required before any deploy**, so erased text does not survive in them. The number is
-   Eureka's and Heimdall's to set; this doc names none. Until it exists, redaction is a promise the backups break.
+5. **Backups: 56 days, restores replay erasures** (Eureka, 2026-11-12). "Append-only" is the receiver's API contract, not a property of the file, so erased text survives in
+   backups of it. The stated purge is: **erased text can survive in backups at most 56 days**, the existing Raven tier (newest 14 daily plus the newest of each of 8 Monday-weeks;
+   `gamecult-ops` `runbooks/gamecult-state-backup.md`, read at `origin/main`). No backup is changed. The receiver keeps an **erased-id list** (account id and record ids, no text,
+   no hash) beside its store, and **any restore must re-apply it before the receiver serves**. The notice to people says it (R2 of the exceptions draft). If Meta wants shorter, put the
+   store outside the weekly tier (14 days), a small backup-config edit.
+   *Is the store under a backed-up path? Not determinable today.* The backup scope takes `/etc/gamecult`, all of `/var/lib/gamecult/*` bar named exclusions, and `/srv/bifrost` except
+   `app`, `bifrost-publish.tar`, `log`, `backups` and `persona-feedback/runtime` (same runbook, Scope table); `docs/deploy-main-to-live.md` names no receiver path, and section 8 chooses
+   none. So any path under `/srv/bifrost` other than those four, or under `/var/lib/gamecult`, **will be backed up**; the excluded ones will not, and the file would then have no backup at all.
+   The path is to be chosen with that table in hand, and the erased-id list must sit in the same backed-up tree as the store. The 56 days is read from the runbook, not measured.
 
 ## 8. Where it lives
 
@@ -273,15 +320,21 @@ receiver's records and kinds use `feedback_page` and `feedback_delivery`, not `p
 
 Rulings of 2026-11-12 closed these, and they are no longer forks: whether erase redacts the receiver's text (it does, section 7a); whether a person's answer to a Mind needs the training-notice receipt (it does, bar a designated exception list, section 4a); whether the host can withhold an answer (it can, in an emergency, section 6a); whether a Mind authenticates through the issuer (it does, with an audience, section 4b).
 
+**Closed by Eureka's decisions (2026-11-12), folded above:** how a Mind gets a token (`client_credentials`, a confidential client per Mind, secret in a file; section 4b); the carrier (HTTPS with the bearer, not the mouth; section 2); who may withhold, the reason codes and who is told (section 6a); the backup purge number (56 days, with the erased-id list; section 7a). Their remaining work is listed below.
+
 **Open forks:**
 
 1. **The exception list is owed.** The notice covers any text entered into the app except a short designated list, which Eureka drafts. This doc names no entries; until the list exists the receipt gate applies to every submission with text (section 4a).
-2. **How a Mind gets a token.** The desk's grant is authorization code over a cookie session, which a Mind lacks, and the issuer allows no other grant (`OidcServiceCollectionExtensions.cs:39`). A client that authenticates as itself, with its own grant, changes the one-grant rule and `docs/oidc-issuer.md` (section 4b). The audience and scope names are proposed.
-3. **Carrier versus credential.** Option B rides the mouth's loopback RUDP endpoint, which holds no bearer and has no validation (section 2); the ruling puts the Mind's credential in OIDC. Either the Mind's pull and ack go to the receiver over HTTP with the bearer (the mouth's endpoint stops being the carrier), or the endpoint's loopback trust stays and the bearer guards only the Mind's other calls to the receiver. Not decided here.
-4. **Route 2 for people has no client.** Only MAS is seeded (`OidcClientSeeder.cs:35-75`); a Ratatoskr client with its own audience is owed, as is the desk's (section 4a).
-5. **The withhold's edges.** Which host role may withhold; the closed `reasonCode` list; whether the Mind receives a text-free notice that an answer was withheld (section 6a).
-6. **Backup purge or expiry** for the receiver's store is required before any deploy and unset (section 7a, item 5). The number is Eureka's and Heimdall's.
-7. **Erase is bounded** by what a Mind already holds; Huginn cannot redact it (section 7a, item 4).
+2. **Route 2 for people has no client.** Only MAS is seeded (`OidcClientSeeder.cs:35-75`); a Ratatoskr client with its own audience is owed, as is the desk's (section 4a).
+3. **Telling the member of a withhold** in a safety case (section 6a): Meta's call.
+4. **Erase is bounded** by what a Mind already holds; Huginn cannot redact it (section 7a, item 4).
+
+**Owed by this design, not forks:**
+
+- The issuer change of section 4b (`client_credentials`, per-Mind clients, `docs/oidc-issuer.md`).
+- **Pre-deploy test: a Mind sandbox can reach Bifrost over HTTPS.** Egress from a Mind's sandbox to Bifrost is untested and no Mind-to-Bifrost HTTP call exists in the repo except the signed intake POST (`Program.cs:768`). Before building, run one `curl` over HTTPS to the Bifrost host from a Mind's own sandbox and record the result; a refusal reopens the carrier.
+- **Pre-deploy: choose the store path** against the backup table (section 7a, item 5) and put the erased-id list beside it.
+- **Retention: 56 days**, stated in the notice.
 
 **Dependencies and unbuilt things:**
 
