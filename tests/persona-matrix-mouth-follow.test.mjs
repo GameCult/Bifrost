@@ -176,7 +176,7 @@ test("follow: at most three an hour per room and peer, counted independently; a 
   assert.deepEqual(got, { $k0: null, $l0: null, $ko0: null, $k1: "follow", $ko1: "follow", $k2: "follow", $k3: "follow", $k4: null, $l4: "follow", $k30: null, $k31: null, $k60: null, $k62: "follow" });
 });
 
-test("follow: an edit and a notice are never follow; a room-basis message from a counted sender is; a tag keeps its own basis", async () => {
+test("follow: an edit and a notice are never follow; a room-basis message from a counted sender stays room; a tag keeps its own basis", async () => {
   const w = world({ rounds: [
     { [ROOM]: [msg("$k0", KIKO, T0 - MIN)] },
     { [ROOM]: [mine("$mine", T0)] },
@@ -187,7 +187,7 @@ test("follow: an edit and a notice are never follow; a room-basis message from a
       msg("$tag", KIKO, T0 + SEC, { "m.mentions": { user_ids: [ME] } }),
     ] },
   ] });
-  assert.deepEqual((await run(w, 3))[2].sort(), [["$edit", null], ["$notice", null], ["$room", "follow"], ["$tag", "tag"]]);
+  assert.deepEqual((await run(w, 3))[2].sort(), [["$edit", null], ["$notice", null], ["$room", "room"], ["$tag", "tag"]]);
 });
 
 test("follow: flag off emits nothing new and reads nothing extra; a fresh mouth has no engagement", async () => {
@@ -375,4 +375,16 @@ test("follow: an echo that arrives while the send's anchor is still reading wait
   await new Promise(r => setTimeout(r, 200));
   assert.equal(w.seen.filter(l => l.endsWith("/state")).length, 1);
   assert.equal(w.mouth.followState().engagements[0].from, T0, "anchored at the send's time, not the echo's");
+});
+
+test("follow: an @room from a followed peer stays room and spends none of the cap; plain messages still upgrade to follow", async () => {
+  const w = world({ rounds: [
+    { [ROOM]: [msg("$k0", KIKO, T0 - MIN)] },
+    { [ROOM]: [mine("$mine", T0)] },
+    { [ROOM]: [1, 2, 3, 4].map(n => msg(`$r${n}`, KIKO, T0 + n * SEC, { "m.mentions": { room: true } })) },
+    { [ROOM]: [1, 2, 3].map(n => msg(`$p${n}`, KIKO, T0 + 10 * SEC + n)) },
+  ] });
+  const out = await run(w, 4);
+  assert.deepEqual(out[2], [["$r1", "room"], ["$r2", "room"], ["$r3", "room"], ["$r4", "room"]]);
+  assert.deepEqual(out[3], [["$p1", "follow"], ["$p2", "follow"], ["$p3", "follow"]]); // all three of K still unspent
 });
