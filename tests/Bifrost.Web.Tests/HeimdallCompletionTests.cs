@@ -1172,7 +1172,7 @@ public sealed class HeimdallCompletionTests
     [InlineData("text/html; charset=windows-1252")]
     [InlineData("text/html; charset=bogus")]
     [InlineData("text/html; charset=utf-7")]
-    public async Task A_refusal_whose_body_cannot_be_decoded_still_redirects_with_the_status(string contentType)
+    public async Task A_refusal_with_an_unusual_charset_still_redirects_with_the_status(string contentType)
     {
         using var host = new HeimdallHost();
         host.Heimdall.StartStatus = HttpStatusCode.BadGateway;
