@@ -324,21 +324,23 @@ export function createMouth({
   const spoke = new Map();
   const followsGiven = new Map();
   const anchored = new Set(); // event ids of her own posts already anchored: the send path and its /sync echo anchor once
-  const publicRooms = new Map(); // room id -> { ok, at }
+  const anchoring = new Map(); // event ids whose anchor is in flight: the send path and its echo never snapshot twice
+  const publicRooms = new Map(); // room id -> { ok, at }: the verdicts, a "no" included, so a not-public room is read once per FOLLOW_ROOM_TTL_MS, not every pass
   const platformId = id => platformEvent({ sender: id });
+  // true or false is a verdict (kept); null is a failed read: unknown, retryable, kept nowhere.
   async function publicRoom(roomId) {
     if (directRooms.has(roomId)) return false;
     const known = publicRooms.get(roomId);
     if (known && now() - known.at < FOLLOW_ROOM_TTL_MS) return known.ok;
     try {
       const state = await matrix("GET", `/rooms/${encodeURIComponent(roomId)}/state`, undefined, API, AbortSignal.timeout(sendTimeoutMs));
-      if (!Array.isArray(state)) return false;
+      if (!Array.isArray(state)) return null;
       const ok = !state.some(e => e?.type === "m.room.encryption" || e?.type === "m.bridge" || e?.type === "uk.half-shot.bridge");
       publicRooms.set(roomId, { ok, at: now() });
       return ok;
     } catch (error) {
       say(`follow: room ${roomId} state not read: ${error.message}`);
-      return false; // unknown is not public
+      return null; // unknown is not public, and not a verdict either
     }
   }
   const eventAt = event => Number.isSafeInteger(event.origin_server_ts) && event.origin_server_ts >= 0 ? event.origin_server_ts : now();
@@ -364,15 +366,23 @@ export function createMouth({
   }
   // Her post at time `at` (the send's own time, or the echo's origin time): snapshot the room. `tagged`: ids from the event's m.mentions, `replyTo` the quoted event id.
   async function anchor(roomId, eventId, at, tagged = [], replyTo = null) {
-    if (!follow || anchored.has(eventId)) return;
-    anchored.add(eventId); // before the room read: the send path and its echo race, and one event anchors once
-    if (anchored.size > 200) anchored.delete(anchored.values().next().value);
-    if (!(await publicRoom(roomId))) return;
-    const counted = new Set((spoke.get(roomId) ?? []).filter(r => r.at >= at - FOLLOW_WINDOW_MS && r.at <= at).map(r => r.sender));
-    for (const id of tagged) counted.add(id);
-    if (typeof replyTo === "string" && replyTo !== "") { const author = await authorOf(roomId, replyTo); if (author !== null) counted.add(author); }
-    for (const id of [...counted]) if (!docs.isMatrixId("@", id) || id === selfId || platformId(id)) counted.delete(id);
-    engagements.set(roomId, { from: at, ends: at + FOLLOW_WINDOW_MS, counted });
+    if (!follow) return;
+    while (anchoring.has(eventId)) await anchoring.get(eventId).catch(() => {}); // the send and its echo meet here: the second waits, then sees whether the first succeeded
+    if (anchored.has(eventId)) return;
+    const run = (async () => {
+      const verdict = await publicRoom(roomId);
+      if (verdict === null) return; // the read failed: this post stays retryable, its echo tries again
+      anchored.add(eventId);
+      if (anchored.size > 200) anchored.delete(anchored.values().next().value);
+      if (!verdict) return; // a "no" stays recorded
+      const counted = new Set((spoke.get(roomId) ?? []).filter(r => r.at >= at - FOLLOW_WINDOW_MS && r.at <= at).map(r => r.sender));
+      for (const id of tagged) counted.add(id);
+      if (typeof replyTo === "string" && replyTo !== "") { const author = await authorOf(roomId, replyTo); if (author !== null) counted.add(author); }
+      for (const id of [...counted]) if (!docs.isMatrixId("@", id) || id === selfId || platformId(id)) counted.delete(id);
+      engagements.set(roomId, { from: at, ends: at + FOLLOW_WINDOW_MS, counted });
+    })();
+    anchoring.set(eventId, run);
+    try { await run; } finally { anchoring.delete(eventId); }
   }
   // Her own event seen in /sync (a send from another client, or the echo of a mouth send, which is then not anchored twice).
   async function noteOwnPost(roomId, event) {

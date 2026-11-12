@@ -21,7 +21,7 @@ const msg = (id, sender, ts, content = {}) => ({ type: "m.room.message", event_i
 const tagKiko = { "m.mentions": { user_ids: [KIKO] } };
 
 // rounds: sync replies after the baseline, each { [roomId]: events }. state: room id -> state events.
-function world({ rounds, state = {}, stateStatus = {}, hangState = false, baselineEvents = null, onSync = null, follow = true, rooms = [ALIAS, OTHER_ALIAS], direct } = {}) {
+function world({ rounds, state = {}, stateStatus = {}, hangState = false, stateFailures = 0, baselineEvents = null, onSync = null, follow = true, rooms = [ALIAS, OTHER_ALIAS], direct } = {}) {
   const seen = [];
   const known = new Map();
   let round = 0;
@@ -37,6 +37,7 @@ function world({ rounds, state = {}, stateStatus = {}, hangState = false, baseli
     if (p.startsWith("/presence/") || p.includes("/receipt/")) return reply(200, {});
     const st = p.match(/^\/rooms\/([^/]+)\/state$/);
     if (st && hangState) return new Promise(() => {});
+    if (st && stateFailures > 0) { stateFailures--; return reply(500, { errcode: "M_UNKNOWN" }); }
     if (st) return stateStatus[st[1]] ? reply(stateStatus[st[1]], { errcode: "M_UNKNOWN" }) : reply(200, state[st[1]] ?? []);
     if (init.method === "PUT" && p.includes("/send/m.room.message/")) return reply(200, { event_id: "$sent1" });
     const ev = p.match(/^\/rooms\/([^/]+)\/event\/(.+)$/);
@@ -329,4 +330,38 @@ test("follow: every pass forgets what has aged out: anchors, speakers and cap ti
   assert.equal(s1.engagements.length, 1); assert.equal(s1.followsGiven, 1); assert.equal(s1.spoke.length, 1);
   await go(w, T0 + 3 * 60 * MIN);
   assert.deepEqual(w.mouth.followState(), { engagements: [], spoke: [], followsGiven: 0 });
+});
+
+test("follow: a failed room-state read at send time leaves the post retryable: its echo anchors it", async () => {
+  const w = world({ stateFailures: 1, rounds: [{ [ROOM]: [msg("$k0", KIKO, T0 - MIN)] }, { [ROOM]: [msg("$sent1", ME, T0, { body: "hello" })] }, { [ROOM]: [msg("$x", KIKO, T0 + MIN)] }] });
+  await w.mouth.syncOnce(); await w.basisOfRound();
+  await w.mouth.send({ requestId: "r1", persona: "eureka", roomAlias: ALIAS, text: "hello" });
+  await tick();
+  assert.deepEqual(w.mouth.followState().engagements, [], "the read failed: nothing anchored yet");
+  await go(w, T0);
+  assert.equal(w.mouth.followState().engagements.length, 1, "the echo anchored it");
+  assert.deepEqual(await go(w, T0 + MIN), [["$x", "follow"]]);
+});
+
+test("follow: a send and its echo in flight together anchor once, and a failure of that one read leaves the echo to retry", async () => {
+  const w = world({ stateFailures: 1, rounds: [{ [ROOM]: [msg("$k0", KIKO, T0 - MIN)] }, { [ROOM]: [msg("$sent1", ME, T0, { body: "hello" })] }] });
+  await w.mouth.syncOnce(); await w.basisOfRound();
+  const sending = w.mouth.send({ requestId: "r1", persona: "eureka", roomAlias: ALIAS, text: "hello" });
+  await sending;
+  await w.basisOfRound(); // the echo, possibly while the send's read is still in flight
+  await tick();
+  assert.equal(w.mouth.followState().engagements.length, 1);
+  assert.equal(w.seen.filter(l => l.endsWith("/state")).length, 2, "one failed read, one that worked; no third");
+});
+
+test("follow: a not-public verdict is recorded: the room is not read again for each post or pass", async () => {
+  const w = world({ state: { [ROOM]: [{ type: "m.bridge", content: {} }] }, rounds: [
+    { [ROOM]: [msg("$k0", KIKO, T0 - MIN)] }, { [ROOM]: [msg("$sent1", ME, T0)] }, { [ROOM]: [mine("$a", T0 + SEC), msg("$x", KIKO, T0 + 2 * SEC)] }, { [ROOM]: [mine("$b", T0 + 3 * SEC)] },
+  ] });
+  await w.mouth.syncOnce(); await w.basisOfRound();
+  await w.mouth.send({ requestId: "r1", persona: "eureka", roomAlias: ALIAS, text: "hello" });
+  await tick();
+  for (const t of [0, 0, 0]) await go(w, T0 + t);
+  assert.equal(w.seen.filter(l => l.endsWith("/state")).length, 1);
+  assert.deepEqual(w.mouth.followState().engagements, []);
 });
