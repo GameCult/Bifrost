@@ -158,7 +158,7 @@ public sealed class HostTrustTests : IClassFixture<TestWebApplicationFactory>
     }
 
     [Fact]
-    public void Production_with_a_heimdall_app_secret_passes_and_the_refusal_never_echoes_it()
+    public void Production_with_a_heimdall_app_secret_passes_and_other_refusals_never_echo_it()
     {
         Validate(keysPath: "/keys", appSecret: ValidAppSecret);
 
