@@ -6,12 +6,17 @@ Status: **design, nothing implemented.** Written for `heimdall-body:follow_up:ch
 builds on are Heimdall's drafts on guests and hiding (`/opt/commons/handoff/heimdall-feedback-pages-rulings.md`, cited as R4a to R6f).
 Draft; do not merge.
 
-Read at Bifrost `bf8ff62` (main), then section 2 and the gaps re-verified at main `55b74275` (the mouth line numbers, the delivery tuple, the ack path and the pending kind all moved; the OIDC, account and `CurrentBifrostActor` files did not): `tools/persona-matrix-mouth.mjs`, `tools/persona-chat-documents.mjs`,
-`tools/persona-feedback*.mjs`, `src/Bifrost.Web/Features/Heimdall/*`, `Features/Shared/CurrentBifrostActor.cs`,
-`Program.cs`, `Domain/BifrostModels.cs`; the deployed trees under `/srv/bifrost`. I could not read Eureka's receiver
+Read at Bifrost main `b1725a1` (2026-11-12): `tools/persona-matrix-mouth.mjs`, `tools/persona-chat-documents.mjs`,
+`src/Bifrost.Web/Features/{Oidc,Desk,Registration,Shared}/*`, `Domain/BifrostModels.cs`, `Program.cs`, `docs/oidc-issuer.md`,
+`docs/ratatoskr-voting-auth.md`; the deployed trees under `/srv/bifrost` were last read at an earlier main (section 9). I could not read Eureka's receiver
 notes in #minds, and `huginn-feedback-kinds-proposal.md` was not in `/opt/commons/handoff` when I looked. Where
 PR #24 names a kind or a field it says the proposal wins, so I cite PR #24 and name the proposal's kinds only as PR #24 does.
 Where source disagrees with either, the section says so.
+
+Rulings of Meta, 2026-11-12, now written into this doc: erase redacts the answer text in the receiver's store and keeps a text-free record
+(section 7a); the training notice covers any text entered into the app, bar a short exception list Eureka drafts (section 4a); the host may
+withhold an answer from its Mind in an emergency, with a logged receipt (section 6a); Minds authenticate to the receiver through an OIDC
+client with an audience, as the desk does (section 4b).
 
 ## 1. What the receiver owns
 
@@ -23,39 +28,46 @@ Where source disagrees with either, the section says so.
 | What `kind` an account is | Bifrost (`Membership`, later `Role`) | reads it at answer time and stamps it |
 | Delivery to the Mind | the receiver, at least once | keeps the record until the Persona acks |
 | Hiding, closing, ruling | the owning Mind | **never**; a hide only changes what the projection serves |
-| Erase | Bifrost's erase, executed here | drops the text and name (section 7a) |
+| Erase | Bifrost's erase, executed here | redacts the text and name in the store, keeps a text-free record (section 7a) |
+| Withholding an answer from its Mind | the host (emergency only) | logs a text-free withhold record and skips delivery; changes nothing stored or ruled (section 6a) |
+| Who may answer | Bifrost: `Active`, a live training-notice receipt | checks both on every submission with text (section 4a) |
 
 The page and the client write no record that carries identity (PR #24, section 3). A Matrix sender is a different identity
 authority and never becomes `answerer`.
 
 ## 2. The mouth's pending/ack path, read from source
 
-Verified in `tools/persona-matrix-mouth.mjs` and `tools/persona-chat-documents.mjs`:
+Verified in `tools/persona-matrix-mouth.mjs` and `tools/persona-chat-documents.mjs` at main `b1725a1`:
 
-- **Pending is Matrix mail only, held in memory.** `pending` (mouth l.123) is filled in one place, `syncOnce`
-  (l.285), from Matrix `/sync` events. No function accepts a delivery from elsewhere.
-- **A request is non-consuming; an ack consumes.** `chat_pending_request` carries `afterSeq`; the mouth answers
-  `pendingAfter(afterSeq)` (l.383) paged to 256 KiB (`pageOf`, l.483-498). `chat_ack` carries `throughSeq`; `ack`
-  drops every delivery at or below it (l.374-381). The endpoint accepts exactly these kinds (l.520) and answers a
-  request for another Persona with a typed `UnknownPersona` refusal.
-- **At-least-once.** The Matrix cursor is persisted only when every delivery of a batch is acked (`commit`, l.351-359), so a
-  restart before the ack re-delivers from Matrix. `seqCounter` is persisted whenever a round made deliveries (l.346), so
+- **Pending is Matrix mail only, held in memory.** `pending` (mouth l.144) is filled in one place, `syncOnce`
+  (l.441; `pending.push(...made)` l.496), from Matrix `/sync` events. No function accepts a delivery from elsewhere.
+- **A request is non-consuming; an ack consumes.** The pending requests carry `afterSeq`; the mouth answers
+  `pendingAfter(afterSeq)` (l.614) paged to 256 KiB (`pageOf`, l.944-972; `limits.replyBytes`, documents l.53). `chat_ack` carries `throughSeq`; `ack`
+  (l.556-561) drops every delivery at or below it, releases stored images (`images?.acked`) and advances the Matrix cursor. An ack posts nothing to
+  Matrix: her public `m.read` receipt follows a separate `chat_read` document (header l.11-13, `chat_read` branch l.1027). The endpoint serves a closed list of kinds
+  (`served`, l.992) and answers any other loudly with `chat_refusal` `UnknownKind` (l.999-1001); a request for another Persona gets `UnknownPersona`.
+- **At-least-once.** The Matrix cursor is persisted only when every delivery of a batch is acked (`commit`, l.513-521), so a
+  restart before the ack re-delivers from Matrix. `seqCounter` (l.143) is persisted whenever a round made deliveries (l.508), so
   sequence numbers never repeat across a restart.
-- **Backpressure.** At 500 unacked (`MAX_PENDING`, l.53) `syncOnce` stops reading (l.294). A truncated round leaves the
-  cursor where it was (l.305, l.339).
-- **A delivery that will not encode is skipped, not held.** `pageOf` logs and omits it (l.489-491); the caller's
+- **Backpressure.** At 500 unacked (`MAX_PENDING`, l.58) `syncOnce` stops reading (l.447). A truncated round (pending cap l.475, reply-read cap l.476)
+  leaves the cursor where it was (l.501).
+- **A delivery that will not encode is skipped, not held.** `pageOf` logs and omits it (l.949-951); the caller's
   next ack covers its seq, so it is dropped. Harmless for a chat line, wrong for a durable record.
-- **The endpoint is loopback RUDP.** `startChatEndpoint` refuses a non-loopback host (l.505). It is another process
+- **The endpoint is loopback RUDP.** `startChatEndpoint` (l.980) refuses a non-loopback host (l.981). It is another process
   from Bifrost.Web, which has no way to hand the mouth anything.
-- **The delivery tuple is closed.** `deliveryTuple` and `parseDelivery` are exactly twelve fields (the twelfth, added since `bf8ff62`, is an optional stored-image reference), with no source or
-  kind field (`persona-chat-documents.mjs` l.120-160). The pending answer is now `gamecult.persona.chat_pending.v2`. A delivery cannot say it is not a Matrix message.
-- **The consumer is not in this repo.** The mouth's header (l.8-9) says the heartbeat polls with a non-consuming
+- **The delivery tuple is closed and versioned.** `deliveryTuple` is twelve fields (the twelfth is an optional stored-image reference), the pending answer
+  `gamecult.persona.chat_pending.v2` (`persona-chat-documents.mjs` l.216-224). v3 adds `basis` and `form` (14 fields) and a room tail (`chat_pending.v3`,
+  asked for by `chat_pending_request.v2`); v4 adds `reply_to` (15 fields, `chat_pending_request.v3`, served only with `CHAT_PENDING_V4=1`, l.1074). No version has a source or
+  kind field. A delivery cannot say it is not a Matrix message.
+- **A fetch kind exists, off by default.** `chat_fetch_request` is served only with `CHAT_FETCH=1` (l.992, l.1076): an optional served kind is a precedent for adding kinds
+  to `served`, and the way a kind is withheld until its consumer is ready.
+- **The consumer is not in this repo.** The mouth's header (l.8-11) says the heartbeat polls with a non-consuming
   request and decides who runs. I could not confirm that from source.
 
 What follows from it:
 
 1. **Feedback cannot ride `pending` as it is.** There is no inlet, and the cursor logic ties acks to Matrix batches.
-2. **A framed text delivery is forgeable.** Any Matrix member can write a line that looks like a frame, and the tuple has no
+2. **A framed text delivery is forgeable.** Any Matrix member can write a line that looks like a frame, and no tuple has a
    field to tell the Mind which one is real. The frame must be a typed difference in the wire, not a convention in `text`.
 3. **A record that is not in Matrix is not re-delivered by a restart.** Feedback needs its own durable store and its own
    delivery cursor.
@@ -63,19 +75,18 @@ What follows from it:
 PR #24 section 3 names the carrier: a new delivery document, `gamecult.persona.feedback_delivery.v1`, owned by Bifrost, through
 the mouth's pending/ack path. Source adds one constraint on how it rides:
 
-- **It cannot be a variant inside `chat_pending`.** `parseDelivery` accepts exactly eleven fields
-  (`persona-chat-documents.mjs` l.149, twelve fields) and `pageOf` encodes each delivery with `deliveryTuple` (l.120), so a different
-  tuple in that page breaks every current consumer, and a text frame in `text` is forgeable by any Matrix member.
+- **It cannot be a variant inside `chat_pending`.** Each version is a closed positional tuple (twelve, fourteen or fifteen fields) encoded by
+  `pageOf` (l.949), so a different tuple in that page breaks every current consumer, and a text frame in `text` is forgeable by any Matrix member.
 - **Option B, kept:** the delivery document rides its own request, page and ack kinds on the same endpoint
   (`feedback_pending_request`, `feedback_pending`, `feedback_ack`), with its own seq space and a durable cursor over the
   receiver's store. The Matrix kinds, the Matrix cursor and `MAX_PENDING` are untouched. The endpoint's closed kind list
-  (l.520) grows by three. Confidence medium: the consumer, which I cannot see, must learn them.
-- **Why main's changes reinforce B (re-verified at `55b74275`).** A chat `ack` now has Matrix side effects: it posts the Persona's public `m.read`
-  receipt per room (`readUpTo`, l.372-381) and releases stored images (`images?.acked`). A feedback ack must do neither, so it cannot share the
-  `chat_ack` kind or its `ack` function. The chat pending answer is already versioned (`chat_pending.v2`, twelve-field tuple), so the lesson of the
-  image change is that a new field in that tuple is a new document version for every consumer, which a feedback record must not force.
+  (`served`, l.992) grows by three. Confidence medium: the consumer, which I cannot see, must learn them.
+- **Why main's changes reinforce B.** A chat `ack` releases stored images and advances the Matrix `/sync` cursor (l.556-561). A feedback ack must do neither, so it cannot
+  share the `chat_ack` kind or its `ack` function. The chat pending answer is already versioned three times, so a new field in that tuple is a new
+  document version for every consumer, which a feedback record must not force.
 - Rejected: injecting records into `pending` as synthetic Matrix deliveries (no inlet, forgeable, lost on restart);
   posting to a Matrix room as a bot (wrong identity authority, spam and forgery, and the Mind would read it as chat).
+- **Open against section 4b:** this endpoint is loopback RUDP with no bearer, so a Mind's OIDC credential does not travel on it. See section 9.
 
 ## 3. Records
 
@@ -89,7 +100,8 @@ sequence; I use that for answers and the same shape for the others.
 | `answer` | `recordId`, `questionId`, `owner`, `choice?` (an option label), `text?` (at most 2000 characters), `answerer`, `kind`, `weightPermille`, `nameAtAnswer`, `clientRequestId`, `time` | at least one of `choice`/`text`; an unknown option label is refused; the request id makes a retry idempotent, as `txnId = request_id` does in the mouth; `weightPermille` is 0 for a guest and 1000 otherwise, stamped, and the page sums nothing |
 | `close_request` | `recordId`, `questionId`, `requester`, `kind`, `time` | refused for a guest and for an account not `active` at that moment (R4c) |
 | `report` | `recordId`, `targetId`, `reporter`, `kind`, `reason`, `time` | delivered to the Mind as input; never shown, never counted (R6b) |
-| delivery state | per owning Mind: highest seq acked; per record: `delivered`, `failed` | a cursor, not a record the page reads |
+| `withhold`, `withholdLifted` | `recordId`, `answerRecordId`, `owner`, `withheldBy` or `liftedBy`, `time`, `reasonCode` (withhold only) | text-free log of section 6a |
+| delivery state | per owning Mind: highest seq acked; per record: `delivered`, `failed`, `withheld` | a cursor, not a record the page reads |
 
 Invariants: `answerer`, `kind`, `weightPermille`, `time` and `nameAtAnswer` come from the verified token and Bifrost state, never from the
 request body, and the body schema is closed: an unknown key refuses the submission. The latest record per account is that
@@ -98,57 +110,73 @@ An answer to a question that has settled is kept and the page says so (PR #24 se
 
 ## 4. Credential and claims check
 
-PR #24 section 7a rules **route 2**: Ratatoskr presents the OIDC access token Bifrost already issues to chat, and Bifrost
-verifies it itself. This section records what Bifrost source says about that token, because PR #24 lists the claims check as open.
+PR #24 section 7a rules **route 2** for people: Ratatoskr presents an OIDC access token that Bifrost issued, and Bifrost verifies it itself. Meta
+ruled on 2026-11-12 that Minds authenticate to the receiver through an OIDC client with an audience, as the desk does (4b). This section records what
+Bifrost's source does on main `b1725a1`.
 
-### What the token carries (`OidcEndpoints.cs` l.35-79, `docs/oidc-issuer.md`)
+### What main does with tokens
 
-| Claim | Value | In the access token | Use by the receiver |
+| Token | Who may get it | Gate at issue | Gate on use |
 |---|---|---|---|
-| `sub` | `UserAccount.Id`, formatted `D` | always | **`answerer`**, and the only claim the receiver reads |
-| `preferred_username` | `NormalizedBifrostIdentity` (the Matrix localpart, minted once) | with scope `profile` | never: it is the chat handle |
-| `name` | `DisplayName`, else `BifrostIdentity` | with scope `profile` | never: it is stale at issue time and can be a handle. The name comes from account state (section 5) |
-| scopes | copied from the request: `openid`, `profile` | yes | ignored |
+| **Chat token** (scopes `openid`, `profile`; no audience) | an account that exists, has a Bifrost identity that is not reserved, and whose membership is not `Suspended`; membership is neither required nor written (`OidcEndpoints.cs:55-78`) | a live training-notice receipt: without one the member is redirected to the consent page and the parked request waits (`:104-111`) | the token and userinfo endpoints re-read it: `ChatRefusalAsync` refuses an absent or `Suspended` account and a chat token with no live receipt (`:164-180`, called at `:127` and `:144`) |
+| **Desk token** (every scope is `desk.read` or `desk.answer`, `DeskEndpoints.cs:21-26`) | the same sign-in, then only a client whose permissions allow the desk scope | **no receipt**: `IsDeskToken` is true only when every scope is a desk scope (`:118`), so a desk token skips the gate (`:104`, `:108`); `principal.SetResources(DeskEndpoints.Audience)` puts audience `bifrost-desk` on it (`:91-94`) | per request, in `DeskEndpoints.HandleAsync`: audience (`DeskEndpoints.cs:110`), scope (`:116-121`), then `Active` membership re-read through `OidcEndpoints.ActiveMemberIdAsync` (`:123-139`; `OidcEndpoints.cs:183-194`, which is `CurrentBifrostActor.IsActiveMember`, `Status == Active`, `CurrentBifrostActor.cs:17`) |
 
-No email, no Heimdall id, no GitHub id and no membership detail is in it. The GitHub login and the Heimdall account id are
-not claims, so neither can become `answerer` or a display name by way of the token.
+The token claims are unchanged: `sub` is `UserAccount.Id` in form `D`; `preferred_username` and `name` ride the token only with scope `profile`
+(`OidcEndpoints.cs:80-102`). No email, Heimdall id or GitHub id is in it. The access token is an encrypted OpenIddict token and its lifetime is OpenIddict's
+default, which I believe is one hour and have not verified (no lifetime override in `src`; `ratatoskr-voting-auth.md` section 14 D3 owes explicit values). There is no refresh token.
 
-### What the receiver checks
+How a bearer is validated has changed: OpenIddict's validation handler is registered against the local server (`DeskEndpoints.cs:36-38`), reading the
+`Authorization` header only (`:40-44`), and `OidcDeskCredential` authenticates through it by its own scheme name and judges nothing else
+(`OidcDeskCredential.cs:14-27`; audience, scope and membership are the desk's, per its header comment). That path is registered only when `Bifrost:Oidc` is configured (`:30-33`).
 
-- **Validity and expiry.** The access token is an encrypted OpenIddict token (`AddEncryptionKey`, `OidcServiceCollectionExtensions.cs` l.51;
-  no reference tokens, no lifetime override anywhere in `src`). Only Bifrost can open it, so validity, issuer binding and expiry are
-  OpenIddict's own checks at validation time. The lifetime is OpenIddict's default, which I believe is one hour but have not
-  verified. There is no refresh token (`oidc-issuer.md`), so a session ends at expiry and the client signs in again.
-- **Issuer.** `server.Issuer` is `Host:PublicBaseUrl` (l.60-68). A token from any other issuer cannot be opened, so there is nothing to compare.
-- **Audience.** None is set: no `SetAudiences` or `SetResources` appears in `src`, so the token carries no `aud` of Bifrost's choosing. The receiver
-  cannot check an audience, and a token is not bound to the feedback endpoint. **That is a weakness of route 2 as it stands:** any access token
-  this issuer has given any client would be accepted here. A scope for this purpose (below) narrows it.
-- **The subject is an active account, read now.** `sub` must parse as a Guid, name an existing `UserAccount`, and that account's `Status` must be
-  `Active` at answer time. This is the reading `IsStillActiveMemberAsync` makes (`OidcEndpoints.cs` l.121-132), but **not** through
-  `IsActiveMember`: under PR #9 that expression also requires `Role == Member` and would exclude guests, and PR #9 itself moves the OIDC tests
-  to `Status == Active` for the same reason.
+**Only one client exists.** The seeder creates the MAS client and deletes every other application at startup (`OidcClientSeeder.cs:35-51`, `:63-75`). MAS's permissions
+carry no desk scope (`:42-50`), so **no desk token can be issued on main**: the desk's second client is owed (`ratatoskr-voting-auth.md` section 14 D7). `AllowAuthorizationCodeFlow` is the only
+grant and the token endpoint takes `client_secret_basic` only (`OidcServiceCollectionExtensions.cs:39`, `:45-46`).
 
-### What the receiver refuses
+### 4a. What the receiver checks on an answer from a person
 
-A token that does not open or has expired; a `sub` that is not a Guid or names no account; an account that is not `Active`;
-a submission whose body carries `answerer`, `kind`, `name`, `weight` or any key the closed schema does not name; an unknown option label;
-a question with no listing in force, or hidden; a close request from a guest.
+In this order; a submission that fails any step leaves nothing behind.
 
-### What source says that route 2 has to answer
+1. **The token opens and has not expired**, and `sub` is a Guid naming an existing `UserAccount`.
+2. **The account is `Active` now** (`ActiveMemberIdAsync` as the desk does). A chat token is issued to non-`Active` accounts (`OidcEndpoints.cs:55-62`), so the token alone proves nothing about standing. Under PR #9 `IsActiveMember` would also require
+   `Role == Member` and exclude guests, so the receiver reads `Status == Active` itself and not that expression.
+3. **A live training-notice receipt, read by the receiver on every submission that carries text** (Meta's ruling, 2026-11-12): `ConsentEndpoints.HasLiveReceiptAsync`
+   (`Features/Registration/ConsentEndpoints.cs:146`), the one reading of "may speak": a receipt for the notice version in force, not withdrawn. The notice covers any
+   text entered into the app except a short designated exception list, which Eureka drafts. The receiver checks the receipt itself because the token's
+   gate does not cover it: a chat token's receipt was checked at issue and again only at the token and userinfo endpoints (`:127`, `:144`), never at the receiver, and a token whose audience is
+   not a chat token skips the gate altogether (`:104`). A receipt withdrawn after issue must stop the next submission. The check applies to answers, close requests and reports alike. **Until Eureka's list exists the gate applies to every submission with text**; the list narrows it, and only by being written down.
+4. The body is closed-schema, an option label must exist, the question must be in force and not hidden (section 3).
 
-1. **The token reaches only MAS.** Exactly one OIDC client is registered, a confidential one for MAS, authorization code with PKCE and a
-   client secret (`OidcClientSeeder.cs` l.28-44), and every other application row is deleted at startup (l.56-68). MAS holds the access token;
-   Ratatoskr, a Matrix client, gets a Matrix session from MAS, not a Bifrost token. Nothing in this repo gives Ratatoskr a Bifrost access token.
-2. **Possible readings of "the token chat already has":**
-   - **2a. Ratatoskr as a second client of Bifrost's issuer,** public, authorization code with PKCE, and its own scope (for example `feedback`).
-     Same `sub`, same checks, a purpose-limited scope the receiver can require. It changes the one-client rule in `oidc-issuer.md`, the seeder's delete
-     of other clients, the need to validate access tokens outside the userinfo endpoint (the web project references only `OpenIddict.Server.AspNetCore`
-     and `OpenIddict.EntityFrameworkCore`, not the validation package), and gives sign-in every hour with no refresh.
-   - **2b. The Matrix token Ratatoskr already holds,** checked by asking the homeserver who it is. No new client, but it hands the receiver a bearer
-     token good for the person's whole Matrix account. I recommend against.
-   - I lean to **2a**, confidence low: I could not read MAS's side, and `chat-s3549` says route 2 without naming which.
-3. **The logout reconciler does not cover a second client.** It lists the authorizations of the MAS client (`oidc-issuer.md`), so a demoted
-   member's feedback token would live to its expiry. The receiver's own `Status == Active` read at every submission is the check that covers it.
+A refusal for a missing receipt is typed and carries the consent page's path, so the page can send the person to agree; it does not store the text.
+
+What the receiver refuses: a token that does not open or has expired; a `sub` that is not a Guid or names no account; an account that is not `Active`; a missing receipt (above);
+a body carrying `answerer`, `kind`, `name`, `weight` or any key the closed schema does not name; an unknown option label; a question with no listing in force, or hidden; a close request from a guest.
+
+What source says route 2 still has to answer:
+
+1. **No client reaches Ratatoskr.** MAS holds the only client, and it holds the access token; Ratatoskr gets a Matrix session from MAS, not a Bifrost token. The reading that fits what the desk now does is **2a**: Ratatoskr as a
+   second, public, PKCE client with its own audience and scope, issued by the same code path as the desk's (`ratatoskr-voting-auth.md` sections 3-4). The audience machinery it needs now exists on main; the client does not. Reading **2b** (check the Matrix token against the homeserver) hands the receiver a bearer good for the person's whole Matrix account; I recommend against. I lean to 2a, confidence medium.
+2. **The logout reconciler covers only MAS** (`OidcLogoutReconciler.cs:108`, `:180`); a second client's token lives to expiry. The receiver's own `Active` and receipt reads at every submission cover that.
+3. A token with an audience of its own would not be accepted from any other client, which closes the weakness an unaudienced chat token had here.
+
+### 4b. How a Mind authenticates (Meta's ruling, 2026-11-12; names are proposed)
+
+A Mind authenticates to the receiver through an OIDC client with an audience, the shape the desk uses: a scope at issue puts an audience on the token
+(`OidcEndpoints.cs:91-94`), the validation handler opens it (`OidcDeskCredential.cs:14-27`), and the endpoint judges audience, then scope, then subject
+(`DeskEndpoints.cs:110-139`). The analogous parts:
+
+| Part | Desk (main) | Receiver (**proposed**) |
+|---|---|---|
+| Audience | `bifrost-desk` (`DeskEndpoints.cs:21`) | **`bifrost-feedback`** |
+| Scopes | `desk.read`, `desk.answer` (`:22-23`) | **`feedback.read`** (pull deliveries and the Mind's own projection) and **`feedback.ack`** (ack a delivery; also the Mind's acts that pass through the receiver) |
+| Credential | `OidcDeskCredential`, OpenIddict validation, header only | the same port, a second audience |
+| Subject check | `ActiveMemberIdAsync` on `sub` (`DeskEndpoints.cs:127`) | **the `sub` must be the owning Mind's configured client**, matched against the question's `owner`; a Mind is not a `UserAccount` and has no membership to read |
+| Receipt | none for a desk token (`OidcEndpoints.cs:104`) | none: a Mind is not a person entering text |
+
+Two things main does not give a Mind, and I do not decide them here: the desk's grant is authorization code with a signed-in cookie session, which a Mind
+does not have, and the issuer enables no other grant (`OidcServiceCollectionExtensions.cs:39`). A Mind therefore needs a client that authenticates as itself
+(a confidential client with `client_secret_basic`, which the token endpoint already takes, and a grant for it). That is a change to the issuer's
+one-grant rule and to `docs/oidc-issuer.md`, and it is an open fork (section 9), as is the carrier question in section 2.
 
 ## 5. Account-kind lookup
 
@@ -158,14 +186,12 @@ a question with no listing in force, or hidden; a close request from a guest.
   (`BifrostModels.cs` l.5-10, l.335). The role field and `gamecult.bifrost.account.v1` are in PR #9 and unbuilt.
   Until then, `kind` can only be derived: `Active` is `member`, `Authenticated` and `PendingApproval` are `user`, and
   nobody is a `guest`. That is the PR #9 backfill, repeated here, and R4a-c have no guest to apply to until PR #9 lands.
-- **An answer needs `Status == Active`**, read at answer time, not `IsActiveMember` (section 4). On main the authorize endpoint
-  already refuses a non-Active account a chat token (`OidcEndpoints.cs` l.50-53), so under route 2 only an Active account can answer
-  until PR #9 changes that test: `Authenticated` and `PendingApproval` accounts have no token to answer with.
+- **An answer needs `Status == Active`**, read at answer time, not `IsActiveMember` (section 4a). On main the chat token is issued to any account that is not
+  suspended (`OidcEndpoints.cs:55-62`), so an `Authenticated` or `PendingApproval` account can hold a token and the receiver refuses it on its own read.
 - **`kind` is read from Bifrost's database**, never from the token: the session carries identity only.
-- **`mind` is not a Bifrost account** in main or PR #9. How a Mind authenticates to answer (a credential of its own, or a path through
-  the receiver) is open in both specs.
+- **`mind` is not a Bifrost account** in main or PR #9. A Mind authenticates as an OIDC client with an audience (section 4b), not as an account; `kind` is stamped only on a person's answer.
 - **The display name must not be `CurrentBifrostActor.DisplayName`.** It falls back to `GitHubLogin`
-  (`CurrentBifrostActor.cs` l.12-16) and then to the literal "Guest". The receiver stores `nameAtAnswer` from
+  (`CurrentBifrostActor.cs:11-15`) and then to the literal "Guest". The receiver stores `nameAtAnswer` from
   `MemberProfile.Nickname` or `UserAccount.DisplayName` only, and "an account" when both are empty. Never a provider handle,
   GitHub login, Heimdall id or Matrix localpart.
 
@@ -186,6 +212,21 @@ a question with no listing in force, or hidden; a close request from a guest.
 - Close requests and reports are delivered the same way. A close request changes nothing until the Mind resolves the question; a report changes nothing.
 - **An erase notice is delivered the same way** (section 7a), and she answers it with a `feedback_hide` of reason `ErasedAuthor`.
 
+## 6a. Withholding an answer from its Mind (Meta's ruling, 2026-11-12)
+
+The host may withhold an answer from its Mind in an emergency, with a logged receipt. It changes **delivery only**.
+
+- **The withhold record** is one more receiver record, append-only, text-free: `recordId` (its own), `answerRecordId` (the answer withheld), `owner` (the Mind),
+  `withheldBy` (the host actor's `UserAccount.Id`, read from Bifrost state, never the body), `time`, `reasonCode` (a closed code from a short list the
+  host sets, for example `Emergency`; no free text, because free text is where content would get in) and, when it ends, a second record, `withholdLifted`, with `liftedBy` and `time`.
+  **No answer text, no choice, no name of the answerer and no excerpt is in either.** It is the log the ruling asks for, readable by the host. Whether the Mind is told that a withhold exists is not ruled (section 9).
+- **What it changes:** the answer's delivery state becomes `withheld`, and the delivery cursor does not pass it silently. The receiver does not put it on the wire to the Mind
+  while the withhold is in force. Lifting it makes the answer deliverable again, in its original seq order, unchanged.
+- **What it never changes:** the stored text (it is not redacted, edited or moved: only erase redacts, section 7a); the projection rules of section 7 (a withhold is not a hide);
+  and the Mind's own authority over the question: she may still hide the answer, close the question or rule on it by her own acts, and a withhold takes none of that away. She cannot lift it; the host's act is the host's.
+- **Who may do it** is the host's operator role in Bifrost; which role is not ruled (section 9). The act is refused to anyone else and to the Mind herself.
+- A withheld answer is not erased, and an erase of its author redacts the text as in 7a; the withhold record stays, because it carries none.
+
 ## 7. Projection read
 
 The page polls the receiver, and the receiver reads the Mind's side through Huginn over RUDP and writes nothing to it
@@ -199,12 +240,12 @@ The page polls the receiver, and the receiver reads the Mind's side through Hugi
 
 ## 7a. Erase
 
-Bifrost's erase (PR #9) blanks the display name and keeps the account id as a tombstone. The receiver's part, as PR #24 section 7 fixes it:
+Bifrost's erase (PR #9) blanks the display name and keeps the account id as a tombstone. **Ruled by Meta, 2026-11-12: erase redacts the answer text in the receiver's store and keeps a text-free record.** The receiver's part, as PR #24 section 7 fixes it:
 
 1. Bifrost's erase records its intent in Postgres first, then the receiver applies it idempotently. The two stores are not one transaction, so
    erase is crash-replayable, as `docs/bridge.md` describes for the persona-feedback pump.
 2. For every record the account authored the receiver **drops the text and the name** and keeps **record id, kind and time only**. `choice`,
-   `weightPermille`, `answerer` and `clientRequestId` are dropped too. The row shows "erased account". **No content hash is kept.**
+   `weightPermille`, `answerer` and `clientRequestId` are dropped too. The row shows "erased account". **No content hash is kept.** Redaction is in the store itself, not a flag over retained text.
 3. The receiver delivers an erase notice, and the Persona admits a `feedback_hide` of reason `ErasedAuthor`: the Mind's acknowledgement, not a moderation call.
 4. **The honest residue:** a Mind's own memory or ruling may already quote an answer, and Huginn cannot redact it. That the Persona cites record ids and
    never text is a prompt, not an invariant. Erase does not reach what she already holds.
@@ -228,25 +269,29 @@ I withdraw my earlier lean to Postgres rows: it contradicts the ruled store, and
 Naming: `persona-feedback` already means the Discord-to-Epiphany ingress (`docs/bridge.md`, "Organizational Persona Feedback Ingress"). This
 receiver's records and kinds use `feedback_page` and `feedback_delivery`, not `persona_feedback`.
 
-## 9. Gaps, plainly
+## 9. Gaps and open forks, plainly
 
-- **`gamecult.bifrost.account.v1` and `Membership.Role` are unbuilt** (PR #9, open, design only). Without them `kind` is derived from `Status`, and no
-  guest exists.
-- **Route 2 has no client yet.** The one OIDC client is MAS, so no Bifrost access token reaches Ratatoskr today (section 4). Route 2 needs a second
-  client or another reading; the token has no audience; a validation package is not referenced; there is no refresh.
-- **Deploy is behind main.**
-  - The deployed mouth is `/srv/bifrost/persona-chat/runtime/current`, release `e396305`. Its `persona-matrix-mouth.mjs` is byte-identical to
-    `e396305`'s (sha256 `91f6dd49...`); main has since added the image path (cut A), a public `m.read` receipt posted on every chat ack, and presence set from the brake, which are 82 changed lines in the mouth and a twelfth delivery field.
-  - The deployed web app is `/srv/bifrost/app/current` at `67072b2`, 129 commits behind main. That includes the OIDC issuer and back-channel logout.
-    I cannot tell from here which of those are live beyond that directory.
-  - Anything in this design runs on a release that does not exist yet.
+Rulings of 2026-11-12 closed these, and they are no longer forks: whether erase redacts the receiver's text (it does, section 7a); whether a person's answer to a Mind needs the training-notice receipt (it does, bar a designated exception list, section 4a); whether the host can withhold an answer (it can, in an emergency, section 6a); whether a Mind authenticates through the issuer (it does, with an audience, section 4b).
+
+**Open forks:**
+
+1. **The exception list is owed.** The notice covers any text entered into the app except a short designated list, which Eureka drafts. This doc names no entries; until the list exists the receipt gate applies to every submission with text (section 4a).
+2. **How a Mind gets a token.** The desk's grant is authorization code over a cookie session, which a Mind lacks, and the issuer allows no other grant (`OidcServiceCollectionExtensions.cs:39`). A client that authenticates as itself, with its own grant, changes the one-grant rule and `docs/oidc-issuer.md` (section 4b). The audience and scope names are proposed.
+3. **Carrier versus credential.** Option B rides the mouth's loopback RUDP endpoint, which holds no bearer and has no validation (section 2); the ruling puts the Mind's credential in OIDC. Either the Mind's pull and ack go to the receiver over HTTP with the bearer (the mouth's endpoint stops being the carrier), or the endpoint's loopback trust stays and the bearer guards only the Mind's other calls to the receiver. Not decided here.
+4. **Route 2 for people has no client.** Only MAS is seeded (`OidcClientSeeder.cs:35-75`); a Ratatoskr client with its own audience is owed, as is the desk's (section 4a).
+5. **The withhold's edges.** Which host role may withhold; the closed `reasonCode` list; whether the Mind receives a text-free notice that an answer was withheld (section 6a).
+6. **Backup purge or expiry** for the receiver's store is required before any deploy and unset (section 7a, item 5). The number is Eureka's and Heimdall's.
+7. **Erase is bounded** by what a Mind already holds; Huginn cannot redact it (section 7a, item 4).
+
+**Dependencies and unbuilt things:**
+
+- **`gamecult.bifrost.account.v1` and `Membership.Role` are unbuilt** (PR #9, design only at last read). Without them `kind` is derived from `Status`, and no guest exists.
 - **The Huginn kinds are Eureka's.** PR #24 names `feedback_listing`, `feedback_answer`, `feedback_close_request`, `feedback_hide`, owned by
   `huginn-feedback-kinds-proposal.md`, which I could not read. PR #24 also notes the proposal's `feedback_answer` lists a `content_hash` that must go.
   Their dependency order is Huginn readers, then the Persona organ, then this receiver, so nothing here can ship first.
-- **How a Mind answers is open.** Bifrost has no `Mind` role; neither main nor PR #9 gives a Mind an account.
 - **The consumer of the mouth's pending path** (the heartbeat) is outside this repo, and option B needs the Persona side to learn three kinds.
-- **Backup purge or expiry** is required before deploy and unset (section 7a, item 5).
-- **Erase is bounded** by what a Mind already holds (section 7a, item 4).
+- **Deploy is behind main.** The deployed mouth is `/srv/bifrost/persona-chat/runtime/current`, release `e396305`, read at an earlier main; main has since added the image path, reply links, `CHAT_FETCH`
+  and the v3/v4 pending answers. The deployed web app is `/srv/bifrost/app/current` at `67072b2`, which predates the desk, the chat-tier issuer change and the consent gate on main. I did not re-read `/srv/bifrost` for this pass. Anything in this design runs on a release that does not exist yet.
 - **Unread:** Eureka's receiver notes in #minds, `huginn-feedback-kinds-proposal.md`, MAS's side of the session, and Heimdall PR #6 (the
   answer-collector consent doc; the page's "guest answers are collected for nothing but delivery" is unchecked against it).
 - The receiver writes nothing to Matrix and nothing to Huginn.
