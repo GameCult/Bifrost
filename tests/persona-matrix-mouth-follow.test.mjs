@@ -21,7 +21,7 @@ const msg = (id, sender, ts, content = {}) => ({ type: "m.room.message", event_i
 const tagKiko = { "m.mentions": { user_ids: [KIKO] } };
 
 // rounds: sync replies after the baseline, each { [roomId]: events }. state: room id -> state events.
-function world({ rounds, state = {}, stateStatus = {}, hangState = false, stateFailures = 0, baselineEvents = null, onSync = null, follow = true, rooms = [ALIAS, OTHER_ALIAS], direct } = {}) {
+function world({ rounds, state = {}, stateStatus = {}, hangState = false, stateDelay = 0, stateFailures = 0, baselineEvents = null, onSync = null, follow = true, rooms = [ALIAS, OTHER_ALIAS], direct } = {}) {
   const seen = [];
   const known = new Map();
   let round = 0;
@@ -36,6 +36,7 @@ function world({ rounds, state = {}, stateStatus = {}, hangState = false, stateF
     if (p.startsWith("/directory/room/")) return reply(200, { room_id: { [ALIAS]: ROOM, [OTHER_ALIAS]: OTHER_ROOM }[p.slice(16)] });
     if (p.startsWith("/presence/") || p.includes("/receipt/")) return reply(200, {});
     const st = p.match(/^\/rooms\/([^/]+)\/state$/);
+    if (st && stateDelay > 0) await new Promise(r => setTimeout(r, stateDelay));
     if (st && hangState) return new Promise(() => {});
     if (st && stateFailures > 0) { stateFailures--; return reply(500, { errcode: "M_UNKNOWN" }); }
     if (st) return stateStatus[st[1]] ? reply(stateStatus[st[1]], { errcode: "M_UNKNOWN" }) : reply(200, state[st[1]] ?? []);
@@ -364,4 +365,14 @@ test("follow: a not-public verdict is recorded: the room is not read again for e
   for (const t of [0, 0, 0]) await go(w, T0 + t);
   assert.equal(w.seen.filter(l => l.endsWith("/state")).length, 1);
   assert.deepEqual(w.mouth.followState().engagements, []);
+});
+
+test("follow: an echo that arrives while the send's anchor is still reading waits for it: one read, one snapshot", async () => {
+  const w = world({ stateDelay: 80, rounds: [{ [ROOM]: [msg("$k0", KIKO, T0 - MIN)] }, { [ROOM]: [msg("$sent1", ME, T0 + 5 * SEC, { body: "hello" })] }] });
+  await w.mouth.syncOnce(); await w.basisOfRound();
+  await w.mouth.send({ requestId: "r1", persona: "eureka", roomAlias: ALIAS, text: "hello" }); // its anchor is now waiting on the state read
+  await w.basisOfRound(); // the echo, meanwhile
+  await new Promise(r => setTimeout(r, 200));
+  assert.equal(w.seen.filter(l => l.endsWith("/state")).length, 1);
+  assert.equal(w.mouth.followState().engagements[0].from, T0, "anchored at the send's time, not the echo's");
 });
