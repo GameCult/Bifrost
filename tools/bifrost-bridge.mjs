@@ -4,6 +4,7 @@ import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isWithin } from "./path-within.mjs";
 import {
   beginCrossingReceipt,
   crossingProvenanceFromOptions,
@@ -182,7 +183,7 @@ async function createGitHubDraftPr(options) {
   }
 
   const targetPath = resolve(repoRoot, relativePath);
-  if (!targetPath.toLowerCase().startsWith(`${repoRoot.toLowerCase()}\\`) && targetPath.toLowerCase() !== repoRoot.toLowerCase()) {
+  if (!isWithin(repoRoot, targetPath)) {
     throw new Error(`Target path escapes repo root: ${relativePath}`);
   }
 

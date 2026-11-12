@@ -210,7 +210,8 @@ public sealed class ConceptRankedExportTests : IClassFixture<ConceptRankedExport
         yield return ["not base64!"];
         yield return ["AAAA"];
         yield return [new string('A', 201)];
-        yield return [new string('A', 100_000)];
+        // 50,000 chars is the longest the client Uri (65,519 cap on Unix) can carry with the path; far past the 200-char RankCursor.MaxLength.
+        yield return [new string('A', 50_000)];
         yield return [B64("")];
         yield return [B64("1|0|0|5")];
         yield return [B64("1|0|0|5|alpha|extra")];
