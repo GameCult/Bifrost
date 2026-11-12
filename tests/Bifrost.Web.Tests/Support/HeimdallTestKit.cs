@@ -202,6 +202,29 @@ public sealed class FakeHeimdall : HttpMessageHandler
 
     public List<string?> StartSecrets { get; } = [];
 
+    /// <summary>The path of every start, so a google link start can be told from a sign-in start.</summary>
+    public List<string> StartPaths { get; } = [];
+
+    /// <summary>The Authorization header of every start (null when absent).</summary>
+    public List<string?> StartAuthorizations { get; } = [];
+
+    public List<string> ConfirmBodies { get; } = [];
+
+    public List<string?> ConfirmAuthorizations { get; } = [];
+
+    /// <summary>When set, every links/confirm answers this status with Heimdall's error code for it.</summary>
+    public HttpStatusCode? ConfirmStatus { get; set; }
+
+    private readonly HashSet<string> _pendingLinks = new(StringComparer.Ordinal);
+
+    /// <summary>Registers a pending link Heimdall will confirm once for any bearer.</summary>
+    public string RegisterPendingLink(string? id = null)
+    {
+        id ??= "pending-" + Convert.ToHexString(RandomNumberGenerator.GetBytes(8)).ToLowerInvariant();
+        _pendingLinks.Add(id);
+        return id;
+    }
+
     /// <summary>The secret a policy start must carry in x-heimdall-app-secret; null means Heimdall asks for none.</summary>
     public string? RequiredAppSecret { get; set; }
 
@@ -255,8 +278,29 @@ public sealed class FakeHeimdall : HttpMessageHandler
         {
             var body = await request.Content!.ReadAsStringAsync(cancellationToken);
             var secret = request.Headers.TryGetValues("x-heimdall-app-secret", out var values) ? values.Single() : null;
+            var authorization = request.Headers.Authorization?.ToString();
             StartBodies.Add(body);
             StartSecrets.Add(secret);
+            StartPaths.Add(path);
+            StartAuthorizations.Add(authorization);
+            var root = JsonDocument.Parse(body).RootElement;
+            if (root.TryGetProperty("mode", out var mode) && mode.GetString() == "link")
+            {
+                if (authorization is null)
+                {
+                    return new HttpResponseMessage(HttpStatusCode.Unauthorized)
+                    {
+                        Content = new StringContent("""{"error":"link_session_required"}""", Encoding.UTF8, "application/json")
+                    };
+                }
+
+                return new HttpResponseMessage(HttpStatusCode.Created)
+                {
+                    Content = new StringContent(
+                        """{"authorizationUrl":"https://heimdall.test/oauth/google/authorize?state=link-fixture"}""", Encoding.UTF8, "application/json")
+                };
+            }
+
             var wantsPolicy = JsonDocument.Parse(body).RootElement.TryGetProperty("entitlementPolicy", out _);
             if (wantsPolicy && RequiredAppSecret is not null && secret != RequiredAppSecret)
             {
@@ -269,6 +313,35 @@ public sealed class FakeHeimdall : HttpMessageHandler
             var content = new ByteArrayContent(Encoding.UTF8.GetBytes(StartBody));
             content.Headers.TryAddWithoutValidation("Content-Type", StartContentType ?? "application/json");
             return new HttpResponseMessage(StartStatus) { Content = content };
+        }
+
+        if (request.Method == HttpMethod.Post && path == "/v1/apps/bifrost/links/confirm")
+        {
+            var body = await request.Content!.ReadAsStringAsync(cancellationToken);
+            var authorization = request.Headers.Authorization?.ToString();
+            ConfirmBodies.Add(body);
+            ConfirmAuthorizations.Add(authorization);
+            static HttpResponseMessage Json(HttpStatusCode status, string json) =>
+                new(status) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
+            if (authorization is null)
+            {
+                return Json(HttpStatusCode.Unauthorized, """{"error":"invalid_link_session"}""");
+            }
+
+            if (ConfirmStatus is { } forced)
+            {
+                return forced switch
+                {
+                    HttpStatusCode.Conflict => Json(forced, """{"error":"identity_linked_elsewhere"}"""),
+                    HttpStatusCode.Gone => Json(forced, """{"error":"invalid_or_expired_pending_link"}"""),
+                    _ => Json(forced, """{"error":"invalid_link_session","detail":"HEIMDALL FREE TEXT"}""")
+                };
+            }
+
+            var id = JsonDocument.Parse(body).RootElement.GetProperty("pendingLinkId").GetString()!;
+            return _pendingLinks.Remove(id)
+                ? Json(HttpStatusCode.Created, """{"status":"linked","provider":"google","accountId":"a","returnTo":"https://localhost/auth/heimdall/complete"}""")
+                : Json(HttpStatusCode.Gone, """{"error":"invalid_or_expired_pending_link"}""");
         }
 
         if (request.Method == HttpMethod.Post && path == "/v1/apps/bifrost/auth-completions/redeem")
@@ -354,6 +427,8 @@ public sealed class HeimdallHost : TestWebApplicationFactory
     private readonly string _baseUrl;
     private readonly string _publicBaseUrl;
     private readonly bool _discordRoles;
+    private readonly bool _traceHttp;
+    private readonly bool _realSessions;
 
     public TestClock Clock { get; } = new();
 
@@ -368,8 +443,12 @@ public sealed class HeimdallHost : TestWebApplicationFactory
         string baseUrl = HeimdallShapes.Issuer,
         string publicBaseUrl = "https://localhost",
         bool discordRoles = true,
-        string appSlug = "bifrost")
+        string appSlug = "bifrost",
+        bool traceHttp = false,
+        bool realSessions = false)
     {
+        _traceHttp = traceHttp;
+        _realSessions = realSessions;
         _appSecret = appSecret;
         _appSlug = appSlug;
         _baseUrl = baseUrl;
@@ -400,9 +479,27 @@ public sealed class HeimdallHost : TestWebApplicationFactory
                 configuration.AddInMemoryCollection(new Dictionary<string, string?> { ["Heimdall:DiscordAllowedRoleIds:0"] = "role-1" });
             }
         });
-        builder.ConfigureLogging(logging => logging.AddProvider(Logs));
+        builder.ConfigureLogging(logging =>
+        {
+            logging.AddProvider(Logs);
+            if (_traceHttp)
+            {
+                // The framework's HttpClient logging writes request headers at Trace; it must never write a bearer there.
+                logging.AddFilter("System.Net.Http", LogLevel.Trace);
+            }
+        });
         builder.ConfigureServices(services =>
         {
+            if (_realSessions)
+            {
+                // The base factory authenticates every request as a test admin; a link needs the session cookie to be the identity.
+                services.Configure<Microsoft.AspNetCore.Authentication.AuthenticationOptions>(options =>
+                {
+                    options.DefaultAuthenticateScheme = Microsoft.AspNetCore.Authentication.Cookies.CookieAuthenticationDefaults.AuthenticationScheme;
+                    options.DefaultScheme = Microsoft.AspNetCore.Authentication.Cookies.CookieAuthenticationDefaults.AuthenticationScheme;
+                });
+            }
+
             services.RemoveAll<TimeProvider>();
             services.AddSingleton<TimeProvider>(Clock);
             services.AddHttpClient(HeimdallTokenVerifier.ClientName).ConfigurePrimaryHttpMessageHandler(() => Heimdall);
@@ -437,7 +534,12 @@ public sealed class HeimdallHost : TestWebApplicationFactory
             request.Headers.Add("Cookie", cookieHeader);
         }
 
-        var response = await client.SendAsync(request);
+        return AttemptFrom(await client.SendAsync(request), before);
+    }
+
+    /// <summary>The attempt a response started at Heimdall, if the start count moved since <paramref name="before"/>.</summary>
+    public StartedAttempt AttemptFrom(HttpResponseMessage response, int before)
+    {
         if (Heimdall.StartBodies.Count == before)
         {
             return new StartedAttempt(string.Empty, null, null, string.Empty, response);
@@ -487,6 +589,73 @@ public sealed class HeimdallHost : TestWebApplicationFactory
         var response = await client.SendAsync(request);
         var session = CookieValue(response, BifrostCookies.Session);
         return new CompletionResult(response, !string.IsNullOrEmpty(session));
+    }
+
+    /// <summary>A browser session: a normal Heimdall sign-in, answered with the session cookie it earned.</summary>
+    public async Task<string> SignInSessionAsync(string accountId, string provider = "discord")
+    {
+        var attempt = await StartAsync(provider: provider);
+        var done = await CompleteAsync(attempt, CodeFor(attempt, accountId));
+        return CookieValue(done.Response, BifrostCookies.Session) ?? throw new InvalidOperationException("sign-in set no session");
+    }
+
+    /// <summary>The raw POST of the complete page, whatever fields and cookies the caller names.</summary>
+    public async Task<HttpResponseMessage> PostCompleteAsync(IDictionary<string, string> fields, string? cookieHeader)
+    {
+        using var client = NewClient();
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/auth/heimdall/complete")
+        {
+            Content = new FormUrlEncodedContent(fields)
+        };
+        if (cookieHeader is not null)
+        {
+            request.Headers.Add("Cookie", cookieHeader);
+        }
+
+        return await client.SendAsync(request);
+    }
+
+    public const string LinkPostUrl = "/Membership/Status?handler=LinkGoogle";
+
+    /// <summary>
+    /// The account page's link button as a browser posts it: the page is fetched for its antiforgery token and cookie
+    /// (when <paramref name="antiforgery"/>), then the form is posted with the session. Without a session nothing is fetched.
+    /// </summary>
+    public async Task<StartedAttempt> StartLinkAsync(string? session, bool antiforgery = true, HttpMethod? method = null)
+    {
+        using var client = NewClient();
+        var cookies = new List<string>();
+        var fields = new Dictionary<string, string>();
+        if (session is not null)
+        {
+            cookies.Add($"{BifrostCookies.Session}={session}");
+        }
+
+        if (antiforgery && session is not null)
+        {
+            using var get = new HttpRequestMessage(HttpMethod.Get, "/Membership/Status");
+            get.Headers.Add("Cookie", string.Join("; ", cookies));
+            using var page = await client.SendAsync(get);
+            var html = await page.Content.ReadAsStringAsync();
+            var token = System.Text.RegularExpressions.Regex.Match(
+                html, "name=\"__RequestVerificationToken\"[^>]*value=\"([^\"]+)\"").Groups[1].Value;
+            fields["__RequestVerificationToken"] = token;
+            cookies.Add($"{BifrostCookies.Antiforgery}={CookieValue(page, BifrostCookies.Antiforgery)}");
+        }
+
+        var before = Heimdall.StartBodies.Count;
+        using var request = new HttpRequestMessage(method ?? HttpMethod.Post, LinkPostUrl);
+        if (request.Method == HttpMethod.Post)
+        {
+            request.Content = new FormUrlEncodedContent(fields);
+        }
+
+        if (cookies.Count > 0)
+        {
+            request.Headers.Add("Cookie", string.Join("; ", cookies));
+        }
+
+        return AttemptFrom(await client.SendAsync(request), before);
     }
 
     public Task<CompletionResult> CompleteAsync(StartedAttempt attempt, string code) =>

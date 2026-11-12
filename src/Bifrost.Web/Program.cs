@@ -152,7 +152,7 @@ builder.Services.AddSingleton<StartupConfigurationValidator>();
 builder.Services.AddScoped<IAuthorizationHandler, ActiveMemberAuthorizationHandler>();
 builder.Services.AddHttpClient<HeimdallAuthService>((serviceProvider, client) =>
     HeimdallAuthService.ConfigureClient(client, serviceProvider.GetRequiredService<IOptions<HeimdallOptions>>().Value))
-    .RedactLoggedHeaders(header => string.Equals(header, HeimdallAuthService.AppSecretHeader, StringComparison.OrdinalIgnoreCase));
+    .RedactLoggedHeaders(HeimdallAuthService.RedactsHeader);
 builder.Services.AddSingleton<HeimdallTokenVerifier>();
 builder.Services.AddHttpClient(HeimdallTokenVerifier.ClientName, (serviceProvider, client) =>
     HeimdallTokenVerifier.ConfigureClient(client, serviceProvider.GetRequiredService<IOptions<HeimdallOptions>>().Value));
@@ -826,8 +826,32 @@ app.MapPost("/auth/heimdall/complete", async (
     var form = await ReadFormOrNullAsync(httpContext.Request, cancellationToken);
     var attempt = form?["attempt"].ToString();
     var held = heimdallAuthService.FindAttemptCookie(httpContext.Request.Cookies, attempt);
+    var linking = held is not null
+        && heimdallAuthService.PurposeOf(held.Value.Value, attempt) is not (null or HeimdallAttemptPurpose.SignIn);
     try
     {
+        if (linking)
+        {
+            // A link step never signs anyone in: the session in this browser is the one being linked.
+            var step = await heimdallAuthService.ContinueLinkAsync(
+                hostOptions.Value.PublicBaseUrl,
+                attempt,
+                held!.Value.Name,
+                held.Value.Value,
+                form?["code"].ToString(),
+                form?["pendingLinkId"].ToString(),
+                httpContext.User.FindFirstValue(BifrostClaimTypes.HeimdallAccountId),
+                cancellationToken);
+            if (step.Next is not null)
+            {
+                httpContext.Response.Cookies.Append(step.CookieName, step.CookieValue!, HeimdallAttemptCookie.Options());
+                return Results.Redirect(step.Next.ToString());
+            }
+
+            httpContext.Response.Cookies.Delete(step.CookieName, HeimdallAttemptCookie.DeleteOptions());
+            return Results.LocalRedirect(HeimdallLinkOutcomes.Redirect(step.Outcome!.Value));
+        }
+
         var signIn = await heimdallAuthService.CompleteAsync(
             hostOptions.Value.PublicBaseUrl,
             attempt,
@@ -846,7 +870,9 @@ app.MapPost("/auth/heimdall/complete", async (
             httpContext.Response.Cookies.Delete(held.Value.Name, HeimdallAttemptCookie.DeleteOptions());
         }
 
-        return Results.Redirect(HeimdallAuthService.ErrorRedirect);
+        return linking
+            ? Results.LocalRedirect(HeimdallLinkOutcomes.Redirect(HeimdallLinkOutcome.Error))
+            : Results.Redirect(HeimdallAuthService.ErrorRedirect);
     }
 }).AllowAnonymous();
 
