@@ -41,9 +41,6 @@ public sealed class HeimdallAuthService(
         "twitch"
     };
 
-    /// <summary>Whether a provider may sign a person in (and so be asked for at /auth/heimdall/{provider}). Google is identity only: it can be linked, never signed in with.</summary>
-    public static bool IsSignInProvider(string provider) => AllowedProviders.Contains(provider);
-
     /// <summary>The headers HttpClient logging must never write: the app secret and any bearer.</summary>
     public static bool RedactsHeader(string header) =>
         string.Equals(header, AppSecretHeader, StringComparison.OrdinalIgnoreCase)
@@ -343,7 +340,7 @@ public sealed class HeimdallAuthService(
                     attempt.ExpectedAccountId,
                     pendingLinkId,
                     replaceSlot: cookieName);
-                return new HeimdallLinkStep(next.AuthorizationUrl, cookieName, next.CookieValue, null);
+                return new HeimdallLinkStep(next.AuthorizationUrl, next.CookieName, next.CookieValue, null);
             }
 
             case HeimdallAttemptPurpose.LinkConfirm:
