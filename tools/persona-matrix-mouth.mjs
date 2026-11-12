@@ -364,9 +364,10 @@ export function createMouth({
   }
   // Her post at time `at` (the send's own time, or the echo's origin time): snapshot the room. `tagged`: ids from the event's m.mentions, `replyTo` the quoted event id.
   async function anchor(roomId, eventId, at, tagged = [], replyTo = null) {
-    if (!follow || anchored.has(eventId) || !(await publicRoom(roomId))) return;
-    anchored.add(eventId);
+    if (!follow || anchored.has(eventId)) return;
+    anchored.add(eventId); // before the room read: the send path and its echo race, and one event anchors once
     if (anchored.size > 200) anchored.delete(anchored.values().next().value);
+    if (!(await publicRoom(roomId))) return;
     const counted = new Set((spoke.get(roomId) ?? []).filter(r => r.at >= at - FOLLOW_WINDOW_MS && r.at <= at).map(r => r.sender));
     for (const id of tagged) counted.add(id);
     if (typeof replyTo === "string" && replyTo !== "") { const author = await authorOf(roomId, replyTo); if (author !== null) counted.add(author); }
@@ -385,7 +386,7 @@ export function createMouth({
     if (!follow || directRooms.has(roomId) || formOf(event.content) !== "message" || platformEvent(event)) return false;
     const e = engagements.get(roomId), at = eventAt(event), t = now();
     // Both clocks must agree: the message's own time inside the window, and this process's time not past it (a forged or old timestamp reuses nothing).
-    if (!e || !e.counted.has(event.sender) || at < e.from || at >= e.ends || t >= e.ends + FOLLOW_SLACK_MS) return false;
+    if (!e || !e.counted.has(event.sender) || at < e.from - FOLLOW_SLACK_MS || at >= e.ends || t >= e.ends + FOLLOW_SLACK_MS) return false;
     if (!(await publicRoom(roomId))) return false;
     const key = `${roomId}|${event.sender}`;
     const recent = (followsGiven.get(key) ?? []).filter(x => at - x < FOLLOW_HOUR_MS);
@@ -742,7 +743,10 @@ export function createMouth({
         const sent = await matrix("PUT", `/rooms/${encodeURIComponent(roomId)}/send/m.room.message/${encodeURIComponent(requestId)}`, { msgtype: "m.text", body: text }, API, AbortSignal.timeout(sendTimeoutMs));
         return { requestId, eventId: sent.event_id, refusal: null, newer: [] };
       });
-      if (result.refusal === null) { touch(); setPresence(true).catch(() => {}); await anchor(roomId, result.eventId, now()).catch(error => say(`follow: send not anchored: ${error.message}`)); } // outside the room gate and not awaited: a slow presence write holds neither another send nor this receipt
+      if (result.refusal === null) {
+        touch(); setPresence(true).catch(() => {}); // outside the room gate and not awaited: a slow presence write holds neither another send nor this receipt
+        if (follow) { const at = now(); anchor(roomId, result.eventId, at).catch(error => say(`follow: send not anchored: ${error.message}`)); } // in the background too: a room-state read that hangs or fails never delays the receipt
+      }
       return result;
     } catch (error) {
       say(`send failed: ${error.message}`);
@@ -982,7 +986,9 @@ export function createMouth({
     }
   }
 
-  return { start, syncOnce, ack, read, pendingAfter, tail, speakableRooms, send, openDirect, fetchAttachment, run, get userId() { return selfId; }, get pendingCount() { return pending.length; } };
+  // A plain copy of the follow memory, for tests: anchors with their counted senders, the sender ring, and how many cap entries are held.
+  const followState = () => ({ engagements: [...engagements].map(([room, e]) => ({ room, from: e.from, ends: e.ends, counted: [...e.counted] })), spoke: [...spoke].map(([room, ring]) => ({ room, senders: ring.map(r => r.sender) })), followsGiven: followsGiven.size });
+  return { followState, start, syncOnce, ack, read, pendingAfter, tail, speakableRooms, send, openDirect, fetchAttachment, run, get userId() { return selfId; }, get pendingCount() { return pending.length; } };
 }
 
 // The log's word for a failure: error class and HTTP status only, never the message (it can hold a URL, an mxc or a sender-chosen id).

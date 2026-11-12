@@ -21,7 +21,7 @@ const msg = (id, sender, ts, content = {}) => ({ type: "m.room.message", event_i
 const tagKiko = { "m.mentions": { user_ids: [KIKO] } };
 
 // rounds: sync replies after the baseline, each { [roomId]: events }. state: room id -> state events.
-function world({ rounds, state = {}, stateStatus = {}, follow = true, rooms = [ALIAS, OTHER_ALIAS], direct } = {}) {
+function world({ rounds, state = {}, stateStatus = {}, hangState = false, baselineEvents = null, onSync = null, follow = true, rooms = [ALIAS, OTHER_ALIAS], direct } = {}) {
   const seen = [];
   const known = new Map();
   let round = 0;
@@ -36,12 +36,14 @@ function world({ rounds, state = {}, stateStatus = {}, follow = true, rooms = [A
     if (p.startsWith("/directory/room/")) return reply(200, { room_id: { [ALIAS]: ROOM, [OTHER_ALIAS]: OTHER_ROOM }[p.slice(16)] });
     if (p.startsWith("/presence/") || p.includes("/receipt/")) return reply(200, {});
     const st = p.match(/^\/rooms\/([^/]+)\/state$/);
+    if (st && hangState) return new Promise(() => {});
     if (st) return stateStatus[st[1]] ? reply(stateStatus[st[1]], { errcode: "M_UNKNOWN" }) : reply(200, state[st[1]] ?? []);
     if (init.method === "PUT" && p.includes("/send/m.room.message/")) return reply(200, { event_id: "$sent1" });
     const ev = p.match(/^\/rooms\/([^/]+)\/event\/(.+)$/);
     if (ev) return known.has(ev[2]) ? reply(200, known.get(ev[2])) : reply(404, { errcode: "M_NOT_FOUND" });
     if (p === "/sync") {
-      if (u.searchParams.get("since") === null) return reply(200, { next_batch: "b0" });
+      if (u.searchParams.get("since") === null) return reply(200, { next_batch: "b0", ...(baselineEvents ? { rooms: { join: Object.fromEntries(Object.entries(baselineEvents).map(([r, list]) => [r, { timeline: { events: list } }])) } } : {}) });
+      onSync?.(setClock);
       const events = rounds[round++] ?? {};
       for (const list of Object.values(events)) for (const e of list) known.set(e.event_id, e);
       return reply(200, { next_batch: `b${round}`, rooms: { join: Object.fromEntries(Object.entries(events).map(([r, list]) => [r, { timeline: { events: list } }])) } });
@@ -50,6 +52,7 @@ function world({ rounds, state = {}, stateStatus = {}, follow = true, rooms = [A
     return reply(404, { errcode: "M_NOT_FOUND" });
   };
   let clock = T0;
+  const setClock = t => { clock = t; };
   const mouth = createMouth({
     persona: "eureka", homeserver: "http://hs.test", serverName: HS, rooms, token: "tok", fetch: hsFetch, follow,
     state: { load: async () => null, save: async () => {} }, brake: async () => true, log: () => {}, syncTimeoutMs: 1, now: () => clock,
@@ -200,4 +203,130 @@ test("follow: the basis is a name the delivery document accepts", () => {
   assert.ok(docs.bases.includes("follow"));
   const d = { seq: 1, roomAlias: ALIAS, roomId: ROOM, eventId: "$e", sender: KIKO, senderDisplay: "kiko", text: "x", atUnixMs: 1, context: [], image: null, mentions: [], isDirect: false, basis: "follow", form: "message" };
   assert.equal(docs.parseDeliveryV3(docs.deliveryV3Tuple(d)).basis, "follow");
+});
+
+const tick = async () => { for (let i = 0; i < 20; i++) await new Promise(r => setImmediate(r)); };
+
+test("follow: a send receipt is not delayed by a room-state read that hangs or fails; the anchor happens in the background", async () => {
+  for (const opts of [{ hangState: true }, { stateStatus: { [ROOM]: 500 } }]) {
+    const w = world({ ...opts, rounds: [] });
+    await w.mouth.syncOnce();
+    const sent = await Promise.race([w.mouth.send({ requestId: "r1", persona: "eureka", roomAlias: ALIAS, text: "hello" }), new Promise(r => setTimeout(() => r("late"), 500))]);
+    assert.equal(sent.refusal, null);
+  }
+  const ok = world({ rounds: [{ [ROOM]: [msg("$k0", KIKO, T0 - MIN)] }, { [ROOM]: [msg("$k1", KIKO, T0 + MIN)] }] });
+  await ok.mouth.syncOnce(); await ok.basisOfRound();
+  await ok.mouth.send({ requestId: "r1", persona: "eureka", roomAlias: ALIAS, text: "hello" });
+  await tick();
+  assert.deepEqual(await ok.basisOfRound(), [["$k1", "follow"]]);
+});
+
+test("follow: the flag off makes a send cost no extra call and no extra turn", async () => {
+  const w = world({ follow: false, rounds: [] });
+  await w.mouth.syncOnce();
+  const before = w.seen.length;
+  await w.mouth.send({ requestId: "r1", persona: "eureka", roomAlias: ALIAS, text: "hello" });
+  await tick();
+  assert.ok(!w.seen.slice(before).some(l => l.endsWith("/state")));
+});
+
+test("follow: a homeserver clock up to 60 s behind still follows; 61 s early does not; the very end of the window is out, 1 ms before it is in", async () => {
+  const w = world({ rounds: [
+    { [ROOM]: [msg("$k0", KIKO, T0 - MIN), msg("$l0", LENA, T0 - MIN), msg("$e0", `@e:${HS}`, T0 - MIN), msg("$f0", `@f:${HS}`, T0 - MIN)] },
+    { [ROOM]: [mine("$mine", T0)] },
+    { [ROOM]: [msg("$x1", KIKO, T0 - 60 * SEC), msg("$x2", LENA, T0 - 61 * SEC), msg("$x3", `@e:${HS}`, T0 + W - 1), msg("$x4", `@f:${HS}`, T0 + W)] },
+  ] });
+  await w.mouth.syncOnce(); await go(w, T0 - MIN); await go(w, T0);
+  assert.deepEqual((await go(w, T0 + 5 * SEC)).sort(), [["$x1", "follow"], ["$x2", null], ["$x3", "follow"], ["$x4", null]]);
+});
+
+test("follow: a window that ended while the pass was being read is out, whatever the message says", async () => {
+  let jump = null;
+  const w = world({ onSync: set => { if (jump !== null) set(jump); }, rounds: [{ [ROOM]: [msg("$k0", KIKO, T0 - MIN)] }, { [ROOM]: [mine("$mine", T0)] }, { [ROOM]: [msg("$x", KIKO, T0 + MIN)] }] });
+  await w.mouth.syncOnce(); await go(w, T0 - MIN);
+  const keep = w.mouth.followState;
+  w.at(T0); await w.basisOfRound(); // her post; the next sync moves the clock after the purge
+  assert.equal(keep().engagements.length, 1);
+  jump = T0 + 30 * MIN; w.at(T0); // the purge at the start of the pass sees T0; the clock moves while the pass reads
+  assert.deepEqual(await w.basisOfRound(), [["$x", null]]);
+});
+
+test("follow: the cap counts only the hour before the message", async () => {
+  const w = world({ rounds: [
+    { [ROOM]: [msg("$k0", KIKO, T0 - SEC)] },
+    ...[1, 2, 3].flatMap(n => [{ [ROOM]: [mine(`$m${n}`, T0 + n * MIN)] }, { [ROOM]: [msg(`$x${n}`, KIKO, T0 + n * MIN + SEC)] }]),
+    { [ROOM]: [msg("$k90", KIKO, T0 + 89 * MIN), mine("$m90", T0 + 90 * MIN)] }, { [ROOM]: [msg("$x90", KIKO, T0 + 90 * MIN + SEC)] },
+  ] });
+  await w.mouth.syncOnce(); await go(w, T0);
+  for (const n of [1, 1, 2, 2, 3, 3]) await go(w, T0 + n * MIN + SEC);
+  assert.deepEqual(await go(w, T0 + 30 * MIN), [["$k90", null]]); // stamps run ahead of this process's clock, so only the cap's own hour bound can tell
+  assert.deepEqual(await go(w, T0 + 30 * MIN), [["$x90", "follow"]]);
+});
+
+test("follow: whoever her reply quotes is counted though they spoke long ago; a thread fallback pointer names no one", async () => {
+  const w = world({ rounds: [
+    { [ROOM]: [msg("$old", LENA, T0 - 30 * MIN), msg("$ghost", `@ghost:${HS}`, T0 - 30 * MIN)] },
+    { [ROOM]: [mine("$mine", T0, { "m.relates_to": { "m.in_reply_to": { event_id: "$old" } } })] },
+    { [ROOM]: [msg("$x1", LENA, T0 + MIN)] },
+    { [ROOM]: [msg("$old2", KIKO, T0 + 2 * MIN)] },
+    { [ROOM]: [mine("$mine2", T0 + 3 * MIN, { "m.relates_to": { rel_type: "m.thread", event_id: "$old", is_falling_back: true, "m.in_reply_to": { event_id: "$ghost" } } })] },
+    { [ROOM]: [msg("$x2", STRANGER, T0 + 4 * MIN)] },
+  ] });
+  await w.mouth.syncOnce();
+  await go(w, T0 - 30 * MIN); await go(w, T0);
+  assert.deepEqual(await go(w, T0 + MIN), [["$x1", "follow"]]);
+  await go(w, T0 + 2 * MIN);
+  await go(w, T0 + 3 * MIN);
+  const [engagement] = w.mouth.followState().engagements;
+  assert.ok(engagement.counted.includes(KIKO), "kiko spoke 1 minute before the second post");
+  assert.ok(!engagement.counted.includes(`@ghost:${HS}`), "a fallback pointer names no one");
+});
+
+test("follow: someone stamped after her send is not counted as having spoken before it", async () => {
+  const w = world({ rounds: [{ [ROOM]: [msg("$ahead", KIKO, T0 + MIN)] }, { [ROOM]: [msg("$x", KIKO, T0 + 2 * MIN)] }] });
+  await w.mouth.syncOnce(); await w.basisOfRound();
+  await w.mouth.send({ requestId: "r1", persona: "eureka", roomAlias: ALIAS, text: "hello" });
+  await tick();
+  assert.deepEqual(w.mouth.followState().engagements[0].counted, []);
+  assert.deepEqual(await go(w, T0 + 2 * MIN), [["$x", null]]);
+});
+
+test("follow: the ring keeps the newest 200 senders of a room; a flood pushes out the oldest, not the newest", async () => {
+  const flood = Array.from({ length: 250 }, (_, i) => msg(`$f${i}`, `@u${i}:${HS}`, T0 - 5 * MIN + i));
+  const w = world({ rounds: [{ [ROOM]: flood }, { [ROOM]: [mine("$mine", T0)] }, { [ROOM]: [msg("$x0", `@u0:${HS}`, T0 + MIN), msg("$x249", `@u249:${HS}`, T0 + MIN)] }] });
+  await w.mouth.syncOnce(); await w.basisOfRound();
+  assert.equal(w.mouth.followState().spoke[0].senders.length, 200);
+  await go(w, T0);
+  assert.deepEqual(await go(w, T0 + MIN + SEC), [["$x0", null], ["$x249", "follow"]]);
+  assert.equal(w.mouth.followState().engagements[0].counted.length, 200);
+});
+
+test("follow: only senders, and only real ones, are remembered and counted: not her, not a bridged id, not an edit, not a notice, not a malformed id", async () => {
+  const puppet = `@_${PLATFORM}_9:${HS}`;
+  const w = world({ rounds: [
+    { [ROOM]: [msg("$a", KIKO, T0 - 2 * MIN), mine("$self", T0 - 2 * MIN), msg("$b", puppet, T0 - 2 * MIN),
+      msg("$c", LENA, T0 - 2 * MIN, { "m.relates_to": { rel_type: "m.replace", event_id: "$a" } }), msg("$d", STRANGER, T0 - 2 * MIN, { msgtype: "m.notice" })] },
+    { [ROOM]: [mine("$mine", T0, { "m.mentions": { user_ids: [ME, puppet, "not-an-id", `@${"x".repeat(300)}:${HS}`, LENA] } })] },
+  ] });
+  await w.mouth.syncOnce(); await go(w, T0 - MIN);
+  assert.deepEqual(w.mouth.followState().spoke, [{ room: ROOM, senders: [KIKO] }]);
+  await go(w, T0);
+  assert.deepEqual(w.mouth.followState().engagements[0].counted.sort(), [KIKO, LENA].sort());
+});
+
+test("follow: her own post in the baseline sync, which is history, anchors nothing", async () => {
+  const w = world({ baselineEvents: { [ROOM]: [msg("$k0", KIKO, T0 - MIN), mine("$mine", T0)] }, rounds: [] });
+  await w.mouth.syncOnce();
+  assert.deepEqual(w.mouth.followState().engagements, []);
+});
+
+test("follow: every pass forgets what has aged out: anchors, speakers and cap times", async () => {
+  const w = world({ rounds: [
+    { [ROOM]: [msg("$k0", KIKO, T0 - MIN)] }, { [ROOM]: [mine("$mine", T0)] }, { [ROOM]: [msg("$x", KIKO, T0 + MIN)] }, {},
+  ] });
+  await w.mouth.syncOnce(); await go(w, T0 - MIN); await go(w, T0); await go(w, T0 + MIN + SEC);
+  const s1 = w.mouth.followState();
+  assert.equal(s1.engagements.length, 1); assert.equal(s1.followsGiven, 1); assert.equal(s1.spoke.length, 1);
+  await go(w, T0 + 3 * 60 * MIN);
+  assert.deepEqual(w.mouth.followState(), { engagements: [], spoke: [], followsGiven: 0 });
 });
