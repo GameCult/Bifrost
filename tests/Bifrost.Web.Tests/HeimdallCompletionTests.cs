@@ -1510,7 +1510,7 @@ public sealed class HeimdallCompletionTests
         var inputs = Regex.Matches(form.Groups[2].Value, @"<input\b([^>]*)>");
         Assert.All(inputs, x => Assert.Contains("type=\"hidden\"", x.Groups[1].Value));
         var names = inputs.Select(x => Regex.Match(x.Groups[1].Value, @"\bname=""([^""]*)""").Groups[1].Value).ToArray();
-        Assert.Equal(new[] { "attempt", "code" }, names);
+        Assert.Equal(new[] { "attempt", "code", "pendingLinkId" }, names);
 
         // The page's own field names and action, filled as its script fills them, complete a sign-in.
         var attempt = await host.StartAsync();
