@@ -577,3 +577,71 @@ test("images.put has exactly two call sites in the mouth and the fetch's comes a
   assert.ok(!/media\/download/.test(source), "no media GET outside fetchImage");
   assert.equal([...source.matchAll(/\/state\/(m\.|uk\.)|event_type=/g)].length, 0);
 });
+
+test("the receipt names the event the GET resolved: reference and content.event_id both carry the returned id, in a thread file and a plain one", async () => {
+  const answered = { type: "m.room.message", event_id: "$resolved", room_id: ROOM, sender: OTHER };
+  const plain = synapse({ events: { [FILE]: { ...answered, content: plainFile(undefined)[FILE].content } } });
+  assert.equal((await mouthOn(plain).ask({ room: ROOM })).receipt, "Posted");
+  const [event] = plain.receipts();
+  assert.equal(event.content["m.relates_to"].event_id, "$resolved");
+  assert.equal(event.content[docs.fileReceivedType].event_id, "$resolved");
+  const threaded = synapse({ events: { [FILE]: { ...answered, content: fileContent() } } });
+  await mouthOn(threaded).ask({ room: ROOM });
+  assert.equal(threaded.receipts()[0].content[docs.fileReceivedType].event_id, "$resolved");
+  const bad = synapse({ events: { [FILE]: { ...answered, event_id: "$a/../b", content: fileContent() } } });
+  assert.equal((await mouthOn(bad).ask({ room: ROOM })).outcome, "NoAttachment");
+  assert.equal(bad.receipts().length, 0);
+});
+
+test("a failure leaves the log as fixed words: a transport error holding a URL, an mxc and a sender-chosen 200-byte album root reaches no line", async () => {
+  const root = `$${"r".repeat(199)}`;
+  const taint = `http://hs.test/_matrix/client/v3/joined_rooms mxc://gamecult.org/abc ${root} Bearer ${TOKEN}`;
+  for (const [pattern, expectFetch] of [[/GET \/rooms\/[^/]+\/relations\//, "Stored"], [/GET \/rooms\/[^/]+\/state$/, "FetchFailed"], [/PUT \/rooms\/[^/]+\/send\//, "Stored"]]) {
+    const s = synapse({ events: { [FILE]: { type: "m.room.message", event_id: FILE, room_id: ROOM, sender: OTHER, content: fileContent({ "m.relates_to": { rel_type: "m.thread", event_id: root } }) } } });
+    const real = s.fetch;
+    s.fetch = async (url, init = {}) => {
+      if (pattern.test(`${init.method ?? "GET"} ${decodeURIComponent(new URL(url).pathname).replace(/^\/_matrix\/client\/v[13]/, "")}`)) throw new Error(`fetch failed ${taint}`);
+      return real(url, init);
+    };
+    const m = mouthOn(s);
+    assert.equal((await m.ask({ room: ROOM })).outcome, expectFetch, String(pattern));
+    assert.equal(m.fetchLines().length, 1, "still one fetch line");
+    for (const line of m.logs) {
+      for (const bit of ["http", "mxc", root, "r".repeat(40), TOKEN, "unreachable"]) assert.ok(!line.includes(bit), `${bit} in: ${line.slice(0, 120)}`);
+    }
+    assert.match(m.fetchLines()[0], / cause=Error\/-$/);
+  }
+  const status = synapse();
+  status.failing = { "/relations/": 500 };
+  const m = mouthOn(status);
+  await m.ask();
+  assert.match(m.fetchLines()[0], /receipt=failed cause=Error\/500$/);
+});
+
+test("the deadline aborts the in-flight media GET: the room gate is free again at once, not after the media timeout", async () => {
+  const s = synapse({ holds: [{ match: /media\/download/ }] });
+  const gate = createRoomGate();
+  const m = mouthOn(s, { gate, deadline: 100 });
+  assert.equal((await m.ask({ room: ROOM })).outcome, "FetchFailed");
+  const freed = await Promise.race([gate.run(ROOM, async () => "free"), new Promise(r => setTimeout(() => r("held"), 300))]);
+  assert.equal(freed, "free");
+  assert.equal(m.puts.length, 0);
+});
+
+test("a redacted receipt does not count as hers even when its content is intact", async () => {
+  const s = synapse();
+  s.relations.set(`${ROOT}|m.thread`, [[{ type: docs.fileReceivedType, sender: ME, unsigned: { redacted_because: {} }, content: { [docs.fileReceivedType]: { event_id: FILE } } }]]);
+  assert.equal((await mouthOn(s).ask({ room: ROOM })).receipt, "Posted");
+  assert.equal(s.receipts().length, 1);
+});
+
+test("a deadline that passes while the brake is re-read before the receipt PUT sends nothing", async () => {
+  const s = synapse();
+  let reads = 0, free;
+  const m = mouthOn(s, { deadline: 150, brake: async () => (++reads === 3 ? new Promise(ok => { free = () => ok(true); }) : true) });
+  assert.equal((await m.ask({ room: ROOM })).outcome, "FetchFailed");
+  free();
+  await new Promise(r => setTimeout(r, 30));
+  assert.equal(s.calls.filter(c => c.startsWith("PUT")).length, 0);
+  assert.equal(m.puts.length, 1);
+});

@@ -770,8 +770,8 @@ export function createMouth({
     const seen = { room: "-", event: "-", size: "-", type: "-", sha256: "-" };
     const idOr = (sigil, v) => docs.isFetchId(sigil, v) ? v : "-"; // a hostile id never reaches the log
     let answered = false; // one log line per fetch: a gate step that finishes after the deadline answered is silent
-    const done = (outcome, { image = null, roomId = null, receipt = null, logged = "skipped" } = {}) => {
-      if (!answered) say(`fetch persona=${persona} room=${seen.room} event=${seen.event} outcome=${outcome} size=${seen.size} type=${seen.type} sha256=${seen.sha256} receipt=${logged}`);
+    const done = (outcome, { image = null, roomId = null, receipt = null, logged = "skipped", cause = null } = {}) => {
+      if (!answered) say(`fetch persona=${persona} room=${seen.room} event=${seen.event} outcome=${outcome} size=${seen.size} type=${seen.type} sha256=${seen.sha256} receipt=${logged}${cause === null ? "" : ` cause=${cause}`}`);
       answered = true;
       return { requestId, outcome, roomId, image, receipt };
     };
@@ -811,6 +811,7 @@ export function createMouth({
           throw error;
         }
         if (event?.room_id !== roomId) return done("NotAMember");
+        if (!docs.isFetchId("$", event.event_id)) return done("NoAttachment"); // the receipt names the event the homeserver returned, not the one asked for
         if (platformEvent(event)) return done("BridgedRoom");
         const content = event.content;
         if (event.type === "m.room.encrypted") return done("TypeRefused");
@@ -839,12 +840,11 @@ export function createMouth({
         }
         stored = true;
         if (!claimed) return done("StoredUnverified", { image, roomId });
-        const { receipt, word } = await postFileReceipt(roomId, albumRoot, eventId, computed, got.bytes.length, deadline);
-        return done("Stored", { image, roomId, receipt, logged: word });
+        const { receipt, word, cause } = await postFileReceipt(roomId, albumRoot, event.event_id, computed, got.bytes.length, deadline);
+        return done("Stored", { image, roomId, receipt, logged: word, cause });
       }));
     } catch (error) {
-      say(`fetch-error ${error?.message ?? error}`); // a diagnostic, not the fetch line
-      return done("FetchFailed", { logged: stored ? "failed" : "skipped" });
+      return done("FetchFailed", { logged: stored ? "failed" : "skipped", cause: causeOf(error) });
     }
   }
 
@@ -853,7 +853,7 @@ export function createMouth({
   // read or a PUT that fails, a held brake, proves nothing and posts nothing: the file stays stored and the receipt is nil. A deadline
   // is not such a failure and leaves the caller (it throws).
   async function postFileReceipt(roomId, albumRoot, fileEventId, sha256, size, deadline) {
-    const none = word => ({ receipt: null, word });
+    const none = (word, cause = null) => ({ receipt: null, word, cause });
     try {
       const room = encodeURIComponent(roomId);
       const [target, relation] = albumRoot === null ? [fileEventId, "m.reference"] : [albumRoot, "m.thread"];
@@ -873,8 +873,7 @@ export function createMouth({
       return { receipt: "Posted", word: "posted" };
     } catch (error) {
       if (deadline.aborted) throw error;
-      say(`file receipt not proven: ${error?.message ?? error}`);
-      return none("failed");
+      return none("failed", causeOf(error));
     }
   }
 
@@ -892,6 +891,11 @@ export function createMouth({
   }
 
   return { start, syncOnce, ack, read, pendingAfter, tail, speakableRooms, send, openDirect, fetchAttachment, run, get userId() { return selfId; }, get pendingCount() { return pending.length; } };
+}
+
+// The log's word for a failure: error class and HTTP status only, never the message (it can hold a URL, an mxc or a sender-chosen id).
+function causeOf(error) {
+  return `${/^[A-Za-z]{1,32}$/.test(error?.name) ? error.name : "Error"}/${Number.isInteger(error?.status) ? error.status : "-"}`;
 }
 
 // Replace every secret in a message. `secrets` is one string or a list.
