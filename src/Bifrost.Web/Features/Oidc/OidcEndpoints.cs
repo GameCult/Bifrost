@@ -114,7 +114,8 @@ public static class OidcEndpoints
     }
 
     /// <summary>A token whose scopes include a desk scope is a desk token. Only the chat token requires the training-notice receipt.</summary>
-    private static bool IsDeskToken(ClaimsPrincipal? principal) => principal is not null && principal.GetScopes().Any(DeskEndpoints.IsDeskScope);
+    // Only a token whose every scope is a desk scope skips the consent gate: a client that may hold chat scopes too cannot ride a desk scope past the receipt.
+    private static bool IsDeskToken(ClaimsPrincipal? principal) => principal is not null && principal.GetScopes() is { Length: > 0 } scopes && scopes.All(DeskEndpoints.IsDeskScope);
 
     private static async Task<IResult> ExchangeAsync(HttpContext http, BifrostDbContext db)
     {

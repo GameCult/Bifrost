@@ -161,6 +161,18 @@ public sealed class DeskCredentialTests : IDisposable
     }
 
     [Fact]
+    public async Task A_desk_scope_mixed_with_a_chat_scope_does_not_skip_the_training_notice_receipt()
+    {
+        var (client, identity) = await SignedInAsync();
+        await RemoveReceiptsAsync(identity, withdrawOnly: false);
+
+        var mixed = NewRequest(DeskClient, DeskRedirect, "openid desk.read");
+        var final = await DriveAsync(client, mixed);
+        Assert.Equal(HttpStatusCode.Redirect, final.StatusCode);
+        Assert.DoesNotContain("code=", final.Headers.Location!.OriginalString);
+    }
+
+    [Fact]
     public async Task The_chat_client_can_neither_ask_for_a_desk_scope_nor_use_its_own_token_on_the_desk()
     {
         var (client, _) = await SignedInAsync();
@@ -337,6 +349,7 @@ public sealed class DeskCredentialTests : IDisposable
                 Permissions.Endpoints.Token,
                 Permissions.GrantTypes.AuthorizationCode,
                 Permissions.ResponseTypes.Code,
+                Permissions.Prefixes.Scope + Scopes.OpenId,
                 Permissions.Prefixes.Scope + DeskEndpoints.ReadScope,
                 Permissions.Prefixes.Scope + DeskEndpoints.AnswerScope,
                 Permissions.Prefixes.Scope + DeskWebApplicationFactory.OtherAudienceScope,

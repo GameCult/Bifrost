@@ -275,8 +275,8 @@ public static class DeskEndpoints
         }
     }
 
-    // A note is a decider's own words, and an answerer id names an account: only a caller on the admin-set list reads
-    // either (visibility ruling c; X3).
+    // A note is a decider's own words: only a caller on the admin-set list reads one. Bifrost strips notes itself; answerer
+    // and decider ids are withheld by Huginn's door (desk-read-visibility-withheld-ids), not here.
     private static bool IsDecider(DeskDoorContext context) =>
         context.Deciders.Contains(context.Subject, StringComparer.Ordinal);
 
