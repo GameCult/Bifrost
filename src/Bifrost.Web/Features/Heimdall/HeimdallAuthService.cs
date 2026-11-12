@@ -83,7 +83,7 @@ public sealed class HeimdallAuthService(
                 detail += ", " + code;
             }
         }
-        catch (Exception) when (!cancellationToken.IsCancellationRequested)
+        catch (Exception error) when (error is not OperationCanceledException)
         {
         }
 
@@ -121,10 +121,12 @@ public sealed class HeimdallAuthService(
             new HeimdallHandoff("browser_completion"),
             entitlementPolicy);
 
-        var response = await httpClient.PostAsJsonAsync(
-            $"/v1/oauth/{provider}/start",
-            request,
-            cancellationToken);
+        // Headers only: a refusal body is read through RefusedStartMessageAsync's own 4 KiB bound, not buffered whole.
+        using var startMessage = new HttpRequestMessage(HttpMethod.Post, $"/v1/oauth/{provider}/start")
+        {
+            Content = JsonContent.Create(request)
+        };
+        using var response = await httpClient.SendAsync(startMessage, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
 
         if (!response.IsSuccessStatusCode)
         {
