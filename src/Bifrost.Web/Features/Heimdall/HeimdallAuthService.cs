@@ -83,7 +83,7 @@ public sealed class HeimdallAuthService(
                 detail += ", " + code;
             }
         }
-        catch (Exception error) when (error is not OperationCanceledException)
+        catch (Exception) when (!cancellationToken.IsCancellationRequested)
         {
         }
 
