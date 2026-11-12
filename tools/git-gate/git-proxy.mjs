@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { dirname, resolve } from "node:path";
+import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isWithin } from "../path-within.mjs";
 
 const args = process.argv.slice(2);
 const wrapperDir = dirname(fileURLToPath(import.meta.url));
@@ -59,9 +60,7 @@ function resolveExecutable(command, excludedDir) {
 }
 
 function isWithinExcludedDir(candidate, excludedDir) {
-  const normalizedCandidate = resolve(candidate).toLowerCase();
-  const normalizedExcludedDir = `${resolve(excludedDir).toLowerCase()}\\`;
-  return normalizedCandidate.startsWith(normalizedExcludedDir);
+  return isWithin(excludedDir, candidate, { allowSelf: false });
 }
 
 function findGitSubcommand(input) {
