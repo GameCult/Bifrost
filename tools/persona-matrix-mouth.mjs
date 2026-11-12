@@ -25,8 +25,8 @@
 //
 // Follow (CHAT_FOLLOW=1, default off; docs/bridge.md "Follow"): her own send in a public room (not a DM, not encrypted, not bridged) anchors the room
 // for 10 minutes; those who spoke there in the 10 minutes before it, and whoever it tagged or replied to, get basis "follow" on their later messages
-// inside the window, at most 3 an hour per peer and room. Memory only. Off, no basis "follow" is ever emitted: Huginn's parser refuses it until its
-// Basis::Follow lands.
+// inside the window, at most 3 an hour per peer and room; only a plain message (no basis) is upgraded, an @room keeps `room`. Memory only. Off, no
+// basis "follow" is ever emitted. Huginn's variant is Basis::FollowUp, wire string "follow" (FOLLOW_UP_BASIS, f09bc56e).
 //
 // Media: an m.image/m.file/m.audio/m.video event is delivered as one typed line (see bodyText), not its bare filename.
 // An m.image event in a delivered message is also fetched, as this Persona and only when an image store is configured
@@ -137,7 +137,7 @@ export function createMouth({
   persona, homeserver, serverName, rooms, token, fetch: httpFetch = globalThis.fetch, state, brake,
   now = Date.now, log = () => {}, syncTimeoutMs = 30000, maxPending = MAX_PENDING, gate = createRoomGate(), sendTimeoutMs = SEND_TIMEOUT_MS,
   presenceGraceMs = PRESENCE_GRACE_MS, fetchDeadlineMs = FETCH_DEADLINE_MS,
-  follow = false, // the follow basis (CHAT_FOLLOW): an untagged message from someone she tagged or replied to, within FOLLOW_WINDOW_MS of her own post, is for her
+  follow = false, // the follow basis (CHAT_FOLLOW): a plain (no-basis) message from someone she tagged or replied to, within FOLLOW_WINDOW_MS of her own post, is for her
   replyLink = false, // resolve each reply's quoted event into delivery.replyTo (the v4 answer; one more event read per reply to a non-Mind)
   images = null, // this Persona's image store (createImageStore), or null: images stay the typed text line
   isServed = async () => false, // (async) whether a Matrix user id is an account this process speaks for: a Mind is not a person to open a DM with
@@ -580,7 +580,7 @@ export function createMouth({
         if (!baseline && !freshRooms.has(roomId) && event.sender === selfId) await noteOwnPost(roomId, event);
         noteSpeaker(roomId, event);
         let basis = deliverable ? await basisOf(roomId, event) : null;
-        if (deliverable && (basis === null || basis === "room") && await followed(roomId, event)) basis = "follow";
+        if (deliverable && basis === null && await followed(roomId, event)) basis = "follow";
         const replyTo = deliverable ? await replyToOf(roomId, event) : null;
         processed.add(event.event_id);
         if (deliverable) {
@@ -1185,7 +1185,7 @@ export function loadRuntime(cultRoot) {
 export const replyLinkFromEnv = env => env.CHAT_PENDING_V4 === "1";
 // The fetch flag, the same way: on only for exactly "1". Off, the fetch request kind is an unknown kind.
 export const fetchFromEnv = env => env.CHAT_FETCH === "1";
-// The follow flag, the same way. Off, the mouth never emits basis "follow" (Huginn's parser refuses an unknown basis until its Basis::Follow lands).
+// The follow flag, the same way. Off, the mouth never emits basis "follow" (Huginn's variant is Basis::FollowUp, wire string "follow", FOLLOW_UP_BASIS f09bc56e).
 export const followFromEnv = env => env.CHAT_FOLLOW === "1";
 
 function required(env, name) {
