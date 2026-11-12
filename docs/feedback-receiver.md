@@ -6,7 +6,7 @@ Status: **design, nothing implemented.** Written for `heimdall-body:follow_up:ch
 builds on are Heimdall's drafts on guests and hiding (`/opt/commons/handoff/heimdall-feedback-pages-rulings.md`, cited as R4a to R6f).
 Draft; do not merge.
 
-Read at Bifrost main `b1725a1` (2026-11-12): `tools/persona-matrix-mouth.mjs`, `tools/persona-chat-documents.mjs`,
+Read at Bifrost main `b1725a1` (2026-11-12), line references re-read at `e58e953` (2026-11-12): `tools/persona-matrix-mouth.mjs`, `tools/persona-chat-documents.mjs`,
 `src/Bifrost.Web/Features/{Oidc,Desk,Registration,Shared}/*`, `Domain/BifrostModels.cs`, `Program.cs`, `docs/oidc-issuer.md`,
 `docs/ratatoskr-voting-auth.md`; the deployed trees under `/srv/bifrost` were last read at an earlier main (section 9). I could not read Eureka's receiver
 notes in #minds, and `huginn-feedback-kinds-proposal.md` was not in `/opt/commons/handoff` when I looked. Where
@@ -38,31 +38,31 @@ authority and never becomes `answerer`.
 
 ## 2. The mouth's pending/ack path, read from source
 
-Verified in `tools/persona-matrix-mouth.mjs` and `tools/persona-chat-documents.mjs` at main `b1725a1`:
+Verified in `tools/persona-matrix-mouth.mjs` and `tools/persona-chat-documents.mjs`; line numbers re-read at main `e58e953` (2026-11-12), where the mouth has grown by about 100 lines since `b1725a1` and nothing else in this section changed:
 
-- **Pending is Matrix mail only, held in memory.** `pending` (mouth l.144) is filled in one place, `syncOnce`
-  (l.441; `pending.push(...made)` l.496), from Matrix `/sync` events. No function accepts a delivery from elsewhere.
+- **Pending is Matrix mail only, held in memory.** `pending` (mouth l.156) is filled in one place, `syncOnce`
+  (l.543; `pending.push(...made)` l.602), from Matrix `/sync` events. No function accepts a delivery from elsewhere.
 - **A request is non-consuming; an ack consumes.** The pending requests carry `afterSeq`; the mouth answers
-  `pendingAfter(afterSeq)` (l.614) paged to 256 KiB (`pageOf`, l.944-972; `limits.replyBytes`, documents l.53). `chat_ack` carries `throughSeq`; `ack`
-  (l.556-561) drops every delivery at or below it, releases stored images (`images?.acked`) and advances the Matrix cursor. An ack posts nothing to
-  Matrix: her public `m.read` receipt follows a separate `chat_read` document (header l.11-13, `chat_read` branch l.1027). The endpoint serves a closed list of kinds
-  (`served`, l.992) and answers any other loudly with `chat_refusal` `UnknownKind` (l.999-1001); a request for another Persona gets `UnknownPersona`.
-- **At-least-once.** The Matrix cursor is persisted only when every delivery of a batch is acked (`commit`, l.513-521), so a
-  restart before the ack re-delivers from Matrix. `seqCounter` (l.143) is persisted whenever a round made deliveries (l.508), so
+  `pendingAfter(afterSeq)` (l.720) paged to 256 KiB (`pageOf`, l.1055-1084; `limits.replyBytes`, documents l.53). `chat_ack` carries `throughSeq`; `ack`
+  (l.662-665) drops every delivery at or below it, releases stored images (`images?.acked`) and advances the Matrix cursor. An ack posts nothing to
+  Matrix: her public `m.read` receipt follows a separate `chat_read` document (header l.10-13, `chat_read` branch l.1138). The endpoint serves a closed list of kinds
+  (`served`, l.1103) and answers any other loudly with `chat_refusal` `UnknownKind` (l.1112); a request for another Persona gets `UnknownPersona`.
+- **At-least-once.** The Matrix cursor is persisted only when every delivery of a batch is acked (`commit`, l.619-627), so a
+  restart before the ack re-delivers from Matrix. `seqCounter` (l.155) is persisted whenever a round made deliveries (l.614), so
   sequence numbers never repeat across a restart.
-- **Backpressure.** At 500 unacked (`MAX_PENDING`, l.58) `syncOnce` stops reading (l.447). A truncated round (pending cap l.475, reply-read cap l.476)
-  leaves the cursor where it was (l.501).
-- **A delivery that will not encode is skipped, not held.** `pageOf` logs and omits it (l.949-951); the caller's
+- **Backpressure.** At 500 unacked (`MAX_PENDING`, l.63) `syncOnce` stops reading (l.550). A truncated round (pending cap l.578, reply-read cap l.579)
+  leaves the cursor where it was (l.607).
+- **A delivery that will not encode is skipped, not held.** `pageOf` logs and omits it (l.1060-1062); the caller's
   next ack covers its seq, so it is dropped. Harmless for a chat line, wrong for a durable record.
-- **The endpoint is loopback RUDP.** `startChatEndpoint` (l.980) refuses a non-loopback host (l.981). It is another process
+- **The endpoint is loopback RUDP.** `startChatEndpoint` (l.1091) refuses a non-loopback host (l.1092). It is another process
   from Bifrost.Web, which has no way to hand the mouth anything.
 - **The delivery tuple is closed and versioned.** `deliveryTuple` is twelve fields (the twelfth is an optional stored-image reference), the pending answer
   `gamecult.persona.chat_pending.v2` (`persona-chat-documents.mjs` l.216-224). v3 adds `basis` and `form` (14 fields) and a room tail (`chat_pending.v3`,
-  asked for by `chat_pending_request.v2`); v4 adds `reply_to` (15 fields, `chat_pending_request.v3`, served only with `CHAT_PENDING_V4=1`, l.1074). No version has a source or
+  asked for by `chat_pending_request.v2`); v4 adds `reply_to` (15 fields, `chat_pending_request.v3`, served only with `CHAT_PENDING_V4=1`, `replyLinkFromEnv` l.1185). No version has a source or
   kind field. A delivery cannot say it is not a Matrix message.
-- **A fetch kind exists, off by default.** `chat_fetch_request` is served only with `CHAT_FETCH=1` (l.992, l.1076): an optional served kind is a precedent for adding kinds
+- **A fetch kind exists, off by default.** `chat_fetch_request` is served only with `CHAT_FETCH=1` (`served`, l.1103; `fetchFromEnv`, l.1187): an optional served kind is a precedent for adding kinds
   to `served`, and the way a kind is withheld until its consumer is ready.
-- **The consumer is not in this repo.** The mouth's header (l.8-11) says the heartbeat polls with a non-consuming
+- **The consumer is not in this repo.** The mouth's header (l.10-11) says the heartbeat polls with a non-consuming
   request and decides who runs. I could not confirm that from source.
 
 What follows from it:
@@ -77,11 +77,11 @@ PR #24 section 3 names the carrier: a new delivery document, `gamecult.persona.f
 the mouth's pending/ack path. Source adds one constraint on how it rides:
 
 - **It cannot be a variant inside `chat_pending`.** Each version is a closed positional tuple (twelve, fourteen or fifteen fields) encoded by
-  `pageOf` (l.949), so a different tuple in that page breaks every current consumer, and a text frame in `text` is forgeable by any Matrix member.
+  `pageOf` (l.1060), so a different tuple in that page breaks every current consumer, and a text frame in `text` is forgeable by any Matrix member.
 - **Option B, kept in shape:** the delivery document has its own request, page and ack kinds (`feedback_pending_request`, `feedback_pending`, `feedback_ack`), its own seq space and
   a durable cursor over the receiver's store. The Matrix kinds, the Matrix cursor and `MAX_PENDING` are untouched. Per the decision below the kinds are served by the receiver over
-  HTTPS, not added to the mouth's `served` list (l.992). Confidence medium: the Persona-side consumer, which I cannot see, must learn them.
-- **Why main's changes reinforce B.** A chat `ack` releases stored images and advances the Matrix `/sync` cursor (l.556-561). A feedback ack must do neither, so it cannot
+  HTTPS, not added to the mouth's `served` list (l.1103). Confidence medium: the Persona-side consumer, which I cannot see, must learn them.
+- **Why main's changes reinforce B.** A chat `ack` releases stored images and advances the Matrix `/sync` cursor (l.662-665). A feedback ack must do neither, so it cannot
   share the `chat_ack` kind or its `ack` function. The chat pending answer is already versioned three times, so a new field in that tuple is a new
   document version for every consumer, which a feedback record must not force.
 - Rejected: injecting records into `pending` as synthetic Matrix deliveries (no inlet, forgeable, lost on restart);
@@ -117,7 +117,7 @@ An answer to a question that has settled is kept and the page says so (PR #24 se
 
 PR #24 section 7a rules **route 2** for people: Ratatoskr presents an OIDC access token that Bifrost issued, and Bifrost verifies it itself. Meta
 ruled on 2026-11-12 that Minds authenticate to the receiver through an OIDC client with an audience, as the desk does (4b). This section records what
-Bifrost's source does on main `b1725a1`.
+Bifrost's source does on main `e58e953` (the Oidc, Desk and Registration files cited here are unchanged since `b1725a1`, bar `DeskEndpoints.cs:49`, which registers `UnixSocketDeskDoor`).
 
 ### What main does with tokens
 
@@ -318,9 +318,9 @@ not the mouth, and not the `bifrost-feedback` user of `bifrost-persona-feedback.
 - **The C# runtime fit is "needs work" (Eyes).** `CultLib` C# (`src/GameCult.Caching` and `GameCult.Caching.MessagePack`, about 10.6k lines, netstandard2.1, MIT) fits net8.0, but:
   - **No published package exists**: nuget.org has none, the `cultlib-v` tags stop at 1.0.32, and packaging is a PowerShell local feed (`CultLib` `docs/nuget-packaging.md`). Bifrost has no `nuget.config` and no vendor directory.
     **The consumption route (checkout `ProjectReference`, local feed, or vendoring) is an open fork for Eureka and Libby.**
-  - **Version conflict (predicted, not run):** `Caching.MessagePack` needs System.Text.Json 9.0.10; Bifrost's Direct pin is `[8.0.5, )` (`packages.lock.json:97-101`), so restore likely fails with NU1605.
+  - **Version conflict (predicted, not run):** `Caching.MessagePack` needs System.Text.Json 9.0.10; Bifrost's Direct pin is `[8.0.5, )` (`packages.lock.json:108-112`), so restore likely fails with NU1605.
   - **It drags CultMath** (MIT AND MPL-2.0 AND Apache-2.0, shaders) into a web service.
-  - **Writer precedent:** the Node sidecar already writes `/srv/bifrost/persona-feedback/deliveries.cc` (`docs/bridge.md:285`), so the receiver is the second `.cc` writer in the app and the first in C#.
+  - **Writer precedent:** the Node sidecar already writes `/srv/bifrost/persona-feedback/deliveries.cc` (`docs/bridge.md:294`), so the receiver is the second `.cc` writer in the app and the first in C#.
 - **Gaps owed to Libby (CultLib steward); no local workaround is built here:** (1) no consumable C# package; (2) the System.Text.Json pin conflict; (3) the CultMath transitive closure;
   (4) `src/GameCult.Caching/README.md:310` says single-writer, no competing writers, which contradicts the store-composition contract's lock; (5) no documented stale `.tmp` / crash procedure;
   (6) no documented backup-while-writing contract for a pair of stores; (7) no cross-runtime test pairing a Linux C# writer with a Rust reader.
@@ -360,6 +360,5 @@ Rulings of 2026-11-12 closed these, and they are no longer forks: whether erase 
 - **The Persona side must learn the three feedback kinds** and pull them over HTTPS with its bearer (section 2); the heartbeat that polls the mouth is outside this repo and is not the carrier.
 - **Deploy is behind main.** The deployed mouth is `/srv/bifrost/persona-chat/runtime/current`, release `e396305`, read at an earlier main; main has since added the image path, reply links, `CHAT_FETCH`
   and the v3/v4 pending answers. The deployed web app is `/srv/bifrost/app/current` at `67072b2`, which predates the desk, the chat-tier issuer change and the consent gate on main. I did not re-read `/srv/bifrost` for this pass. Anything in this design runs on a release that does not exist yet.
-- **Unread:** Eureka's receiver notes in #minds, `huginn-feedback-kinds-proposal.md`, MAS's side of the session, and Heimdall PR #6 (the
-  answer-collector consent doc; the page's "guest answers are collected for nothing but delivery" is unchecked against it).
+- **Unread:** Eureka's receiver notes in #minds, `huginn-feedback-kinds-proposal.md`, MAS's side of the session, and Heimdall PR #6 (merged, `docs/answer-collector-consent.md`; it drops a sender with no linked member at l.197 and does not mention guests; the page's "guest answers are collected for nothing but delivery" is unchecked against it).
 - The receiver writes nothing to Matrix and nothing to Huginn.
