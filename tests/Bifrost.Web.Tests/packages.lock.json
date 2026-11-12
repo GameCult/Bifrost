@@ -443,6 +443,14 @@
           "Microsoft.IdentityModel.Abstractions": "8.19.2"
         }
       },
+      "Microsoft.IdentityModel.Protocols": {
+        "type": "Transitive",
+        "resolved": "8.19.2",
+        "contentHash": "sGxSsSrZXNmca6D+jHH2rVRyo2nNRd/g4H9CFbPmLLq0xgoH1U0orLWE5minfijw7+zq49tBs7txenbfAErRoQ==",
+        "dependencies": {
+          "Microsoft.IdentityModel.Tokens": "8.19.2"
+        }
+      },
       "Microsoft.IdentityModel.Tokens": {
         "type": "Transitive",
         "resolved": "8.19.2",
@@ -548,6 +556,34 @@
           "OpenIddict.Server": "7.7.1"
         }
       },
+      "OpenIddict.Validation": {
+        "type": "Transitive",
+        "resolved": "7.7.1",
+        "contentHash": "09FOsvek+iSKrNbEehH2c1uBWSFurZk1U8vyTKk5aiaCV2bbj+j/68KRA/iHOgSe8qV3+0ZrquhmjFMpcojVSw==",
+        "dependencies": {
+          "Microsoft.Extensions.Logging": "8.0.1",
+          "Microsoft.IdentityModel.JsonWebTokens": "8.19.2",
+          "Microsoft.IdentityModel.Protocols": "8.19.2",
+          "OpenIddict.Abstractions": "7.7.1"
+        }
+      },
+      "OpenIddict.Validation.AspNetCore": {
+        "type": "Transitive",
+        "resolved": "7.7.1",
+        "contentHash": "9Gpw13k6KRif6LCeIfzS5cfDPxzEvg5I4l8JKwMxNL4mqal8eT00T069RnuXuDY8CwOO43FLD55JY7Wh3an5cg==",
+        "dependencies": {
+          "OpenIddict.Validation": "7.7.1"
+        }
+      },
+      "OpenIddict.Validation.ServerIntegration": {
+        "type": "Transitive",
+        "resolved": "7.7.1",
+        "contentHash": "tZd5oqlVHftWjo3gthwXRvDE09NGmOjo5yjyRH8W2q4Yw9Hntkfi70+T2ESFKJ++oqueQT4YG5ilyot/o0OBMA==",
+        "dependencies": {
+          "OpenIddict.Server": "7.7.1",
+          "OpenIddict.Validation": "7.7.1"
+        }
+      },
       "System.Collections.Immutable": {
         "type": "Transitive",
         "resolved": "8.0.0",
@@ -640,6 +676,8 @@
           "Npgsql.EntityFrameworkCore.PostgreSQL": "[8.0.0, )",
           "OpenIddict.EntityFrameworkCore": "[7.7.1, )",
           "OpenIddict.Server.AspNetCore": "[7.7.1, )",
+          "OpenIddict.Validation.AspNetCore": "[7.7.1, )",
+          "OpenIddict.Validation.ServerIntegration": "[7.7.1, )",
           "System.Text.Json": "[8.0.5, )"
         }
       }

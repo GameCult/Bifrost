@@ -4,6 +4,7 @@ using Bifrost.Web.Data;
 using Bifrost.Web.Features.Oidc;
 using Microsoft.AspNetCore.Cors.Infrastructure;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
 using Microsoft.Net.Http.Headers;
 
@@ -22,8 +23,29 @@ public static class DeskEndpoints
     public const string AnswerScope = "desk.answer";
     public const string CorsPolicy = "DeskCors";
 
-    public static IServiceCollection AddBifrostDesk(this IServiceCollection services)
+    public static bool IsDeskScope(string scope) => scope is ReadScope or AnswerScope;
+
+    // The desk's credential is OpenIddict validation against the local server, so it exists only where Bifrost:Oidc is
+    // configured. Without it nothing is registered here and startup fails in the validator, with its own message.
+    public static IServiceCollection AddBifrostDesk(this IServiceCollection services, bool oidcConfigured)
     {
+        if (oidcConfigured)
+        {
+            services.AddOpenIddict()
+                .AddServer(server => server.RegisterScopes(ReadScope, AnswerScope))
+                .AddValidation(validation =>
+                {
+                    validation.UseLocalServer();
+                    // The bearer travels in the Authorization header only: a token in a URL lands in access logs.
+                    validation.UseAspNetCore().Configure(options =>
+                    {
+                        options.DisableAccessTokenExtractionFromQueryString = true;
+                        options.DisableAccessTokenExtractionFromBodyForm = true;
+                    });
+                });
+            services.TryAddSingleton<IDeskCredential, OidcDeskCredential>();
+        }
+
         services.AddSingleton(provider => new DeskMindRoutes(provider.GetRequiredService<IOptions<DeskOptions>>().Value.Minds));
         services.AddCors();
         // Exactly the configured origin, no credentials, and only on the routes that require this policy.
@@ -167,7 +189,7 @@ public static class DeskEndpoints
                     var listed = await door.ListAsync(mind.Socket, context, listRequest! with { Mind = mind.Id }, cancellationToken);
                     if (listed is DeskListOutcome.Listed(var list))
                     {
-                        await WriteJsonAsync(http, 200, IsDecider(context) ? list : DeskNotes.Strip(list));
+                        await WriteJsonAsync(http, 200, IsDecider(context) ? list : DeskRedaction.ForNonDecider(list));
                     }
                     else if (listed is DeskListOutcome.ForkTooLarge(var largeId, var largeOrder))
                     {
@@ -187,7 +209,7 @@ public static class DeskEndpoints
                     var found = await door.ReadAsync(mind.Socket, context, forkId, cancellationToken);
                     if (found is DeskReadOutcome.Found(var entry))
                     {
-                        await WriteJsonAsync(http, 200, IsDecider(context) ? entry : DeskNotes.Strip(entry));
+                        await WriteJsonAsync(http, 200, IsDecider(context) ? entry : DeskRedaction.ForNonDecider(entry));
                     }
                     else if (found is DeskReadOutcome.ForkTooLarge(var largeFork))
                     {
@@ -253,7 +275,8 @@ public static class DeskEndpoints
         }
     }
 
-    // A note is a decider's own words: only a caller on the admin-set list reads them (visibility ruling c).
+    // A note is a decider's own words: only a caller on the admin-set list reads one. Bifrost strips notes itself; answerer
+    // and decider ids are withheld by Huginn's door (desk-read-visibility-withheld-ids), not here.
     private static bool IsDecider(DeskDoorContext context) =>
         context.Deciders.Contains(context.Subject, StringComparer.Ordinal);
 

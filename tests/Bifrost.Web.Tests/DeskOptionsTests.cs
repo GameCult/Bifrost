@@ -32,7 +32,7 @@ public sealed class DeskOptionsTests
         return options;
     }
 
-    private static void Validate(Dictionary<string, string?> values, string environment = "Testing")
+    private static void Validate(Dictionary<string, string?> values, string environment = "Testing", bool oidc = true)
     {
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(values).Build();
         new StartupConfigurationValidator(
@@ -45,7 +45,8 @@ public sealed class DeskOptionsTests
             Options.Create(new BifrostHostOptions()),
             Options.Create(new ConceptVoteOptions()),
             Options.Create(Bind(values)),
-            Options.Create(new RegistrationOptions())).Validate();
+            Options.Create(new RegistrationOptions()),
+            oidc ? new OidcIssuerOptions() : null).Validate();
     }
 
     private static void Refused(Dictionary<string, string?> values, string expectedFragment)
@@ -63,6 +64,15 @@ public sealed class DeskOptionsTests
         Assert.Equal([Alice], options.Minds[0].Deciders);
         Assert.Equal([Bob], options.Minds[1].Deciders);
         Validate(Good());
+    }
+
+    [Fact]
+    public void A_desk_without_the_oidc_issuer_stops_startup_and_says_why()
+    {
+        var failure = Assert.Throws<InvalidOperationException>(() => Validate(Good(), oidc: false));
+        Assert.Contains("Bifrost:Oidc must be configured when the Desk section exists", failure.Message);
+
+        Validate([], oidc: false); // no desk, no need of an issuer
     }
 
     [Fact]
