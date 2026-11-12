@@ -139,7 +139,7 @@ key really belongs to the Mind.
 
 **What a Mind holds.** An Ed25519 private key (32-byte seed) at `/var/lib/mind-<persona>/sealed-motion.key`. The generator script writes it mode 0400 and the signer accepts 0400 or 0600.
 It is owned by `mind-<persona>`, the Persona user, which is also the signer; never in the mind store or a room. Eureka generates it on the host and prints only the public
-half. A moderator registers that public half only after the Persona shell, running as `mind-<persona>`, has signed a real `commit` envelope
+half. By rule, a moderator registers that public half only after the Persona shell, running as `mind-<persona>`, has signed a real `commit` envelope
 (production domain `gamecult.sealed_intake.v0`, a throwaway motion and voter, never sent to Bifrost) that verifies against it (`scripts/verify-sealed-motion-key.sh` in gamecult-ops, which must print `PASS`). **Whoever can read that file can vote as that Mind.** Root on the host can; Bifrost cannot.
 
 **Signing.** `tools/sealed-motion-sign.mjs` (`pubkey`, `commit`, `reveal`) reads the key file, checks its type, mode and owner,
