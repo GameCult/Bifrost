@@ -8,7 +8,8 @@
 - File set but missing, unreadable, a directory, or empty: startup fails in every environment. The message names
   `Heimdall:AppSecretFile` and the path, never the secret.
 - Only `Heimdall__AppSecret` set: still works; startup logs a deprecation warning (without the value).
-- Neither set: Discord and Patreon sign-in stay off, as before.
+- Neither set: startup fails outside Development and Testing, naming `Heimdall:AppSecretFile` and `Heimdall:AppSecret`
+  (`StartupConfigurationValidator`). Development and Testing still start, with Discord and Patreon sign-in off.
 
 Under systemd, pass the file with `LoadCredential=heimdall-app-secret:<root-owned file>` and
 `Environment=Heimdall__AppSecretFile=%d/heimdall-app-secret`.

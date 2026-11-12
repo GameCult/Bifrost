@@ -60,9 +60,10 @@ New since the live release, and not read by the validator:
   stops startup in every environment, with a message that names the option and path and never the value. Ops steps:
   `docs/heimdall-app-secret-file.md`.
 - **`Heimdall__AppSecret`** (deprecated; use `Heimdall__AppSecretFile`; startup logs a warning when it is set): required for
-  Discord and Patreon sign-in. Without it `HeimdallOptions.IsDiscordConfigured` and
-  `IsPatreonConfigured` are false and those sign-ins stop working (GitHub sign-in is unaffected); startup does not fail,
-  so a missing key shows only at the live check. The value is Heimdall's app secret for slug `bifrost`
+  Discord and Patreon sign-in. Outside Development and Testing startup fails when neither this nor
+  `Heimdall__AppSecretFile` supplies a non-blank secret (the message names both options, never a value), because
+  `HeimdallOptions.IsDiscordConfigured` and `IsPatreonConfigured` would otherwise be false and those sign-ins silently
+  stop working (GitHub sign-in is unaffected). The value is Heimdall's app secret for slug `bifrost`
   (`GC_ACCESS_APP_BIFROST_SHARED_SECRET` on the Heimdall side). Bifrost sends it as `x-heimdall-app-secret`, redacted
   from logs.
 - **`Bifrost__Oidc__*`**: optional. Absent, the OIDC issuer is not mapped and discovery answers 404. Present, it must be
@@ -135,7 +136,7 @@ All must hold before step 1. A missing one means the window is not used.
    not a workstation.
 6. **Env diff done.** Every row of the Configuration table is marked present by the reader, `ConceptVotes__NetworkTagSecret`
    included and at least 32 characters (a count, not the value), and the `Heimdall__AppSecret` line is in `bifrost.env`
-   (mode 600, owner `bifrost`) with Heimdall holding the same value. Nothing in "Configuration" is left unresolved.
+   (mode 600, owner `bifrost`; a build with the empty-secret refusal does not start without it or `Heimdall__AppSecretFile`) with Heimdall holding the same value. Nothing in "Configuration" is left unresolved.
 7. **Quiet.** No motion closing and no known vote in flight inside the window. Check the motions page. Members told that
    everyone is signed out once (see "What moves").
 8. **Watchdog.** `bifrost-watchdog-notice.timer` fires one minute after boot and one minute after each run

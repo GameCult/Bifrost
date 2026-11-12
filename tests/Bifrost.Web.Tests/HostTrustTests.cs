@@ -145,6 +145,36 @@ public sealed class HostTrustTests : IClassFixture<TestWebApplicationFactory>
         Assert.DoesNotContain(canary, refusal.Message);
     }
 
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void Production_without_a_heimdall_app_secret_refuses_startup_naming_the_options(string blank)
+    {
+        var refusal = Assert.Throws<InvalidOperationException>(
+            () => Validate(keysPath: "/keys", appSecret: blank));
+
+        Assert.Contains("Heimdall:AppSecretFile", refusal.Message);
+        Assert.Contains("Heimdall:AppSecret", refusal.Message);
+    }
+
+    [Fact]
+    public void Production_with_a_heimdall_app_secret_passes_and_other_refusals_never_echo_it()
+    {
+        Validate(keysPath: "/keys", appSecret: ValidAppSecret);
+
+        var refusal = Assert.Throws<InvalidOperationException>(
+            () => Validate(keysPath: null, appSecret: ValidAppSecret));
+        Assert.DoesNotContain(ValidAppSecret, refusal.Message);
+    }
+
+    [Theory]
+    [InlineData("Development")]
+    [InlineData("Testing")]
+    public void Development_and_Testing_start_without_a_heimdall_app_secret(string environment)
+    {
+        Validate(keysPath: null, environment: environment, appSecret: "");
+    }
+
     [Fact]
     public void Production_without_network_tag_secret_fails_and_never_echoes_values()
     {
@@ -315,12 +345,14 @@ public sealed class HostTrustTests : IClassFixture<TestWebApplicationFactory>
     }
 
     private const string ValidTagSecret = "tag-secret-0123456789-0123456789-abcdef";
+    private const string ValidAppSecret = "app-secret-5c0e91d4";
 
     private static void Validate(
         string? keysPath,
         string environment = "Production",
         string? connectionString = "Host=db",
         string? tagSecret = ValidTagSecret,
+        string appSecret = ValidAppSecret,
         int ipv4Length = 32,
         int ipv6Length = 56,
         string[]? allowedOrigins = null,
@@ -344,7 +376,7 @@ public sealed class HostTrustTests : IClassFixture<TestWebApplicationFactory>
             hostEnvironment,
             Options.Create(new GitHubOAuthOptions { ClientId = "id", ClientSecret = "secret" }),
             Options.Create(new GitHubAppOptions { EnableWebhookSync = false }),
-            Options.Create(new HeimdallOptions { EnablePatronSupportIntake = false }),
+            Options.Create(new HeimdallOptions { EnablePatronSupportIntake = false, AppSecret = appSecret }),
             Options.Create(new StripeOptions()),
             Options.Create(new BifrostHostOptions
             {
