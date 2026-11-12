@@ -14,7 +14,7 @@ namespace Bifrost.Web.Features.Desk;
 // `unavailable`; this is the one type the client throws for every one of those, so a failure is never an empty page.
 public sealed class DeskDoorException(string message, Exception? inner = null) : Exception(message, inner);
 
-// The production IDeskDoor: a client of Huginn's desk door (Huginn docs/desk-feed-door.md at b299d6f7). One new
+// The production IDeskDoor: a client of Huginn's desk door (Huginn docs/desk-feed-door.md at 232764bf). One new
 // connection per call, one request frame, one reply frame, closed after, all inside one deadline. The client holds no
 // connection state, so a dead socket fails only the calls addressed to that Mind.
 //

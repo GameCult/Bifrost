@@ -8,7 +8,7 @@ using Bifrost.Web.Tests.Support;
 
 namespace Bifrost.Web.Tests;
 
-// The production door against a real unix socket and Huginn's golden frames (fixtures at Huginn b299d6f7, vectors at CultLib d3025d3c).
+// The production door against a real unix socket and Huginn's golden frames (fixtures at Huginn 232764bf, vectors at CultLib d3025d3c).
 public sealed class UnixSocketDeskDoorTests
 {
     private const string Fork = "eureka-substrate:question:desk-listing-authority";
@@ -243,9 +243,9 @@ public sealed class UnixSocketDeskDoorTests
     // ---- (c2) both reader views through the door and the edge ----
 
     // What each piece of the fixtures directory is (its two READMEs):
-    //  - record-whole is HUGINN's own encoder output at b299d6f7: gamecult.fork.record.v0 with all four answer variants
-    //    by three accounts, notes and ids whole. It has 5 keys and NO answerer_count: what the door sends today.
-    //  - cultlib-3a51bbab/*.msgpack are CULTLIB's bytes (twelve vectors pinned to 3a51bbab, each a vector's
+    //  - record-whole is HUGINN's own encoder output at 232764bf: gamecult.fork.record.v0 with all four answer variants
+    //    by three accounts, notes and ids whole. It has 6 keys, answerer_count included; record-withheld is the same record for a non-decider.
+    //  - cultlib-d3025d3c/*.msgpack are CULTLIB's bytes (fourteen vectors pinned to d3025d3c, each a vector's
     //    messagePackHex decoded), vendored unedited. They are NOT Huginn output; Huginn's types do not carry those
     //    shapes yet. Bifrost reads them as the contract (vectors file d3025d3c, append-only on 3a51bbab) spells them.
     private static JsonObject Fragment(string name) =>
@@ -253,7 +253,7 @@ public sealed class UnixSocketDeskDoorTests
             Path.Combine(DeskFeedFixturePinTests.Directory, name + ".payload.msgpack"))))!.AsObject();
 
     private static byte[] CultLib(string name) =>
-        File.ReadAllBytes(Path.Combine(DeskFeedFixturePinTests.Directory, "cultlib-3a51bbab", name + ".msgpack"));
+        File.ReadAllBytes(Path.Combine(DeskFeedFixturePinTests.Directory, "cultlib-d3025d3c", name + ".msgpack"));
 
     private static JsonObject CultLibJson(string name) => JsonNode.Parse(MessagePackSerializer.ConvertToJson(CultLib(name)))!.AsObject();
 
@@ -328,14 +328,47 @@ public sealed class UnixSocketDeskDoorTests
     public void Every_account_id_in_record_whole_is_a_lowercase_D_format_uuid_and_the_record_is_what_the_README_says()
     {
         var whole = Fragment("record-whole");
-        // Huginn's own record: 5 keys, no answerer_count (the README says so; the contract wants a sixth).
-        Assert.Equal(["schemaVersion", "fork_id", "options_hash", "counted_answer_id", "answers"], whole.Select(p => p.Key));
+        // Huginn's own record: 6 keys, answerer_count 3 (the README's table).
+        Assert.Equal(["schemaVersion", "fork_id", "options_hash", "counted_answer_id", "answerer_count", "answers"], whole.Select(p => p.Key));
+        Assert.Equal(3, (int)whole["answerer_count"]!);
         Assert.Equal(["Counted", "Revision", "Refused", "Retraction"], whole["answers"]!.AsArray().Select(a => (string)a!["outcome"]!).Distinct());
 
         var grammar = new System.Text.RegularExpressions.Regex("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$");
         var accounts = whole["answers"]!.AsArray().Select(a => (string)a!["answerer"]!).ToList();
         Assert.All(accounts, id => Assert.Matches(grammar, id));
         Assert.Equal(3, accounts.Distinct().Count());
+    }
+
+    [Fact]
+    public void Record_withheld_is_record_whole_with_every_answerer_nil_and_the_count_and_notes_kept()
+    {
+        var whole = Fragment("record-whole");
+        var withheld = Fragment("record-withheld");
+
+        Assert.Equal(whole.Select(p => p.Key), withheld.Select(p => p.Key));
+        Assert.Equal((int)whole["answerer_count"]!, (int)withheld["answerer_count"]!);
+        Assert.All(withheld["answers"]!.AsArray(), a => Assert.Null(a!["answerer"]));
+        Assert.Equal(
+            whole["answers"]!.AsArray().Select(a => (string?)a!["note"]),
+            withheld["answers"]!.AsArray().Select(a => (string?)a!["note"]));
+    }
+
+    // Huginn's own record fragments, in a CultLib card's entry, through the real door: nothing added, dropped or invented.
+    [Theory]
+    [InlineData("record-whole", false)]
+    [InlineData("record-withheld", true)]
+    public async Task Huginns_own_record_in_either_view_comes_through_the_door_unchanged(string fragment, bool withheld)
+    {
+        var card = CultLibJson("entry-open-counted")["card"]!;
+        var entry = JsonNode.Parse($$$"""{"schemaVersion":"gamecult.fork.entry.v0","card":{{{card.ToJsonString(DeskJson.Options)}}},"record":{{{Fragment(fragment).ToJsonString(DeskJson.Options)}}}}""")!;
+        using var huginn = new FakeHuginnSocket(FakeHuginnSocket.Answer((_, _) => ListOf(entry.ToJsonString(DeskJson.Options))));
+
+        var listed = Assert.IsType<DeskListOutcome.Listed>(await List(new UnixSocketDeskDoor(), huginn.Path));
+
+        var got = Assert.Single(listed.List.Forks);
+        Assert.Equal(DeskServe.Text(entry), DeskServe.Text(got));
+        Assert.Equal(3, got.Record.AnswererCount);
+        Assert.All(got.Record.Answers, a => Assert.Equal(withheld, a.Answerer is null));
     }
 
     // A decider's entry and its non-decider twin, each served through the real door as a list page: the card (18 keys,
@@ -393,22 +426,6 @@ public sealed class UnixSocketDeskDoorTests
 
         Assert.Equal(200, own.Status);
         Assert.Equal(DeskServe.Text(decider), DeskServe.Text(JsonNode.Parse(own.Text)!["forks"]![0]!));
-    }
-
-    // Huginn's record-whole at b299d6f7 still has no answerer_count, which the contract requires (the README says "what
-    // the door sends today"; the real types follow in cut-desk-feed-listing). The door refuses it as a reply that does
-    // not decode; it does not write the 0 it could have made up. When Huginn's record gains the key this test is the
-    // one to retire.
-    [Fact]
-    public async Task Huginns_record_without_answerer_count_is_a_fault_not_a_zero()
-    {
-        var card = CultLibJson("entry-open-counted")["card"]!;
-        var entry = $$$"""{"schemaVersion":"gamecult.fork.entry.v0","card":{{{card.ToJsonString(DeskJson.Options)}}},"record":{{{Fragment("record-whole").ToJsonString(DeskJson.Options)}}}}""";
-        using var huginn = new FakeHuginnSocket(FakeHuginnSocket.Answer((_, _) => ListOf(entry)));
-
-        var failure = await Assert.ThrowsAsync<DeskDoorException>(() => List(new UnixSocketDeskDoor(), huginn.Path));
-
-        Assert.Contains("closed map", failure.Message);
     }
 
     // ---- (d) one dead Mind fails only itself, through the HTTP edge ----

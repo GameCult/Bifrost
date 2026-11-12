@@ -115,7 +115,7 @@ public static class DeskServe
         JsonNode.Parse($$"""{"schemaVersion":"gamecult.fork.list.v0","mind":"{{mind}}","stamp":"s7","open_count":1,"recorded_count":0,"forks":[{{entry.ToJsonString(DeskJson.Options)}}],"next_cursor":null}""")!.AsObject();
 
     public static JsonObject Entry(string file) =>
-        JsonNode.Parse(MessagePackSerializer.ConvertToJson(File.ReadAllBytes(Path.Combine(DeskFeedFixturePinTests.Directory, "cultlib-3a51bbab", file + ".msgpack"))))!.AsObject();
+        JsonNode.Parse(MessagePackSerializer.ConvertToJson(File.ReadAllBytes(Path.Combine(DeskFeedFixturePinTests.Directory, "cultlib-d3025d3c", file + ".msgpack"))))!.AsObject();
 
     // The reply payload exactly as given, asked as a list for "gamecult-chat"; throws what the door throws.
     public static async Task<DeskListOutcome> ListPayloadAsync(byte[] payload)
