@@ -105,6 +105,13 @@ public sealed class StartupConfigurationValidator(
             failures.Add("Heimdall:PatronSupportIntakeSecret is required when patron support intake is enabled.");
         }
 
+        // The options are already resolved, so a secret from Heimdall:AppSecretFile or Heimdall:AppSecret lands in AppSecret.
+        // Blank would silently switch Discord and Patreon member sign-in off.
+        if (string.IsNullOrWhiteSpace(heimdallOptions.Value.AppSecret))
+        {
+            failures.Add("Heimdall:AppSecretFile (or Heimdall:AppSecret) must supply the Heimdall app secret outside development.");
+        }
+
         if (stripeOptions.Value.EnableCheckout)
         {
             if (!stripeOptions.Value.IsCheckoutConfigured)
