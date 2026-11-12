@@ -53,18 +53,29 @@ public sealed class HeimdallAuthService(
         }
     }
 
+    private const int RefusalBodyLimit = 4096;
+
     /// <summary>
-    /// Names the HTTP status and, when the body carries one, Heimdall's error code. The code is shown only
-    /// if it is a short snake_case token, so nothing else from the body (free text, tokens) reaches a log.
+    /// Names the HTTP status and, when the first 4 KiB of the body carry one, Heimdall's error code. The code
+    /// is shown only if it is a short snake_case token, so nothing else from the body (free text, tokens)
+    /// reaches a log. A body that cannot be read or parsed leaves the status alone: a refusal never becomes a 500.
     /// </summary>
     private static async Task<string> RefusedStartMessageAsync(HttpResponseMessage response, CancellationToken cancellationToken)
     {
         var detail = $"HTTP {(int)response.StatusCode}";
         try
         {
-            var body = await response.Content.ReadFromJsonAsync<JsonElement>(cancellationToken);
-            if (body.ValueKind == JsonValueKind.Object
-                && body.TryGetProperty("error", out var error)
+            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            var head = new byte[RefusalBodyLimit];
+            var length = 0;
+            while (length < head.Length && await stream.ReadAsync(head.AsMemory(length), cancellationToken) is > 0 and var read)
+            {
+                length += read;
+            }
+
+            using var body = JsonDocument.Parse(head.AsMemory(0, length));
+            if (body.RootElement.ValueKind == JsonValueKind.Object
+                && body.RootElement.TryGetProperty("error", out var error)
                 && error.ValueKind == JsonValueKind.String
                 && error.GetString() is { Length: > 0 and <= 64 } code
                 && code.All(c => c is (>= 'a' and <= 'z') or (>= '0' and <= '9') or '_'))
@@ -72,7 +83,7 @@ public sealed class HeimdallAuthService(
                 detail += ", " + code;
             }
         }
-        catch (JsonException)
+        catch (Exception) when (!cancellationToken.IsCancellationRequested)
         {
         }
 

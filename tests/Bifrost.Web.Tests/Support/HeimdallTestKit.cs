@@ -207,6 +207,9 @@ public sealed class FakeHeimdall : HttpMessageHandler
 
     public HttpStatusCode StartStatus { get; set; } = HttpStatusCode.OK;
 
+    /// <summary>A raw Content-Type header for the start answer (for example a charset .NET cannot decode); null means application/json.</summary>
+    public string? StartContentType { get; set; }
+
     public string StartBody { get; set; } =
         """{"authorizationUrl":"https://heimdall.test/oauth/discord/authorize?state=fixture"}""";
 
@@ -263,10 +266,9 @@ public sealed class FakeHeimdall : HttpMessageHandler
                 };
             }
 
-            return new HttpResponseMessage(StartStatus)
-            {
-                Content = new StringContent(StartBody, Encoding.UTF8, "application/json")
-            };
+            var content = new ByteArrayContent(Encoding.UTF8.GetBytes(StartBody));
+            content.Headers.TryAddWithoutValidation("Content-Type", StartContentType ?? "application/json");
+            return new HttpResponseMessage(StartStatus) { Content = content };
         }
 
         if (request.Method == HttpMethod.Post && path == "/v1/apps/bifrost/auth-completions/redeem")

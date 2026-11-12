@@ -1155,6 +1155,49 @@ public sealed class HeimdallCompletionTests
     }
 
     [Fact]
+    public async Task A_code_longer_than_sixty_four_characters_is_not_logged()
+    {
+        using var host = new HeimdallHost();
+        host.Heimdall.StartStatus = HttpStatusCode.Unauthorized;
+        host.Heimdall.StartBody = "{\"error\":\"" + new string('a', 65) + "\"}";
+
+        await host.StartAsync(member: true);
+
+        var logs = string.Join("\n", host.Logs.Lines);
+        Assert.Contains("Heimdall start refused: Heimdall rejected the auth start (HTTP 401).", logs);
+        Assert.DoesNotContain(new string('a', 65), logs);
+    }
+
+    [Theory]
+    [InlineData("text/html; charset=windows-1252")]
+    [InlineData("text/html; charset=bogus")]
+    [InlineData("text/html; charset=utf-7")]
+    public async Task A_refusal_whose_body_cannot_be_decoded_still_redirects_with_the_status(string contentType)
+    {
+        using var host = new HeimdallHost();
+        host.Heimdall.StartStatus = HttpStatusCode.BadGateway;
+        host.Heimdall.StartContentType = contentType;
+        host.Heimdall.StartBody = "<html>bad gateway</html>";
+
+        var attempt = await host.StartAsync();
+
+        Assert.Equal(ErrorRedirect, attempt.Response.Headers.Location!.OriginalString);
+        Assert.Contains("Heimdall start refused: Heimdall rejected the auth start (HTTP 502).", string.Join("\n", host.Logs.Lines));
+    }
+
+    [Fact]
+    public async Task Only_the_head_of_a_refusal_body_is_read()
+    {
+        using var host = new HeimdallHost();
+        host.Heimdall.StartStatus = HttpStatusCode.Unauthorized;
+        host.Heimdall.StartBody = "{\"pad\":\"" + new string('x', 200_000) + "\",\"error\":\"app_auth_required\"}";
+
+        await host.StartAsync(member: true);
+
+        Assert.Contains("Heimdall start refused: Heimdall rejected the auth start (HTTP 401).", string.Join("\n", host.Logs.Lines));
+    }
+
+    [Fact]
     public async Task Refusals_echo_no_input_in_responses_or_logs()
     {
         using var host = new HeimdallHost();
