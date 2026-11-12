@@ -490,4 +490,115 @@ public sealed class HeimdallGoogleLinkTests
         Assert.Equal(Status + "?link=linked", Location(d.Response));
         Assert.Equal(Status + "?link=expired", Location(replayed.Response));
     }
+
+    // ---- 10. pins for guards the first pass left unproven ----
+
+    [Fact]
+    public async Task A_link_continues_in_its_own_slot_and_leaves_a_parallel_sign_in_attempt_alive()
+    {
+        using var host = new HeimdallHost(realSessions: true);
+        var account = HeimdallShapes.NewAccountId();
+        var session = await host.SignInSessionAsync(account);
+        var parallel = await host.StartAsync();
+        var parallelCookie = $"{parallel.CookieName}={parallel.Cookie}";
+        var start = await host.StartLinkAsync(session, extraCookies: parallelCookie);
+        // The parallel attempt holds slot 0, so the link lives in the other slot.
+        Assert.Equal(HeimdallAttemptCookie.SlotNames[0], parallel.CookieName);
+        Assert.Equal(HeimdallAttemptCookie.SlotNames[1], start.CookieName);
+
+        var b = await StepB(host, session, start, account);
+        var awaiting = new Step(b.Response, b.Next, b.Token);
+        var pending = host.Heimdall.RegisterPendingLink();
+        var c = await StepC(host, session, awaiting.Next, pending);
+        var d = await StepD(host, session, c.Next, account);
+
+        // Every continuation wrote the link's own slot and none touched the parallel attempt's slot.
+        foreach (var response in new[] { b.Response, c.Response })
+        {
+            Assert.NotNull(HeimdallHost.SetCookieHeader(response, start.CookieName!));
+            Assert.Null(HeimdallHost.SetCookieHeader(response, parallel.CookieName!));
+        }
+
+        Assert.Equal(start.CookieName, b.Next.CookieName);
+        Assert.Equal(start.CookieName, c.Next.CookieName);
+        Assert.Equal(Status + "?link=linked", Location(d.Response));
+        Assert.Null(HeimdallHost.SetCookieHeader(d.Response, parallel.CookieName!));
+
+        var signIn = await host.CompleteWithHeaderAsync(
+            parallel.Nonce, host.CodeFor(parallel, HeimdallShapes.NewAccountId()), parallelCookie);
+        Assert.True(signIn.SignedIn);
+    }
+
+    [Theory]
+    [InlineData("9")]
+    [InlineData("-1")]
+    [InlineData("4")]
+    public async Task An_attempt_cookie_with_an_undefined_purpose_is_no_attempt_and_asks_Heimdall_for_nothing(string purpose)
+    {
+        using var host = new HeimdallHost(realSessions: true);
+        var account = HeimdallShapes.NewAccountId();
+        var session = await host.SignInSessionAsync(account);
+        var nonce = "crafted-" + Guid.NewGuid().ToString("N");
+        var protector = host.Services.GetRequiredService<IDataProtectionProvider>().CreateProtector("Bifrost.Heimdall.Attempt.v1");
+        var crafted = protector.Protect(
+            $$"""{"Nonce":"{{nonce}}","Provider":"discord","RequiresMemberAccess":false,"ReturnPath":"/App/Mill","ExpiresAt":"{{host.Clock.Now.AddMinutes(5):O}}","Purpose":{{purpose}},"ExpectedAccountId":"{{account}}","PendingLinkId":"p"}""");
+        var attempt = new StartedAttempt(
+            nonce, HeimdallAttemptCookie.SlotNames[0], crafted, $"https://localhost/auth/heimdall/complete?attempt={nonce}", null!);
+        var starts = host.Heimdall.StartBodies.Count;
+        var redeems = host.Heimdall.RedeemCalls;
+
+        var response = await host.PostCompleteAsync(
+            new Dictionary<string, string>
+            {
+                ["attempt"] = nonce, ["code"] = host.CodeFor(attempt, account), ["pendingLinkId"] = "p"
+            },
+            Jar(session, attempt));
+
+        Assert.Equal(ErrorRedirect, Location(response));
+        Assert.Equal(starts, host.Heimdall.StartBodies.Count);
+        Assert.Equal(redeems, host.Heimdall.RedeemCalls);
+        Assert.Empty(host.Heimdall.ConfirmBodies);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task An_await_step_without_a_pending_link_id_is_refused_before_Heimdall_hears_of_it(string pendingLinkId)
+    {
+        using var host = new HeimdallHost(realSessions: true);
+        var account = HeimdallShapes.NewAccountId();
+        var session = await host.SignInSessionAsync(account);
+        var start = await host.StartLinkAsync(session);
+        var b = await StepB(host, session, start, account);
+        var starts = host.Heimdall.StartBodies.Count;
+        var redeems = host.Heimdall.RedeemCalls;
+
+        var c = await StepC(host, session, b.Next, pendingLinkId);
+
+        Assert.Equal(Status + "?link=error", Location(c.Response));
+        Assert.Equal(starts, host.Heimdall.StartBodies.Count);
+        Assert.Equal(redeems, host.Heimdall.RedeemCalls);
+        Assert.Empty(host.Heimdall.ConfirmBodies);
+        AssertAttemptCleared(c.Response, b.Next);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("{}")]
+    [InlineData("""{"status":"pending"}""")]
+    [InlineData("""{"status":"Linked"}""")]
+    [InlineData("not json")]
+    public async Task A_201_confirm_that_does_not_say_linked_is_not_shown_as_linked(string body)
+    {
+        using var host = new HeimdallHost(realSessions: true);
+        var journey = await ThroughC(host);
+        host.Heimdall.ConfirmStatus = HttpStatusCode.Created;
+        host.Heimdall.ConfirmBody = body;
+
+        var d = await StepD(host, journey.Session, journey.C.Next, journey.Account);
+
+        Assert.Equal(Status + "?link=error", Location(d.Response));
+        Assert.Single(host.Heimdall.ConfirmBodies);
+        AssertAttemptCleared(d.Response, journey.C.Next);
+    }
 }
