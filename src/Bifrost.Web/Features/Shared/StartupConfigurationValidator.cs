@@ -22,6 +22,9 @@ public sealed class StartupConfigurationValidator(
     {
         var failures = new List<string>();
 
+        // Building the options resolves Heimdall:AppSecretFile, and a bad file stops startup in every environment.
+        _ = heimdallOptions.Value;
+
         // Checked in every environment: a bad value here would otherwise pass startup and throw on every cast.
         var conceptVotes = conceptVoteOptions.Value;
         if (!NetworkPrefix.IsValidLength(conceptVotes.IPv4PrefixLength, NetworkPrefix.IPv4Bits))

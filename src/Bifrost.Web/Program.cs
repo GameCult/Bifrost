@@ -64,7 +64,8 @@ builder.Services
 
 builder.Services
     .AddOptions<HeimdallOptions>()
-    .BindConfiguration(HeimdallOptions.SectionName);
+    .BindConfiguration(HeimdallOptions.SectionName)
+    .PostConfigure<ILogger<HeimdallOptions>>(HeimdallOptions.ResolveAppSecret);
 
 builder.Services
     .AddOptions<StripeOptions>()

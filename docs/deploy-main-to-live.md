@@ -54,7 +54,13 @@ permits, windows and `MaxTrackedKeys`.
 
 New since the live release, and not read by the validator:
 
-- **`Heimdall__AppSecret`**: required for Discord and Patreon sign-in. Without it `HeimdallOptions.IsDiscordConfigured` and
+- **`Heimdall__AppSecretFile`**: the preferred way to give Bifrost the app secret below. A path to a file holding it (one
+  trailing newlines are trimmed), for example `%d/heimdall-app-secret` under systemd `LoadCredential=`, so the secret never
+  rides in the process environment. When set, the file wins over `Heimdall__AppSecret`; a missing, unreadable or empty file
+  stops startup in every environment, with a message that names the option and path and never the value. Ops steps:
+  `docs/heimdall-app-secret-file.md`.
+- **`Heimdall__AppSecret`** (deprecated; use `Heimdall__AppSecretFile`; startup logs a warning when it is set): required for
+  Discord and Patreon sign-in. Without it `HeimdallOptions.IsDiscordConfigured` and
   `IsPatreonConfigured` are false and those sign-ins stop working (GitHub sign-in is unaffected); startup does not fail,
   so a missing key shows only at the live check. The value is Heimdall's app secret for slug `bifrost`
   (`GC_ACCESS_APP_BIFROST_SHARED_SECRET` on the Heimdall side). Bifrost sends it as `x-heimdall-app-secret`, redacted
