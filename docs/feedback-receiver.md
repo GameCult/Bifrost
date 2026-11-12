@@ -295,21 +295,22 @@ Bifrost's erase (PR #9) blanks the display name and keeps the account id as a to
    `gamecult-ops` `runbooks/gamecult-state-backup.md`, read at `origin/main`). No backup is changed. The receiver keeps an **erased-id list** (account id and record ids, no text,
    no hash) beside its store, and **any restore must re-apply it before the receiver serves**. The notice to people says it (R2 of the exceptions draft). If Meta wants shorter, put the
    store outside the weekly tier (14 days), a small backup-config edit.
-   *Is the store under a backed-up path? Not determinable today.* The backup scope takes `/etc/gamecult`, all of `/var/lib/gamecult/*` bar named exclusions, and `/srv/bifrost` except
-   `app`, `bifrost-publish.tar`, `log`, `backups` and `persona-feedback/runtime` (same runbook, Scope table); `docs/deploy-main-to-live.md` names no receiver path, and section 8 chooses
-   none. So any path under `/srv/bifrost` other than those four, or under `/var/lib/gamecult`, **will be backed up**; the excluded ones will not, and the file would then have no backup at all.
-   The path is to be chosen with that table in hand, and the erased-id list must sit in the same backed-up tree as the store. The 56 days is read from the runbook, not measured.
+   *Is the store under a backed-up path? Yes, by choice (Eureka, 2026-11-12):* `/var/lib/gamecult/bifrost/feedback-receiver/` (section 8), under `/var/lib/gamecult`, which the nightly
+   snapshot takes whole bar Idunn caches and Ghostlight acceptance output. It avoids the excluded `/srv/bifrost/persona-feedback/runtime`, `app`, `log` and `backups`. A file with a sibling
+   `<name>.lock` is re-copied under a shared lock, so `receiver.cc` and `erased.cc` each carry a `.lock` and travel in one directory in every snapshot, the erased-id list included. The 56 days is read from the runbook, not measured.
 
 ## 8. Where it lives
 
-**A CultCache file**, owned and written only by the receiver (Eureka's pick, PR #24 section 7a). Bifrost.Web is ASP.NET with Postgres as its
-store of record and has no CultCache writer (`CultCache` appears only in a comment in `BifrostModels.cs`); the mouth and the persona-feedback pump
-are Node and read CultCache. So the shape that fits what exists:
+**CultCache files in one directory, written only by the receiver, which is C# inside the Bifrost app** (`bifrost.service`, `Bifrost.Web`), sharing its issuer and auth (Eureka, 2026-11-12). Not Node,
+not the mouth, and not the `bifrost-feedback` user of `bifrost-persona-feedback.service`.
 
-- the receiver writes the file (a C# CultCache writer is new to Bifrost.Web, or a Node writer behind a loopback call; I did not decide which, and
-  it is Eureka's), only it writes, and the Node chat endpoint reads it read-only with its own delivery cursor in a separate file, the way
-  `persona-feedback serve` reads its delivery store and the mouth keeps `cursor.cc`;
-- session check, account state and role stay in Bifrost.Web (Postgres), where they already are.
+- **Path:** `/var/lib/gamecult/bifrost/feedback-receiver/` holding `receiver.cc` (records and delivery state), `erased.cc` (the erased-id list of section 7a) and a `.lock` file for each.
+  Directory `bifrost:bifrost`, mode 0750, **created by root at install**: `/var/lib/gamecult/bifrost` is `root:root` 0755 today, so the `bifrost` user cannot create the child itself (or a
+  `StateDirectory=gamecult/bifrost/feedback-receiver` in the unit that writes it). `bifrost.service` has no sandbox directives, so it needs nothing more; if it is later hardened with `ProtectSystem=strict`,
+  add `ReadWritePaths=/var/lib/gamecult/bifrost/feedback-receiver`. The backup reads as root, so 0750 does not block it.
+- **One writer.** Only the receiver writes these files; its delivery cursor lives in the same store, and Minds pull over HTTPS (section 2), so nothing else opens them.
+- **Open build question:** Bifrost.Web has no CultCache writer today (`CultCache` appears only in a comment in `BifrostModels.cs`); a C# CultCache runtime from `CultLib` is the new dependency this owes, and nobody has checked one fits.
+- Session check, account state and role stay in Postgres, where they already are.
 
 I withdraw my earlier lean to Postgres rows: it contradicts the ruled store, and the `.cc` witness it would have owed is what the file is.
 
@@ -332,8 +333,8 @@ Rulings of 2026-11-12 closed these, and they are no longer forks: whether erase 
 **Owed by this design, not forks:**
 
 - The issuer change of section 4b (`client_credentials`, per-Mind clients, `docs/oidc-issuer.md`).
-- **Pre-deploy test: a Mind sandbox can reach Bifrost over HTTPS.** Egress from a Mind's sandbox to Bifrost is untested and no Mind-to-Bifrost HTTP call exists in the repo except the signed intake POST (`Program.cs:768`). Before building, run one `curl` over HTTPS to the Bifrost host from a Mind's own sandbox and record the result; a refusal reopens the carrier.
-- **Pre-deploy: choose the store path** against the backup table (section 7a, item 5) and put the erased-id list beside it.
+- **Pre-deploy test: a Mind's process can reach Bifrost over HTTPS, and get a token.** Done 2026-11-12 from a Self run (not a Persona turn's sandbox): `https://bifrost.gamecult.org/healthz` returns 200 with a verified certificate. `/.well-known/openid-configuration` returns 404 because the live app (`67072b2`) predates the issuer, so the token path is untested. **Re-run when the issuer ships**, adding discovery, a `client_credentials` token request and one authorised receiver call; and run `curl -sI https://bifrost.gamecult.org/healthz` once from inside a Persona turn, which has not been tested. No Mind-to-Bifrost HTTP call exists in the repo except the signed intake POST (`Program.cs:768`).
+- **Install step:** root creates `/var/lib/gamecult/bifrost/feedback-receiver/` as `bifrost:bifrost` 0750 (section 8).
 - **Retention: 56 days**, stated in the notice.
 
 **Dependencies and unbuilt things:**
@@ -342,7 +343,7 @@ Rulings of 2026-11-12 closed these, and they are no longer forks: whether erase 
 - **The Huginn kinds are Eureka's.** PR #24 names `feedback_listing`, `feedback_answer`, `feedback_close_request`, `feedback_hide`, owned by
   `huginn-feedback-kinds-proposal.md`, which I could not read. PR #24 also notes the proposal's `feedback_answer` lists a `content_hash` that must go.
   Their dependency order is Huginn readers, then the Persona organ, then this receiver, so nothing here can ship first.
-- **The consumer of the mouth's pending path** (the heartbeat) is outside this repo, and option B needs the Persona side to learn three kinds.
+- **The Persona side must learn the three feedback kinds** and pull them over HTTPS with its bearer (section 2); the heartbeat that polls the mouth is outside this repo and is not the carrier.
 - **Deploy is behind main.** The deployed mouth is `/srv/bifrost/persona-chat/runtime/current`, release `e396305`, read at an earlier main; main has since added the image path, reply links, `CHAT_FETCH`
   and the v3/v4 pending answers. The deployed web app is `/srv/bifrost/app/current` at `67072b2`, which predates the desk, the chat-tier issuer change and the consent gate on main. I did not re-read `/srv/bifrost` for this pass. Anything in this design runs on a release that does not exist yet.
 - **Unread:** Eureka's receiver notes in #minds, `huginn-feedback-kinds-proposal.md`, MAS's side of the session, and Heimdall PR #6 (the
