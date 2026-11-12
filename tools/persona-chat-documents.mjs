@@ -22,6 +22,8 @@ export const kinds = Object.freeze({
   refusal: "gamecult.persona.chat_refusal.v1",
   openDirectRequest: "gamecult.persona.chat_open_direct_request.v1",
   openDirectReceipt: "gamecult.persona.chat_open_direct_receipt.v1",
+  fetchRequest: "gamecult.persona.chat_fetch_request.v1", // served only when the mouth's CHAT_FETCH flag is on, else an unknown kind
+  fetchReceipt: "gamecult.persona.chat_fetch_receipt.v1",
 });
 
 export const refusals = Object.freeze(["Brake", "PersonaMismatch", "UnknownRoom", "EmptyText", "SendFailed", "UnknownPersona"]);
@@ -34,6 +36,13 @@ const refusalDocument = Object.freeze([...refusals, "UnknownKind"]);
 
 // One outcome word per open-direct receipt. room_id and event_id are present exactly for Opened and Existing.
 export const directOutcomes = Object.freeze(["Opened", "Existing", "Brake", "PersonaMismatch", "UnknownPersona", "EmptyText", "ForeignUser", "NotAPerson", "NoSuchUser", "InvitePending", "Declined", "DailyLimit", "SendFailed"]);
+
+// One outcome word per fetch receipt, closed: no mouth text travels. room_id and image are present exactly for Stored and StoredUnverified;
+// the receipt slot is nil, Posted or Existing and is non-nil only for Stored.
+export const fetchOutcomes = Object.freeze(["Stored", "StoredUnverified", "Brake", "PersonaMismatch", "UnknownPersona", "NotAMember", "BridgedRoom", "TooLarge", "TypeRefused", "NoAttachment", "HashMismatch", "RateLimited", "FetchFailed", "StoreFailed"]);
+export const fileReceivedType = "org.gamecult.file_received"; // the Matrix event the mouth posts as the Mind after it stored her file
+export const fetchReceiptModes = Object.freeze(["Posted", "Existing"]);
+const maxFetchIdBytes = 255;
 
 const maxTextBytes = 4000;
 export const maxNewer = 50;
@@ -172,6 +181,38 @@ export function parseOpenDirectReceipt(t) {
   return { requestId: text(requestId, "request_id"), outcome, roomId: roomId === null ? null : text(roomId, "room_id"), eventId: eventId === null ? null : text(eventId, "event_id") };
 }
 
+// A Persona asks her mouth to keep one named Matrix file: room (an alias or a room id) and event id, nothing else. No mxc, URL, hash or path
+// exists in the tuple; the mouth reads the event itself. The id shapes are the mouth's to refuse by word (NotAMember, NoAttachment); here only
+// the bound that every id field has.
+const fetchId = (v, what) => {
+  text(v, what);
+  if (Buffer.byteLength(v, "utf8") > maxFetchIdBytes) throw new Error(`${what} is over ${maxFetchIdBytes} bytes`);
+  return v;
+};
+export function fetchRequestTuple({ requestId, persona, room, eventId }) {
+  return [text(requestId, "request_id"), text(persona, "persona"), fetchId(room, "room"), fetchId(eventId, "event_id")];
+}
+export function parseFetchRequest(t) {
+  const [requestId, persona, room, eventId] = tuple(t, 4, "chat_fetch_request");
+  return { requestId: text(requestId, "request_id"), persona: text(persona, "persona"), room: fetchId(room, "room"), eventId: fetchId(eventId, "event_id") };
+}
+
+function checkFetchReceipt(outcome, roomId, image, receipt) {
+  if (!fetchOutcomes.includes(outcome)) throw new Error(`unknown fetch outcome ${String(outcome)}`);
+  const stored = outcome === "Stored" || outcome === "StoredUnverified";
+  if (stored !== (roomId !== null && image !== null) || (!stored && (roomId !== null || image !== null))) throw new Error("room_id and image are present exactly for Stored and StoredUnverified");
+  if (receipt !== null && !(outcome === "Stored" && fetchReceiptModes.includes(receipt))) throw new Error("receipt is nil, or Posted or Existing for Stored only");
+}
+export function fetchReceiptTuple({ requestId, outcome, roomId = null, image = null, receipt = null }) {
+  checkFetchReceipt(outcome, roomId, image, receipt);
+  return [text(requestId, "request_id"), outcome, roomId === null ? null : text(roomId, "room_id"), imageTuple(image), receipt];
+}
+export function parseFetchReceipt(t) {
+  const [requestId, outcome, roomId, image, receipt] = tuple(t, 5, "chat_fetch_receipt");
+  checkFetchReceipt(outcome, roomId, image, receipt);
+  return { requestId: text(requestId, "request_id"), outcome, roomId: roomId === null ? null : text(roomId, "room_id"), image: image === null ? null : parseImage(image), receipt };
+}
+
 export function deliveryTuple(d) {
   return [
     seq(d.seq, "seq"), text(d.roomAlias, "room_alias"), text(d.roomId, "room_id"), matrixId("$", d.eventId, "event_id"),
@@ -230,6 +271,10 @@ export function parseDeliveryV4(t) {
 // A Matrix id as the tuple carries it: its sigil, a non-empty rest, at most 255 bytes, no Unicode whitespace, control, format or private-use characters and no unpaired surrogates.
 // The mouth applies the same test to what a homeserver returned, so a hostile id is no reply_to rather than a skipped delivery.
 export const isMatrixId = (sigil, v) => typeof v === "string" && Buffer.byteLength(v) <= 255 && v.length > 1 && v[0] === sigil && !/[\p{White_Space}\p{Cc}\p{Cf}\p{Co}\p{Default_Ignorable_Code_Point}\uD800-\uDFFF]/u.test(v);
+// A Matrix id the fetch path will put in a URL path or a request it builds: isMatrixId, and none of the characters or sequences that
+// steer a path or a query (a slash, ?, #, %, backslash, ..). Stricter than isMatrixId on purpose: the event id and the album root are
+// the sender's words. A room version 3 event id (standard base64) may hold a slash and is refused, as the fail-closed side.
+export const isFetchId = (sigil, v) => isMatrixId(sigil, v) && !/[/?#%\\]/.test(v.slice(1)) && !v.includes("..");
 function replyTo(r) {
   if (r === null) return null;
   const { eventId, sender, excerpt = null } = r;

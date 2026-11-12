@@ -298,6 +298,10 @@ The intended shape:
 
 VoidBot still owns room reading, moderation judgment, archive/source retrieval, and Persona cognition. Bifrost owns Discord when Discord is being used as the Labor Platform interface or swarm transport.
 
+### Fetch a named file (`chat_fetch_request.v1`, `chat_fetch_receipt.v1`)
+
+A Persona's Mind shell holds no Matrix token, so the mouth keeps a file for her: `chat_fetch_request.v1` is `[request_id, persona, room, event_id]`, a room (alias or id) and an event id, nothing else. The mouth reads her live membership and the room's full state, reads the event itself and takes `content.url` from it, fetches it as her (5 MiB, magic bytes decide the type), compares the file event's `info.sha256` with the hash it computed, stores the bytes in her image store, and answers `chat_fetch_receipt.v1` `[request_id, outcome, room_id, image, receipt]` with one of 14 fixed outcome words. A file with no `info.sha256` is `StoredUnverified` and gets no receipt; a present hash that is not the computed one is `HashMismatch` and stores nothing. For a stored, hash-matching file the mouth posts the contract's `org.gamecult.file_received` event (`{event_id, sha256, size}`) as her own Matrix user, once per (file, Mind): a reply in the album thread, else a plain event with an `m.reference` to the file. The Matrix sender is the Mind; no content key names her. Idempotence is read from Matrix, not kept. Bridged and encrypted rooms and other people's rooms are refused. The kind is served only with `CHAT_FETCH=1` (exactly that value); off, it is answered as any unknown kind (`UnknownKind`). One 15 s deadline owns each fetch, and one Persona may ask 30 in an hour.
+
 ## Heimdall Integration Target
 
 The correct future credential path is:

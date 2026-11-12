@@ -668,11 +668,11 @@ test("v4 paging: reply_to counts toward each delivery's size, and one oversize o
 });
 
 // Dial a throwaway endpoint, send one request and return the first document answered.
-async function askOnce({ replyLink, kind, tuple }) {
-  const mouth = { pendingAfter: () => [{ ...v4Delivery, replyTo: quoted }], tail: async () => ({ lines: [], gaps: [], rooms: [] }), speakableRooms: () => [] };
+async function askOnce({ replyLink, kind, tuple, fetchEnabled, mouth: given }) {
+  const mouth = given ?? { pendingAfter: () => [{ ...v4Delivery, replyTo: quoted }], tail: async () => ({ lines: [], gaps: [], rooms: [] }), speakableRooms: () => [] };
   const key = "connection-key-v4";
   const logs = [];
-  const server = await startChatEndpoint({ mouths: new Map([["eureka", mouth]]), runtime, port: 0, connectionKey: key, runtimeId: "mouth-v4", log: l => logs.push(l), ...(replyLink === undefined ? {} : { replyLink }) });
+  const server = await startChatEndpoint({ mouths: new Map([["eureka", mouth]]), runtime, port: 0, connectionKey: key, runtimeId: "mouth-v4", log: l => logs.push(l), ...(replyLink === undefined ? {} : { replyLink }), ...(fetchEnabled === undefined ? {} : { fetchEnabled }) });
   const client = dgram.createSocket("udp4");
   await new Promise(ok => client.bind(0, "127.0.0.1", ok));
   const connection = new runtime.cultnet.CultNetRudpSocketTransportConnection({ runtimeId: "huginn-v4", socket: client, mode: "client", remoteHost: "127.0.0.1", remotePort: server.address.port, connectionId: connectionIdFor(key), initialSequence: 1, resendDelayMs: 50, resendPollMs: 10, maxFragmentBytes: 1200 });
@@ -711,3 +711,57 @@ test("v4 flag on: the v3 request kind is answered with chat_pending.v4 over RUDP
   const v1 = await askOnce({ replyLink: true, kind: docs.kinds.pendingRequest, tuple: request });
   assert.equal(msgpack.decode(v1.document.payload)[1][0].length, 12);
 });
+
+// ---- chat_fetch (docs/bridge.md, "Fetch a named file"): the request and receipt kinds, behind CHAT_FETCH, default off.
+const fetchTuple = docs.fetchRequestTuple({ requestId: "req-f1", persona: "eureka", room: "#swarm:gamecult.org", eventId: "$file1" });
+const fetchStub = () => { const asked = []; return { asked, mouth: { fetchAttachment: async request => { asked.push(request); return { requestId: request.requestId, outcome: "NoAttachment", roomId: null, image: null, receipt: null }; } } }; };
+
+test("fetch flag off (unset, false): a fetch request is answered exactly as any unknown kind is, byte for byte, with no mouth call and the existing unknown-kind log line only", async () => {
+  for (const fetchEnabled of [undefined, false]) {
+    const { asked, mouth } = fetchStub();
+    const off = await askOnce({ fetchEnabled, kind: docs.kinds.fetchRequest, tuple: fetchTuple, mouth });
+    assert.deepEqual([off.document.schemaId, docs.parseRefusal(msgpack.decode(off.document.payload))], [docs.kinds.refusal, { persona: "eureka", refusal: "UnknownKind" }]);
+    assert.equal(asked.length, 0, "the mouth was never asked");
+    assert.deepEqual(off.logs, [`chat endpoint refused a request of an unknown kind: ${docs.kinds.fetchRequest}`]);
+    const made = await askOnce({ fetchEnabled, kind: "gamecult.persona.chat_fetch_request.v9", tuple: fetchTuple, mouth });
+    assert.equal(made.document.schemaId, off.document.schemaId);
+    assert.equal(made.document.recordKey, off.document.recordKey);
+    assert.deepEqual(Buffer.from(made.document.payload), Buffer.from(off.document.payload), "byte for byte the answer to a kind that never existed");
+  }
+});
+
+test("fetch flag on: the request reaches the Persona's mouth and the receipt comes back typed, 5 slots; another Persona's request is UnknownPersona", async () => {
+  const { asked, mouth } = fetchStub();
+  const on = await askOnce({ fetchEnabled: true, kind: docs.kinds.fetchRequest, tuple: fetchTuple, mouth });
+  assert.equal(on.document.schemaId, docs.kinds.fetchReceipt);
+  assert.deepEqual(asked, [{ requestId: "req-f1", persona: "eureka", room: "#swarm:gamecult.org", eventId: "$file1" }]);
+  assert.deepEqual(docs.parseFetchReceipt(msgpack.decode(on.document.payload)), { requestId: "req-f1", outcome: "NoAttachment", roomId: null, image: null, receipt: null });
+  const ghost = await askOnce({ fetchEnabled: true, kind: docs.kinds.fetchRequest, tuple: docs.fetchRequestTuple({ requestId: "r", persona: "ghost", room: "#a:b", eventId: "$e" }), mouth });
+  assert.equal(docs.parseFetchReceipt(msgpack.decode(ghost.document.payload)).outcome, "UnknownPersona");
+  assert.equal(asked.length, 1);
+});
+
+// ---- persona-chat-v7: the fetch request and its receipts. Huginn copies the msgpack byte for byte (its persona-chat-v9).
+const v7Dir = resolve(root, "tests", "fixtures", "persona-chat-v7");
+const v7Image = { path: `${"cd".repeat(32)}/${"ab".repeat(32)}.png`, mime: "image/png", size: 2048, sha256: "ab".repeat(32) };
+const v7Receipt = receipt => ({ tuple: docs.fetchReceiptTuple({ requestId: "req-f1", outcome: "Stored", roomId: "!abc:gamecult.org", image: v7Image, receipt }), parse: docs.parseFetchReceipt });
+const v7Samples = {
+  "gamecult.persona.chat_fetch_request.v1": { tuple: fetchTuple, parse: docs.parseFetchRequest },
+  "gamecult.persona.chat_fetch_receipt.v1.stored-nil": v7Receipt(null),
+  "gamecult.persona.chat_fetch_receipt.v1.stored-posted": v7Receipt("Posted"),
+  "gamecult.persona.chat_fetch_receipt.v1.stored-existing": v7Receipt("Existing"),
+  "gamecult.persona.chat_fetch_receipt.v1.stored-unverified": { tuple: docs.fetchReceiptTuple({ requestId: "req-f1", outcome: "StoredUnverified", roomId: "!abc:gamecult.org", image: v7Image }), parse: docs.parseFetchReceipt },
+  "gamecult.persona.chat_fetch_receipt.v1.refused": { tuple: docs.fetchReceiptTuple({ requestId: "req-f1", outcome: "BridgedRoom" }), parse: docs.parseFetchReceipt },
+};
+for (const [name, { tuple, parse }] of Object.entries(v7Samples)) {
+  test(`golden fixture: ${name} is byte-stable (msgpack and hex) and parses back, and re-encodes byte-equal`, async () => {
+    const bytes = Buffer.from(msgpack.encode(tuple));
+    if (process.env.UPDATE_FIXTURES === "1") { await mkdir(v7Dir, { recursive: true }); await writeFile(resolve(v7Dir, `${name}.msgpack`), bytes); await writeFile(resolve(v7Dir, `${name}.hex`), hexOf(bytes)); }
+    assert.deepEqual(bytes, await readFile(resolve(v7Dir, `${name}.msgpack`)), "wire bytes changed: Huginn decodes these fixtures");
+    assert.equal(await readFile(resolve(v7Dir, `${name}.hex`), "utf8"), hexOf(bytes), "the hex dump is the msgpack file");
+    const decoded = msgpack.decode(bytes);
+    assert.deepEqual(parse(decoded), parse(tuple));
+    assert.equal(decoded.length, name.includes("request") ? 4 : 5);
+    if (!name.includes("request")) assert.deepEqual(Buffer.from(msgpack.encode(docs.fetchReceiptTuple(parse(decoded)))), bytes, "decode then re-encode is byte-equal");
+  });
+}
