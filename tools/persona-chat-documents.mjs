@@ -68,8 +68,8 @@ export function parsePendingRequest(t) {
 
 // What the mouth can establish about a delivery from Matrix alone, for the Persona it is delivered to (see docs/bridge.md, "Addressing facts").
 // `basis` is why the message is for her, or null when the mouth has no proof (not that it is not for her: her names, her projects' names and
-// the sender's role are not the mouth's to know). `form` is the event's kind: only a "message" can address anyone.
-export const bases = Object.freeze(["direct", "tag", "reply", "room"]);
+// the sender's role are not the mouth's to know). "follow" is emitted only under the mouth's CHAT_FOLLOW flag. `form` is the event's kind: only a "message" can address anyone.
+export const bases = Object.freeze(["direct", "tag", "reply", "room", "follow"]);
 export const forms = Object.freeze(["message", "notice", "edit"]);
 
 export function ackTuple({ persona, throughSeq }) {

@@ -6,7 +6,7 @@
 // its m.mentions user ids and whether the room is a DM. The /sync position
 // (next_batch) is persisted only when an ack covers it, so a restart before the
 // ack re-delivers instead of losing. A v3 delivery also carries what Matrix proves about why it is for her (basis: direct, tag,
-// reply, room; form: message, notice, edit); names and roles are the heartbeat's to match, not the mouth's (docs/bridge.md,
+// reply, room, and with CHAT_FOLLOW=1 follow; form: message, notice, edit); names and roles are the heartbeat's to match, not the mouth's (docs/bridge.md,
 // "Addressing facts"). Reading wakes nothing: the heartbeat polls
 // with a non-consuming chat_pending_request and decides who runs. An ack posts nothing to Matrix. Her public
 // m.read receipt follows a chat_read document from Huginn, sent when a delivery has gone into the model's
@@ -22,6 +22,11 @@
 // newest room event she saw): inside the room gate, one step per room across every Persona, the mouth
 // reads the room's head from Matrix and answers RoomMoved, naming the messages that moved it, instead
 // of the PUT. A v1 send, and a v2 send with no basis, are not checked; both still pass through the gate.
+//
+// Follow (CHAT_FOLLOW=1, default off; docs/bridge.md "Follow"): her own send in a public room (not a DM, not encrypted, not bridged) anchors the room
+// for 10 minutes; those who spoke there in the 10 minutes before it, and whoever it tagged or replied to, get basis "follow" on their later messages
+// inside the window, at most 3 an hour per peer and room. Memory only. Off, no basis "follow" is ever emitted: Huginn's parser refuses it until its
+// Basis::Follow lands.
 //
 // Media: an m.image/m.file/m.audio/m.video event is delivered as one typed line (see bodyText), not its bare filename.
 // An m.image event in a delivered message is also fetched, as this Persona and only when an image store is configured
@@ -68,6 +73,12 @@ const FETCH_DEADLINE_MS = 15000; // one fetch, whole: it ends before Huginn's 20
 const FETCH_PER_HOUR = 30; // fetches one Persona may ask in an hour
 const RELATION_PAGES = 3; // pages of a receipt target's relations read before the answer is called unproven
 const PLATFORM = ["disc", "ord"].join(""); // the bridged platform's name, as Huginn's room_scope spells it: never written out whole
+const FOLLOW_WINDOW_MS = 10 * 60 * 1000; // W: an engagement lasts this long from the Mind's own post; a follow never extends it
+const FOLLOW_PER_HOUR = 3; // K: follow bases given per (Mind, peer, room) in an hour; past it the message keeps the basis it had
+const FOLLOW_ROOM_TTL_MS = 5 * 60 * 1000; // how long a room's public verdict (not encrypted, not bridged) is kept
+const FOLLOW_SLACK_MS = 60 * 1000; // clock disagreement tolerated between this process and the homeserver
+const FOLLOW_HOUR_MS = 60 * 60 * 1000;
+const FOLLOW_RING = 200; // recent senders kept per room
 const HEAD_PAGE = 50; // the room head a gated send reads; also the most ids a RoomMoved receipt names
 
 // The kind of an event for a delivery: an edit (m.replace) and an automated notice (m.notice) are not messages anyone is addressed by.
@@ -126,6 +137,7 @@ export function createMouth({
   persona, homeserver, serverName, rooms, token, fetch: httpFetch = globalThis.fetch, state, brake,
   now = Date.now, log = () => {}, syncTimeoutMs = 30000, maxPending = MAX_PENDING, gate = createRoomGate(), sendTimeoutMs = SEND_TIMEOUT_MS,
   presenceGraceMs = PRESENCE_GRACE_MS, fetchDeadlineMs = FETCH_DEADLINE_MS,
+  follow = false, // the follow basis (CHAT_FOLLOW): an untagged message from someone she tagged or replied to, within FOLLOW_WINDOW_MS of her own post, is for her
   replyLink = false, // resolve each reply's quoted event into delivery.replyTo (the v4 answer; one more event read per reply to a non-Mind)
   images = null, // this Persona's image store (createImageStore), or null: images stay the typed text line
   isServed = async () => false, // (async) whether a Matrix user id is an account this process speaks for: a Mind is not a person to open a DM with
@@ -303,6 +315,96 @@ export function createMouth({
     return lines;
   }
 
+  // Follow (docs/bridge.md, "Follow"). Memory only, bounded, purged on every sync pass. Her own send in a public room (not a DM, not encrypted, not
+  // bridged) anchors that room for W from the send: `engagements` room id -> { from, ends, counted }, counted being the senders who spoke there in the
+  // W before the send (`spoke`, a per-room ring of recent senders with event times) plus whoever the post tagged or replied to, if the event says so.
+  // Someone who first speaks after the send is not counted. Only her speaking again re-anchors (and re-snapshots); a follow never extends the window.
+  // `followsGiven` room|peer -> times follows were given. A restart empties all of it, which only shortens windows.
+  const engagements = new Map();
+  const spoke = new Map();
+  const followsGiven = new Map();
+  const anchored = new Set(); // event ids of her own posts already anchored: the send path and its /sync echo anchor once
+  const anchoring = new Map(); // event ids whose anchor is in flight: the send path and its echo never snapshot twice
+  const publicRooms = new Map(); // room id -> { ok, at }: the verdicts, a "no" included, so a not-public room is read once per FOLLOW_ROOM_TTL_MS, not every pass
+  const platformId = id => platformEvent({ sender: id });
+  // true or false is a verdict (kept); null is a failed read: unknown, retryable, kept nowhere.
+  async function publicRoom(roomId) {
+    if (directRooms.has(roomId)) return false;
+    const known = publicRooms.get(roomId);
+    if (known && now() - known.at < FOLLOW_ROOM_TTL_MS) return known.ok;
+    try {
+      const state = await matrix("GET", `/rooms/${encodeURIComponent(roomId)}/state`, undefined, API, AbortSignal.timeout(sendTimeoutMs));
+      if (!Array.isArray(state)) return null;
+      const ok = !state.some(e => e?.type === "m.room.encryption" || e?.type === "m.bridge" || e?.type === "uk.half-shot.bridge");
+      publicRooms.set(roomId, { ok, at: now() });
+      return ok;
+    } catch (error) {
+      say(`follow: room ${roomId} state not read: ${error.message}`);
+      return null; // unknown is not public, and not a verdict either
+    }
+  }
+  const eventAt = event => Number.isSafeInteger(event.origin_server_ts) && event.origin_server_ts >= 0 ? event.origin_server_ts : now();
+  function purgeFollow() {
+    const t = now();
+    for (const [room, e] of engagements) if (e.ends + FOLLOW_SLACK_MS <= t) engagements.delete(room);
+    for (const [room, ring] of spoke) {
+      const kept = ring.filter(r => r.at > t - FOLLOW_WINDOW_MS - FOLLOW_SLACK_MS);
+      if (kept.length === 0) spoke.delete(room); else spoke.set(room, kept);
+    }
+    for (const [key, times] of followsGiven) {
+      const kept = times.filter(x => t - x < FOLLOW_HOUR_MS + FOLLOW_SLACK_MS);
+      if (kept.length === 0) followsGiven.delete(key); else followsGiven.set(key, kept);
+    }
+  }
+  // Someone spoke in the room (a message from another account, not an edit or a notice): the ring behind the snapshot.
+  function noteSpeaker(roomId, event) {
+    if (!follow || directRooms.has(roomId) || formOf(event.content) !== "message" || platformEvent(event) || event.sender === selfId) return;
+    const ring = spoke.get(roomId) ?? [];
+    ring.push({ sender: event.sender, at: eventAt(event) });
+    if (ring.length > FOLLOW_RING) ring.shift();
+    spoke.set(roomId, ring);
+  }
+  // Her post at time `at` (the send's own time, or the echo's origin time): snapshot the room. `tagged`: ids from the event's m.mentions, `replyTo` the quoted event id.
+  async function anchor(roomId, eventId, at, tagged = [], replyTo = null) {
+    if (!follow) return;
+    while (anchoring.has(eventId)) await anchoring.get(eventId).catch(() => {}); // the send and its echo meet here: the second waits, then sees whether the first succeeded
+    if (anchored.has(eventId)) return;
+    const run = (async () => {
+      const verdict = await publicRoom(roomId);
+      if (verdict === null) return; // the read failed: this post stays retryable, its echo tries again
+      anchored.add(eventId);
+      if (anchored.size > 200) anchored.delete(anchored.values().next().value);
+      if (!verdict) return; // a "no" stays recorded
+      const counted = new Set((spoke.get(roomId) ?? []).filter(r => r.at >= at - FOLLOW_WINDOW_MS && r.at <= at).map(r => r.sender));
+      for (const id of tagged) counted.add(id);
+      if (typeof replyTo === "string" && replyTo !== "") { const author = await authorOf(roomId, replyTo); if (author !== null) counted.add(author); }
+      for (const id of [...counted]) if (!docs.isMatrixId("@", id) || id === selfId || platformId(id)) counted.delete(id);
+      engagements.set(roomId, { from: at, ends: at + FOLLOW_WINDOW_MS, counted });
+    })();
+    anchoring.set(eventId, run);
+    try { await run; } finally { anchoring.delete(eventId); }
+  }
+  // Her own event seen in /sync (a send from another client, or the echo of a mouth send, which is then not anchored twice).
+  async function noteOwnPost(roomId, event) {
+    if (!follow || formOf(event.content) !== "message" || platformEvent(event)) return;
+    const relates = event.content["m.relates_to"];
+    const tagged = Array.isArray(event.content["m.mentions"]?.user_ids) ? event.content["m.mentions"].user_ids : [];
+    await anchor(roomId, event.event_id, eventAt(event), tagged.slice(0, docs.limits.mentions), relates?.is_falling_back === true ? null : relates?.["m.in_reply_to"]?.event_id);
+  }
+  // Whether this message is a follow, and if so spends one of the peer's K for the hour. Called only for a message that has no better basis.
+  async function followed(roomId, event) {
+    if (!follow || directRooms.has(roomId) || formOf(event.content) !== "message" || platformEvent(event)) return false;
+    const e = engagements.get(roomId), at = eventAt(event), t = now();
+    // Both clocks must agree: the message's own time inside the window, and this process's time not past it (a forged or old timestamp reuses nothing).
+    if (!e || !e.counted.has(event.sender) || at < e.from - FOLLOW_SLACK_MS || at >= e.ends || t >= e.ends + FOLLOW_SLACK_MS) return false;
+    if (!(await publicRoom(roomId))) return false;
+    const key = `${roomId}|${event.sender}`;
+    const recent = (followsGiven.get(key) ?? []).filter(x => at - x < FOLLOW_HOUR_MS);
+    if (recent.length >= FOLLOW_PER_HOUR) { followsGiven.set(key, recent); return false; }
+    followsGiven.set(key, [...recent, at]);
+    return true;
+  }
+
   // Why a delivered event is for this Persona, from what Matrix says and nothing else: "direct" (a DM), "tag" (m.mentions lists her
   // id, or, from a client that sends no m.mentions at all, the body links her matrix.to pill), "reply" (it replies to, or sits in a
   // thread under, an event her account wrote, so her Self run's words count as hers), "room" (an @room mention). In that order; null
@@ -440,6 +542,7 @@ export function createMouth({
   // One /sync round. Returns the deliveries it made.
   async function syncOnce() {
     if (!started || unjoined()) await start();
+    purgeFollow();
     replyReads = 0;
     held.clear();
     const free = await released(); // the round's brake read for presence, taken before any early return
@@ -474,7 +577,10 @@ export function createMouth({
         const deliverable = !baseline && !freshRooms.has(roomId) && event.sender !== selfId;
         if (deliverable && pending.length + made.length >= maxPending) { truncated = true; break rounds; }
         if (deliverable && replyLink && replyReads + targetsToRead(roomId, event) > REPLY_READS_PER_ROUND) { say(`event ${event.event_id} not read: round cap on target reads, the rest of the round waits for the next`); truncated = true; break rounds; } // not processed: the next round meets it again, with its read count reset
-        const basis = deliverable ? await basisOf(roomId, event) : null;
+        if (!baseline && !freshRooms.has(roomId) && event.sender === selfId) await noteOwnPost(roomId, event);
+        noteSpeaker(roomId, event);
+        let basis = deliverable ? await basisOf(roomId, event) : null;
+        if (deliverable && (basis === null || basis === "room") && await followed(roomId, event)) basis = "follow";
         const replyTo = deliverable ? await replyToOf(roomId, event) : null;
         processed.add(event.event_id);
         if (deliverable) {
@@ -647,7 +753,10 @@ export function createMouth({
         const sent = await matrix("PUT", `/rooms/${encodeURIComponent(roomId)}/send/m.room.message/${encodeURIComponent(requestId)}`, { msgtype: "m.text", body: text }, API, AbortSignal.timeout(sendTimeoutMs));
         return { requestId, eventId: sent.event_id, refusal: null, newer: [] };
       });
-      if (result.refusal === null) { touch(); setPresence(true).catch(() => {}); } // outside the room gate and not awaited: a slow presence write holds neither another send nor this receipt
+      if (result.refusal === null) {
+        touch(); setPresence(true).catch(() => {}); // outside the room gate and not awaited: a slow presence write holds neither another send nor this receipt
+        if (follow) { const at = now(); anchor(roomId, result.eventId, at).catch(error => say(`follow: send not anchored: ${error.message}`)); } // in the background too: a room-state read that hangs or fails never delays the receipt
+      }
       return result;
     } catch (error) {
       say(`send failed: ${error.message}`);
@@ -887,7 +996,9 @@ export function createMouth({
     }
   }
 
-  return { start, syncOnce, ack, read, pendingAfter, tail, speakableRooms, send, openDirect, fetchAttachment, run, get userId() { return selfId; }, get pendingCount() { return pending.length; } };
+  // A plain copy of the follow memory, for tests: anchors with their counted senders, the sender ring, and how many cap entries are held.
+  const followState = () => ({ engagements: [...engagements].map(([room, e]) => ({ room, from: e.from, ends: e.ends, counted: [...e.counted] })), spoke: [...spoke].map(([room, ring]) => ({ room, senders: ring.map(r => r.sender) })), followsGiven: followsGiven.size });
+  return { followState, start, syncOnce, ack, read, pendingAfter, tail, speakableRooms, send, openDirect, fetchAttachment, run, get userId() { return selfId; }, get pendingCount() { return pending.length; } };
 }
 
 // The log's word for a failure: error class and HTTP status only, never the message (it can hold a URL, an mxc or a sender-chosen id).
@@ -1074,6 +1185,8 @@ export function loadRuntime(cultRoot) {
 export const replyLinkFromEnv = env => env.CHAT_PENDING_V4 === "1";
 // The fetch flag, the same way: on only for exactly "1". Off, the fetch request kind is an unknown kind.
 export const fetchFromEnv = env => env.CHAT_FETCH === "1";
+// The follow flag, the same way. Off, the mouth never emits basis "follow" (Huginn's parser refuses an unknown basis until its Basis::Follow lands).
+export const followFromEnv = env => env.CHAT_FOLLOW === "1";
 
 function required(env, name) {
   if (!env[name]) throw new Error(`${name} is required`);
@@ -1127,7 +1240,7 @@ export async function main(env = process.env) {
     const mouths = new Map(personas.map(persona => {
       mkdirSync(join(stateRoot, persona), { recursive: true });
       return [persona, createMouth({
-        persona, homeserver, serverName, rooms: roomsByPersona.get(persona), token: tokens.get(persona), gate, replyLink, isServed: async id => { await Promise.all([...mouths.values()].map(m => m.start().catch(() => {}))); return [...mouths.values()].some(m => m.userId === id); }, log: line => log(`${persona}: ${line}`),
+        persona, homeserver, serverName, rooms: roomsByPersona.get(persona), token: tokens.get(persona), gate, replyLink, follow: followFromEnv(env), isServed: async id => { await Promise.all([...mouths.values()].map(m => m.start().catch(() => {}))); return [...mouths.values()].some(m => m.userId === id); }, log: line => log(`${persona}: ${line}`),
         images: imageRoot ? createImageStore({ root: join(imageRoot, persona), log: line => log(`${persona}: ${line}`) }) : null,
         state: cultcacheState({ runtime, path: join(stateRoot, persona, "cursor.cc") }),
         brake: createBrakeReader({ controlPath: join(controlRoot, persona, "control.cc"), readStore: runtime.readSingleFileStore, decode: runtime.msgpack.decode }),
