@@ -24,6 +24,19 @@
         <p class="muted">@Model.StatusMessage</p>
     </div>
 
+    @if (Model.LinkMessage is not null)
+    {
+        <div class="callout" role="status">@Model.LinkMessage</div>
+    }
+
+    @if (Model.CanLinkGoogle)
+    {
+        <form method="post" asp-page-handler="LinkGoogle" class="panel-actions">
+            <button class="button secondary" type="submit">Link a Google login</button>
+            <span class="muted">You will sign in to Heimdall again, then to Google. Google links your account; it does not sign you in.</span>
+        </form>
+    }
+
     @if (Model.Invitation is not null)
     {
         <div class="callout success">

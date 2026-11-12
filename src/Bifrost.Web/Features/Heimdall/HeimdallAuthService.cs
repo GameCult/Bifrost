@@ -41,6 +41,14 @@ public sealed class HeimdallAuthService(
         "twitch"
     };
 
+    /// <summary>Whether a provider may sign a person in (and so be asked for at /auth/heimdall/{provider}). Google is identity only: it can be linked, never signed in with.</summary>
+    public static bool IsSignInProvider(string provider) => AllowedProviders.Contains(provider);
+
+    /// <summary>The headers HttpClient logging must never write: the app secret and any bearer.</summary>
+    public static bool RedactsHeader(string header) =>
+        string.Equals(header, AppSecretHeader, StringComparison.OrdinalIgnoreCase)
+        || string.Equals(header, "Authorization", StringComparison.OrdinalIgnoreCase);
+
     private readonly IDataProtector _protector = dataProtectionProvider.CreateProtector("Bifrost.Heimdall.Attempt.v1");
 
     /// <summary>Points the client at Heimdall and, when the app has a secret, identifies Bifrost as the app.</summary>
@@ -96,7 +104,11 @@ public sealed class HeimdallAuthService(
         LocalReturnPath returnPath,
         bool requireMemberAccess,
         IEnumerable<KeyValuePair<string, string>> requestCookies,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        HeimdallAttemptPurpose purpose = HeimdallAttemptPurpose.SignIn,
+        string? expectedAccountId = null,
+        string? pendingLinkId = null,
+        string? replaceSlot = null)
     {
         if (!AllowedProviders.Contains(provider))
         {
@@ -144,10 +156,39 @@ public sealed class HeimdallAuthService(
             provider,
             requireMemberAccess,
             returnPath,
-            timeProvider.GetUtcNow() + HeimdallAttemptCookie.Lifetime);
+            timeProvider.GetUtcNow() + HeimdallAttemptCookie.Lifetime,
+            purpose,
+            expectedAccountId,
+            pendingLinkId);
         return new HeimdallAuthStartResult(
-            new Uri(payload.AuthorizationUrl, UriKind.Absolute), ChooseSlot(requestCookies), Protect(attempt));
+            new Uri(payload.AuthorizationUrl, UriKind.Absolute), replaceSlot ?? ChooseSlot(requestCookies), Protect(attempt));
     }
+
+    /// <summary>The provider a link's fresh sign-in uses: the one the person signed in with, else Discord.</summary>
+    public static string LinkSignInProvider(string? sessionProvider) =>
+        sessionProvider is not null && AllowedProviders.Contains(sessionProvider) ? sessionProvider.ToLowerInvariant() : "discord";
+
+    /// <summary>
+    /// The account page's link button: an ordinary Heimdall sign-in whose attempt says it is only the proof for a
+    /// link, and which person it must prove. The session is never replaced by it.
+    /// </summary>
+    public Task<HeimdallAuthStartResult> StartLinkAsync(
+        string sessionAccountId,
+        string? sessionProvider,
+        string callbackBaseUrl,
+        IEnumerable<KeyValuePair<string, string>> requestCookies,
+        CancellationToken cancellationToken) =>
+        StartAsync(
+            LinkSignInProvider(sessionProvider),
+            callbackBaseUrl,
+            LocalReturnPath.Parse(LinkReturnPath),
+            requireMemberAccess: false,
+            requestCookies,
+            cancellationToken,
+            HeimdallAttemptPurpose.LinkStart,
+            sessionAccountId);
+
+    public const string LinkReturnPath = "/Membership/Status";
 
     /// <summary>
     /// The slot the new attempt's cookie takes: the first slot that holds no live attempt, else the one whose
@@ -195,15 +236,13 @@ public sealed class HeimdallAuthService(
         return null;
     }
 
-    public async Task<HeimdallCompletedSignIn> CompleteAsync(
-        string callbackBaseUrl,
-        string? nonce,
-        string? cookieValue,
-        string? code,
-        CancellationToken cancellationToken)
+    /// <summary>What the attempt this browser holds for the nonce is for, or null when it holds none.</summary>
+    public HeimdallAttemptPurpose? PurposeOf(string? cookieValue, string? nonce) => Unprotect(cookieValue, nonce)?.Purpose;
+
+    /// <summary>Redeems the code of an attempt and verifies the token it carries. The token is returned to the caller's stack frame and nowhere else.</summary>
+    private async Task<(HeimdallVerifiedIdentity Identity, string AccessToken)> RedeemVerifiedAsync(
+        string callbackBaseUrl, HeimdallAttempt attempt, string? code, CancellationToken cancellationToken)
     {
-        var attempt = Unprotect(cookieValue, nonce)
-            ?? throw new HeimdallAuthException("Heimdall completion has no attempt for this browser.");
         if (string.IsNullOrWhiteSpace(code))
         {
             throw new HeimdallAuthException("Heimdall completion carried no code.");
@@ -221,6 +260,24 @@ public sealed class HeimdallAuthService(
         }
 
         var identity = await tokenVerifier.VerifyAsync(redeemed.AccessToken, redeemed.Account?.Id, cancellationToken);
+        return (identity, redeemed.AccessToken);
+    }
+
+    public async Task<HeimdallCompletedSignIn> CompleteAsync(
+        string callbackBaseUrl,
+        string? nonce,
+        string? cookieValue,
+        string? code,
+        CancellationToken cancellationToken)
+    {
+        var attempt = Unprotect(cookieValue, nonce)
+            ?? throw new HeimdallAuthException("Heimdall completion has no attempt for this browser.");
+        if (attempt.Purpose != HeimdallAttemptPurpose.SignIn)
+        {
+            throw new HeimdallAuthException("Heimdall completion is not a sign-in attempt.");
+        }
+
+        var (identity, _) = await RedeemVerifiedAsync(callbackBaseUrl, attempt, code, cancellationToken);
         if (attempt.RequiresMemberAccess && !identity.HasMemberAccess)
         {
             throw new HeimdallAuthException("Heimdall did not grant Bifrost member access.");
@@ -234,6 +291,155 @@ public sealed class HeimdallAuthService(
         return new HeimdallCompletedSignIn(
             bifrostIdentityService.BuildPrincipal(userAccount, attempt.Provider),
             attempt.ReturnPath);
+    }
+
+    /// <summary>
+    /// One step of a Google link, chosen by the purpose of the attempt this browser holds. The browser's session must be
+    /// the account the link was begun for, checked before Heimdall is asked anything and again against the identity the
+    /// fresh sign-in proves. Each step consumes the held attempt: the next step is a new attempt in the same slot, or none.
+    /// </summary>
+    public async Task<HeimdallLinkStep> ContinueLinkAsync(
+        string callbackBaseUrl,
+        string? nonce,
+        string cookieName,
+        string? cookieValue,
+        string? code,
+        string? pendingLinkId,
+        string? sessionAccountId,
+        CancellationToken cancellationToken)
+    {
+        var attempt = Unprotect(cookieValue, nonce)
+            ?? throw new HeimdallAuthException("Heimdall link has no attempt for this browser.");
+        if (string.IsNullOrEmpty(attempt.ExpectedAccountId)
+            || !string.Equals(sessionAccountId, attempt.ExpectedAccountId, StringComparison.Ordinal))
+        {
+            throw new HeimdallAuthException("Heimdall link belongs to another session.");
+        }
+
+        switch (attempt.Purpose)
+        {
+            case HeimdallAttemptPurpose.LinkStart:
+            {
+                var (_, bearer) = await RedeemOwnerAsync(callbackBaseUrl, attempt, code, cancellationToken);
+                var authorizationUrl = await StartGoogleLinkAsync(callbackBaseUrl, attempt, bearer, cancellationToken);
+                return new HeimdallLinkStep(authorizationUrl.Url, cookieName, authorizationUrl.CookieValue, null);
+            }
+
+            case HeimdallAttemptPurpose.LinkAwaitGoogle:
+            {
+                if (string.IsNullOrWhiteSpace(pendingLinkId))
+                {
+                    throw new HeimdallAuthException("Heimdall link carried no pending link.");
+                }
+
+                var next = await StartAsync(
+                    LinkSignInProvider(attempt.Provider),
+                    callbackBaseUrl,
+                    attempt.ReturnPath,
+                    requireMemberAccess: false,
+                    [],
+                    cancellationToken,
+                    HeimdallAttemptPurpose.LinkConfirm,
+                    attempt.ExpectedAccountId,
+                    pendingLinkId,
+                    replaceSlot: cookieName);
+                return new HeimdallLinkStep(next.AuthorizationUrl, cookieName, next.CookieValue, null);
+            }
+
+            case HeimdallAttemptPurpose.LinkConfirm:
+            {
+                var (identity, bearer) = await RedeemOwnerAsync(callbackBaseUrl, attempt, code, cancellationToken);
+                var outcome = await ConfirmLinkAsync(attempt.PendingLinkId!, bearer, cancellationToken);
+                if (outcome == HeimdallLinkOutcome.Linked)
+                {
+                    // Membership follows the verified identity exactly as at sign-in; the session principal is not replaced.
+                    await UpsertUserAccountAsync(identity, attempt.Provider, grantMemberAccess: false, cancellationToken);
+                }
+
+                return new HeimdallLinkStep(null, cookieName, null, outcome);
+            }
+
+            default:
+                throw new HeimdallAuthException("Heimdall completion is not a link attempt.");
+        }
+    }
+
+    /// <summary>Redeems a link attempt's code and requires it to prove the account the link was begun for.</summary>
+    private async Task<(HeimdallVerifiedIdentity Identity, string AccessToken)> RedeemOwnerAsync(
+        string callbackBaseUrl, HeimdallAttempt attempt, string? code, CancellationToken cancellationToken)
+    {
+        var proven = await RedeemVerifiedAsync(callbackBaseUrl, attempt, code, cancellationToken);
+        if (!string.Equals(proven.Identity.AccountId, attempt.ExpectedAccountId, StringComparison.Ordinal))
+        {
+            throw new HeimdallAuthException("Heimdall link was proven by another account.");
+        }
+
+        return proven;
+    }
+
+    private async Task<(Uri Url, string CookieValue)> StartGoogleLinkAsync(
+        string callbackBaseUrl, HeimdallAttempt attempt, string bearer, CancellationToken cancellationToken)
+    {
+        var options = heimdallOptions.Value;
+        var nonce = WebEncoders.Base64UrlEncode(RandomNumberGenerator.GetBytes(32));
+        using var message = new HttpRequestMessage(HttpMethod.Post, "/v1/oauth/google/start")
+        {
+            Content = JsonContent.Create(new HeimdallStartRequest(
+                options.AppSlug, "link", ToAttemptReturnUrl(callbackBaseUrl, nonce), new HeimdallHandoff("browser_completion"), null))
+        };
+        message.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", bearer);
+        using var response = await httpClient.SendAsync(message, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new HeimdallAuthException(await RefusedStartMessageAsync(response, cancellationToken));
+        }
+
+        var payload = await response.Content.ReadFromJsonAsync<HeimdallStartResponse>(cancellationToken);
+        if (payload is null || string.IsNullOrWhiteSpace(payload.AuthorizationUrl))
+        {
+            throw new HeimdallAuthException("Heimdall link start returned no authorization URL.");
+        }
+
+        var awaiting = new HeimdallAttempt(
+            nonce,
+            attempt.Provider,
+            false,
+            attempt.ReturnPath,
+            timeProvider.GetUtcNow() + HeimdallAttemptCookie.Lifetime,
+            HeimdallAttemptPurpose.LinkAwaitGoogle,
+            attempt.ExpectedAccountId,
+            null);
+        return (new Uri(payload.AuthorizationUrl, UriKind.Absolute), Protect(awaiting));
+    }
+
+    private async Task<HeimdallLinkOutcome> ConfirmLinkAsync(string pendingLinkId, string bearer, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var message = new HttpRequestMessage(
+                HttpMethod.Post, $"/v1/apps/{Uri.EscapeDataString(heimdallOptions.Value.AppSlug)}/links/confirm")
+            {
+                Content = JsonContent.Create(new HeimdallConfirmLinkRequest(pendingLinkId))
+            };
+            message.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", bearer);
+            using var response = await httpClient.SendAsync(message, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            switch (response.StatusCode)
+            {
+                case HttpStatusCode.Created:
+                    var linked = await response.Content.ReadFromJsonAsync<HeimdallConfirmLinkResponse>(cancellationToken);
+                    return linked?.Status == "linked" ? HeimdallLinkOutcome.Linked : HeimdallLinkOutcome.Error;
+                case HttpStatusCode.Conflict:
+                    return HeimdallLinkOutcome.IdentityLinkedElsewhere;
+                case HttpStatusCode.Gone:
+                    return HeimdallLinkOutcome.Expired;
+                default:
+                    return HeimdallLinkOutcome.Error;
+            }
+        }
+        catch (Exception error) when (error is HttpRequestException or JsonException or NotSupportedException && !cancellationToken.IsCancellationRequested)
+        {
+            return HeimdallLinkOutcome.Error;
+        }
     }
 
     private async Task<HeimdallRedeemResponse> RedeemAsync(string code, CancellationToken cancellationToken)
@@ -260,7 +466,8 @@ public sealed class HeimdallAuthService(
 
     private string Protect(HeimdallAttempt attempt) =>
         _protector.Protect(JsonSerializer.Serialize(new AttemptWire(
-            attempt.Nonce, attempt.Provider, attempt.RequiresMemberAccess, attempt.ReturnPath.Value, attempt.ExpiresAt)));
+            attempt.Nonce, attempt.Provider, attempt.RequiresMemberAccess, attempt.ReturnPath.Value, attempt.ExpiresAt,
+            attempt.Purpose, attempt.ExpectedAccountId, attempt.PendingLinkId)));
 
     /// <summary>The live attempt a cookie value protects when it belongs to this nonce, else null.</summary>
     private HeimdallAttempt? Unprotect(string? cookieValue, string? nonce) =>
@@ -277,13 +484,14 @@ public sealed class HeimdallAuthService(
         try
         {
             var wire = JsonSerializer.Deserialize<AttemptWire>(_protector.Unprotect(cookieValue));
-            if (wire is null || wire.ExpiresAt <= timeProvider.GetUtcNow())
+            if (wire is null || wire.ExpiresAt <= timeProvider.GetUtcNow() || !Enum.IsDefined(wire.Purpose))
             {
                 return null;
             }
 
             return new HeimdallAttempt(
-                wire.Nonce, wire.Provider, wire.RequiresMemberAccess, LocalReturnPath.Parse(wire.ReturnPath), wire.ExpiresAt);
+                wire.Nonce, wire.Provider, wire.RequiresMemberAccess, LocalReturnPath.Parse(wire.ReturnPath), wire.ExpiresAt,
+                wire.Purpose, wire.ExpectedAccountId, wire.PendingLinkId);
         }
         catch (Exception error) when (error is CryptographicException or JsonException or FormatException)
         {
@@ -296,7 +504,10 @@ public sealed class HeimdallAuthService(
         string Provider,
         bool RequiresMemberAccess,
         string ReturnPath,
-        DateTimeOffset ExpiresAt);
+        DateTimeOffset ExpiresAt,
+        HeimdallAttemptPurpose Purpose = HeimdallAttemptPurpose.SignIn,
+        string? ExpectedAccountId = null,
+        string? PendingLinkId = null);
 
     private async Task<UserAccount> UpsertUserAccountAsync(
         HeimdallVerifiedIdentity identity,
@@ -448,7 +659,65 @@ public sealed record HeimdallAttempt(
     string Provider,
     bool RequiresMemberAccess,
     LocalReturnPath ReturnPath,
-    DateTimeOffset ExpiresAt);
+    DateTimeOffset ExpiresAt,
+    HeimdallAttemptPurpose Purpose = HeimdallAttemptPurpose.SignIn,
+    string? ExpectedAccountId = null,
+    string? PendingLinkId = null);
+
+/// <summary>
+/// What a held attempt is for. SignIn is the default, so a cookie written before purposes existed reads as a sign-in.
+/// The link purposes are the fresh sign-ins and the Google round trip of an explicit link; they never sign anyone in.
+/// </summary>
+public enum HeimdallAttemptPurpose
+{
+    SignIn = 0,
+    LinkStart = 1,
+    LinkAwaitGoogle = 2,
+    LinkConfirm = 3
+}
+
+public enum HeimdallLinkOutcome
+{
+    Linked,
+    IdentityLinkedElsewhere,
+    Expired,
+    Error
+}
+
+/// <summary>
+/// Where a link step sends the browser: to <see cref="Next"/> with a new attempt cookie in the held slot, or, when the
+/// link is finished, back to the account page with <see cref="Outcome"/>.
+/// </summary>
+public static class HeimdallLinkOutcomes
+{
+    public static string Redirect(HeimdallLinkOutcome outcome) => HeimdallAuthService.LinkReturnPath + "?link=" + Code(outcome);
+
+    public static string Code(HeimdallLinkOutcome outcome) => outcome switch
+    {
+        HeimdallLinkOutcome.Linked => "linked",
+        HeimdallLinkOutcome.IdentityLinkedElsewhere => "identity_linked_elsewhere",
+        HeimdallLinkOutcome.Expired => "expired",
+        _ => "error"
+    };
+
+    /// <summary>The words for an outcome code: a closed set, never Heimdall's text. Anything else gets none.</summary>
+    public static string? Wording(string? code) => code switch
+    {
+        "linked" => "Google is now linked to your Heimdall account.",
+        "identity_linked_elsewhere" => "That Google identity is already linked to a different Heimdall account. Nothing was linked.",
+        "expired" => "The Google link expired before it was confirmed. Nothing was linked; start the link again.",
+        "error" => "The Google link could not be completed. Nothing was linked.",
+        _ => null
+    };
+}
+
+public sealed record HeimdallLinkStep(Uri? Next, string CookieName, string? CookieValue, HeimdallLinkOutcome? Outcome);
+
+public sealed record HeimdallConfirmLinkRequest(
+    [property: JsonPropertyName("pendingLinkId")] string PendingLinkId);
+
+public sealed record HeimdallConfirmLinkResponse(
+    [property: JsonPropertyName("status")] string? Status);
 
 public sealed record HeimdallStartRequest(
     [property: JsonPropertyName("appSlug")] string AppSlug,
