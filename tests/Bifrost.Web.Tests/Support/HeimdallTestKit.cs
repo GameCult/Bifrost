@@ -215,6 +215,9 @@ public sealed class FakeHeimdall : HttpMessageHandler
     /// <summary>When set, every links/confirm answers this status with Heimdall's error code for it.</summary>
     public HttpStatusCode? ConfirmStatus { get; set; }
 
+    /// <summary>When set with <see cref="ConfirmStatus"/>, the body of that answer verbatim (empty string included).</summary>
+    public string? ConfirmBody { get; set; }
+
     private readonly HashSet<string> _pendingLinks = new(StringComparer.Ordinal);
 
     /// <summary>Registers a pending link Heimdall will confirm once for any bearer.</summary>
@@ -330,6 +333,11 @@ public sealed class FakeHeimdall : HttpMessageHandler
 
             if (ConfirmStatus is { } forced)
             {
+                if (ConfirmBody is not null)
+                {
+                    return Json(forced, ConfirmBody);
+                }
+
                 return forced switch
                 {
                     HttpStatusCode.Conflict => Json(forced, """{"error":"identity_linked_elsewhere"}"""),
@@ -621,7 +629,8 @@ public sealed class HeimdallHost : TestWebApplicationFactory
     /// The account page's link button as a browser posts it: the page is fetched for its antiforgery token and cookie
     /// (when <paramref name="antiforgery"/>), then the form is posted with the session. Without a session nothing is fetched.
     /// </summary>
-    public async Task<StartedAttempt> StartLinkAsync(string? session, bool antiforgery = true, HttpMethod? method = null)
+    public async Task<StartedAttempt> StartLinkAsync(
+        string? session, bool antiforgery = true, HttpMethod? method = null, string? extraCookies = null)
     {
         using var client = NewClient();
         var cookies = new List<string>();
@@ -641,6 +650,11 @@ public sealed class HeimdallHost : TestWebApplicationFactory
                 html, "name=\"__RequestVerificationToken\"[^>]*value=\"([^\"]+)\"").Groups[1].Value;
             fields["__RequestVerificationToken"] = token;
             cookies.Add($"{BifrostCookies.Antiforgery}={CookieValue(page, BifrostCookies.Antiforgery)}");
+        }
+
+        if (extraCookies is not null)
+        {
+            cookies.Add(extraCookies);
         }
 
         var before = Heimdall.StartBodies.Count;
