@@ -9,6 +9,8 @@
 | Show my logins | A fresh ordinary Heimdall sign-in as the session's account, through the proof provider (below); inside its completion, the list | `GET /v1/me/identities` with that sign-in's bearer |
 | Link Discord, Patreon or Google | The same fresh sign-in as proof, then the link start for the chosen provider with its bearer. Needs a current list. Discord and Patreon attach in Heimdall's callback and return a link completion; Google writes a pending link, and a second fresh sign-in confirms it | `POST /v1/oauth/{provider}/start` `mode: "link"`, then for Google `POST /v1/apps/bifrost/links/confirm` |
 | Unlink | A sign-in through Google with `stepUp: true` (app secret); inside its completion, the unlink | `POST /v1/me/identities/{id}/unlink` with that sign-in's bearer |
+| Unlink with a passkey (an account with a strong passkey) | A WebAuthn assertion verified at Bifrost, then a fresh ordinary sign-in as the account; inside its completion, Heimdall's app-asserted step-up, then the unlink with the token it returns | `POST /v1/apps/bifrost/step-up` `{method: "bifrost-passkey", nonce}`, then `POST /v1/me/identities/{id}/unlink` |
+| Add or revoke a passkey | Enrolment needs a fresh Heimdall sign-in first and cools off 48 hours; revoking needs no proof | none |
 
 The linkable providers are the ones Heimdall's `bifrost` profile admits (`identityProviders` in Heimdall `src/app-profiles.ts`): Discord, Patreon, Google. Twitch is offered for sign-in elsewhere in Bifrost but the profile refuses it, so it is not offered here.
 
@@ -30,9 +32,11 @@ An ordinary proof sign-in through Discord or Patreon when the account no longer 
 
 ## The proof limit
 
+Passkeys (`docs/passkeys.md`) are the strong proof: an account with a passkey past its cooling-off unlinks with it, and the Google step-up below is then closed (`passkey_required`). The rest of this section is the Google proof, which stays for an account with no strong passkey.
+
 Unlinking needs fresh proof: Heimdall refuses `403 step_up_required` unless the access token carries `step_up_at` from a step-up sign-in within 600 seconds (`docs/service-contract.md`, `POST /v1/me/identities/{identityId}/unlink`, in the Heimdall repository). Only Google can give that to a `bifrost` sign-in: Discord and Patreon have no re-authentication parameter (an open provider session completes without credentials), and Twitch and YouTube, which do, are not in the `bifrost` profile. So:
 
-- An account with no Google login linked cannot unlink anything from here. The page says so and shows no Unlink button; a posted unlink starts nothing.
+- An account with no Google login linked and no strong passkey cannot unlink anything from here. The page says what it can do (add a passkey; the time a cooling-off one becomes strong) and shows no Unlink button; a posted unlink starts nothing.
 - Heimdall answers `503 provider_not_configured` for Google until a Google OAuth client is configured on the Heimdall host (follow-up `heimdall-body:follow_up:google-console-client-registration`; not set live as of 2026-11-13). The step-up start is then refused and the page says fresh proof could not be started. Nothing loops: the refusal sets no attempt cookie.
 - Linking Google needs the same client. Until then the Google link button ends in "That could not be completed. Nothing was changed."
 - A Google step-up proof is as strong as Google's `prompt=login`; Heimdall says "asked", not "verified" (`stepUpRequested`).
@@ -53,8 +57,9 @@ A link refused because the login already belongs to another account (`409 identi
 - `Pages/Membership/LinkedAccounts.cshtml[.cs]`: the page and its three POST handlers.
 - `Features/Heimdall/HeimdallAuthService.cs`: the attempt machinery (`StartListAsync`, `StartLinkAsync`, `StartUnlinkAsync`, `ContinueLinkAsync`), shared with sign-in.
 - `Features/Heimdall/HeimdallMemberClient.cs`: the two member calls and their outcome mapping.
+- `Features/Passkeys/`, `wwwroot/js/passkeys.js`: the passkey ceremonies (`docs/passkeys.md`).
 - `Features/Heimdall/LinkedAccountsSnapshots.cs`: the five-minute list.
-- Tests: `tests/Bifrost.Web.Tests/LinkedAccountsTests.cs`, `HeimdallGoogleLinkTests.cs`, with the fake Heimdall in `Support/HeimdallTestKit.cs`.
+- Tests: `tests/Bifrost.Web.Tests/LinkedAccountsTests.cs`, `HeimdallGoogleLinkTests.cs`, `PasskeyTests.cs`, with the fake Heimdall in `Support/HeimdallTestKit.cs`.
 
 ## Known leftover
 
