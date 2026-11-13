@@ -105,6 +105,8 @@ This keeps Reddit useful without making subreddit mechanics the secret constitut
 
 Heimdall authenticates; it does not issue GameCult identity. Bifrost owns the identity (`UserAccount.Id`, `NormalizedBifrostIdentity`) and issues it to chat as an OIDC provider (`docs/oidc-issuer.md`). `HeimdallAccountId` is an authenticator handle that links a Heimdall account to a Bifrost identity.
 
+A member's provider logins are Heimdall's (`linked_identities`); Bifrost shows, links and unlinks them on `/Membership/LinkedAccounts` by calling Heimdall's member routes with a bearer from a fresh Heimdall sign-in, and keeps none (`docs/linked-accounts.md`).
+
 Bifrost consumes Heimdall claims. It does not become the key vault. The split is bridge versus gate: Heimdall decides who may cross under which grant; Bifrost moves authorized work across public protocols and records where it landed.
 
 ### Patron Collection Crossing

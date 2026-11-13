@@ -95,9 +95,11 @@ public sealed class LinkedAccountsTests
     {
         using var host = new HeimdallHost();
 
-        var (_, html) = await host.GetLinkedAccountsAsync(session: null);
+        var (response, html) = await host.GetLinkedAccountsAsync(session: null);
         var start = await host.StartListAsync(session: null);
 
+        // No form, so no antiforgery token to make the response uncacheable: the page itself must say no-store.
+        Assert.Contains("no-store", response.Headers.CacheControl?.ToString());
         Assert.Contains("not a Heimdall account", html);
         Assert.DoesNotContain("Link Discord", html);
         Assert.Empty(host.Heimdall.StartBodies);
@@ -556,6 +558,19 @@ public sealed class LinkedAccountsTests
         Assert.Equal("bifrost", link.RootElement.GetProperty("appSlug").GetString());
         Assert.False(link.RootElement.TryGetProperty("stepUp", out _));
         Assert.Equal($"https://heimdall.test/oauth/{provider}/authorize?state=link-fixture", Location(step));
+    }
+
+    [Fact]
+    public async Task A_proof_sign_in_goes_through_a_provider_the_account_still_holds()
+    {
+        using var host = new HeimdallHost(realSessions: true);
+        // Signed in through Discord, which the account has since unlinked: signing in through it again would mint another account.
+        var member = await ListedMember(host, "patreon", "google");
+
+        var start = await host.StartLinkAsync(member.Session, "discord");
+
+        Assert.Equal("/v1/oauth/patreon/start", host.Heimdall.StartPaths[^1]);
+        Assert.NotNull(start.Cookie);
     }
 
     [Theory]
