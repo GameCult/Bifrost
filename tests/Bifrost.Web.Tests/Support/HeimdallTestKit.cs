@@ -251,8 +251,8 @@ public sealed class FakeHeimdall : HttpMessageHandler
     public HashSet<string> StepUpReturnTos { get; } = new(StringComparer.Ordinal);
 
     /// <summary>
-    /// Providers an ordinary sign-in came through that the fake account (once it holds any login) does not hold. Heimdall mints an
-    /// unrelated account for such a sign-in, which would then hold that login.
+    /// Discord or Patreon sign-ins that came through a provider the fake account (once it holds any login) does not hold. Heimdall mints an
+    /// unrelated account for such a sign-in, which would then hold that login. Google never mints.
     /// </summary>
     public List<string> OrphanMints { get; } = [];
 
@@ -264,6 +264,9 @@ public sealed class FakeHeimdall : HttpMessageHandler
 
     /// <summary>When set, every unlink answers this status with Heimdall's error code for it (the fake's own rules are bypassed).</summary>
     public HttpStatusCode? UnlinkStatus { get; set; }
+
+    /// <summary>When set, an unlink is applied and then answered with this status (200 answers a body that is not JSON): a lost answer.</summary>
+    public HttpStatusCode? UnlinkApplyThenFail { get; set; }
 
     /// <summary>Throws instead of answering a member route, as an unreachable Heimdall does.</summary>
     public Exception? MemberFailure { get; set; }
@@ -302,6 +305,13 @@ public sealed class FakeHeimdall : HttpMessageHandler
             if (authorization is null)
             {
                 return Json(HttpStatusCode.Unauthorized, """{"error":"sign_in_required"}""");
+            }
+
+            if (UnlinkApplyThenFail is { } lost)
+            {
+                // The unlink happened; the answer did not arrive intact.
+                Identities.RemoveAll(x => (string?)x["id"] == id);
+                return Json(lost, lost == HttpStatusCode.OK ? "not json" : """{"error":"server_error"}""");
             }
 
             if (UnlinkStatus is { } forced)
@@ -453,7 +463,8 @@ public sealed class FakeHeimdall : HttpMessageHandler
                 };
             }
 
-            if (Identities.Count > 0 && Identities.All(x => (string?)x["provider"] != startProvider))
+            // Discord and Patreon mint an account for an identity no account holds; Google is requires_link and refuses (identity_not_linked).
+            if (startProvider != "google" && Identities.Count > 0 && Identities.All(x => (string?)x["provider"] != startProvider))
             {
                 OrphanMints.Add(startProvider);
             }

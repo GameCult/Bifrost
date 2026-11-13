@@ -164,7 +164,7 @@ public sealed class HeimdallAuthService(
 
     /// <summary>
     /// The provider an ordinary proof sign-in uses, or null when none is safe. A sign-in through a provider the account no
-    /// longer holds makes Heimdall mint an unrelated account that holds that login, so it is never guessed: with the account's
+    /// longer holds makes Heimdall mint an unrelated account that holds that login (Discord and Patreon; Google refuses instead), so it is never guessed: with the account's
     /// current list, the first held one of the person's choice, Discord, Patreon, Google; with no list, only a provider the
     /// member named (<paramref name="via"/>), who is the one who knows what they hold. The session's provider claim is not
     /// consulted: it records how they signed in once, not what the account holds now.
@@ -473,14 +473,15 @@ public sealed class HeimdallAuthService(
                 }
 
                 var unlinked = await memberClient.UnlinkAsync(bearer, attempt.Target ?? string.Empty, cancellationToken);
-                switch (unlinked.Call)
+                // Only Heimdall's definitive refusals leave the account as the list showed it. Any other end (not found, a lost
+                // answer, a 500, a malformed 200) may have applied the unlink, so the list is dropped rather than trusted.
+                if (unlinked.Call == HeimdallMemberCall.Ok)
                 {
-                    case HeimdallMemberCall.Ok:
-                        snapshots.Put(identity.AccountId, unlinked.Identities!);
-                        break;
-                    case HeimdallMemberCall.IdentityNotFound:
-                        snapshots.Remove(identity.AccountId);
-                        break;
+                    snapshots.Put(identity.AccountId, unlinked.Identities!);
+                }
+                else if (unlinked.Call is not (HeimdallMemberCall.SignInRequired or HeimdallMemberCall.StepUpRequired or HeimdallMemberCall.LastIdentity))
+                {
+                    snapshots.Remove(identity.AccountId);
                 }
 
                 return new HeimdallLinkStep(null, cookieName, null, unlinked.Call == HeimdallMemberCall.Ok ? HeimdallLinkOutcome.Unlinked : OutcomeOf(unlinked.Call));

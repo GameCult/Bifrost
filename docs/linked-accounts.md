@@ -22,11 +22,11 @@ Every action is a POST with antiforgery; a GET starts nothing. The completion ro
 
 ## Which provider proves the account
 
-An ordinary proof sign-in through a provider the account no longer holds makes Heimdall mint a new, unrelated account that holds that login, and the freed login then answers `identity_linked_elsewhere` when the member tries to link it back. So Bifrost never guesses a provider, and it does not use the "provider you signed in with" claim in the session (that records how you signed in once, not what the account holds now):
+An ordinary proof sign-in through Discord or Patreon when the account no longer holds that login makes Heimdall mint a new, unrelated account that holds it (those providers are `mints_account`), and the freed login then answers `identity_linked_elsewhere` when the member tries to link it back. Google is `requires_link`: Heimdall refuses a Google sign-in for a login no account holds (`identity_not_linked`) and never mints. So Bifrost never guesses a provider, and it does not use the "provider you signed in with" claim in the session (that records how you signed in once, not what the account holds now). This guarantee covers this page's proofs only: the older anonymous `GET /auth/heimdall/{provider}` still starts an ordinary sign-in through any named provider, and can overwrite an in-flight attempt slot; that route is unchanged here.
 
 - With a current list (the five-minute snapshot), the proof goes through a provider on it: Discord, else Patreon, else Google.
-- With no list (first visit, five minutes passed, a restart), the page offers only "Show my logins through Discord / Patreon / Google" and says plainly that Bifrost cannot tell what the account holds, so the member picks a login they know it holds. A named provider the account turns out not to hold still mints at Heimdall: that is the member's choice and the page says so beforehand. A refresh with no list and no named provider starts nothing (`provider_needed`).
-- Link buttons appear only with a current list; a posted link with none starts nothing (`list_expired`). Unlink needs the list too.
+- With no list (first visit, five minutes passed, a restart), the page offers only "Show my logins through Google (cannot create an account) / Discord / Patreon" and says plainly that Bifrost cannot tell what the account holds, so the member picks a login they know it holds. A named Discord or Patreon the account turns out not to hold still mints at Heimdall: that is the member's choice and the page says so beforehand. A refresh with no list and no named provider starts nothing (`provider_needed`).
+- Link buttons appear only with a current list; a posted link with none starts nothing (`list_expired`). Unlink needs the list too. After an unlink whose result is not a definitive refusal (a 500, a lost or malformed answer, not found) the list is dropped, since Heimdall may have applied it; only `403 step_up_required`, `409 last_identity` and `401` leave it.
 
 ## The proof limit
 
@@ -58,4 +58,6 @@ A link refused because the login already belongs to another account (`409 identi
 
 ## Known leftover
 
-When Discord or Patreon's callback refuses a link because the login belongs to another account, the complete page's script redirects to the page with the fixed result and does not post anything. The held attempt cookie (`__Host-bifrost_heimdall_<slot>`, HttpOnly, so script cannot clear it) stays until its ten minutes end and occupies one of the two slots meanwhile; a new start reuses a free or the oldest slot, so nothing blocks. Clearing it would need a server route reached by GET or a post from the failure path, which the hardened script deliberately does not do.
+Several exits leave the held attempt cookie (`__Host-bifrost_heimdall_<slot>`, HttpOnly, so script cannot clear it) in the browser until its ten minutes end: the complete page's redirect when Discord or Patreon refuses a link because the login belongs to another account, every other `heimdall_status=error` redirect, and a return with no code or no attempt. The script redirects without posting anything; clearing the cookie would need a server route reached by GET or a post from the failure path, which the hardened script deliberately does not do.
+
+A start takes a free slot, else overwrites the slot that expires first, live or dead (`ChooseSlot`, two slots). So three member starts within ten minutes can cost a still-live older attempt, which then finds no cookie and is refused; the member starts again.

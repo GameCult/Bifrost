@@ -134,6 +134,71 @@ public sealed class LinkedAccountsTests
     }
 
     [Theory]
+    [InlineData(HttpStatusCode.InternalServerError)]
+    [InlineData(HttpStatusCode.OK)]
+    public async Task An_unlink_whose_answer_is_lost_drops_the_list_and_a_link_then_starts_nothing(HttpStatusCode lost)
+    {
+        using var host = new HeimdallHost(realSessions: true);
+        var member = await ListedMember(host, "discord", "google");
+        var discord = (string)host.Heimdall.Identities[0]["id"]!;
+        var start = await host.StartUnlinkAsync(member.Session, discord);
+        host.Heimdall.UnlinkApplyThenFail = lost;
+
+        var done = await Finish(host, member.Session, start, member.Account, provider: "google");
+        var starts = host.Heimdall.StartBodies.Count;
+        var link = await host.StartLinkAsync(member.Session, "patreon", seedList: false);
+        var (_, html) = await host.GetLinkedAccountsAsync(member.Session);
+
+        // Heimdall did unlink Discord. Linking now through the stale list would sign in through Discord and mint an orphan.
+        Assert.Equal(Page + "?result=error", Location(done));
+        Assert.Single(host.Heimdall.Identities);
+        Assert.Equal(starts, host.Heimdall.StartBodies.Count);
+        Assert.Equal(Page + "?result=list_expired", Location(link.Response));
+        Assert.Empty(host.Heimdall.OrphanMints);
+        Assert.Contains("will not choose one for you", html);
+    }
+
+    [Fact]
+    public async Task Without_a_list_the_picker_names_Google_first_as_unable_to_create_an_account()
+    {
+        using var host = new HeimdallHost(realSessions: true);
+        var session = await host.SignInSessionAsync(HeimdallShapes.NewAccountId());
+
+        var (_, html) = await host.GetLinkedAccountsAsync(session);
+
+        Assert.Contains("Google cannot do that", html);
+        Assert.Contains("through Google (cannot create an account)", html);
+        Assert.True(html.IndexOf("Show my logins through Google", StringComparison.Ordinal) < html.IndexOf("Show my logins through Discord", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void With_no_list_and_no_choice_there_is_no_proof_provider()
+    {
+        Assert.Null(HeimdallAuthService.ProofProvider(null, null));
+        Assert.Null(HeimdallAuthService.ProofProvider(null, "twitch"));
+        Assert.Equal("patreon", HeimdallAuthService.ProofProvider(null, "Patreon"));
+        Assert.Null(HeimdallAuthService.ProofProvider([], "discord"));
+        Assert.Null(HeimdallAuthService.ProofProvider(["twitch"], null));
+        Assert.Equal("patreon", HeimdallAuthService.ProofProvider(["google", "patreon"], null));
+    }
+
+    [Fact]
+    public async Task The_service_refuses_to_start_a_proof_with_no_list_and_no_choice()
+    {
+        using var host = new HeimdallHost(realSessions: true);
+        using var scope = host.Services.CreateScope();
+        var service = scope.ServiceProvider.GetRequiredService<HeimdallAuthService>();
+        var starts = host.Heimdall.StartBodies.Count;
+
+        await Assert.ThrowsAsync<HeimdallAuthException>(() => service.StartListAsync(
+            HeimdallShapes.NewAccountId(), null, "https://localhost", [], CancellationToken.None));
+        await Assert.ThrowsAsync<HeimdallAuthException>(() => service.StartLinkAsync(
+            HeimdallShapes.NewAccountId(), "patreon", "https://localhost", [], CancellationToken.None));
+
+        Assert.Equal(starts, host.Heimdall.StartBodies.Count);
+    }
+
+    [Theory]
     [InlineData(null)]
     [InlineData("twitch")]
     [InlineData("nonsense")]
@@ -493,8 +558,8 @@ public sealed class LinkedAccountsTests
         Assert.DoesNotContain("HEIMDALL FREE TEXT", string.Join("\n", host.Logs.Lines));
         var (_, html) = await host.GetLinkedAccountsAsync(member.Session);
         Assert.DoesNotContain("HEIMDALL FREE TEXT", html);
-        // Not found says the list is stale: it is dropped. Anything else leaves what was shown.
-        Assert.Equal(status != HttpStatusCode.NotFound, html.Contains("Name of discord"));
+        // Only a definitive refusal (401 here) leaves the list shown; not found or an unreadable end may have changed the account, so it is dropped.
+        Assert.Equal(status == HttpStatusCode.Unauthorized, html.Contains("Name of discord"));
     }
 
     [Fact]
@@ -508,7 +573,7 @@ public sealed class LinkedAccountsTests
         var done = await Finish(host, member.Session, start, member.Account, StepUpToken(host, member.Account), provider: "google");
 
         Assert.Equal(Page + "?result=error", Location(done));
-        Assert.Contains("Name of discord", (await host.GetLinkedAccountsAsync(member.Session)).Html);
+        Assert.DoesNotContain("Name of discord", (await host.GetLinkedAccountsAsync(member.Session)).Html);
     }
 
     [Fact]

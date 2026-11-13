@@ -32,15 +32,16 @@
             <p class="muted">
                 Bifrost does not hold the list: it asks Heimdall, which means signing in to Heimdall again, and keeps the answer for
                 five minutes. It also cannot tell which logins this account holds right now, so it will not choose one for you.
-                Pick a login you know it holds. Signing in through one it no longer holds would create a separate Heimdall account
-                holding that login.
+                Pick a login you know it holds. Signing in through Discord or Patreon when the account no longer holds that login
+                would create a separate Heimdall account holding it. Google cannot do that: Heimdall refuses a Google sign-in for a
+                login no account holds.
             </p>
             <div class="panel-actions">
-                @foreach (var provider in Model.LinkableProviders)
+                @foreach (var provider in Model.LinkableProviders.OrderBy(x => x == "google" ? 0 : 1))
                 {
                     <form method="post" asp-page-handler="Refresh" class="inline-actions">
                         <input type="hidden" name="via" value="@provider" />
-                        <button class="button secondary" type="submit">Show my logins through @LinkedAccountsModel.ProviderName(provider)</button>
+                        <button class="button secondary" type="submit">Show my logins through @LinkedAccountsModel.ProviderName(provider)@(provider == "google" ? " (cannot create an account)" : "")</button>
                     </form>
                 }
             </div>
