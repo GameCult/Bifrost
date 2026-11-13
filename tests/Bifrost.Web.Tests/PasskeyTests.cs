@@ -951,10 +951,11 @@ public sealed class PasskeyTests
 
         Assert.False(party.IsAvailable);
         Assert.False(loud.IsAvailable);
-        foreach (var literal in new[] { "[::1]", "::1", "127.0.0.1" })
+        foreach (var (publicBase, literal) in new[] { ("https://[::1]", "[::1]"), ("https://[::1]", "::1"), ("https://127.0.0.1", "127.0.0.1") })
         {
+            // The public URL and the expected host agree, so only the IP-literal rule can refuse them.
             Assert.False(new PasskeyRelyingParty(
-                Microsoft.Extensions.Options.Options.Create(new Bifrost.Web.Configuration.BifrostHostOptions { PublicBaseUrl = "https://localhost", ExpectedHost = literal }),
+                Microsoft.Extensions.Options.Options.Create(new Bifrost.Web.Configuration.BifrostHostOptions { PublicBaseUrl = publicBase, ExpectedHost = literal }),
                 new Microsoft.Extensions.Logging.Abstractions.NullLogger<PasskeyRelyingParty>()).IsAvailable);
         }
 
