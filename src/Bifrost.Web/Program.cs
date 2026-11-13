@@ -829,6 +829,8 @@ app.MapPost("/auth/heimdall/complete", async (
     ILogger<HeimdallAuthService> logger,
     CancellationToken cancellationToken) =>
 {
+    // Every answer here sets or clears an attempt cookie or signs someone in: none may be stored.
+    httpContext.Response.Headers.CacheControl = "no-store";
     var form = await ReadFormOrNullAsync(httpContext.Request, cancellationToken);
     var attempt = form?["attempt"].ToString();
     var held = heimdallAuthService.FindAttemptCookie(httpContext.Request.Cookies, attempt);

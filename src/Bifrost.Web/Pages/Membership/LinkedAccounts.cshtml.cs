@@ -55,13 +55,21 @@ public sealed class LinkedAccountsModel(
     }
 
     /// <summary>Reads the account's logins: an ordinary Heimdall sign-in, then the list inside its completion.</summary>
-    public Task<IActionResult> OnPostRefreshAsync(CancellationToken cancellationToken) =>
-        BeginAsync(
-            (id, ct) => heimdallAuthService.StartListAsync(id, SessionProvider, hostOptions.Value.PublicBaseUrl, Request.Cookies, ct),
+    public Task<IActionResult> OnPostRefreshAsync(string? via, CancellationToken cancellationToken)
+    {
+        // With no current list Bifrost cannot tell which provider the account still holds, so the member names one.
+        if (AccountId is not { } id || (snapshots.Get(id) is null && (via is null || !HeimdallAuthService.LinkableProviders.Contains(via))))
+        {
+            return Task.FromResult(Done(HeimdallLinkOutcome.ProviderNeeded));
+        }
+
+        return BeginAsync(
+            (account, ct) => heimdallAuthService.StartListAsync(account, via, hostOptions.Value.PublicBaseUrl, Request.Cookies, ct),
             HeimdallLinkOutcome.Error,
             cancellationToken);
+    }
 
-    /// <summary>Links another provider. The provider is one Heimdall's bifrost profile admits; anything else starts nothing.</summary>
+    /// <summary>Links another provider. The provider is one Heimdall's bifrost profile admits; anything else starts nothing, and so does a missing list.</summary>
     public Task<IActionResult> OnPostLinkAsync(string? provider, CancellationToken cancellationToken)
     {
         if (provider is null || !HeimdallAuthService.LinkableProviders.Contains(provider))
@@ -69,8 +77,13 @@ public sealed class LinkedAccountsModel(
             return Task.FromResult(Done(HeimdallLinkOutcome.Error));
         }
 
+        if (AccountId is not { } id || snapshots.Get(id) is null)
+        {
+            return Task.FromResult(Done(HeimdallLinkOutcome.ListExpired));
+        }
+
         return BeginAsync(
-            (id, ct) => heimdallAuthService.StartLinkAsync(id, SessionProvider, provider, hostOptions.Value.PublicBaseUrl, Request.Cookies, ct),
+            (account, ct) => heimdallAuthService.StartLinkAsync(account, provider, hostOptions.Value.PublicBaseUrl, Request.Cookies, ct),
             HeimdallLinkOutcome.Error,
             cancellationToken);
     }
@@ -97,8 +110,6 @@ public sealed class LinkedAccountsModel(
             HeimdallLinkOutcome.ProofUnavailable,
             cancellationToken);
     }
-
-    private string? SessionProvider => User.FindFirstValue(BifrostClaimTypes.AuthProvider);
 
     private IActionResult Done(HeimdallLinkOutcome outcome) =>
         RedirectToPage(null, new Dictionary<string, string?> { [HeimdallLinkOutcomes.ResultParameter] = HeimdallLinkOutcomes.Code(outcome) });

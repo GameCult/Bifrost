@@ -28,9 +28,9 @@ public sealed class LinkedAccountsTests
     /// <summary>The fresh sign-in's completion as the browser posts it: Heimdall minted a code for <paramref name="proofAccount"/>.</summary>
     private static async Task<HttpResponseMessage> Finish(
         HeimdallHost host, string session, StartedAttempt attempt, string proofAccount, string? token = null,
-        string mode = "sign_in", string provider = "discord", string? sessionOverride = null)
+        string mode = "sign_in", string provider = "discord", string? sessionOverride = null, bool? stepUpRequested = null)
     {
-        var code = host.CodeFor(attempt, proofAccount, token, mode: mode, provider: provider);
+        var code = host.CodeFor(attempt, proofAccount, token, mode: mode, provider: provider, stepUpRequested: stepUpRequested);
         return await host.PostCompleteAsync(
             new Dictionary<string, string> { ["attempt"] = attempt.Nonce, ["code"] = code }, Jar(sessionOverride ?? session, attempt));
     }
@@ -50,9 +50,10 @@ public sealed class LinkedAccountsTests
             host.Heimdall.AddIdentity(provider, "Name of " + provider);
         }
 
-        var start = await host.StartListAsync(session);
+        var start = await host.StartListAsync(session, providers[0]);
         var done = await Finish(host, session, start, account);
         Assert.Equal(Page + "?result=listed", Location(done));
+        Assert.Empty(host.Heimdall.OrphanMints);
         return new Member(account, session);
     }
 
@@ -82,12 +83,83 @@ public sealed class LinkedAccountsTests
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Contains("no-store", response.Headers.CacheControl?.ToString());
-        Assert.Contains("Show my linked logins", html);
+        Assert.Contains("Show my logins through", html);
+        Assert.Contains("Show my logins through Patreon", html);
+        Assert.Contains("will not choose one for you", html);
+        Assert.DoesNotContain("Link Discord", html);
+        Assert.DoesNotContain("Unlink", html);
+    }
+
+    [Fact]
+    public async Task With_a_list_the_page_offers_each_admitted_provider_to_link_and_never_twitch()
+    {
+        using var host = new HeimdallHost(realSessions: true);
+        var member = await ListedMember(host, "discord", "google");
+
+        var (_, html) = await host.GetLinkedAccountsAsync(member.Session);
+
         Assert.Contains("Link Discord", html);
         Assert.Contains("Link Patreon", html);
         Assert.Contains("Link Google", html);
         Assert.DoesNotContain("Link Twitch", html);
-        Assert.DoesNotContain("Unlink", html);
+    }
+
+    [Fact]
+    public async Task After_the_list_expired_a_proof_is_never_started_through_a_provider_the_member_unlinked()
+    {
+        using var host = new HeimdallHost(realSessions: true);
+        var account = HeimdallShapes.NewAccountId();
+        var session = await host.SignInSessionAsync(account); // signed in through Discord
+        var discord = host.Heimdall.AddIdentity("discord", "D");
+        host.Heimdall.AddIdentity("google", "G");
+        var list = await host.StartListAsync(session, "discord");
+        await Finish(host, session, list, account);
+        var unlink = await host.StartUnlinkAsync(session, discord);
+        var done = await Finish(host, session, unlink, account, provider: "google");
+        Assert.Equal(Page + "?result=unlinked", Location(done));
+        host.Clock.Advance(LinkedAccountsSnapshots.Lifetime + TimeSpan.FromSeconds(1));
+        var starts = host.Heimdall.StartBodies.Count;
+
+        var refresh = await host.StartListAsync(session, via: null);
+        var link = await host.StartLinkAsync(session, "patreon", seedList: false);
+        var (_, html) = await host.GetLinkedAccountsAsync(session);
+
+        // Signing in through Discord again would mint an unrelated account holding that login: nothing is started.
+        Assert.Equal(starts, host.Heimdall.StartBodies.Count);
+        Assert.Equal(Page + "?result=provider_needed", Location(refresh.Response));
+        Assert.Equal(Page + "?result=list_expired", Location(link.Response));
+        Assert.Empty(host.Heimdall.OrphanMints);
+        Assert.Contains("will not choose one for you", html);
+        Assert.DoesNotContain("Link Patreon", html);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("twitch")]
+    [InlineData("nonsense")]
+    public async Task Without_a_list_the_member_must_name_an_admitted_provider_or_nothing_is_started(string? via)
+    {
+        using var host = new HeimdallHost(realSessions: true);
+        var session = await host.SignInSessionAsync(HeimdallShapes.NewAccountId());
+        var starts = host.Heimdall.StartBodies.Count;
+
+        var post = await host.StartListAsync(session, via);
+
+        Assert.Equal(starts, host.Heimdall.StartBodies.Count);
+        Assert.Equal(Page + "?result=provider_needed", Location(post.Response));
+    }
+
+    [Fact]
+    public async Task With_a_list_the_member_cannot_steer_the_proof_to_a_provider_the_account_does_not_hold()
+    {
+        using var host = new HeimdallHost(realSessions: true);
+        var member = await ListedMember(host, "patreon", "google");
+
+        var post = await host.StartListAsync(member.Session, "discord");
+
+        Assert.Equal("/v1/oauth/patreon/start", host.Heimdall.StartPaths[^1]);
+        Assert.Empty(host.Heimdall.OrphanMints);
+        Assert.NotNull(post.Cookie);
     }
 
     [Fact]
@@ -226,13 +298,13 @@ public sealed class LinkedAccountsTests
         Assert.Contains("Name of discord", (await host.GetLinkedAccountsAsync(member.Session)).Html);
         var (_, other) = await host.GetLinkedAccountsAsync(stranger);
         Assert.DoesNotContain("Name of discord", other);
-        Assert.Contains("Show my linked logins", other);
+        Assert.Contains("Show my logins through", other);
 
         host.Clock.Advance(LinkedAccountsSnapshots.Lifetime + TimeSpan.FromSeconds(1));
 
         var (_, later) = await host.GetLinkedAccountsAsync(member.Session);
         Assert.DoesNotContain("Name of discord", later);
-        Assert.Contains("Show my linked logins", later);
+        Assert.Contains("Show my logins through", later);
     }
 
     [Theory]
@@ -251,7 +323,7 @@ public sealed class LinkedAccountsTests
 
         Assert.Equal($"{Page}?result={outcome}", Location(done));
         Assert.DoesNotContain("HEIMDALL FREE TEXT", string.Join("\n", host.Logs.Lines));
-        Assert.Contains("Show my linked logins", (await host.GetLinkedAccountsAsync(session)).Html);
+        Assert.Contains("Show my logins through", (await host.GetLinkedAccountsAsync(session)).Html);
     }
 
     [Fact]
@@ -267,7 +339,7 @@ public sealed class LinkedAccountsTests
         var done = await Finish(host, session, start, account);
 
         Assert.Equal(Page + "?result=error", Location(done));
-        Assert.Contains("Show my linked logins", (await host.GetLinkedAccountsAsync(session)).Html);
+        Assert.Contains("Show my logins through", (await host.GetLinkedAccountsAsync(session)).Html);
     }
 
     [Fact]
@@ -354,6 +426,54 @@ public sealed class LinkedAccountsTests
         Assert.Equal(Page + "?result=step_up_required", Location(done));
         Assert.Equal(2, host.Heimdall.Identities.Count);
         Assert.Contains("Name of discord", (await host.GetLinkedAccountsAsync(member.Session)).Html);
+    }
+
+    [Fact]
+    public async Task A_completion_that_does_not_say_a_step_up_was_asked_unlinks_nothing()
+    {
+        using var host = new HeimdallHost(realSessions: true);
+        var member = await ListedMember(host, "discord", "google");
+        var start = await host.StartUnlinkAsync(member.Session, (string)host.Heimdall.Identities[0]["id"]!);
+
+        // The token even carries step_up_at, but the completion is not the answer to a step-up start.
+        var done = await Finish(host, member.Session, start, member.Account, StepUpToken(host, member.Account), provider: "google",
+            stepUpRequested: false);
+
+        Assert.Equal(Page + "?result=step_up_required", Location(done));
+        Assert.Empty(host.Heimdall.Unlinks);
+        Assert.Equal(2, host.Heimdall.Identities.Count);
+    }
+
+    [Fact]
+    public async Task A_proof_older_than_600_seconds_is_refused_by_Heimdall_and_changes_nothing()
+    {
+        using var host = new HeimdallHost(realSessions: true);
+        var member = await ListedMember(host, "discord", "google");
+        var start = await host.StartUnlinkAsync(member.Session, (string)host.Heimdall.Identities[0]["id"]!);
+        // The sign-in happened 601 seconds before the unlink reaches Heimdall (the attempt itself lives ten minutes).
+        var stale = host.Token(member.Account, mutate: claims => claims["step_up_at"] = host.Clock.Now.ToUnixTimeSeconds() - 601);
+
+        var done = await Finish(host, member.Session, start, member.Account, stale, provider: "google");
+
+        Assert.Equal(Page + "?result=step_up_required", Location(done));
+        Assert.Single(host.Heimdall.Unlinks);
+        Assert.Equal(2, host.Heimdall.Identities.Count);
+    }
+
+    [Fact]
+    public async Task Every_completion_answer_is_no_store()
+    {
+        using var host = new HeimdallHost(realSessions: true);
+        var account = HeimdallShapes.NewAccountId();
+        var session = await host.SignInSessionAsync(account);
+        host.Heimdall.AddIdentity("discord");
+        var start = await host.StartListAsync(session);
+
+        var done = await Finish(host, session, start, account);
+        var refused = await host.PostCompleteAsync(new Dictionary<string, string> { ["attempt"] = "nope" }, null);
+
+        Assert.Contains("no-store", done.Headers.CacheControl?.ToString());
+        Assert.Contains("no-store", refused.Headers.CacheControl?.ToString());
     }
 
     [Theory]
@@ -701,6 +821,7 @@ public sealed class LinkedAccountsTests
     [InlineData("sign_in_required")]
     [InlineData("proof_unavailable")]
     [InlineData("list_expired")]
+    [InlineData("provider_needed")]
     [InlineData("error")]
     public void Every_outcome_code_has_words_and_nothing_else_does(string code)
     {

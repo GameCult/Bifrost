@@ -29,10 +29,21 @@
         <h2>Your logins</h2>
         @if (Model.Identities is null)
         {
-            <form method="post" asp-page-handler="Refresh" class="panel-actions">
-                <button class="button secondary" type="submit">Show my linked logins</button>
-                <span class="muted">You will sign in to Heimdall again, which reads the list. It is kept for five minutes, then asked for again.</span>
-            </form>
+            <p class="muted">
+                Bifrost does not hold the list: it asks Heimdall, which means signing in to Heimdall again, and keeps the answer for
+                five minutes. It also cannot tell which logins this account holds right now, so it will not choose one for you.
+                Pick a login you know it holds. Signing in through one it no longer holds would create a separate Heimdall account
+                holding that login.
+            </p>
+            <div class="panel-actions">
+                @foreach (var provider in Model.LinkableProviders)
+                {
+                    <form method="post" asp-page-handler="Refresh" class="inline-actions">
+                        <input type="hidden" name="via" value="@provider" />
+                        <button class="button secondary" type="submit">Show my logins through @LinkedAccountsModel.ProviderName(provider)</button>
+                    </form>
+                }
+            </div>
         }
         else
         {
@@ -82,20 +93,23 @@
             </form>
         }
 
-        <h2>Link another login</h2>
-        <p class="muted">
-            You will sign in to Heimdall again, then to the provider you pick. If that login already belongs to another account,
-            nothing is linked and nothing is merged.
-        </p>
-        <div class="panel-actions">
-            @foreach (var provider in Model.LinkableProviders)
-            {
-                <form method="post" asp-page-handler="Link" class="inline-actions">
-                    <input type="hidden" name="provider" value="@provider" />
-                    <button class="button secondary" type="submit">Link @LinkedAccountsModel.ProviderName(provider)</button>
-                </form>
-            }
-        </div>
+        @if (Model.Identities is not null)
+        {
+            <h2>Link another login</h2>
+            <p class="muted">
+                You will sign in to Heimdall again, then to the provider you pick. If that login already belongs to another account,
+                nothing is linked and nothing is merged.
+            </p>
+            <div class="panel-actions">
+                @foreach (var provider in Model.LinkableProviders)
+                {
+                    <form method="post" asp-page-handler="Link" class="inline-actions">
+                        <input type="hidden" name="provider" value="@provider" />
+                        <button class="button secondary" type="submit">Link @LinkedAccountsModel.ProviderName(provider)</button>
+                    </form>
+                }
+            </div>
+        }
     }
 
     <div class="panel-actions">

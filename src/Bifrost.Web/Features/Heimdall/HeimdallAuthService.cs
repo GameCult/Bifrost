@@ -163,26 +163,27 @@ public sealed class HeimdallAuthService(
     }
 
     /// <summary>
-    /// The provider an ordinary proof sign-in uses: the one the person signed in with when the account still holds it,
-    /// else the first held one of Discord, Patreon, Google. With no list to go by, the session's provider, else Discord.
-    /// Signing in through a provider the account no longer holds would only mint an unrelated Heimdall account.
+    /// The provider an ordinary proof sign-in uses, or null when none is safe. A sign-in through a provider the account no
+    /// longer holds makes Heimdall mint an unrelated account that holds that login, so it is never guessed: with the account's
+    /// current list, the first held one of the person's choice, Discord, Patreon, Google; with no list, only a provider the
+    /// member named (<paramref name="via"/>), who is the one who knows what they hold. The session's provider claim is not
+    /// consulted: it records how they signed in once, not what the account holds now.
     /// </summary>
-    public static string ProofProvider(string? sessionProvider, IReadOnlyCollection<string>? held)
+    public static string? ProofProvider(IReadOnlyCollection<string>? held, string? via)
     {
-        var session = sessionProvider is not null && ProofProviders.Contains(sessionProvider) ? sessionProvider.ToLowerInvariant() : null;
-        if (held is { Count: > 0 })
+        var chosen = via is not null && ProofProviders.Contains(via) ? via.ToLowerInvariant() : null;
+        if (held is null)
         {
-            foreach (var candidate in new[] { session, "discord", "patreon", "google" })
-            {
-                if (candidate is not null && held.Contains(candidate, StringComparer.OrdinalIgnoreCase))
-                {
-                    return candidate;
-                }
-            }
+            return chosen;
         }
 
-        return session ?? "discord";
+        return new[] { chosen, "discord", "patreon", "google" }
+            .FirstOrDefault(x => x is not null && held.Contains(x, StringComparer.OrdinalIgnoreCase));
     }
+
+    private string ProofProviderFor(string accountId, string? via) =>
+        ProofProvider(snapshots.Get(accountId)?.Select(x => x.Provider).ToArray(), via)
+        ?? throw new HeimdallAuthException("No provider the account is known to hold can prove it.");
 
     /// <summary>
     /// The page's proof sign-ins. Each is a Heimdall sign-in for the account already signed in here, kept as an attempt
@@ -209,17 +210,23 @@ public sealed class HeimdallAuthService(
             stepUp: stepUp,
             target: target);
 
-    /// <summary>Reads the account's logins: an ordinary sign-in, then GET /v1/me/identities inside its completion.</summary>
+    /// <summary>
+    /// Reads the account's logins: an ordinary sign-in, then GET /v1/me/identities inside its completion. Through a provider on
+    /// the current list, or, when there is none, the one the member names in <paramref name="via"/>.
+    /// </summary>
     public Task<HeimdallAuthStartResult> StartListAsync(
-        string sessionAccountId, string? sessionProvider, string callbackBaseUrl,
+        string sessionAccountId, string? via, string callbackBaseUrl,
         IEnumerable<KeyValuePair<string, string>> requestCookies, CancellationToken cancellationToken) =>
         StartProofAsync(
-            HeimdallAttemptPurpose.ListProof, ProofProvider(sessionProvider, snapshots.Get(sessionAccountId)?.Select(x => x.Provider).ToArray()),
+            HeimdallAttemptPurpose.ListProof, ProofProviderFor(sessionAccountId, via),
             sessionAccountId, callbackBaseUrl, requestCookies, false, null, cancellationToken);
 
-    /// <summary>Links another provider: an ordinary sign-in as proof, then the link start for <paramref name="targetProvider"/> with its bearer.</summary>
+    /// <summary>
+    /// Links another provider: an ordinary sign-in as proof through a provider on the account's current list (there is no
+    /// guessing without one), then the link start for <paramref name="targetProvider"/> with its bearer.
+    /// </summary>
     public Task<HeimdallAuthStartResult> StartLinkAsync(
-        string sessionAccountId, string? sessionProvider, string targetProvider, string callbackBaseUrl,
+        string sessionAccountId, string targetProvider, string callbackBaseUrl,
         IEnumerable<KeyValuePair<string, string>> requestCookies, CancellationToken cancellationToken)
     {
         if (!LinkableProviders.Contains(targetProvider))
@@ -228,7 +235,7 @@ public sealed class HeimdallAuthService(
         }
 
         return StartProofAsync(
-            HeimdallAttemptPurpose.LinkStart, ProofProvider(sessionProvider, snapshots.Get(sessionAccountId)?.Select(x => x.Provider).ToArray()),
+            HeimdallAttemptPurpose.LinkStart, ProofProviderFor(sessionAccountId, null),
             sessionAccountId, callbackBaseUrl, requestCookies, false, targetProvider.ToLowerInvariant(), cancellationToken);
     }
 
@@ -458,7 +465,13 @@ public sealed class HeimdallAuthService(
 
             case HeimdallAttemptPurpose.UnlinkProof:
             {
-                var (identity, bearer) = await RedeemOwnerAsync(callbackBaseUrl, attempt, code, cancellationToken);
+                var (identity, bearer, redeemed) = await RedeemOwnerWithBodyAsync(callbackBaseUrl, attempt, code, cancellationToken);
+                if (redeemed.StepUpRequested != true)
+                {
+                    // Heimdall reports "asked" on a step-up completion; one that does not was not a step-up sign-in.
+                    return new HeimdallLinkStep(null, cookieName, null, HeimdallLinkOutcome.StepUpRequired);
+                }
+
                 var unlinked = await memberClient.UnlinkAsync(bearer, attempt.Target ?? string.Empty, cancellationToken);
                 switch (unlinked.Call)
                 {
@@ -838,7 +851,8 @@ public enum HeimdallLinkOutcome
     IdentityNotFound,
     SignInRequired,
     ProofUnavailable,
-    ListExpired
+    ListExpired,
+    ProviderNeeded
 }
 
 /// <summary>
@@ -865,6 +879,7 @@ public static class HeimdallLinkOutcomes
         HeimdallLinkOutcome.SignInRequired => "sign_in_required",
         HeimdallLinkOutcome.ProofUnavailable => "proof_unavailable",
         HeimdallLinkOutcome.ListExpired => "list_expired",
+        HeimdallLinkOutcome.ProviderNeeded => "provider_needed",
         _ => "error"
     };
 
@@ -881,6 +896,7 @@ public static class HeimdallLinkOutcomes
         "identity_not_found" => "That login is no longer on your account. Nothing was changed; the list below is read again when you ask.",
         "sign_in_required" => "Heimdall no longer accepts that sign-in. Nothing was changed; try again.",
         "proof_unavailable" => "Fresh proof could not be started, so nothing was changed. Unlinking needs a fresh Google sign-in, and it is not available right now.",
+        "provider_needed" => "Bifrost does not know which logins this account holds right now, so it will not guess. Pick one you know it holds to read the list. Nothing was changed.",
         "list_expired" => "The list was out of date. Nothing was changed; read your linked logins again.",
         "error" => "That could not be completed. Nothing was changed.",
         _ => null
@@ -928,7 +944,8 @@ public sealed record HeimdallRedeemResponse(
     [property: JsonPropertyName("accessToken")] string? AccessToken,
     [property: JsonPropertyName("account")] HeimdallAccount? Account,
     [property: JsonPropertyName("mode")] string? Mode = null,
-    [property: JsonPropertyName("provider")] string? Provider = null);
+    [property: JsonPropertyName("provider")] string? Provider = null,
+    [property: JsonPropertyName("stepUpRequested")] bool? StepUpRequested = null);
 
 public sealed record HeimdallAccount(
     [property: JsonPropertyName("id")] string Id);

@@ -6,8 +6,8 @@
 
 | Action | What Bifrost does | Heimdall call |
 |---|---|---|
-| Show my linked logins | A fresh ordinary Heimdall sign-in as the session's account; inside its completion, the list | `GET /v1/me/identities` with that sign-in's bearer |
-| Link Discord, Patreon or Google | The same fresh sign-in as proof, then the link start for the chosen provider with its bearer. Discord and Patreon attach in Heimdall's callback and return a link completion; Google writes a pending link, and a second fresh sign-in confirms it | `POST /v1/oauth/{provider}/start` `mode: "link"`, then for Google `POST /v1/apps/bifrost/links/confirm` |
+| Show my logins | A fresh ordinary Heimdall sign-in as the session's account, through the proof provider (below); inside its completion, the list | `GET /v1/me/identities` with that sign-in's bearer |
+| Link Discord, Patreon or Google | The same fresh sign-in as proof, then the link start for the chosen provider with its bearer. Needs a current list. Discord and Patreon attach in Heimdall's callback and return a link completion; Google writes a pending link, and a second fresh sign-in confirms it | `POST /v1/oauth/{provider}/start` `mode: "link"`, then for Google `POST /v1/apps/bifrost/links/confirm` |
 | Unlink | A sign-in through Google with `stepUp: true` (app secret); inside its completion, the unlink | `POST /v1/me/identities/{id}/unlink` with that sign-in's bearer |
 
 The linkable providers are the ones Heimdall's `bifrost` profile admits (`identityProviders` in Heimdall `src/app-profiles.ts`): Discord, Patreon, Google. Twitch is offered for sign-in elsewhere in Bifrost but the profile refuses it, so it is not offered here.
@@ -18,7 +18,15 @@ Bifrost keeps no Heimdall token. Each action is an attempt: a Data Protection co
 
 The list is kept for five minutes in this process only (`LinkedAccountsSnapshots`), keyed by the Heimdall account id, so the page can render after the completion's redirect: identity id, provider, display name (or username when there is none) and link date. Never the bearer, the email, the provider user id or the scopes. It is not given to the browser. A restart or the five minutes empties it and the page offers "Show my linked logins" again.
 
-Every action is a POST with antiforgery; a GET starts nothing. The page and every redirect carry only a code from a closed set (`HeimdallLinkOutcomes`, `?result=`); the wording is Bifrost's, never Heimdall's text or the query's.
+Every action is a POST with antiforgery; a GET starts nothing. The completion route's answers are `Cache-Control: no-store`. The page and every redirect carry only a code from a closed set (`HeimdallLinkOutcomes`, `?result=`); the wording is Bifrost's, never Heimdall's text or the query's.
+
+## Which provider proves the account
+
+An ordinary proof sign-in through a provider the account no longer holds makes Heimdall mint a new, unrelated account that holds that login, and the freed login then answers `identity_linked_elsewhere` when the member tries to link it back. So Bifrost never guesses a provider, and it does not use the "provider you signed in with" claim in the session (that records how you signed in once, not what the account holds now):
+
+- With a current list (the five-minute snapshot), the proof goes through a provider on it: Discord, else Patreon, else Google.
+- With no list (first visit, five minutes passed, a restart), the page offers only "Show my logins through Discord / Patreon / Google" and says plainly that Bifrost cannot tell what the account holds, so the member picks a login they know it holds. A named provider the account turns out not to hold still mints at Heimdall: that is the member's choice and the page says so beforehand. A refresh with no list and no named provider starts nothing (`provider_needed`).
+- Link buttons appear only with a current list; a posted link with none starts nothing (`list_expired`). Unlink needs the list too.
 
 ## The proof limit
 
@@ -29,7 +37,7 @@ Unlinking needs fresh proof: Heimdall refuses `403 step_up_required` unless the 
 - Linking Google needs the same client. Until then the Google link button ends in "That could not be completed. Nothing was changed."
 - A Google step-up proof is as strong as Google's `prompt=login`; Heimdall says "asked", not "verified" (`stepUpRequested`).
 
-Heimdall's other answers are shown as plain outcomes with nothing changed: `409 last_identity` (the last login is never removed), `404 identity_not_found` (the list is dropped as stale), `401 sign_in_required`, `403 step_up_required`, and any failure to reach Heimdall.
+The unlink completion must also say a step-up was requested (`stepUpRequested`, set by Heimdall when the start asked for one); one that does not is refused without calling Heimdall. Heimdall's other answers are shown as plain outcomes with nothing changed: `409 last_identity` (the last login is never removed), `404 identity_not_found` (the list is dropped as stale), `401 sign_in_required`, `403 step_up_required`, and any failure to reach Heimdall.
 
 A link refused because the login already belongs to another account (`409 identity_linked_elsewhere` from `links/confirm`; for Discord and Patreon the callback's `link_initiator_mismatch`, carried on by the complete page as a fixed result) is shown as "That login belongs to another account." The other account is never named.
 
@@ -47,3 +55,7 @@ A link refused because the login already belongs to another account (`409 identi
 - `Features/Heimdall/HeimdallMemberClient.cs`: the two member calls and their outcome mapping.
 - `Features/Heimdall/LinkedAccountsSnapshots.cs`: the five-minute list.
 - Tests: `tests/Bifrost.Web.Tests/LinkedAccountsTests.cs`, `HeimdallGoogleLinkTests.cs`, with the fake Heimdall in `Support/HeimdallTestKit.cs`.
+
+## Known leftover
+
+When Discord or Patreon's callback refuses a link because the login belongs to another account, the complete page's script redirects to the page with the fixed result and does not post anything. The held attempt cookie (`__Host-bifrost_heimdall_<slot>`, HttpOnly, so script cannot clear it) stays until its ten minutes end and occupies one of the two slots meanwhile; a new start reuses a free or the oldest slot, so nothing blocks. Clearing it would need a server route reached by GET or a post from the failure path, which the hardened script deliberately does not do.
