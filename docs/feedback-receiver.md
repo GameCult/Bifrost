@@ -4,7 +4,6 @@ Status: **design, nothing implemented.** Written for `heimdall-body:follow_up:ch
 `chat-s3549-3549`. It is the receiver half of Ratatoskr's Mind feedback pages. The page spec is Ratatoskr PR #24,
 `docs/mind-feedback-pages.md` at b146000d, which I take as final here; its section 7a names this doc. The rulings it
 builds on are Heimdall's drafts on guests and hiding (`/opt/commons/handoff/heimdall-feedback-pages-rulings.md`, cited as R4a to R6f).
-Draft; do not merge.
 
 Read at Bifrost main `b1725a1` (2026-11-12), line references re-read at `e58e953` (2026-11-12): `tools/persona-matrix-mouth.mjs`, `tools/persona-chat-documents.mjs`,
 `src/Bifrost.Web/Features/{Oidc,Desk,Registration,Shared}/*`, `Domain/BifrostModels.cs`, `Program.cs`, `docs/oidc-issuer.md`,
