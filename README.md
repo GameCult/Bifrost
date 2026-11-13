@@ -11,6 +11,7 @@ This repository now includes a viable alpha foundation slice of the ASP.NET Core
 - Razor Pages app under `src/Bifrost.Web`
 - PostgreSQL-backed EF Core model with an initial migration under `src/Bifrost.Web/Data/Migrations`
 - Bifrost-native identity registration plus GitHub OAuth and Heimdall-linked provider identities, with invite/approval-based membership gating
+- a Linked accounts page where a member sees, links and unlinks their Heimdall provider logins, with unlink gated on a fresh Google step-up proof ([docs/linked-accounts.md](docs/linked-accounts.md))
 - explicit member roles and admin-managed patron or contributor tier snapshots
 - patron support event recording with derived patron point summaries and tier refresh for voting weight
 - shared work board with estimates, actual time logs, review flow, and GitHub issue or PR links

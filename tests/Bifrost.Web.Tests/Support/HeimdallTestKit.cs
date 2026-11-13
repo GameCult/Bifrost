@@ -133,11 +133,13 @@ public static class HeimdallShapes
         string accessToken,
         string[]? looseCapabilities = null,
         string[]? looseFacts = null,
-        string looseName = "Loose Name") => new()
+        string looseName = "Loose Name",
+        string mode = "sign_in",
+        string provider = "discord") => new()
     {
         ["status"] = "success",
-        ["provider"] = "discord",
-        ["mode"] = "sign_in",
+        ["provider"] = provider,
+        ["mode"] = mode,
         ["appSlug"] = "bifrost",
         ["account"] = new Dictionary<string, object?> { ["id"] = accountId, ["displayName"] = looseName },
         ["entitlements"] = new Dictionary<string, object?>
@@ -220,6 +222,140 @@ public sealed class FakeHeimdall : HttpMessageHandler
 
     private readonly HashSet<string> _pendingLinks = new(StringComparer.Ordinal);
 
+    /// <summary>The logins the fake account holds, as GET /v1/me/identities answers them (with the fields Bifrost must never keep).</summary>
+    public List<Dictionary<string, object?>> Identities { get; } = [];
+
+    /// <summary>Adds a login to the fake account and returns its id.</summary>
+    public string AddIdentity(string provider, string? displayName = "A Name", string? id = null)
+    {
+        id ??= Guid.NewGuid().ToString();
+        Identities.Add(new Dictionary<string, object?>
+        {
+            ["id"] = id,
+            ["provider"] = provider,
+            ["providerUserId"] = "PUID-CANARY-" + id[..8],
+            ["username"] = "username-canary-" + id[..8],
+            ["displayName"] = displayName,
+            ["linkedAt"] = "2026-11-13T12:00:00.000Z",
+            ["scopes"] = new[] { "scope-canary" }
+        });
+        return id;
+    }
+
+    public List<string?> ListAuthorizations { get; } = [];
+
+    /// <summary>The clock the fake judges a step-up proof's age by (the host sets it to its test clock).</summary>
+    public Func<DateTimeOffset> Now { get; set; } = () => DateTimeOffset.UtcNow;
+
+    /// <summary>The returnTo of every start that asked for a step-up and passed Heimdall's checks: its completion carries the proof.</summary>
+    public HashSet<string> StepUpReturnTos { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Discord or Patreon sign-ins that came through a provider the fake account (once it holds any login) does not hold. Heimdall mints an
+    /// unrelated account for such a sign-in, which would then hold that login. Google never mints.
+    /// </summary>
+    public List<string> OrphanMints { get; } = [];
+
+    /// <summary>When set, GET /v1/me/identities answers this status with an error body.</summary>
+    public HttpStatusCode? ListStatus { get; set; }
+
+    /// <summary>The Authorization header and identity id of every unlink.</summary>
+    public List<(string? Authorization, string Id)> Unlinks { get; } = [];
+
+    /// <summary>When set, every unlink answers this status with Heimdall's error code for it (the fake's own rules are bypassed).</summary>
+    public HttpStatusCode? UnlinkStatus { get; set; }
+
+    /// <summary>When set, an unlink is applied and then answered with this status (200 answers a body that is not JSON): a lost answer.</summary>
+    public HttpStatusCode? UnlinkApplyThenFail { get; set; }
+
+    /// <summary>Throws instead of answering a member route, as an unreachable Heimdall does.</summary>
+    public Exception? MemberFailure { get; set; }
+
+    private HttpResponseMessage MemberRoute(HttpRequestMessage request, string path)
+    {
+        static HttpResponseMessage Json(HttpStatusCode status, string json) =>
+            new(status) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
+        if (MemberFailure is not null)
+        {
+            throw MemberFailure;
+        }
+
+        var authorization = request.Headers.Authorization?.ToString();
+        object Listing() => new { accountId = "a", identities = Identities };
+        if (request.Method == HttpMethod.Get && path == "/v1/me/identities")
+        {
+            ListAuthorizations.Add(authorization);
+            if (authorization is null)
+            {
+                return Json(HttpStatusCode.Unauthorized, """{"error":"sign_in_required"}""");
+            }
+
+            return ListStatus switch
+            {
+                HttpStatusCode.Unauthorized => Json(HttpStatusCode.Unauthorized, """{"error":"sign_in_required"}"""),
+                { } listed => Json(listed, """{"error":"server_error","detail":"HEIMDALL FREE TEXT"}"""),
+                _ => Json(HttpStatusCode.OK, JsonSerializer.Serialize(Listing()))
+            };
+        }
+
+        var segments = path.Split('/');
+        if (request.Method == HttpMethod.Post && segments is ["", "v1", "me", "identities", var id, "unlink"])
+        {
+            Unlinks.Add((authorization, id));
+            if (authorization is null)
+            {
+                return Json(HttpStatusCode.Unauthorized, """{"error":"sign_in_required"}""");
+            }
+
+            if (UnlinkApplyThenFail is { } lost)
+            {
+                // The unlink happened; the answer did not arrive intact.
+                Identities.RemoveAll(x => (string?)x["id"] == id);
+                return Json(lost, lost == HttpStatusCode.OK ? "not json" : """{"error":"server_error"}""");
+            }
+
+            if (UnlinkStatus is { } forced)
+            {
+                return forced switch
+                {
+                    HttpStatusCode.Unauthorized => Json(forced, """{"error":"sign_in_required"}"""),
+                    HttpStatusCode.Forbidden => Json(forced, """{"error":"step_up_required"}"""),
+                    HttpStatusCode.NotFound => Json(forced, """{"error":"identity_not_found"}"""),
+                    HttpStatusCode.Conflict => Json(forced, """{"error":"last_identity"}"""),
+                    _ => Json(forced, """{"error":"server_error","detail":"HEIMDALL FREE TEXT"}""")
+                };
+            }
+
+            // Heimdall's rule: the bearer must carry a step_up_at claim from the last 600 seconds, and not from the future.
+            var payload = Encoding.UTF8.GetString(WebEncoders.Base64UrlDecode(authorization["Bearer ".Length..].Split('.')[1]));
+            using var claims = JsonDocument.Parse(payload);
+            var fresh = claims.RootElement.TryGetProperty("step_up_at", out var at) && at.TryGetInt64(out var seconds)
+                && seconds <= Now().ToUnixTimeSeconds() && Now().ToUnixTimeSeconds() - seconds <= 600;
+            if (!fresh)
+            {
+                return Json(HttpStatusCode.Forbidden, """{"error":"step_up_required"}""");
+            }
+
+            var held = Identities.FirstOrDefault(x => (string?)x["id"] == id);
+            if (held is null)
+            {
+                return Json(HttpStatusCode.NotFound, """{"error":"identity_not_found"}""");
+            }
+
+            if (Identities.Count == 1)
+            {
+                return Json(HttpStatusCode.Conflict, """{"error":"last_identity"}""");
+            }
+
+            Identities.Remove(held);
+            return Json(
+                HttpStatusCode.OK,
+                JsonSerializer.Serialize(new { unlinked = new { id, provider = held["provider"], providerUserId = held["providerUserId"] }, identities = Identities }));
+        }
+
+        return new HttpResponseMessage(HttpStatusCode.NotFound);
+    }
+
     /// <summary>Registers a pending link Heimdall will confirm once for any bearer.</summary>
     public string RegisterPendingLink(string? id = null)
     {
@@ -287,6 +423,28 @@ public sealed class FakeHeimdall : HttpMessageHandler
             StartPaths.Add(path);
             StartAuthorizations.Add(authorization);
             var root = JsonDocument.Parse(body).RootElement;
+            static HttpResponseMessage Refuse(HttpStatusCode status, string error) =>
+                new(status) { Content = new StringContent($$"""{"error":"{{error}}"}""", Encoding.UTF8, "application/json") };
+            var startProvider = path.Split('/')[3];
+            if (root.TryGetProperty("stepUp", out var stepUp) && stepUp.ValueKind == JsonValueKind.True)
+            {
+                // Heimdall's step-up rules (service-contract.md, "Step-up"): the app's request, sign_in only, a provider that can re-authenticate.
+                if (secret != RequiredAppSecret)
+                {
+                    return Refuse(HttpStatusCode.Unauthorized, "app_auth_required");
+                }
+
+                if (root.TryGetProperty("mode", out var stepMode) && stepMode.GetString() != "sign_in")
+                {
+                    return Refuse(HttpStatusCode.BadRequest, "step_up_only_in_sign_in");
+                }
+
+                if (startProvider is not ("google" or "twitch" or "youtube"))
+                {
+                    return Refuse(HttpStatusCode.BadRequest, "step_up_not_supported");
+                }
+            }
+
             if (root.TryGetProperty("mode", out var mode) && mode.GetString() == "link")
             {
                 if (authorization is null)
@@ -297,11 +455,23 @@ public sealed class FakeHeimdall : HttpMessageHandler
                     };
                 }
 
+                var linkProvider = path.Split('/')[3];
                 return new HttpResponseMessage(HttpStatusCode.Created)
                 {
                     Content = new StringContent(
-                        """{"authorizationUrl":"https://heimdall.test/oauth/google/authorize?state=link-fixture"}""", Encoding.UTF8, "application/json")
+                        $$"""{"authorizationUrl":"https://heimdall.test/oauth/{{linkProvider}}/authorize?state=link-fixture"}""", Encoding.UTF8, "application/json")
                 };
+            }
+
+            // Discord and Patreon mint an account for an identity no account holds; Google is requires_link and refuses (identity_not_linked).
+            if (startProvider != "google" && Identities.Count > 0 && Identities.All(x => (string?)x["provider"] != startProvider))
+            {
+                OrphanMints.Add(startProvider);
+            }
+
+            if (StartStatus == HttpStatusCode.OK && root.TryGetProperty("stepUp", out var asked) && asked.ValueKind == JsonValueKind.True)
+            {
+                StepUpReturnTos.Add(root.GetProperty("returnTo").GetString()!);
             }
 
             var wantsPolicy = JsonDocument.Parse(body).RootElement.TryGetProperty("entitlementPolicy", out _);
@@ -316,6 +486,11 @@ public sealed class FakeHeimdall : HttpMessageHandler
             var content = new ByteArrayContent(Encoding.UTF8.GetBytes(StartBody));
             content.Headers.TryAddWithoutValidation("Content-Type", StartContentType ?? "application/json");
             return new HttpResponseMessage(StartStatus) { Content = content };
+        }
+
+        if (path.StartsWith("/v1/me/identities", StringComparison.Ordinal))
+        {
+            return MemberRoute(request, path);
         }
 
         if (request.Method == HttpMethod.Post && path == "/v1/apps/bifrost/links/confirm")
@@ -463,6 +638,7 @@ public sealed class HeimdallHost : TestWebApplicationFactory
         _publicBaseUrl = publicBaseUrl;
         _discordRoles = discordRoles;
         Heimdall.Published.Add(Key);
+        Heimdall.Now = () => Clock.Now;
         Heimdall.RequiredAppSecret = AppSecret;
     }
 
@@ -512,6 +688,7 @@ public sealed class HeimdallHost : TestWebApplicationFactory
             services.AddSingleton<TimeProvider>(Clock);
             services.AddHttpClient(HeimdallTokenVerifier.ClientName).ConfigurePrimaryHttpMessageHandler(() => Heimdall);
             services.AddHttpClient<HeimdallAuthService>().ConfigurePrimaryHttpMessageHandler(() => Heimdall);
+            services.AddHttpClient<HeimdallMemberClient>().ConfigurePrimaryHttpMessageHandler(() => Heimdall);
         });
     }
 
@@ -561,10 +738,21 @@ public sealed class HeimdallHost : TestWebApplicationFactory
 
     /// <summary>Registers a completion code as Heimdall would mint it after authenticating this attempt.</summary>
     public string CodeFor(StartedAttempt attempt, string accountId, string? accessToken = null, string[]? looseCapabilities = null,
-        string[]? looseFacts = null, string looseName = "Loose Name", string? returnTo = null)
+        string[]? looseFacts = null, string looseName = "Loose Name", string? returnTo = null, string mode = "sign_in", string provider = "discord",
+        bool? stepUpRequested = null)
     {
+        // A completion of a start that asked for a step-up carries the proof the way Heimdall's does: step_up_at in the token and stepUpRequested.
+        var asked = Heimdall.StepUpReturnTos.Contains(returnTo ?? attempt.ReturnTo);
+        var token = accessToken ?? (asked
+            ? Token(accountId, mutate: claims => claims["step_up_at"] = Clock.Now.ToUnixTimeSeconds())
+            : Token(accountId));
         var completion = HeimdallShapes.Completion(
-            returnTo ?? attempt.ReturnTo, accountId, accessToken ?? Token(accountId), looseCapabilities, looseFacts, looseName);
+            returnTo ?? attempt.ReturnTo, accountId, token, looseCapabilities, looseFacts, looseName, mode, provider);
+        if (stepUpRequested ?? asked)
+        {
+            completion["stepUpRequested"] = true;
+        }
+
         return Heimdall.RegisterCode(completion);
     }
 
@@ -600,11 +788,15 @@ public sealed class HeimdallHost : TestWebApplicationFactory
     }
 
     /// <summary>A browser session: a normal Heimdall sign-in, answered with the session cookie it earned.</summary>
+    private readonly Dictionary<string, string> _sessionAccounts = new(StringComparer.Ordinal);
+
     public async Task<string> SignInSessionAsync(string accountId, string provider = "discord")
     {
         var attempt = await StartAsync(provider: provider);
         var done = await CompleteAsync(attempt, CodeFor(attempt, accountId));
-        return CookieValue(done.Response, BifrostCookies.Session) ?? throw new InvalidOperationException("sign-in set no session");
+        var session = CookieValue(done.Response, BifrostCookies.Session) ?? throw new InvalidOperationException("sign-in set no session");
+        _sessionAccounts[session] = accountId;
+        return session;
     }
 
     /// <summary>The raw POST of the complete page, whatever fields and cookies the caller names.</summary>
@@ -623,18 +815,33 @@ public sealed class HeimdallHost : TestWebApplicationFactory
         return await client.SendAsync(request);
     }
 
-    public const string LinkPostUrl = "/Membership/Status?handler=LinkGoogle";
+    public const string LinkedAccountsUrl = "/Membership/LinkedAccounts";
+
+    /// <summary>The Linked accounts page as a browser reads it, with its session when there is one.</summary>
+    public async Task<(HttpResponseMessage Response, string Html)> GetLinkedAccountsAsync(string? session, string query = "")
+    {
+        using var client = NewClient();
+        using var request = new HttpRequestMessage(HttpMethod.Get, LinkedAccountsUrl + query);
+        if (session is not null)
+        {
+            request.Headers.Add("Cookie", $"{BifrostCookies.Session}={session}");
+        }
+
+        var response = await client.SendAsync(request);
+        return (response, await response.Content.ReadAsStringAsync());
+    }
 
     /// <summary>
-    /// The account page's link button as a browser posts it: the page is fetched for its antiforgery token and cookie
-    /// (when <paramref name="antiforgery"/>), then the form is posted with the session. Without a session nothing is fetched.
+    /// One of the page's buttons as a browser posts it: the page is fetched for its antiforgery token and cookie (when
+    /// <paramref name="antiforgery"/>), then the form is posted with the session. Without a session nothing is fetched.
     /// </summary>
-    public async Task<StartedAttempt> StartLinkAsync(
-        string? session, bool antiforgery = true, HttpMethod? method = null, string? extraCookies = null)
+    public async Task<StartedAttempt> PostLinkedAccountsAsync(
+        string? session, string handler, IDictionary<string, string>? form = null, bool antiforgery = true, HttpMethod? method = null,
+        string? extraCookies = null)
     {
         using var client = NewClient();
         var cookies = new List<string>();
-        var fields = new Dictionary<string, string>();
+        var fields = new Dictionary<string, string>(form ?? new Dictionary<string, string>());
         if (session is not null)
         {
             cookies.Add($"{BifrostCookies.Session}={session}");
@@ -642,7 +849,7 @@ public sealed class HeimdallHost : TestWebApplicationFactory
 
         if (antiforgery && session is not null)
         {
-            using var get = new HttpRequestMessage(HttpMethod.Get, "/Membership/Status");
+            using var get = new HttpRequestMessage(HttpMethod.Get, LinkedAccountsUrl);
             get.Headers.Add("Cookie", string.Join("; ", cookies));
             using var page = await client.SendAsync(get);
             var html = await page.Content.ReadAsStringAsync();
@@ -658,7 +865,7 @@ public sealed class HeimdallHost : TestWebApplicationFactory
         }
 
         var before = Heimdall.StartBodies.Count;
-        using var request = new HttpRequestMessage(method ?? HttpMethod.Post, LinkPostUrl);
+        using var request = new HttpRequestMessage(method ?? HttpMethod.Post, $"{LinkedAccountsUrl}?handler={handler}");
         if (request.Method == HttpMethod.Post)
         {
             request.Content = new FormUrlEncodedContent(fields);
@@ -671,6 +878,31 @@ public sealed class HeimdallHost : TestWebApplicationFactory
 
         return AttemptFrom(await client.SendAsync(request), before);
     }
+
+    /// <summary>
+    /// A link start needs the account's current list (Bifrost will not guess a provider to prove with). Link tests that are not
+    /// about the list get one seeded for a session of this host: the Discord login it signed in with. <paramref name="seedList"/> false leaves it.
+    /// </summary>
+    public Task<StartedAttempt> StartLinkAsync(
+        string? session, string provider = "google", bool antiforgery = true, HttpMethod? method = null, string? extraCookies = null,
+        bool seedList = true)
+    {
+        if (seedList && session is not null && _sessionAccounts.TryGetValue(session, out var account)
+            && Services.GetRequiredService<LinkedAccountsSnapshots>().Get(account) is null)
+        {
+            Services.GetRequiredService<LinkedAccountsSnapshots>().Put(
+                account, [new LinkedIdentitySummary(Guid.NewGuid().ToString(), "discord", "Seeded", null)]);
+        }
+
+        return PostLinkedAccountsAsync(session, "Link", new Dictionary<string, string> { ["provider"] = provider }, antiforgery, method, extraCookies);
+    }
+
+    /// <summary>The list button. <paramref name="via"/> is the provider the member names, needed only when no current list is held.</summary>
+    public Task<StartedAttempt> StartListAsync(string? session, string? via = "discord") =>
+        PostLinkedAccountsAsync(session, "Refresh", via is null ? null : new Dictionary<string, string> { ["via"] = via });
+
+    public Task<StartedAttempt> StartUnlinkAsync(string? session, string identityId) =>
+        PostLinkedAccountsAsync(session, "Unlink", new Dictionary<string, string> { ["identityId"] = identityId });
 
     public Task<CompletionResult> CompleteAsync(StartedAttempt attempt, string code) =>
         CompleteAsync(attempt.Nonce, code, attempt.Cookie, attempt.CookieName);

@@ -1,0 +1,119 @@
+@page
+@model Bifrost.Web.Pages.Membership.LinkedAccountsModel
+@{
+    ViewData["Title"] = "Linked accounts";
+}
+
+<section class="panel">
+    <span class="eyebrow">Heimdall</span>
+    <h1>Linked accounts</h1>
+    <p class="panel-intro">
+        The provider logins that sign in to this account. Heimdall holds them and decides what may change; Bifrost keeps none of
+        your Heimdall sign-in, so each action sends you through Heimdall once more.
+    </p>
+
+    @if (Model.ResultMessage is not null)
+    {
+        <div class="callout" role="status">@Model.ResultMessage</div>
+    }
+
+    @if (!Model.HasHeimdallAccount)
+    {
+        <div class="callout warning">
+            This session is not a Heimdall account, so there are no provider logins to manage here. Sign in with Discord or Patreon
+            through Heimdall to see them.
+        </div>
+    }
+    else
+    {
+        <h2>Your logins</h2>
+        @if (Model.Identities is null)
+        {
+            <p class="muted">
+                Bifrost does not hold the list: it asks Heimdall, which means signing in to Heimdall again, and keeps the answer for
+                five minutes. It also cannot tell which logins this account holds right now, so it will not choose one for you.
+                Pick a login you know it holds. Signing in through Discord or Patreon when the account no longer holds that login
+                would create a separate Heimdall account holding it. Google cannot do that: Heimdall refuses a Google sign-in for a
+                login no account holds.
+            </p>
+            <div class="panel-actions">
+                @foreach (var provider in Model.LinkableProviders.OrderBy(x => x == "google" ? 0 : 1))
+                {
+                    <form method="post" asp-page-handler="Refresh" class="inline-actions">
+                        <input type="hidden" name="via" value="@provider" />
+                        <button class="button secondary" type="submit">Show my logins through @LinkedAccountsModel.ProviderName(provider)@(provider == "google" ? " (cannot create an account)" : "")</button>
+                    </form>
+                }
+            </div>
+        }
+        else
+        {
+            <ul>
+                @foreach (var identity in Model.Identities)
+                {
+                    <li>
+                        <strong>@LinkedAccountsModel.ProviderName(identity.Provider)</strong>
+                        @if (identity.DisplayName is not null)
+                        {
+                            <span>@identity.DisplayName</span>
+                        }
+                        @if (identity.LinkedAt is { } linkedAt)
+                        {
+                            <span class="muted">linked @linkedAt.UtcDateTime.ToString("dd MMM yyyy") UTC</span>
+                        }
+                        @if (Model.CanProve)
+                        {
+                            <form method="post" asp-page-handler="Unlink" class="inline-actions">
+                                <input type="hidden" name="identityId" value="@identity.Id" />
+                                <button class="button secondary" type="submit">Unlink</button>
+                            </form>
+                        }
+                    </li>
+                }
+            </ul>
+            @if (Model.Identities.Count == 1)
+            {
+                <p class="muted">This is your only login. Heimdall will not remove the last one.</p>
+            }
+
+            @if (!Model.CanProve)
+            {
+                <p class="muted">
+                    Unlinking needs a fresh Google sign-in as proof. Discord and Patreon cannot give that proof, and no Google login
+                    is linked to this account, so nothing can be unlinked from here yet. Linking Google first makes it possible
+                    once Heimdall has Google set up.
+                </p>
+            }
+            else
+            {
+                <p class="muted">Unlinking asks you to sign in with Google again as proof, then removes only the login you picked.</p>
+            }
+
+            <form method="post" asp-page-handler="Refresh" class="panel-actions">
+                <button class="button secondary" type="submit">Read the list again</button>
+            </form>
+        }
+
+        @if (Model.Identities is not null)
+        {
+            <h2>Link another login</h2>
+            <p class="muted">
+                You will sign in to Heimdall again, then to the provider you pick. If that login already belongs to another account,
+                nothing is linked and nothing is merged.
+            </p>
+            <div class="panel-actions">
+                @foreach (var provider in Model.LinkableProviders)
+                {
+                    <form method="post" asp-page-handler="Link" class="inline-actions">
+                        <input type="hidden" name="provider" value="@provider" />
+                        <button class="button secondary" type="submit">Link @LinkedAccountsModel.ProviderName(provider)</button>
+                    </form>
+                }
+            </div>
+        }
+    }
+
+    <div class="panel-actions">
+        <a class="button secondary" asp-page="/Membership/Status">Back to membership status</a>
+    </div>
+</section>

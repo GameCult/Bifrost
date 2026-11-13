@@ -16,7 +16,7 @@ namespace Bifrost.Web.Tests;
 /// </summary>
 public sealed class HeimdallGoogleLinkTests
 {
-    private const string Status = "/Membership/Status";
+    private const string LinkedPage = "/Membership/LinkedAccounts";
     private const string ErrorRedirect = "/?auth=heimdall-error";
 
     private sealed record Step(HttpResponseMessage Response, StartedAttempt Next, string Token);
@@ -126,7 +126,7 @@ public sealed class HeimdallGoogleLinkTests
             new Dictionary<string, string> { ["attempt"] = start.Nonce }, Jar(session, start));
 
         Assert.Equal(before, host.Heimdall.StartBodies.Count);
-        Assert.Equal(Status + "?link=error", Location(response));
+        Assert.Equal(LinkedPage + "?result=error", Location(response));
     }
 
     [Fact]
@@ -238,7 +238,7 @@ public sealed class HeimdallGoogleLinkTests
         var b = await StepB(host, session, start, HeimdallShapes.NewAccountId());
 
         Assert.Equal(starts, host.Heimdall.StartBodies.Count);
-        Assert.Equal(Status + "?link=error", Location(b.Response));
+        Assert.Equal(LinkedPage + "?result=error", Location(b.Response));
         AssertAttemptCleared(b.Response, start);
     }
 
@@ -258,7 +258,7 @@ public sealed class HeimdallGoogleLinkTests
 
         Assert.Equal(starts, host.Heimdall.StartBodies.Count);
         Assert.Equal(redeems, host.Heimdall.RedeemCalls);
-        Assert.Equal(Status + "?link=error", Location(b.Response));
+        Assert.Equal(LinkedPage + "?result=error", Location(b.Response));
     }
 
     [Fact]
@@ -271,7 +271,7 @@ public sealed class HeimdallGoogleLinkTests
         var d = await StepD(host, journey.Session, journey.C.Next, other);
 
         Assert.Empty(host.Heimdall.ConfirmBodies);
-        Assert.Equal(Status + "?link=error", Location(d.Response));
+        Assert.Equal(LinkedPage + "?result=error", Location(d.Response));
     }
 
     private static void AssertAttemptCleared(HttpResponseMessage response, StartedAttempt attempt)
@@ -295,7 +295,7 @@ public sealed class HeimdallGoogleLinkTests
 
         var d = await StepD(host, journey.Session, journey.C.Next, journey.Account);
 
-        Assert.Equal(Status + "?link=linked", Location(d.Response));
+        Assert.Equal(LinkedPage + "?result=linked", Location(d.Response));
         Assert.Single(host.Heimdall.ConfirmBodies);
         using var body = JsonDocument.Parse(host.Heimdall.ConfirmBodies[0]);
         Assert.Equal(journey.PendingLinkId, body.RootElement.GetProperty("pendingLinkId").GetString());
@@ -320,7 +320,7 @@ public sealed class HeimdallGoogleLinkTests
 
         var d = await StepD(host, journey.Session, journey.C.Next, journey.Account);
 
-        Assert.Equal($"{Status}?link={outcome}", Location(d.Response));
+        Assert.Equal($"{LinkedPage}?result={outcome}", Location(d.Response));
         Assert.DoesNotContain("HEIMDALL FREE TEXT", string.Join("\n", host.Logs.Lines));
         AssertAttemptCleared(d.Response, journey.C.Next);
     }
@@ -334,18 +334,18 @@ public sealed class HeimdallGoogleLinkTests
 
         async Task<string> Page(string link)
         {
-            using var request = new HttpRequestMessage(HttpMethod.Get, Status + "?link=" + Uri.EscapeDataString(link));
+            using var request = new HttpRequestMessage(HttpMethod.Get, LinkedPage + "?result=" + Uri.EscapeDataString(link));
             request.Headers.Add("Cookie", $"{BifrostCookies.Session}={session}");
             return await (await client.SendAsync(request)).Content.ReadAsStringAsync();
         }
 
-        Assert.Contains("Google is now linked", await Page("linked"));
-        Assert.Contains("already linked to a different Heimdall account", await Page("identity_linked_elsewhere"));
+        Assert.Contains("now linked to your Heimdall account", await Page("linked"));
+        Assert.Contains("belongs to another account", await Page("identity_linked_elsewhere"));
         Assert.Contains("expired before it was confirmed", await Page("expired"));
         Assert.Contains("could not be completed", await Page("error"));
         var hostile = await Page("<script>alert(1)</script>");
         Assert.DoesNotContain("alert(1)", hostile);
-        Assert.DoesNotContain("Google is now linked", hostile);
+        Assert.DoesNotContain("now linked to your", hostile);
     }
 
     // ---- 6. google stays out of sign-in and member access ----
@@ -379,7 +379,7 @@ public sealed class HeimdallGoogleLinkTests
         var pending = host.Heimdall.RegisterPendingLink(pendingCanary);
         var c = await StepC(host, session, b.Next, pending);
         var d = await StepD(host, session, c.Next, account);
-        Assert.Equal(Status + "?link=linked", Location(d.Response));
+        Assert.Equal(LinkedPage + "?result=linked", Location(d.Response));
 
         var tokens = new[] { b.Token, d.Token }
             .SelectMany(token => new[] { token, token.Split('.')[2], token.Split('.')[1] })
@@ -457,7 +457,7 @@ public sealed class HeimdallGoogleLinkTests
         var replay = await host.PostCompleteAsync(fields, Jar(session, start));
 
         Assert.Equal(starts, host.Heimdall.StartBodies.Count);
-        Assert.Equal(Status + "?link=error", Location(replay));
+        Assert.Equal(LinkedPage + "?result=error", Location(replay));
     }
 
     [Fact]
@@ -468,12 +468,12 @@ public sealed class HeimdallGoogleLinkTests
         var code = host.CodeFor(journey.C.Next, journey.Account);
         var fields = new Dictionary<string, string> { ["attempt"] = journey.C.Next.Nonce, ["code"] = code };
         var first = await host.PostCompleteAsync(fields, Jar(journey.Session, journey.C.Next));
-        Assert.Equal(Status + "?link=linked", Location(first));
+        Assert.Equal(LinkedPage + "?result=linked", Location(first));
 
         var replay = await host.PostCompleteAsync(fields, Jar(journey.Session, journey.C.Next));
 
         Assert.Single(host.Heimdall.ConfirmBodies);
-        Assert.Equal(Status + "?link=error", Location(replay));
+        Assert.Equal(LinkedPage + "?result=error", Location(replay));
     }
 
     [Fact]
@@ -487,8 +487,8 @@ public sealed class HeimdallGoogleLinkTests
         var d = await StepD(host, journey.Session, again.Next, journey.Account);
         var replayed = await StepD(host, journey.Session, journey.C.Next, journey.Account);
 
-        Assert.Equal(Status + "?link=linked", Location(d.Response));
-        Assert.Equal(Status + "?link=expired", Location(replayed.Response));
+        Assert.Equal(LinkedPage + "?result=linked", Location(d.Response));
+        Assert.Equal(LinkedPage + "?result=expired", Location(replayed.Response));
     }
 
     // ---- 10. pins for guards the first pass left unproven ----
@@ -521,7 +521,7 @@ public sealed class HeimdallGoogleLinkTests
 
         Assert.Equal(start.CookieName, b.Next.CookieName);
         Assert.Equal(start.CookieName, c.Next.CookieName);
-        Assert.Equal(Status + "?link=linked", Location(d.Response));
+        Assert.Equal(LinkedPage + "?result=linked", Location(d.Response));
         Assert.Null(HeimdallHost.SetCookieHeader(d.Response, parallel.CookieName!));
 
         var signIn = await host.CompleteWithHeaderAsync(
@@ -532,7 +532,7 @@ public sealed class HeimdallGoogleLinkTests
     [Theory]
     [InlineData("9")]
     [InlineData("-1")]
-    [InlineData("4")]
+    [InlineData("7")]
     public async Task An_attempt_cookie_with_an_undefined_purpose_is_no_attempt_and_asks_Heimdall_for_nothing(string purpose)
     {
         using var host = new HeimdallHost(realSessions: true);
@@ -575,7 +575,7 @@ public sealed class HeimdallGoogleLinkTests
 
         var c = await StepC(host, session, b.Next, pendingLinkId);
 
-        Assert.Equal(Status + "?link=error", Location(c.Response));
+        Assert.Equal(LinkedPage + "?result=error", Location(c.Response));
         Assert.Equal(starts, host.Heimdall.StartBodies.Count);
         Assert.Equal(redeems, host.Heimdall.RedeemCalls);
         Assert.Empty(host.Heimdall.ConfirmBodies);
@@ -597,7 +597,7 @@ public sealed class HeimdallGoogleLinkTests
 
         var d = await StepD(host, journey.Session, journey.C.Next, journey.Account);
 
-        Assert.Equal(Status + "?link=error", Location(d.Response));
+        Assert.Equal(LinkedPage + "?result=error", Location(d.Response));
         Assert.Single(host.Heimdall.ConfirmBodies);
         AssertAttemptCleared(d.Response, journey.C.Next);
     }

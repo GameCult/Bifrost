@@ -112,6 +112,28 @@ public sealed class HeimdallCompletePageScriptTests
         Assert.Equal(ErrorTarget, runs["link-error-with-pending-id"].Events[^1]);
     }
 
+    [Fact]
+    public async Task A_link_refused_because_the_login_belongs_to_another_account_goes_to_the_page_with_a_fixed_result_and_submits_nothing()
+    {
+        var runs = await RunScenariosAsync();
+        const string Target = "replace:/Membership/LinkedAccounts?result=identity_linked_elsewhere";
+
+        var run = runs["link-refused-elsewhere"];
+        Assert.Null(run.Submit);
+        Assert.Equal(Target, run.Events[^1]);
+        Assert.DoesNotContain("submit", run.Events);
+        Assert.Contains(run.Events, x => x.StartsWith("replaceState:", StringComparison.Ordinal) && !x.Contains('#'));
+
+        // Without an attempt, from the query only, or for any other refusal text, it is the ordinary error exit.
+        foreach (var name in new[] { "link-refused-elsewhere-no-attempt", "other-refusal-text", "refusal-in-query-only" })
+        {
+            Assert.Null(runs[name].Submit);
+            Assert.Equal(ErrorTarget, runs[name].Events[^1]);
+        }
+
+        Assert.DoesNotContain("EVIL", string.Join("\n", runs["other-refusal-text"].Events));
+    }
+
     [Theory]
     [InlineData("error-status-with-code")]
     [InlineData("no-code")]

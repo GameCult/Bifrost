@@ -93,6 +93,7 @@ builder.Services.AddAntiforgery(options =>
 builder.Services.AddRazorPages(options =>
 {
     options.Conventions.AuthorizePage("/Membership/Status");
+    options.Conventions.AuthorizePage("/Membership/LinkedAccounts");
     options.Conventions.AuthorizeFolder("/App", ActiveMemberRequirement.PolicyName);
     options.Conventions.AllowAnonymousToFolder("/Mill");
 });
@@ -153,6 +154,11 @@ builder.Services.AddScoped<IAuthorizationHandler, ActiveMemberAuthorizationHandl
 builder.Services.AddHttpClient<HeimdallAuthService>((serviceProvider, client) =>
     HeimdallAuthService.ConfigureClient(client, serviceProvider.GetRequiredService<IOptions<HeimdallOptions>>().Value))
     .RedactLoggedHeaders(HeimdallAuthService.RedactsHeader);
+// Heimdall's member routes take only the member's bearer: this client carries no app secret.
+builder.Services.AddHttpClient<HeimdallMemberClient>((serviceProvider, client) =>
+    HeimdallMemberClient.ConfigureClient(client, serviceProvider.GetRequiredService<IOptions<HeimdallOptions>>().Value))
+    .RedactLoggedHeaders(HeimdallAuthService.RedactsHeader);
+builder.Services.AddSingleton<LinkedAccountsSnapshots>();
 builder.Services.AddSingleton<HeimdallTokenVerifier>();
 builder.Services.AddHttpClient(HeimdallTokenVerifier.ClientName, (serviceProvider, client) =>
     HeimdallTokenVerifier.ConfigureClient(client, serviceProvider.GetRequiredService<IOptions<HeimdallOptions>>().Value));
@@ -823,6 +829,8 @@ app.MapPost("/auth/heimdall/complete", async (
     ILogger<HeimdallAuthService> logger,
     CancellationToken cancellationToken) =>
 {
+    // Every answer here sets or clears an attempt cookie or signs someone in: none may be stored.
+    httpContext.Response.Headers.CacheControl = "no-store";
     var form = await ReadFormOrNullAsync(httpContext.Request, cancellationToken);
     var attempt = form?["attempt"].ToString();
     var held = heimdallAuthService.FindAttemptCookie(httpContext.Request.Cookies, attempt);
