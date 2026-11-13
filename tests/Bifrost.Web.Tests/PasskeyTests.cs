@@ -844,9 +844,12 @@ public sealed class PasskeyTests
 
         await CoolOff(host, member);
         var (json, _) = await Challenge(host, member, member.Patreon);
+        var thief = new SoftwareAuthenticator();
         for (var i = 0; i < PasskeyRateLimit.Permits + 5; i++)
         {
-            var junk = await PostAssertion(host, member, new Dictionary<string, string> { ["rawId"] = "AAAA" }, member.Patreon);
+            // Half malformed, half a complete assertion by a key the account does not hold: both fail before anything is spent.
+            var fields = i % 2 == 0 ? new Dictionary<string, string> { ["rawId"] = "AAAA" } : thief.Assert(json);
+            var junk = await PostAssertion(host, member, fields, member.Patreon);
             Assert.Equal(Page + "?result=passkey_failed", Location(junk.Response));
         }
 
