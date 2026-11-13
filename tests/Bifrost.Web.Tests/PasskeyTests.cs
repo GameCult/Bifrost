@@ -847,8 +847,8 @@ public sealed class PasskeyTests
         var thief = new SoftwareAuthenticator();
         for (var i = 0; i < PasskeyRateLimit.Permits + 5; i++)
         {
-            // Half malformed, half a complete assertion by a key the account does not hold: both fail before anything is spent.
-            var fields = i % 2 == 0 ? new Dictionary<string, string> { ["rawId"] = "AAAA" } : thief.Assert(json);
+            // Some malformed, most a complete assertion by a key the account does not hold: both fail before anything is spent.
+            var fields = i % 5 == 0 ? new Dictionary<string, string> { ["rawId"] = "AAAA" } : thief.Assert(json);
             var junk = await PostAssertion(host, member, fields, member.Patreon);
             Assert.Equal(Page + "?result=passkey_failed", Location(junk.Response));
         }
