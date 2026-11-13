@@ -93,6 +93,7 @@ builder.Services.AddAntiforgery(options =>
 builder.Services.AddRazorPages(options =>
 {
     options.Conventions.AuthorizePage("/Membership/Status");
+    options.Conventions.AuthorizePage("/Membership/LinkedAccounts");
     options.Conventions.AuthorizeFolder("/App", ActiveMemberRequirement.PolicyName);
     options.Conventions.AllowAnonymousToFolder("/Mill");
 });
@@ -153,6 +154,11 @@ builder.Services.AddScoped<IAuthorizationHandler, ActiveMemberAuthorizationHandl
 builder.Services.AddHttpClient<HeimdallAuthService>((serviceProvider, client) =>
     HeimdallAuthService.ConfigureClient(client, serviceProvider.GetRequiredService<IOptions<HeimdallOptions>>().Value))
     .RedactLoggedHeaders(HeimdallAuthService.RedactsHeader);
+// Heimdall's member routes take only the member's bearer: this client carries no app secret.
+builder.Services.AddHttpClient<HeimdallMemberClient>((serviceProvider, client) =>
+    HeimdallMemberClient.ConfigureClient(client, serviceProvider.GetRequiredService<IOptions<HeimdallOptions>>().Value))
+    .RedactLoggedHeaders(HeimdallAuthService.RedactsHeader);
+builder.Services.AddSingleton<LinkedAccountsSnapshots>();
 builder.Services.AddSingleton<HeimdallTokenVerifier>();
 builder.Services.AddHttpClient(HeimdallTokenVerifier.ClientName, (serviceProvider, client) =>
     HeimdallTokenVerifier.ConfigureClient(client, serviceProvider.GetRequiredService<IOptions<HeimdallOptions>>().Value));

@@ -64,6 +64,10 @@ console.log(
     run("link-return-with-decoy-query-id", "?attempt=NONCE&heimdall_pending_link_id=QPEND", "#heimdall_status=success&heimdall_pending_link_id=PEND1"),
     run("link-error-with-pending-id", "?attempt=NONCE", "#heimdall_status=error&heimdall_error=denied&heimdall_pending_link_id=PEND1"),
     run("link-pending-id-in-query-only", "?attempt=NONCE&heimdall_pending_link_id=QPEND", ""),
+    run("link-refused-elsewhere", "?attempt=NONCE", "#heimdall_status=error&heimdall_error=link_initiator_mismatch"),
+    run("link-refused-elsewhere-no-attempt", "", "#heimdall_status=error&heimdall_error=link_initiator_mismatch"),
+    run("other-refusal-text", "?attempt=NONCE", "#heimdall_status=error&heimdall_error=%3Cb%3Ex&heimdall_error_description=EVIL"),
+    run("refusal-in-query-only", "?attempt=NONCE&heimdall_error=link_initiator_mismatch", ""),
     run("code-in-query-only", "?attempt=NONCE&heimdall_completion_code=QCODE", ""),
   ]),
 );

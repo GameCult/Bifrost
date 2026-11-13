@@ -105,6 +105,7 @@ public sealed partial class NoThirdPartyAssetTests(TestWebApplicationFactory fac
             ("/auth/sign-in", null, true),
             ("/auth/bifrost/register", null, true),
             ("/auth/bifrost/consent", identity, false),
+            ("/Membership/LinkedAccounts", identity, false),
         };
 
         foreach (var (path, who, anonymous) in pages)

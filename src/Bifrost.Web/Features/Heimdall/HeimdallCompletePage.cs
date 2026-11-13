@@ -33,6 +33,12 @@ public static class HeimdallCompletePage
                 var pendingLinkId = fragment.get("heimdall_pending_link_id");
                 var failed = fragment.get("heimdall_status") === "error";
                 history.replaceState(null, "", location.pathname + location.search);
+                // A provider other than Google attaches in Heimdall's callback, which refuses an identity another account
+                // holds. Only this one refusal is carried on, as a fixed result the page words itself; nothing from the fragment is shown.
+                if (failed && attempt && fragment.get("heimdall_error") === "link_initiator_mismatch") {
+                  location.replace("/Membership/LinkedAccounts?result=identity_linked_elsewhere");
+                  return;
+                }
                 if (failed || !(code || pendingLinkId) || !attempt) {
                   location.replace("/?auth=heimdall-error");
                   return;
