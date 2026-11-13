@@ -159,6 +159,10 @@ builder.Services.AddHttpClient<HeimdallMemberClient>((serviceProvider, client) =
     HeimdallMemberClient.ConfigureClient(client, serviceProvider.GetRequiredService<IOptions<HeimdallOptions>>().Value))
     .RedactLoggedHeaders(HeimdallAuthService.RedactsHeader);
 builder.Services.AddSingleton<LinkedAccountsSnapshots>();
+builder.Services.AddSingleton<Bifrost.Web.Features.Passkeys.PasskeyRelyingParty>();
+builder.Services.AddSingleton<Bifrost.Web.Features.Passkeys.PasskeyCeremonies>();
+builder.Services.AddSingleton<Bifrost.Web.Features.Passkeys.PasskeyRateLimit>();
+builder.Services.AddScoped<Bifrost.Web.Features.Passkeys.PasskeyService>();
 builder.Services.AddSingleton<HeimdallTokenVerifier>();
 builder.Services.AddHttpClient(HeimdallTokenVerifier.ClientName, (serviceProvider, client) =>
     HeimdallTokenVerifier.ConfigureClient(client, serviceProvider.GetRequiredService<IOptions<HeimdallOptions>>().Value));
@@ -854,6 +858,19 @@ app.MapPost("/auth/heimdall/complete", async (
             {
                 httpContext.Response.Cookies.Append(step.CookieName, step.CookieValue!, HeimdallAttemptCookie.Options());
                 return Results.Redirect(step.Next.ToString());
+            }
+
+            if (step.EnrolTicket is not null)
+            {
+                // The ticket id goes only to the browser that completed the fresh sign-in; the server holds what it is bound to.
+                httpContext.Response.Cookies.Append(BifrostCookies.PasskeyTicket, step.EnrolTicket, new CookieOptions
+                {
+                    HttpOnly = true,
+                    Secure = true,
+                    SameSite = SameSiteMode.Lax,
+                    Path = BifrostCookies.Path,
+                    MaxAge = Bifrost.Web.Features.Passkeys.PasskeyCeremonies.TicketLifetime
+                });
             }
 
             httpContext.Response.Cookies.Delete(step.CookieName, HeimdallAttemptCookie.DeleteOptions());

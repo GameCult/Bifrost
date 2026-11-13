@@ -8,6 +8,7 @@ using Bifrost.Web.Configuration;
 using Bifrost.Web.Data;
 using Bifrost.Web.Domain;
 using Bifrost.Web.Features.Membership;
+using Bifrost.Web.Features.Passkeys;
 using Bifrost.Web.Features.Shared;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.WebUtilities;
@@ -33,7 +34,8 @@ public sealed class HeimdallAuthService(
     IDataProtectionProvider dataProtectionProvider,
     TimeProvider timeProvider,
     HeimdallMemberClient memberClient,
-    LinkedAccountsSnapshots snapshots)
+    LinkedAccountsSnapshots snapshots,
+    PasskeyCeremonies ceremonies)
 {
     public const string ErrorRedirect = "/?auth=heimdall-error";
     public const string AppSecretHeader = "x-heimdall-app-secret";
@@ -89,7 +91,8 @@ public sealed class HeimdallAuthService(
         string? pendingLinkId = null,
         string? replaceSlot = null,
         bool stepUp = false,
-        string? target = null)
+        string? target = null,
+        string? proof = null)
     {
         // The public sign-in routes offer AllowedProviders; the proofs of the Linked accounts page may also use Google
         // (a step-up proof only Google can give a bifrost sign-in, an ordinary one for an account that holds Google).
@@ -144,7 +147,8 @@ public sealed class HeimdallAuthService(
             purpose,
             expectedAccountId,
             pendingLinkId,
-            target);
+            target,
+            proof);
         return new HeimdallAuthStartResult(
             new Uri(payload.AuthorizationUrl, UriKind.Absolute), replaceSlot ?? ChooseSlot(requestCookies), Protect(attempt));
     }
@@ -197,7 +201,8 @@ public sealed class HeimdallAuthService(
         IEnumerable<KeyValuePair<string, string>> requestCookies,
         bool stepUp,
         string? target,
-        CancellationToken cancellationToken) =>
+        CancellationToken cancellationToken,
+        string? proof = null) =>
         StartAsync(
             provider,
             callbackBaseUrl,
@@ -208,7 +213,8 @@ public sealed class HeimdallAuthService(
             purpose,
             sessionAccountId,
             stepUp: stepUp,
-            target: target);
+            target: target,
+            proof: proof);
 
     /// <summary>
     /// Reads the account's logins: an ordinary sign-in, then GET /v1/me/identities inside its completion. Through a provider on
@@ -249,6 +255,29 @@ public sealed class HeimdallAuthService(
         IEnumerable<KeyValuePair<string, string>> requestCookies, CancellationToken cancellationToken) =>
         StartProofAsync(
             HeimdallAttemptPurpose.UnlinkProof, StepUpProvider, sessionAccountId, callbackBaseUrl, requestCookies, true, identityId, cancellationToken);
+
+    /// <summary>
+    /// The fresh sign-in that earns an enrolment ticket (docs/passkeys.md): an ordinary sign-in through a provider the account
+    /// holds, proving the account to this browser's session. Its completion issues the ticket; no passkey exists before it.
+    /// </summary>
+    public Task<HeimdallAuthStartResult> StartEnrolProofAsync(
+        string sessionAccountId, string callbackBaseUrl,
+        IEnumerable<KeyValuePair<string, string>> requestCookies, CancellationToken cancellationToken) =>
+        StartProofAsync(
+            HeimdallAttemptPurpose.EnrolProof, ProofProviderFor(sessionAccountId, null),
+            sessionAccountId, callbackBaseUrl, requestCookies, false, null, cancellationToken);
+
+    /// <summary>
+    /// Unlinks one login on a verified passkey assertion: an ordinary fresh sign-in as the account (never a guessed provider), and
+    /// inside its completion, with that bearer, Heimdall's app-asserted step-up and then the unlink. <paramref name="factId"/> is the
+    /// id of the single-use assertion fact; the attempt carries it and nothing else about the passkey.
+    /// </summary>
+    public Task<HeimdallAuthStartResult> StartUnlinkPasskeyAsync(
+        string sessionAccountId, string identityId, string factId, string callbackBaseUrl,
+        IEnumerable<KeyValuePair<string, string>> requestCookies, CancellationToken cancellationToken) =>
+        StartProofAsync(
+            HeimdallAttemptPurpose.UnlinkPasskeyProof, ProofProviderFor(sessionAccountId, null),
+            sessionAccountId, callbackBaseUrl, requestCookies, false, identityId, cancellationToken, factId);
 
     /// <summary>
     /// The providers Heimdall's bifrost profile admits (src/app-profiles.ts, <c>identityProviders</c>): a link or a proof can use them.
@@ -472,23 +501,105 @@ public sealed class HeimdallAuthService(
                     return new HeimdallLinkStep(null, cookieName, null, HeimdallLinkOutcome.StepUpRequired);
                 }
 
-                var unlinked = await memberClient.UnlinkAsync(bearer, attempt.Target ?? string.Empty, cancellationToken);
-                // Only Heimdall's definitive refusals leave the account as the list showed it. Any other end (not found, a lost
-                // answer, a 500, a malformed 200) may have applied the unlink, so the list is dropped rather than trusted.
-                if (unlinked.Call == HeimdallMemberCall.Ok)
+                return new HeimdallLinkStep(null, cookieName, null, await UnlinkAsync(identity.AccountId, bearer, attempt.Target, cancellationToken));
+            }
+
+            case HeimdallAttemptPurpose.EnrolProof:
+            {
+                // A fresh ordinary sign-in as the session's own account: the one thing a stolen session cookie cannot produce.
+                // It earns a short-lived single-use ticket, handed to this browser in a cookie; no passkey exists yet.
+                var (identity, _) = await RedeemOwnerAsync(callbackBaseUrl, attempt, code, cancellationToken);
+                var ticket = ceremonies.Issue(CeremonyKind.EnrolTicket, identity.AccountId, null, null, PasskeyCeremonies.TicketLifetime);
+                return new HeimdallLinkStep(
+                    null, cookieName, null, ticket is null ? HeimdallLinkOutcome.Error : HeimdallLinkOutcome.EnrolReady, ticket);
+            }
+
+            case HeimdallAttemptPurpose.UnlinkPasskeyProof:
+            {
+                // The assertion fact is spent before anything else: missing, expired, spent, or for another account or identity
+                // means no step-up is asked of Heimdall and nothing is unlinked.
+                var fact = ceremonies.Take(CeremonyKind.UnlinkProof, attempt.ExpectedAccountId, attempt.Target, attempt.Proof);
+                var (identity, bearer) = await RedeemOwnerAsync(callbackBaseUrl, attempt, code, cancellationToken);
+                if (fact is null)
                 {
-                    snapshots.Put(identity.AccountId, unlinked.Identities!);
-                }
-                else if (unlinked.Call is not (HeimdallMemberCall.SignInRequired or HeimdallMemberCall.StepUpRequired or HeimdallMemberCall.LastIdentity))
-                {
-                    snapshots.Remove(identity.AccountId);
+                    return new HeimdallLinkStep(null, cookieName, null, HeimdallLinkOutcome.PasskeyExpired);
                 }
 
-                return new HeimdallLinkStep(null, cookieName, null, unlinked.Call == HeimdallMemberCall.Ok ? HeimdallLinkOutcome.Unlinked : OutcomeOf(unlinked.Call));
+                var asserted = await StepUpAsync(bearer, cancellationToken);
+                if (asserted.Refusal is { } refusal)
+                {
+                    return new HeimdallLinkStep(null, cookieName, null, refusal);
+                }
+
+                // The returned token is this request's alone: it goes to the one unlink and is dropped.
+                return new HeimdallLinkStep(null, cookieName, null, await UnlinkAsync(identity.AccountId, asserted.AccessToken!, attempt.Target, cancellationToken));
             }
 
             default:
                 throw new HeimdallAuthException("Heimdall completion is not a link attempt.");
+        }
+    }
+
+    /// <summary>
+    /// Heimdall's unlink with a bearer that carries fresh proof, and what the list becomes. Only Heimdall's definitive refusals leave
+    /// the account as the list showed it. Any other end (not found, a lost answer, a 500, a malformed 200) may have applied the
+    /// unlink, so the list is dropped rather than trusted.
+    /// </summary>
+    private async Task<HeimdallLinkOutcome> UnlinkAsync(string accountId, string bearer, string? identityId, CancellationToken cancellationToken)
+    {
+        var unlinked = await memberClient.UnlinkAsync(bearer, identityId ?? string.Empty, cancellationToken);
+        if (unlinked.Call == HeimdallMemberCall.Ok)
+        {
+            snapshots.Put(accountId, unlinked.Identities!);
+        }
+        else if (unlinked.Call is not (HeimdallMemberCall.SignInRequired or HeimdallMemberCall.StepUpRequired or HeimdallMemberCall.LastIdentity))
+        {
+            snapshots.Remove(accountId);
+        }
+
+        return unlinked.Call == HeimdallMemberCall.Ok ? HeimdallLinkOutcome.Unlinked : OutcomeOf(unlinked.Call);
+    }
+
+    /// <summary>The method label Heimdall's bifrost profile admits for an app-asserted passkey proof.</summary>
+    public const string PasskeyStepUpMethod = "bifrost-passkey";
+
+    /// <summary>
+    /// POST /v1/apps/{app}/step-up (Heimdall docs/service-contract.md): the app secret, the member's live bearer and a fresh random
+    /// nonce; Heimdall answers a token for the same session that carries the proof. Called only from the completion that holds the
+    /// bearer, after a verified passkey assertion fact was spent. Each refusal is a closed outcome; nothing is retried here.
+    /// </summary>
+    private async Task<(HeimdallLinkOutcome? Refusal, string? AccessToken)> StepUpAsync(string bearer, CancellationToken cancellationToken)
+    {
+        var nonce = WebEncoders.Base64UrlEncode(RandomNumberGenerator.GetBytes(32));
+        try
+        {
+            using var message = new HttpRequestMessage(
+                HttpMethod.Post, $"/v1/apps/{Uri.EscapeDataString(heimdallOptions.Value.AppSlug)}/step-up")
+            {
+                Content = JsonContent.Create(new HeimdallStepUpRequest(PasskeyStepUpMethod, nonce))
+            };
+            message.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", bearer);
+            using var response = await httpClient.SendAsync(message, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            if (response.StatusCode == HttpStatusCode.Created)
+            {
+                var minted = await response.Content.ReadFromJsonAsync<HeimdallStepUpResponse>(cancellationToken);
+                return string.IsNullOrWhiteSpace(minted?.AccessToken) ? (HeimdallLinkOutcome.Error, null) : (null, minted.AccessToken);
+            }
+
+            var error = await HeimdallRefusal.CodeAsync(response, cancellationToken);
+            return ((int)response.StatusCode, error) switch
+            {
+                (401, "sign_in_required") => (HeimdallLinkOutcome.SignInRequired, null),
+                (429, _) => (HeimdallLinkOutcome.StepUpRateLimited, null),
+                (409, "step_up_nonce_replayed") => (HeimdallLinkOutcome.StepUpReplayed, null),
+                (401 or 403 or 400, _) => (HeimdallLinkOutcome.StepUpUnavailable, null),
+                _ => (HeimdallLinkOutcome.Error, null)
+            };
+        }
+        catch (Exception exception) when (exception is HttpRequestException or JsonException or NotSupportedException or TaskCanceledException
+                                          && !cancellationToken.IsCancellationRequested)
+        {
+            return (HeimdallLinkOutcome.Error, null);
         }
     }
 
@@ -623,7 +734,7 @@ public sealed class HeimdallAuthService(
     private string Protect(HeimdallAttempt attempt) =>
         _protector.Protect(JsonSerializer.Serialize(new AttemptWire(
             attempt.Nonce, attempt.Provider, attempt.RequiresMemberAccess, attempt.ReturnPath.Value, attempt.ExpiresAt,
-            attempt.Purpose, attempt.ExpectedAccountId, attempt.PendingLinkId, attempt.Target)));
+            attempt.Purpose, attempt.ExpectedAccountId, attempt.PendingLinkId, attempt.Target, attempt.Proof)));
 
     /// <summary>The live attempt a cookie value protects when it belongs to this nonce, else null.</summary>
     private HeimdallAttempt? Unprotect(string? cookieValue, string? nonce) =>
@@ -647,7 +758,7 @@ public sealed class HeimdallAuthService(
 
             return new HeimdallAttempt(
                 wire.Nonce, wire.Provider, wire.RequiresMemberAccess, LocalReturnPath.Parse(wire.ReturnPath), wire.ExpiresAt,
-                wire.Purpose, wire.ExpectedAccountId, wire.PendingLinkId, wire.Target);
+                wire.Purpose, wire.ExpectedAccountId, wire.PendingLinkId, wire.Target, wire.Proof);
         }
         catch (Exception error) when (error is CryptographicException or JsonException or FormatException)
         {
@@ -664,7 +775,8 @@ public sealed class HeimdallAuthService(
         HeimdallAttemptPurpose Purpose = HeimdallAttemptPurpose.SignIn,
         string? ExpectedAccountId = null,
         string? PendingLinkId = null,
-        string? Target = null);
+        string? Target = null,
+        string? Proof = null);
 
     private async Task<UserAccount> UpsertUserAccountAsync(
         HeimdallVerifiedIdentity identity,
@@ -820,7 +932,8 @@ public sealed record HeimdallAttempt(
     HeimdallAttemptPurpose Purpose = HeimdallAttemptPurpose.SignIn,
     string? ExpectedAccountId = null,
     string? PendingLinkId = null,
-    string? Target = null);
+    string? Target = null,
+    string? Proof = null);
 
 /// <summary>
 /// What a held attempt is for. SignIn is the default, so a cookie written before purposes existed reads as a sign-in.
@@ -835,7 +948,9 @@ public enum HeimdallAttemptPurpose
     LinkConfirm = 3,
     ListProof = 4,
     UnlinkProof = 5,
-    LinkAwaitDirect = 6
+    LinkAwaitDirect = 6,
+    EnrolProof = 7,
+    UnlinkPasskeyProof = 8
 }
 
 /// <summary>How a Linked accounts action ended. <see cref="HeimdallLinkOutcomes.Code"/> is its closed wire form.</summary>
@@ -853,7 +968,20 @@ public enum HeimdallLinkOutcome
     SignInRequired,
     ProofUnavailable,
     ListExpired,
-    ProviderNeeded
+    ProviderNeeded,
+    EnrolReady,
+    EnrolNeedsSignIn,
+    PasskeyAdded,
+    PasskeyRevoked,
+    PasskeyLimit,
+    PasskeyExpired,
+    PasskeyFailed,
+    PasskeyRequired,
+    PasskeysUnavailable,
+    RateLimited,
+    StepUpUnavailable,
+    StepUpReplayed,
+    StepUpRateLimited
 }
 
 /// <summary>
@@ -881,6 +1009,19 @@ public static class HeimdallLinkOutcomes
         HeimdallLinkOutcome.ProofUnavailable => "proof_unavailable",
         HeimdallLinkOutcome.ListExpired => "list_expired",
         HeimdallLinkOutcome.ProviderNeeded => "provider_needed",
+        HeimdallLinkOutcome.EnrolReady => "enrol_ready",
+        HeimdallLinkOutcome.EnrolNeedsSignIn => "enrol_needs_sign_in",
+        HeimdallLinkOutcome.PasskeyAdded => "passkey_added",
+        HeimdallLinkOutcome.PasskeyRevoked => "passkey_revoked",
+        HeimdallLinkOutcome.PasskeyLimit => "passkey_limit",
+        HeimdallLinkOutcome.PasskeyExpired => "passkey_expired",
+        HeimdallLinkOutcome.PasskeyFailed => "passkey_failed",
+        HeimdallLinkOutcome.PasskeyRequired => "passkey_required",
+        HeimdallLinkOutcome.PasskeysUnavailable => "passkeys_unavailable",
+        HeimdallLinkOutcome.RateLimited => "rate_limited",
+        HeimdallLinkOutcome.StepUpUnavailable => "step_up_unavailable",
+        HeimdallLinkOutcome.StepUpReplayed => "step_up_replayed",
+        HeimdallLinkOutcome.StepUpRateLimited => "step_up_rate_limited",
         _ => "error"
     };
 
@@ -898,16 +1039,36 @@ public static class HeimdallLinkOutcomes
         "sign_in_required" => "Heimdall no longer accepts that sign-in. Nothing was changed; try again.",
         "proof_unavailable" => "Fresh proof could not be started, so nothing was changed. Unlinking needs a fresh Google sign-in, and it is not available right now.",
         "provider_needed" => "Bifrost does not know which logins this account holds right now, so it will not guess. Pick one you know it holds to read the list. Nothing was changed.",
+        "enrol_ready" => "You signed in again. Add the passkey below within five minutes.",
+        "enrol_needs_sign_in" => "Adding a passkey needs a fresh sign-in first, and none is current. Start again with \"Sign in again to add a passkey\". Nothing was added.",
+        "passkey_added" => "The passkey was added. It counts as strong proof after a 48 hour cooling-off; until then it cannot unlink anything.",
+        "passkey_revoked" => "The passkey was revoked.",
+        "passkey_limit" => "This account already has the most passkeys it can hold. Revoke one to add another.",
+        "passkey_expired" => "The passkey check expired or was already used. Nothing was changed; start the unlink again.",
+        "passkey_failed" => "The passkey could not be verified. Nothing was changed.",
+        "passkey_required" => "This account has a passkey, so unlinking needs it. Nothing was changed.",
+        "passkeys_unavailable" => "Passkeys are not available on this server right now. Nothing was changed.",
+        "rate_limited" => "Too many passkey attempts. Nothing was changed; wait a few minutes.",
+        "step_up_unavailable" => "Your passkey was verified, but Heimdall would not take Bifrost's proof. Nothing was changed.",
+        "step_up_replayed" => "Heimdall had already seen that proof. Nothing was changed; start the unlink again.",
+        "step_up_rate_limited" => "Heimdall is limiting proofs for now. Nothing was changed; wait a few minutes and start the unlink again.",
         "list_expired" => "The list was out of date. Nothing was changed; read your linked logins again.",
         "error" => "That could not be completed. Nothing was changed.",
         _ => null
     };
 }
 
-public sealed record HeimdallLinkStep(Uri? Next, string CookieName, string? CookieValue, HeimdallLinkOutcome? Outcome);
+public sealed record HeimdallLinkStep(Uri? Next, string CookieName, string? CookieValue, HeimdallLinkOutcome? Outcome, string? EnrolTicket = null);
 
 public sealed record HeimdallConfirmLinkRequest(
     [property: JsonPropertyName("pendingLinkId")] string PendingLinkId);
+
+public sealed record HeimdallStepUpRequest(
+    [property: JsonPropertyName("method")] string Method,
+    [property: JsonPropertyName("nonce")] string Nonce);
+
+public sealed record HeimdallStepUpResponse(
+    [property: JsonPropertyName("accessToken")] string? AccessToken);
 
 public sealed record HeimdallConfirmLinkResponse(
     [property: JsonPropertyName("status")] string? Status);

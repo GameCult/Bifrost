@@ -36,6 +36,7 @@ public sealed class CookieHardeningTests(CookieHardeningTests.OAuthConfiguredFac
         Assert.Equal("__Host-bifrost_antiforgery", BifrostCookies.Antiforgery);
         Assert.Equal("__Host-bifrost_voter", VoterKeyResolver.CookieName);
         Assert.Equal("__Host-bifrost_heimdall_", HeimdallAttemptCookie.Prefix);
+        Assert.Equal("__Host-bifrost_passkey_ticket", BifrostCookies.PasskeyTicket);
         Assert.All(HeimdallAttemptCookie.SlotNames, x => Assert.StartsWith("__Host-", x, StringComparison.Ordinal));
         Assert.Equal("/", BifrostCookies.Path);
         Assert.Equal("/", VoterKeyResolver.CookiePath);

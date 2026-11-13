@@ -1177,6 +1177,41 @@ public sealed class ConsentReceipt
     public UserAccount? UserAccount { get; set; }
 }
 
+/// <summary>
+/// A WebAuthn passkey a Heimdall-backed member enrolled (docs/passkeys.md). Holds only what verifying an assertion needs:
+/// the credential id, the public key and the sign count. No secret exists to hold. It counts as strong proof only from
+/// <see cref="StrongFromUtc"/> (the cooling-off after enrolment) and only while not revoked.
+/// </summary>
+public sealed class PasskeyCredential
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+
+    public Guid UserAccountId { get; set; }
+
+    public byte[] CredentialId { get; set; } = [];
+
+    public byte[] PublicKey { get; set; } = [];
+
+    public long SignCount { get; set; }
+
+    // Comma-separated WebAuthn transport hints the authenticator reported at enrolment; a hint for the browser, never trusted.
+    public string Transports { get; set; } = string.Empty;
+
+    public Guid? AaGuid { get; set; }
+
+    public string Label { get; set; } = string.Empty;
+
+    public DateTimeOffset CreatedUtc { get; set; }
+
+    public DateTimeOffset StrongFromUtc { get; set; }
+
+    public DateTimeOffset? RevokedUtc { get; set; }
+
+    public DateTimeOffset? LastUsedUtc { get; set; }
+
+    public UserAccount? UserAccount { get; set; }
+}
+
 /// <summary>A Mind's registered Ed25519 public key. Bifrost never holds a private key.</summary>
 public sealed class MindKey
 {
