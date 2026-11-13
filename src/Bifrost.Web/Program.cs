@@ -285,6 +285,8 @@ var app = builder.Build();
 var appJsonSerializerOptions = CreateAppJsonSerializerOptions();
 
 app.Services.GetRequiredService<StartupConfigurationValidator>().Validate();
+// Resolved now so a misconfigured RP (not https, host differs, a port in ExpectedHost) is logged once at boot, not on the first ceremony.
+_ = app.Services.GetRequiredService<Bifrost.Web.Features.Passkeys.PasskeyRelyingParty>();
 await using (var scope = app.Services.CreateAsyncScope())
 {
     await scope.ServiceProvider

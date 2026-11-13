@@ -119,15 +119,18 @@ public sealed class PasskeyCeremonies(TimeProvider clock)
 }
 
 /// <summary>
-/// The one budget on the passkey ceremonies, per Heimdall account, on the shared <see cref="FixedWindowBudget"/>: every
-/// options request, enrolment, assertion and enrolment start spends a permit.
+/// The budgets on the passkey ceremonies, per Heimdall account, on the shared <see cref="FixedWindowBudget"/>. Two separate
+/// ones: asking for options or starting an enrolment sign-in (anyone holding the session can do that), and verifying a
+/// registration or an assertion, which is spent only after the caller holds what the verification needs (a live ticket, or one of
+/// the account's own strong credentials). So junk from a session thief cannot spend the permits a legitimate verification needs.
 /// </summary>
 public sealed class PasskeyRateLimit(TimeProvider clock)
 {
     public const int Permits = 20;
     public static readonly TimeSpan Window = TimeSpan.FromMinutes(10);
 
-    private readonly FixedWindowBudget _budget = new(Permits, Window, 10_000, clock);
+    private readonly FixedWindowBudget _options = new(Permits, Window, 10_000, clock);
+    private readonly FixedWindowBudget _verifications = new(Permits, Window, 10_000, clock);
 
-    public bool TryAcquire(string account) => _budget.Spend(account) is null;
+    public bool TryAcquire(string account, bool verification = false) => (verification ? _verifications : _options).Spend(account) is null;
 }

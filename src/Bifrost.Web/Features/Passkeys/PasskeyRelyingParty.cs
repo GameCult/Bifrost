@@ -17,6 +17,12 @@ public sealed class PasskeyRelyingParty
     public PasskeyRelyingParty(IOptions<BifrostHostOptions> hostOptions, ILogger<PasskeyRelyingParty> logger)
     {
         var host = hostOptions.Value;
+        if (host.ExpectedHost.Contains(':'))
+        {
+            logger.LogWarning("Passkeys are unavailable: Host:ExpectedHost must be a bare host name without a port (it is the RP ID's host); it was written with a port.");
+            return;
+        }
+
         if (!Uri.TryCreate(host.PublicBaseUrl, UriKind.Absolute, out var url)
             || url.Scheme != Uri.UriSchemeHttps
             || string.IsNullOrWhiteSpace(host.ExpectedHost)

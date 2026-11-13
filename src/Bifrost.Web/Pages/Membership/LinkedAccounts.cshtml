@@ -63,6 +63,8 @@
                         }
                         @if (Model.HasStrongPasskey)
                         {
+                            @if (Model.PasskeysAvailable)
+                            {
                             <form method="post" asp-page-handler="UnlinkPasskey" class="inline-actions" data-passkey-unlink>
                                 <input type="hidden" name="identityId" value="@identity.Id" />
                                 <input type="hidden" name="id" />
@@ -73,6 +75,7 @@
                                 <input type="hidden" name="userHandle" />
                                 <button class="button secondary" type="submit">Unlink with passkey</button>
                             </form>
+                            }
                         }
                         else if (Model.HasGoogle)
                         {
@@ -89,7 +92,16 @@
                 <p class="muted">This is your only login. Heimdall will not remove the last one.</p>
             }
 
-            @if (Model.HasStrongPasskey)
+            @if (Model.HasStrongPasskey && !Model.PasskeysAvailable)
+            {
+                <p class="callout warning">
+                    This account has a passkey, so unlinking needs it, but passkeys are not available on this server right now (a
+                    configuration fault the operator must fix), so nothing can be unlinked from here at the moment. Nothing is lost:
+                    try again later. If you cannot wait, revoke your passkeys below; unlinking then falls back to a fresh Google sign-in,
+                    if a Google login is linked to this account.
+                </p>
+            }
+            else if (Model.HasStrongPasskey)
             {
                 <p class="muted">Unlinking asks for one of your passkeys, then signs you in to Heimdall once more and removes only the login you picked.</p>
             }
@@ -115,15 +127,16 @@
         <h2>Passkeys</h2>
         @if (!Model.PasskeysAvailable)
         {
-            <p class="muted">Passkeys are not available on this server right now.</p>
+            <p class="muted">Passkeys are not available on this server right now, so none can be added or used. You can still revoke the ones listed.</p>
         }
-        else
-        {
+            @if (Model.PasskeysAvailable)
+            {
             <p class="muted">
                 A passkey is the strong proof for unlinking a login: it stays on your device, and a site that is not Bifrost cannot use it.
                 A new passkey is added only right after you sign in to Heimdall again, and it counts as strong proof 48 hours later, so
                 someone who borrows your open browser cannot add one and use it at once. You can revoke a passkey here at any time.
             </p>
+            }
             @if (Model.Passkeys.Count > 0)
             {
                 <ul>
@@ -153,7 +166,10 @@
                 </ul>
             }
 
-            @if (Model.PasskeyLimitReached)
+            @if (!Model.PasskeysAvailable)
+            {
+            }
+            else if (Model.PasskeyLimitReached)
             {
                 <p class="muted">This is the most passkeys an account can hold. Revoke one to add another.</p>
             }
@@ -182,7 +198,6 @@
             }
 
             <p id="passkey-status" class="muted" role="status"></p>
-        }
 
         @if (Model.Identities is not null)
         {

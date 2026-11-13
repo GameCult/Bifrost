@@ -239,6 +239,7 @@ public sealed class PasskeyTests
         Assert.Contains("httponly", header);
         Assert.Contains("path=/", header);
         Assert.Contains("max-age=300", header);
+        Assert.Contains("samesite=lax", header);
         Assert.DoesNotContain("domain", header);
     }
 
@@ -347,7 +348,7 @@ public sealed class PasskeyTests
         StartedAttempt? last = null;
         for (var i = 0; i < PasskeyRateLimit.Permits + 1; i++)
         {
-            last = await host.PostLinkedAccountsAsync(member.Session, "PasskeyEnrolOptions");
+            last = await host.PostLinkedAccountsAsync(member.Session, "PasskeyChallenge", new Dictionary<string, string> { ["identityId"] = member.Patreon });
         }
 
         Assert.Equal(HttpStatusCode.TooManyRequests, last!.Response.StatusCode);
@@ -475,7 +476,7 @@ public sealed class PasskeyTests
         var withOwnKey = await PostAssertion(host, member, fields, member.Patreon);
         var viaGoogleRoute = await host.StartUnlinkAsync(member.Session, member.Patreon);
 
-        Assert.Equal(Page + "?result=passkey_expired", Location(noChallenge.Response));
+        Assert.Equal(Page + "?result=passkey_failed", Location(noChallenge.Response));
         Assert.Equal(Page + "?result=passkey_failed", Location(withOwnKey.Response));
         Assert.Equal(Page + "?result=passkey_required", Location(viaGoogleRoute.Response));
         Assert.Equal(starts, host.Heimdall.StartBodies.Count);
@@ -817,5 +818,204 @@ public sealed class PasskeyTests
         Assert.DoesNotContain("eval(", source);
         Assert.DoesNotContain("innerHTML", source);
         Assert.DoesNotContain("document.write", source);
+    }
+
+    // ---- a thief holding only the session cannot grief the member's flows ----
+
+    [Fact]
+    public async Task Junk_from_a_session_thief_burns_neither_the_members_challenge_nor_ticket_nor_permits()
+    {
+        using var host = new HeimdallHost(realSessions: true);
+        var member = await NewMember(host);
+        var authenticator = new SoftwareAuthenticator();
+        var ticket = await SignInForEnrolment(host, member);
+        var options = await host.PostLinkedAccountsAsync(member.Session, "PasskeyEnrolOptions", extraCookies: Ticket(ticket));
+        var registration = authenticator.Register(await JsonOf(options));
+
+        // The thief has the session cookie and no ticket: many junk registrations, all refused, nothing spent.
+        for (var i = 0; i < PasskeyRateLimit.Permits + 5; i++)
+        {
+            var junk = await host.PostLinkedAccountsAsync(member.Session, "PasskeyEnrol", new Dictionary<string, string> { ["rawId"] = "AAAA" });
+            Assert.Equal(Page + "?result=enrol_needs_sign_in", Location(junk.Response));
+        }
+
+        var enrolled = await host.PostLinkedAccountsAsync(member.Session, "PasskeyEnrol", registration, extraCookies: Ticket(ticket));
+        Assert.Equal(Page + "?result=passkey_added", Location(enrolled.Response));
+
+        await CoolOff(host, member);
+        var (json, _) = await Challenge(host, member, member.Patreon);
+        for (var i = 0; i < PasskeyRateLimit.Permits + 5; i++)
+        {
+            var junk = await PostAssertion(host, member, new Dictionary<string, string> { ["rawId"] = "AAAA" }, member.Patreon);
+            Assert.Equal(Page + "?result=passkey_failed", Location(junk.Response));
+        }
+
+        var real = await PostAssertion(host, member, authenticator.Assert(json), member.Patreon);
+        Assert.StartsWith("https://heimdall.test", Location(real.Response));
+    }
+
+    [Fact]
+    public async Task A_passkey_revoked_after_the_assertion_does_not_unlink_at_the_completion()
+    {
+        using var host = new HeimdallHost(realSessions: true);
+        var member = await NewMember(host);
+        var authenticator = new SoftwareAuthenticator();
+        await AddPasskey(host, member, authenticator);
+        await CoolOff(host, member);
+        var attempt = await Unlink(host, member, authenticator, member.Patreon);
+        var id = (await Credentials(host)).Single().Id.ToString();
+        await host.PostLinkedAccountsAsync(member.Session, "PasskeyRevoke", new Dictionary<string, string> { ["credentialId"] = id });
+
+        var done = await Finish(host, member, attempt);
+
+        Assert.Equal(Page + "?result=passkey_failed", Location(done));
+        Assert.Empty(host.Heimdall.StepUps);
+        Assert.Empty(host.Heimdall.Unlinks);
+        Assert.Contains(host.Heimdall.Identities, x => (string?)x["id"] == member.Patreon);
+    }
+
+    [Fact]
+    public async Task An_assertion_whose_user_handle_names_another_account_is_refused()
+    {
+        using var host = new HeimdallHost(realSessions: true);
+        var member = await NewMember(host);
+        var authenticator = new SoftwareAuthenticator();
+        await AddPasskey(host, member, authenticator);
+        await CoolOff(host, member);
+        var own = (await host.Account(member.Account))!.Id.ToByteArray();
+
+        var (foreign, _) = await Challenge(host, member, member.Patreon);
+        var refused = await PostAssertion(host, member, authenticator.Assert(foreign, Guid.NewGuid().ToByteArray()), member.Patreon);
+        var (mine, _) = await Challenge(host, member, member.Patreon);
+        var accepted = await PostAssertion(host, member, authenticator.Assert(mine, own), member.Patreon);
+
+        Assert.Equal(Page + "?result=passkey_failed", Location(refused.Response));
+        Assert.StartsWith("https://heimdall.test", Location(accepted.Response));
+    }
+
+    [Fact]
+    public async Task The_credential_lookup_is_scoped_to_the_session_account_even_when_the_allow_list_is_empty()
+    {
+        using var host = new HeimdallHost(realSessions: true);
+        var victim = await NewMember(host);
+        var victimKey = new SoftwareAuthenticator();
+        await AddPasskey(host, victim, victimKey);
+        var other = await NewMember(host);
+        await AddPasskey(host, other, new SoftwareAuthenticator());
+        await CoolOff(host, other);
+        await ReadList(host, victim);
+        var (json, _) = await Challenge(host, other, other.Patreon);
+        // The allow list is a second guard; take it out of the other account's challenge (the way a test can without weakening
+        // the server) so only the account-scoped lookup stands between the victim's credential and the other account.
+        var node = System.Text.Json.Nodes.JsonNode.Parse(json)!.AsObject();
+        node["allowCredentials"] = new System.Text.Json.Nodes.JsonArray();
+        var stripped = node.ToJsonString();
+        Assert.NotNull(host.Services.GetRequiredService<PasskeyCeremonies>()
+            .Issue(CeremonyKind.UnlinkChallenge, other.Account, other.Patreon, stripped, TimeSpan.FromMinutes(2)));
+        var starts = host.Heimdall.StartBodies.Count;
+
+        var borrowed = await PostAssertion(host, other, victimKey.Assert(stripped), other.Patreon);
+
+        Assert.Equal(Page + "?result=passkey_failed", Location(borrowed.Response));
+        Assert.Equal(starts, host.Heimdall.StartBodies.Count);
+    }
+
+    // ---- configuration ----
+
+    [Fact]
+    public async Task A_misconfigured_relying_party_is_logged_once_at_boot_before_any_ceremony()
+    {
+        using var host = new HeimdallHost(realSessions: true, publicBaseUrl: "http://localhost");
+
+        _ = host.Services;
+
+        Assert.Single(host.Logs.Lines, x => x.Contains("Passkeys are unavailable"));
+    }
+
+    [Fact]
+    public void An_expected_host_written_with_a_port_makes_passkeys_unavailable_and_says_why()
+    {
+        var logs = new CapturedLogs();
+        var party = new PasskeyRelyingParty(
+            Microsoft.Extensions.Options.Options.Create(new Bifrost.Web.Configuration.BifrostHostOptions { PublicBaseUrl = "https://localhost", ExpectedHost = "localhost:443" }),
+            new Microsoft.Extensions.Logging.Abstractions.NullLogger<PasskeyRelyingParty>());
+        var loud = new PasskeyRelyingParty(
+            Microsoft.Extensions.Options.Options.Create(new Bifrost.Web.Configuration.BifrostHostOptions { PublicBaseUrl = "https://localhost:8443", ExpectedHost = "localhost:8443" }),
+            new TestLogger<PasskeyRelyingParty>(logs));
+        var fine = new PasskeyRelyingParty(
+            Microsoft.Extensions.Options.Options.Create(new Bifrost.Web.Configuration.BifrostHostOptions { PublicBaseUrl = "https://localhost:8443", ExpectedHost = "localhost" }),
+            new Microsoft.Extensions.Logging.Abstractions.NullLogger<PasskeyRelyingParty>());
+
+        Assert.False(party.IsAvailable);
+        Assert.False(loud.IsAvailable);
+        Assert.Contains("without a port", Assert.Single(logs.Lines));
+        Assert.True(fine.IsAvailable);
+        Assert.Equal("https://localhost:8443", fine.Origin);
+        Assert.Equal("localhost", fine.RpId);
+    }
+
+    private sealed class TestLogger<T>(CapturedLogs logs) : Microsoft.Extensions.Logging.ILogger<T>
+    {
+        private readonly Microsoft.Extensions.Logging.ILogger _inner = logs.CreateLogger(typeof(T).Name);
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(Microsoft.Extensions.Logging.LogLevel logLevel) => true;
+
+        public void Log<TState>(Microsoft.Extensions.Logging.LogLevel logLevel, Microsoft.Extensions.Logging.EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter) =>
+            _inner.Log(logLevel, eventId, state, exception, formatter);
+    }
+
+    [Fact]
+    public async Task With_a_strong_passkey_and_an_unavailable_relying_party_the_page_says_so_and_offers_no_form()
+    {
+        using var host = new HeimdallHost(realSessions: true, publicBaseUrl: "https://other.example");
+        var member = await NewMember(host);
+        var user = (await host.Account(member.Account))!;
+        await host.Db(async db =>
+        {
+            db.PasskeyCredentials.Add(new Bifrost.Web.Domain.PasskeyCredential
+            {
+                UserAccountId = user.Id,
+                CredentialId = [1, 2, 3, 4],
+                PublicKey = [1],
+                Label = "Old key",
+                CreatedUtc = host.Clock.Now - TimeSpan.FromDays(3),
+                StrongFromUtc = host.Clock.Now - TimeSpan.FromDays(1)
+            });
+            await db.SaveChangesAsync();
+            return 0;
+        });
+
+        var (_, html) = await host.GetLinkedAccountsAsync(member.Session);
+
+        Assert.DoesNotContain("UnlinkPasskey", html);
+        Assert.DoesNotContain("Unlink with passkey", html);
+        Assert.DoesNotContain("passkeys.js", html);
+        Assert.Contains("passkeys are not available on this server right now", html);
+        Assert.Contains("revoke your passkeys below", html);
+        Assert.Contains("Old key", html);
+        Assert.Contains("PasskeyRevoke", html);
+    }
+
+    [Fact]
+    public async Task A_label_is_cut_by_text_element_never_inside_a_surrogate_pair_and_loses_format_characters()
+    {
+        using var host = new HeimdallHost(realSessions: true);
+        var member = await NewMember(host);
+        var ticket = await SignInForEnrolment(host, member);
+
+        var done = await Enrol(host, member, new SoftwareAuthenticator(), ticket, new string('a', 39) + "\U0001F600" + "tail\u202Eevil");
+
+        Assert.Equal(Page + "?result=passkey_added", Location(done));
+        var label = Assert.Single(await Credentials(host)).Label;
+        Assert.Equal(new string('a', 39) + "\U0001F600", label);
+        Assert.DoesNotContain(label.EnumerateRunes(), x => x == System.Text.Rune.ReplacementChar);
+        Assert.Equal(label, System.Text.Encoding.UTF8.GetString(System.Text.Encoding.UTF8.GetBytes(label)));
+
+        var second = await SignInForEnrolment(host, member);
+        var again = await Enrol(host, member, new SoftwareAuthenticator(), second, "\u202Eab\u200Bc");
+        Assert.Equal(Page + "?result=passkey_added", Location(again));
+        Assert.Contains((await Credentials(host)), x => x.Label == "abc");
     }
 }

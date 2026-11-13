@@ -35,7 +35,8 @@ public sealed class HeimdallAuthService(
     TimeProvider timeProvider,
     HeimdallMemberClient memberClient,
     LinkedAccountsSnapshots snapshots,
-    PasskeyCeremonies ceremonies)
+    PasskeyCeremonies ceremonies,
+    PasskeyService passkeys)
 {
     public const string ErrorRedirect = "/?auth=heimdall-error";
     public const string AppSecretHeader = "x-heimdall-app-secret";
@@ -523,6 +524,12 @@ public sealed class HeimdallAuthService(
                 if (fact is null)
                 {
                     return new HeimdallLinkStep(null, cookieName, null, HeimdallLinkOutcome.PasskeyExpired);
+                }
+
+                // A passkey revoked since the assertion no longer proves anything: Heimdall is not asked.
+                if (!await passkeys.StillStrongAsync(identity.AccountId, fact.Data, cancellationToken))
+                {
+                    return new HeimdallLinkStep(null, cookieName, null, HeimdallLinkOutcome.PasskeyFailed);
                 }
 
                 var asserted = await StepUpAsync(bearer, cancellationToken);

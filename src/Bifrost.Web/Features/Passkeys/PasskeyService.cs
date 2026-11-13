@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Text;
 using Bifrost.Web.Data;
 using Bifrost.Web.Domain;
 using Bifrost.Web.Features.Heimdall;
@@ -98,14 +100,14 @@ public sealed class PasskeyService(
             return (HeimdallLinkOutcome.PasskeysUnavailable, null);
         }
 
-        if (!rateLimit.TryAcquire(heimdallAccountId))
-        {
-            return (HeimdallLinkOutcome.RateLimited, null);
-        }
-
         if (!HasTicket(heimdallAccountId, ticketId) || await AccountAsync(heimdallAccountId, ct) is not { } user)
         {
             return (HeimdallLinkOutcome.EnrolNeedsSignIn, null);
+        }
+
+        if (!rateLimit.TryAcquire(heimdallAccountId))
+        {
+            return (HeimdallLinkOutcome.RateLimited, null);
         }
 
         var existing = await Active(user.Id).Select(x => x.CredentialId).ToListAsync(ct);
@@ -143,21 +145,11 @@ public sealed class PasskeyService(
             return HeimdallLinkOutcome.PasskeysUnavailable;
         }
 
-        if (!rateLimit.TryAcquire(heimdallAccountId))
-        {
-            return HeimdallLinkOutcome.RateLimited;
-        }
-
-        var ticket = ticketId is null ? null : ceremonies.Take(CeremonyKind.EnrolTicket, heimdallAccountId, null, ticketId);
-        var challenge = ceremonies.Take(CeremonyKind.EnrolChallenge, heimdallAccountId, null, null);
-        if (ticket is null || await AccountAsync(heimdallAccountId, ct) is not { } user)
+        // The caller's own preconditions first, spending nothing: someone with only the session has no ticket, so junk from them
+        // can neither burn the member's ticket and challenge nor spend the verification permits.
+        if (!HasTicket(heimdallAccountId, ticketId) || await AccountAsync(heimdallAccountId, ct) is not { } user)
         {
             return HeimdallLinkOutcome.EnrolNeedsSignIn;
-        }
-
-        if (challenge?.Data is null)
-        {
-            return HeimdallLinkOutcome.PasskeyExpired;
         }
 
         if (await Active(user.Id).CountAsync(ct) >= MaxActive)
@@ -169,6 +161,24 @@ public sealed class PasskeyService(
             || !TryDecode(fields.ClientDataJson, out var clientData) || fields.Id is null)
         {
             return HeimdallLinkOutcome.PasskeyFailed;
+        }
+
+        if (!rateLimit.TryAcquire(heimdallAccountId, verification: true))
+        {
+            return HeimdallLinkOutcome.RateLimited;
+        }
+
+        // Now both are spent, whatever the outcome.
+        var ticket = ceremonies.Take(CeremonyKind.EnrolTicket, heimdallAccountId, null, ticketId);
+        var challenge = ceremonies.Take(CeremonyKind.EnrolChallenge, heimdallAccountId, null, null);
+        if (ticket is null)
+        {
+            return HeimdallLinkOutcome.EnrolNeedsSignIn;
+        }
+
+        if (challenge?.Data is null)
+        {
+            return HeimdallLinkOutcome.PasskeyExpired;
         }
 
         try
@@ -305,17 +315,9 @@ public sealed class PasskeyService(
             return (HeimdallLinkOutcome.PasskeysUnavailable, null);
         }
 
-        if (!rateLimit.TryAcquire(heimdallAccountId))
-        {
-            return (HeimdallLinkOutcome.RateLimited, null);
-        }
-
-        var challenge = ceremonies.Take(CeremonyKind.UnlinkChallenge, heimdallAccountId, identityId, null);
-        if (challenge?.Data is null)
-        {
-            return (HeimdallLinkOutcome.PasskeyExpired, null);
-        }
-
+        // The caller's own preconditions first, spending nothing: a decodable assertion naming one of this account's strong,
+        // un-revoked credentials. Junk from someone holding only the session fails here and burns neither the member's challenge
+        // nor the verification permits.
         if (await AccountAsync(heimdallAccountId, ct) is not { } user
             || !TryDecode(fields.RawId, out var rawId) || !TryDecode(fields.AuthenticatorData, out var authenticatorData)
             || !TryDecode(fields.ClientDataJson, out var clientData) || !TryDecode(fields.Signature, out var signature)
@@ -335,6 +337,18 @@ public sealed class PasskeyService(
         if (credential is null)
         {
             return (HeimdallLinkOutcome.PasskeyFailed, null);
+        }
+
+        if (!rateLimit.TryAcquire(heimdallAccountId, verification: true))
+        {
+            return (HeimdallLinkOutcome.RateLimited, null);
+        }
+
+        // Spent from here on, whatever the outcome.
+        var challenge = ceremonies.Take(CeremonyKind.UnlinkChallenge, heimdallAccountId, identityId, null);
+        if (challenge?.Data is null)
+        {
+            return (HeimdallLinkOutcome.PasskeyExpired, null);
         }
 
         try
@@ -372,19 +386,33 @@ public sealed class PasskeyService(
             return (HeimdallLinkOutcome.PasskeyFailed, null);
         }
 
-        var fact = ceremonies.Issue(CeremonyKind.UnlinkProof, heimdallAccountId, identityId, null, PasskeyCeremonies.ProofLifetime);
+        var fact = ceremonies.Issue(CeremonyKind.UnlinkProof, heimdallAccountId, identityId, credential.Id.ToString(), PasskeyCeremonies.ProofLifetime);
         return fact is null ? (HeimdallLinkOutcome.Error, null) : (null, fact);
     }
 
     public void DiscardFact(string? factId) => ceremonies.Discard(factId);
 
+    /// <summary>
+    /// Whether the credential an assertion fact was made with is still this account's own, un-revoked and strong. Asked in the
+    /// completion, before Heimdall is: a passkey revoked between the assertion and the completion no longer proves anything.
+    /// </summary>
+    public async Task<bool> StillStrongAsync(string heimdallAccountId, string? credentialId, CancellationToken ct) =>
+        Guid.TryParse(credentialId, out var id) && await AccountAsync(heimdallAccountId, ct) is { } user
+        && await Strong(user.Id).AnyAsync(x => x.Id == id, ct);
+
     /// <summary>A label from a form field: trimmed, control characters dropped, bounded; the fallback when nothing is left.</summary>
     private static string Label(string? value, string fallback)
     {
-        var cleaned = new string((value ?? string.Empty).Where(c => !char.IsControl(c)).ToArray()).Trim();
-        if (cleaned.Length > MaxLabel)
+        // By rune and by text element, never by UTF-16 unit: a cut inside a surrogate pair is not valid text and Postgres refuses it.
+        // Control and format characters (bidi overrides, joiners, zero-width marks) are dropped; a lone surrogate becomes U+FFFD.
+        var runes = (value ?? string.Empty).EnumerateRunes()
+            .Where(r => Rune.GetUnicodeCategory(r) is not (UnicodeCategory.Control or UnicodeCategory.Format))
+            .Take(MaxLabel * 4);
+        var cleaned = string.Concat(runes.Select(r => r.ToString())).Trim();
+        var elements = new StringInfo(cleaned);
+        if (elements.LengthInTextElements > MaxLabel)
         {
-            cleaned = cleaned[..MaxLabel];
+            cleaned = elements.SubstringByTextElements(0, MaxLabel);
         }
 
         return cleaned.Length == 0 ? fallback : cleaned;
