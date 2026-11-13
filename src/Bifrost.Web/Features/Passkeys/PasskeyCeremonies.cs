@@ -122,7 +122,10 @@ public sealed class PasskeyCeremonies(TimeProvider clock)
 /// The budgets on the passkey ceremonies, per Heimdall account, on the shared <see cref="FixedWindowBudget"/>. Two separate
 /// ones: asking for options or starting an enrolment sign-in (anyone holding the session can do that), and verifying a
 /// registration or an assertion, which is spent only after the caller holds what the verification needs (a live ticket, or one of
-/// the account's own strong credentials). So junk from a session thief cannot spend the permits a legitimate verification needs.
+/// the account's own strong credentials and a live challenge). Junk from a session thief that names no credential of the account, or
+/// arrives with no live challenge, spends nothing; junk naming one of the account's credentials spends one permit per challenge that
+/// was asked for, because the first such post takes the challenge. A session holder can still exhaust both budgets by asking for
+/// challenges over and over: a lockout the same session already has through revoking passkeys, not a bypass. Budgets are per process.
 /// </summary>
 public sealed class PasskeyRateLimit(TimeProvider clock)
 {

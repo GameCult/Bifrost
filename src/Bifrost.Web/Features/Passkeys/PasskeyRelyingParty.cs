@@ -17,9 +17,9 @@ public sealed class PasskeyRelyingParty
     public PasskeyRelyingParty(IOptions<BifrostHostOptions> hostOptions, ILogger<PasskeyRelyingParty> logger)
     {
         var host = hostOptions.Value;
-        if (host.ExpectedHost.Contains(':'))
+        if (host.ExpectedHost.Contains(':') || System.Net.IPAddress.TryParse(host.ExpectedHost.Trim('[', ']'), out _))
         {
-            logger.LogWarning("Passkeys are unavailable: Host:ExpectedHost must be a bare host name without a port (it is the RP ID's host); it was written with a port.");
+            logger.LogWarning("Passkeys are unavailable: Host:ExpectedHost must be a bare DNS host name, with no port and not an IP address (an IP address is not a valid RP ID).");
             return;
         }
 

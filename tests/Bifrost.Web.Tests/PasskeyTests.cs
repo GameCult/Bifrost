@@ -951,7 +951,14 @@ public sealed class PasskeyTests
 
         Assert.False(party.IsAvailable);
         Assert.False(loud.IsAvailable);
-        Assert.Contains("without a port", Assert.Single(logs.Lines));
+        foreach (var literal in new[] { "[::1]", "::1", "127.0.0.1" })
+        {
+            Assert.False(new PasskeyRelyingParty(
+                Microsoft.Extensions.Options.Options.Create(new Bifrost.Web.Configuration.BifrostHostOptions { PublicBaseUrl = "https://localhost", ExpectedHost = literal }),
+                new Microsoft.Extensions.Logging.Abstractions.NullLogger<PasskeyRelyingParty>()).IsAvailable);
+        }
+
+        Assert.Contains("not an IP address", Assert.Single(logs.Lines));
         Assert.True(fine.IsAvailable);
         Assert.Equal("https://localhost:8443", fine.Origin);
         Assert.Equal("localhost", fine.RpId);
@@ -1020,5 +1027,126 @@ public sealed class PasskeyTests
         var again = await Enrol(host, member, new SoftwareAuthenticator(), second, "\u202Eab\u200Bc");
         Assert.Equal(Page + "?result=passkey_added", Location(again));
         Assert.Contains((await Credentials(host)), x => x.Label == "abc");
+    }
+
+    // ---- delta: permits, challenges and the fact's credential ----
+
+    [Fact]
+    public async Task Junk_naming_the_accounts_own_credential_spends_one_permit_per_challenge_not_the_budget()
+    {
+        using var host = new HeimdallHost(realSessions: true);
+        var member = await NewMember(host);
+        var authenticator = new SoftwareAuthenticator();
+        await AddPasskey(host, member, authenticator);
+        await CoolOff(host, member);
+        var (json, _) = await Challenge(host, member, member.Patreon);
+        var thief = new SoftwareAuthenticator();
+
+        // The credential id is public to the session (it is in allowCredentials): every junk post names it.
+        for (var i = 0; i < PasskeyRateLimit.Permits + 5; i++)
+        {
+            var junk = thief.Assert(json);
+            junk["id"] = junk["rawId"] = Microsoft.AspNetCore.WebUtilities.WebEncoders.Base64UrlEncode(authenticator.CredentialId);
+            var done = await PostAssertion(host, member, junk, member.Patreon);
+            Assert.Equal(Page + (i == 0 ? "?result=passkey_failed" : "?result=passkey_expired"), Location(done.Response));
+        }
+
+        var (fresh, _) = await Challenge(host, member, member.Patreon);
+        var real = await PostAssertion(host, member, authenticator.Assert(fresh), member.Patreon);
+        Assert.StartsWith("https://heimdall.test", Location(real.Response));
+    }
+
+    [Fact]
+    public async Task The_fact_is_bound_to_the_credential_it_was_made_with_not_to_some_strong_credential()
+    {
+        using var host = new HeimdallHost(realSessions: true);
+        var member = await NewMember(host);
+        var a = new SoftwareAuthenticator();
+        var b = new SoftwareAuthenticator();
+        await AddPasskey(host, member, a);
+        await AddPasskey(host, member, b);
+        await CoolOff(host, member);
+        var attempt = await Unlink(host, member, a, member.Patreon);
+        var aId = (await Credentials(host)).Single(x => x.CredentialId.SequenceEqual(a.CredentialId)).Id.ToString();
+        await host.PostLinkedAccountsAsync(member.Session, "PasskeyRevoke", new Dictionary<string, string> { ["credentialId"] = aId });
+
+        var done = await Finish(host, member, attempt);
+
+        Assert.Equal(Page + "?result=passkey_failed", Location(done));
+        Assert.Empty(host.Heimdall.StepUps);
+        Assert.Empty(host.Heimdall.Unlinks);
+        Assert.Single((await Credentials(host)), x => x.RevokedUtc is null); // B is still strong
+    }
+
+    [Fact]
+    public async Task A_rate_limited_verification_spends_neither_the_ticket_nor_the_challenge()
+    {
+        using var host = new HeimdallHost(realSessions: true);
+        var member = await NewMember(host);
+        var authenticator = new SoftwareAuthenticator();
+        var limit = host.Services.GetRequiredService<PasskeyRateLimit>();
+        var ceremonies = host.Services.GetRequiredService<PasskeyCeremonies>();
+
+        // Enrolment.
+        var ticket = await SignInForEnrolment(host, member);
+        var options = await host.PostLinkedAccountsAsync(member.Session, "PasskeyEnrolOptions", extraCookies: Ticket(ticket));
+        var registration = authenticator.Register(await JsonOf(options));
+        for (var i = 0; i < PasskeyRateLimit.Permits; i++)
+        {
+            Assert.True(limit.TryAcquire(member.Account, verification: true));
+        }
+
+        var limited = await host.PostLinkedAccountsAsync(member.Session, "PasskeyEnrol", registration, extraCookies: Ticket(ticket));
+
+        Assert.Equal(Page + "?result=rate_limited", Location(limited.Response));
+        Assert.NotNull(ceremonies.Peek(CeremonyKind.EnrolTicket, member.Account, null, ticket));
+        Assert.NotNull(ceremonies.Peek(CeremonyKind.EnrolChallenge, member.Account, null, null));
+
+        // Assertion, for an account whose budget is fresh (the budgets time on the monotonic clock, which the test clock does not move).
+        var other = await NewMember(host);
+        var otherKey = new SoftwareAuthenticator();
+        await AddPasskey(host, other, otherKey);
+        await CoolOff(host, other);
+        var (json, _) = await Challenge(host, other, other.Patreon);
+        while (limit.TryAcquire(other.Account, verification: true))
+        {
+        }
+
+        var assertion = await PostAssertion(host, other, otherKey.Assert(json), other.Patreon);
+
+        Assert.Equal(Page + "?result=rate_limited", Location(assertion.Response));
+        Assert.NotNull(ceremonies.Peek(CeremonyKind.UnlinkChallenge, other.Account, other.Patreon, null));
+    }
+
+    [Fact]
+    public async Task Options_and_verification_budgets_do_not_drain_each_other()
+    {
+        using var host = new HeimdallHost(realSessions: true);
+        var member = await NewMember(host);
+        var authenticator = new SoftwareAuthenticator();
+        await AddPasskey(host, member, authenticator);
+        await CoolOff(host, member);
+        var limit = host.Services.GetRequiredService<PasskeyRateLimit>();
+        var (json, _) = await Challenge(host, member, member.Patreon);
+
+        // Options budget spent: a verification still goes through.
+        while (limit.TryAcquire(member.Account))
+        {
+        }
+
+        var real = await PostAssertion(host, member, authenticator.Assert(json), member.Patreon);
+        Assert.StartsWith("https://heimdall.test", Location(real.Response));
+
+        // And the other way round, for an account whose options budget is fresh: verification spent, options still answer.
+        var other = await NewMember(host);
+        await AddPasskey(host, other, new SoftwareAuthenticator());
+        await CoolOff(host, other);
+        while (limit.TryAcquire(other.Account, verification: true))
+        {
+        }
+
+        var (again, call) = await Challenge(host, other, other.Patreon);
+        Assert.Equal(HttpStatusCode.OK, call.Response.StatusCode);
+        Assert.Contains("challenge", again);
     }
 }

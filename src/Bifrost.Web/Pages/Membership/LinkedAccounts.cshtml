@@ -129,47 +129,46 @@
         {
             <p class="muted">Passkeys are not available on this server right now, so none can be added or used. You can still revoke the ones listed.</p>
         }
-            @if (Model.PasskeysAvailable)
-            {
+        @if (Model.PasskeysAvailable)
+        {
             <p class="muted">
                 A passkey is the strong proof for unlinking a login: it stays on your device, and a site that is not Bifrost cannot use it.
                 A new passkey is added only right after you sign in to Heimdall again, and it counts as strong proof 48 hours later, so
                 someone who borrows your open browser cannot add one and use it at once. You can revoke a passkey here at any time.
             </p>
-            }
-            @if (Model.Passkeys.Count > 0)
-            {
-                <ul>
-                    @foreach (var key in Model.Passkeys)
-                    {
-                        <li>
-                            <strong>@key.Label</strong>
-                            @if (key.IsStrong)
-                            {
-                                <span class="muted">active</span>
-                            }
-                            else
-                            {
-                                <span class="muted">cooling off until @key.StrongFromUtc.UtcDateTime.ToString("dd MMM yyyy HH:mm") UTC; cannot unlink yet</span>
-                            }
-                            <span class="muted">added @key.CreatedUtc.UtcDateTime.ToString("dd MMM yyyy") UTC</span>
-                            @if (key.LastUsedUtc is { } used)
-                            {
-                                <span class="muted">last used @used.UtcDateTime.ToString("dd MMM yyyy") UTC</span>
-                            }
-                            <form method="post" asp-page-handler="PasskeyRevoke" class="inline-actions">
-                                <input type="hidden" name="credentialId" value="@key.Id" />
-                                <button class="button secondary" type="submit">Revoke</button>
-                            </form>
-                        </li>
-                    }
-                </ul>
-            }
+        }
+        @if (Model.Passkeys.Count > 0)
+        {
+            <ul>
+                @foreach (var key in Model.Passkeys)
+                {
+                    <li>
+                        <strong>@key.Label</strong>
+                        @if (key.IsStrong)
+                        {
+                            <span class="muted">active</span>
+                        }
+                        else
+                        {
+                            <span class="muted">cooling off until @key.StrongFromUtc.UtcDateTime.ToString("dd MMM yyyy HH:mm") UTC; cannot unlink yet</span>
+                        }
+                        <span class="muted">added @key.CreatedUtc.UtcDateTime.ToString("dd MMM yyyy") UTC</span>
+                        @if (key.LastUsedUtc is { } used)
+                        {
+                            <span class="muted">last used @used.UtcDateTime.ToString("dd MMM yyyy") UTC</span>
+                        }
+                        <form method="post" asp-page-handler="PasskeyRevoke" class="inline-actions">
+                            <input type="hidden" name="credentialId" value="@key.Id" />
+                            <button class="button secondary" type="submit">Revoke</button>
+                        </form>
+                    </li>
+                }
+            </ul>
+        }
 
-            @if (!Model.PasskeysAvailable)
-            {
-            }
-            else if (Model.PasskeyLimitReached)
+        @if (Model.PasskeysAvailable)
+        {
+            if (Model.PasskeyLimitReached)
             {
                 <p class="muted">This is the most passkeys an account can hold. Revoke one to add another.</p>
             }
@@ -196,8 +195,8 @@
             {
                 <p class="muted">Read your linked logins first; adding a passkey then asks you to sign in to Heimdall once more.</p>
             }
-
-            <p id="passkey-status" class="muted" role="status"></p>
+        }
+        <p id="passkey-status" class="muted" role="status"></p>
 
         @if (Model.Identities is not null)
         {

@@ -339,6 +339,13 @@ public sealed class PasskeyService(
             return (HeimdallLinkOutcome.PasskeyFailed, null);
         }
 
+        // Without a live challenge for this account and identity nothing can verify, so no permit is spent either: junk naming the
+        // account's own credential spends at most one permit per challenge that was asked for (the first junk then takes it).
+        if (ceremonies.Peek(CeremonyKind.UnlinkChallenge, heimdallAccountId, identityId, null) is null)
+        {
+            return (HeimdallLinkOutcome.PasskeyExpired, null);
+        }
+
         if (!rateLimit.TryAcquire(heimdallAccountId, verification: true))
         {
             return (HeimdallLinkOutcome.RateLimited, null);
