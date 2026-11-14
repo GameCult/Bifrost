@@ -44,6 +44,7 @@ public sealed record MergePlan(
             Field(entry.Kind.ToString());
             Field(entry.Action.ToString());
             // A Created row does not exist yet: its id is minted anew by every plan, so it cannot be part of what the member saw.
+            // Left unpinned on purpose: the mutant that keeps the id in (digest-includes-created-id in tools/merge-saga-mutants.py) is behaviourally equivalent bar one benign case.
             Field(entry.Action == AccountMergeEntryAction.Created ? null : entry.RecordId.ToString("N"));
             Field(entry.PriorUserAccountId?.ToString("N"));
             Field(entry.PriorText);
