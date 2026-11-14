@@ -1,6 +1,6 @@
 # Account merge ledger
 
-What a merge of two Bifrost accounts does to Bifrost records, who owns it, and how an account stands under one. Design: `/opt/commons/handoff/heimdall-account-merge-design-20261113.md` sections 3, 5 and 7. The ledger owns what a merge does to Bifrost records; the saga (below) owns the merge's lifecycle around it and every Heimdall call. No page calls the saga yet (cuts D1 and D2), so no merge can be created in production by this code alone.
+What a merge of two Bifrost accounts does to Bifrost records, who owns it, and how an account stands under one. Design: `/opt/commons/handoff/heimdall-account-merge-design-20261113.md` sections 3, 5 and 7. The ledger owns what a merge does to Bifrost records; the saga (below) owns the merge's lifecycle around it and every Heimdall call. The member's pages are in Pages and flags below; with `AccountMerge:Enabled` false (the default) no page can start a merge.
 
 ## Owner
 
@@ -67,6 +67,21 @@ Left untouched (counted by the plan): consent receipts, passkeys, ledger entries
 **Sealed proofs.** The saga holds the two Heimdall bearers (`ruling merge-sealed-proofs-until-move-final`) only between Confirmed (or UndoRequested) and Heimdall's final answer: protected with Data Protection (purpose `Bifrost.AccountMerge.Proofs.v1`), never logged, wiped in the save that records Moved or Refused. Logs name the merge id, state, outcome class and refusal code; never a token, account id, identity id or provider user id. Proof coverage is Heimdall's rule (`move-proof-strict-passkey`): a proof through one login moves only that login, and only an asserted passkey speaks for the whole account, so a folded account's every login must be proved (or a passkey asserted) or Heimdall answers `identity_not_proved`. A `moveId` replayed with other identities returns the first receipt (`move-replay-first-receipt`).
 
 `AccountMergeSweeper` is the one merge loop (30 s): per tick, in one scope, `AccountMergeSaga.AdvanceDueAsync` (every in-flight merge whose `NextAttemptUtc` is null or due, oldest first, a failure logged and skipped), then `FinalizeDueAsync`.
+
+## Pages and flags
+
+`Pages/Membership/MergeAccounts` is the one page that creates a merge. It is `[Authorize]`, no-store, a 404 unless `AccountMergeOptions.Enabled` (section `AccountMerge`, default false; environment `AccountMerge__Enabled`) and forbidden to a frozen or folded account, as Linked accounts is. Linked accounts shows one "Merge two accounts" link, only when the flag is on and the session is Heimdall-backed.
+
+Its stage is derived on every request from `MergeProofs.Snapshot` and the `keep` query; no cookie or form field carries progress except the chosen direction and the preview digest, which the saga re-checks.
+
+1. Prove: the member names a provider for this account (`MergeProveSelf`) and for the other (`MergeProveOther`). Nothing about the other account is rendered until both proofs are held.
+2. Choose: both accounts are named by display name only, and `keep=self` or `keep=other` shows the preview. No survivor is preselected (the chat-history default needs `ChatFirstSignInUtc`, follow-up `merge-chat-default-survivor`; the chat paragraph carries the warning meanwhile).
+3. Prove the rest: one fresh sign-in for each login of the account that would be folded and is not yet proved (`ProveRemaining`). Proofs older than `MergeProofs.ProofLifetime` fall out and are asked again.
+4. Confirm: two checkboxes, one per account, the direction and the digest. `AccountMergeSaga.ConfirmAsync` inserts the Confirmed row, which is the consent record (actor, time, digest, proof providers); the page then runs `AdvanceAsync` once (a throw is logged and the sweeper resumes) and sends the member to Merge status. `MergeProofs.Clear` runs after a Confirmed outcome only: Blocked, PreviewStale, NotParty and ProofAccountMismatch come back as closed codes (`?merge=`), keep the proofs and write nothing.
+
+`MergePreview` is the one wording of the plan (counts by entry kind and action, the nine block codes, the static statements about chat, connections, StreamPixels, roles, one vote per motion, the 7-day undo and ordinary sign-ins); the digest is `MergePlan.Digest` of the plan just rendered. `MergeWording.Confirm` holds the refusal words. The page writes no merge, vote, membership or journal row.
+
+Deploy: set `AccountMerge__Enabled` only after Heimdall's identity-moves route is deployed and probed. A Confirmed merge against a Heimdall without it stays Unknown and keeps the folded account frozen.
 
 ## Merged is terminal
 
