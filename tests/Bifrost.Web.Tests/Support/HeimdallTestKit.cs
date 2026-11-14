@@ -741,6 +741,7 @@ public sealed class HeimdallHost : TestWebApplicationFactory
     private readonly bool _traceHttp;
     private readonly bool _realSessions;
     private readonly bool _accountMerge;
+    private readonly string? _chatNoticesToken;
 
     public TestClock Clock { get; } = new();
 
@@ -758,9 +759,11 @@ public sealed class HeimdallHost : TestWebApplicationFactory
         string appSlug = "bifrost",
         bool traceHttp = false,
         bool realSessions = false,
-        bool accountMerge = false)
+        bool accountMerge = false,
+        string? chatNoticesToken = null)
     {
         _accountMerge = accountMerge;
+        _chatNoticesToken = chatNoticesToken;
         _traceHttp = traceHttp;
         _realSessions = realSessions;
         _appSecret = appSecret;
@@ -792,6 +795,11 @@ public sealed class HeimdallHost : TestWebApplicationFactory
             if (_accountMerge)
             {
                 configuration.AddInMemoryCollection(new Dictionary<string, string?> { ["AccountMerge:Enabled"] = "true" });
+            }
+
+            if (_chatNoticesToken is not null)
+            {
+                configuration.AddInMemoryCollection(new Dictionary<string, string?> { ["ChatNotices:Token"] = _chatNoticesToken });
             }
 
             if (_discordRoles)

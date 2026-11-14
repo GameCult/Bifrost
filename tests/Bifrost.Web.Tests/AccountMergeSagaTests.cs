@@ -23,9 +23,9 @@ public sealed class AccountMergeSagaTests
     internal sealed record Party(Guid Id, string HeimdallId, IReadOnlyDictionary<string, string> Logins);
 
     /// <summary>A host plus the helpers every test needs: accounts with logins at the fake Heimdall, proofs, a scope per operation.</summary>
-    internal sealed class Rig(bool realSessions = false, bool accountMerge = false) : IDisposable
+    internal sealed class Rig(bool realSessions = false, bool accountMerge = false, string? chatNoticesToken = null) : IDisposable
     {
-        public HeimdallHost Host { get; } = new(realSessions: realSessions, accountMerge: accountMerge);
+        public HeimdallHost Host { get; } = new(realSessions: realSessions, accountMerge: accountMerge, chatNoticesToken: chatNoticesToken);
 
         public FakeMoves Moves => Host.Heimdall.Moves;
 
