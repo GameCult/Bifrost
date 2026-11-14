@@ -20,12 +20,12 @@ public sealed class AccountMergeSagaTests
 {
     private const string Passkey = "bifrost-passkey";
 
-    private sealed record Party(Guid Id, string HeimdallId, IReadOnlyDictionary<string, string> Logins);
+    internal sealed record Party(Guid Id, string HeimdallId, IReadOnlyDictionary<string, string> Logins);
 
     /// <summary>A host plus the helpers every test needs: accounts with logins at the fake Heimdall, proofs, a scope per operation.</summary>
-    private sealed class Rig : IDisposable
+    internal sealed class Rig(bool realSessions = false) : IDisposable
     {
-        public HeimdallHost Host { get; } = new();
+        public HeimdallHost Host { get; } = new(realSessions: realSessions);
 
         public FakeMoves Moves => Host.Heimdall.Moves;
 
@@ -42,7 +42,8 @@ public sealed class AccountMergeSagaTests
             var account = new UserAccount
             {
                 DisplayName = name, BifrostIdentity = name, NormalizedBifrostIdentity = BifrostIdentityService.NormalizeIdentity(name),
-                HeimdallAccountId = heimdallId, CreatedAtUtc = Clock.Now, LastSeenAtUtc = Clock.Now
+                HeimdallAccountId = heimdallId, CreatedAtUtc = Clock.Now, LastSeenAtUtc = Clock.Now,
+                MemberProfile = new MemberProfile { Nickname = name, Headline = "seed", UpdatedAtUtc = Clock.Now }
             };
             account.Membership = new Membership { UserAccountId = account.Id, Status = MembershipStatus.Active };
             db.UserAccounts.Add(account);
