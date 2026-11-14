@@ -36,7 +36,8 @@ public sealed class HeimdallAuthService(
     HeimdallMemberClient memberClient,
     LinkedAccountsSnapshots snapshots,
     PasskeyCeremonies ceremonies,
-    PasskeyService passkeys)
+    PasskeyService passkeys,
+    MergeProofs mergeProofs)
 {
     public const string ErrorRedirect = "/?auth=heimdall-error";
     public const string AppSecretHeader = "x-heimdall-app-secret";
@@ -203,11 +204,12 @@ public sealed class HeimdallAuthService(
         bool stepUp,
         string? target,
         CancellationToken cancellationToken,
-        string? proof = null) =>
+        string? proof = null,
+        string? returnPath = null) =>
         StartAsync(
             provider,
             callbackBaseUrl,
-            LocalReturnPath.Parse(LinkReturnPath),
+            LocalReturnPath.Parse(returnPath ?? LinkReturnPath),
             requireMemberAccess: false,
             requestCookies,
             cancellationToken,
@@ -227,6 +229,32 @@ public sealed class HeimdallAuthService(
         StartProofAsync(
             HeimdallAttemptPurpose.ListProof, ProofProviderFor(sessionAccountId, via),
             sessionAccountId, callbackBaseUrl, requestCookies, false, null, cancellationToken);
+
+    /// <summary>
+    /// A fresh sign-in as the account signed in here, held as one side of a merge (<see cref="MergeProofs"/>). The member names the
+    /// provider in <paramref name="via"/>: Bifrost never guesses one, and a sign-in through a login no account holds mints an unrelated
+    /// Heimdall account. The browser returns to <paramref name="returnPath"/> with the outcome in <c>?result=</c>.
+    /// </summary>
+    public Task<HeimdallAuthStartResult> StartMergeProveSelfAsync(
+        string sessionAccountId, string? via, string returnPath, string callbackBaseUrl,
+        IEnumerable<KeyValuePair<string, string>> requestCookies, CancellationToken cancellationToken) =>
+        StartProofAsync(
+            HeimdallAttemptPurpose.MergeProveSelf, MergeProvider(via),
+            sessionAccountId, callbackBaseUrl, requestCookies, false, null, cancellationToken, returnPath: returnPath);
+
+    /// <summary>
+    /// A fresh sign-in as the other account of a merge. <paramref name="sessionAccountId"/> is the account that must not be the one
+    /// proved: signing in again as oneself is not a second account.
+    /// </summary>
+    public Task<HeimdallAuthStartResult> StartMergeProveOtherAsync(
+        string sessionAccountId, string? via, string returnPath, string callbackBaseUrl,
+        IEnumerable<KeyValuePair<string, string>> requestCookies, CancellationToken cancellationToken) =>
+        StartProofAsync(
+            HeimdallAttemptPurpose.MergeProveOther, MergeProvider(via),
+            sessionAccountId, callbackBaseUrl, requestCookies, false, null, cancellationToken, returnPath: returnPath);
+
+    private static string MergeProvider(string? via) =>
+        ProofProvider(null, via) ?? throw new HeimdallAuthException("A merge proof needs the provider the member names.");
 
     /// <summary>
     /// Links another provider: an ordinary sign-in as proof through a provider on the account's current list (there is no
@@ -541,6 +569,10 @@ public sealed class HeimdallAuthService(
                 // The returned token is this request's alone: it goes to the one unlink and is dropped.
                 return new HeimdallLinkStep(null, cookieName, null, await UnlinkAsync(identity.AccountId, asserted.AccessToken!, attempt.Target, cancellationToken));
             }
+
+            case HeimdallAttemptPurpose.MergeProveSelf:
+            case HeimdallAttemptPurpose.MergeProveOther:
+                throw new NotImplementedException();
 
             default:
                 throw new HeimdallAuthException("Heimdall completion is not a link attempt.");
@@ -958,7 +990,8 @@ public sealed record HeimdallAttempt(
 /// <summary>
 /// What a held attempt is for. SignIn is the default, so a cookie written before purposes existed reads as a sign-in.
 /// The other purposes belong to the Linked accounts page: the fresh sign-ins that prove an account for a list, a link or
-/// an unlink, and the provider round trips of a link. They never sign anyone in. Values are persisted in cookies: append only.
+/// an unlink, and the provider round trips of a link. The merge purposes are fresh sign-ins that prove the account signed in here or a
+/// second one, held in <see cref="MergeProofs"/> for a merge's confirm and undo, and started by the page that is to read them. They never sign anyone in. Values are persisted in cookies: append only.
 /// </summary>
 public enum HeimdallAttemptPurpose
 {
@@ -970,7 +1003,9 @@ public enum HeimdallAttemptPurpose
     UnlinkProof = 5,
     LinkAwaitDirect = 6,
     EnrolProof = 7,
-    UnlinkPasskeyProof = 8
+    UnlinkPasskeyProof = 8,
+    MergeProveSelf = 9,
+    MergeProveOther = 10
 }
 
 /// <summary>How a Linked accounts action ended. <see cref="HeimdallLinkOutcomes.Code"/> is its closed wire form.</summary>
@@ -1001,7 +1036,11 @@ public enum HeimdallLinkOutcome
     RateLimited,
     StepUpUnavailable,
     StepUpReplayed,
-    StepUpRateLimited
+    StepUpRateLimited,
+    MergeProofRecorded,
+    MergeSameAccount,
+    MergeNoAccount,
+    MergeLoginsAmbiguous
 }
 
 /// <summary>
@@ -1012,8 +1051,9 @@ public static class HeimdallLinkOutcomes
 {
     public const string ResultParameter = "result";
 
-    public static string Redirect(HeimdallLinkOutcome outcome) =>
-        HeimdallAuthService.LinkReturnPath + "?" + ResultParameter + "=" + Code(outcome);
+    /// <summary>Back to the page that began the step (<paramref name="returnPath"/>, a local path), else the Linked accounts page.</summary>
+    public static string Redirect(HeimdallLinkOutcome outcome, string? returnPath = null) =>
+        (returnPath ?? HeimdallAuthService.LinkReturnPath) + "?" + ResultParameter + "=" + Code(outcome);
 
     public static string Code(HeimdallLinkOutcome outcome) => outcome switch
     {
@@ -1042,6 +1082,10 @@ public static class HeimdallLinkOutcomes
         HeimdallLinkOutcome.StepUpUnavailable => "step_up_unavailable",
         HeimdallLinkOutcome.StepUpReplayed => "step_up_replayed",
         HeimdallLinkOutcome.StepUpRateLimited => "step_up_rate_limited",
+        HeimdallLinkOutcome.MergeProofRecorded => "merge_proof_recorded",
+        HeimdallLinkOutcome.MergeSameAccount => "merge_same_account",
+        HeimdallLinkOutcome.MergeNoAccount => "merge_no_account",
+        HeimdallLinkOutcome.MergeLoginsAmbiguous => "merge_logins_ambiguous",
         _ => "error"
     };
 
@@ -1072,13 +1116,17 @@ public static class HeimdallLinkOutcomes
         "step_up_unavailable" => "Your passkey was verified, but Heimdall would not take Bifrost's proof. Nothing was changed.",
         "step_up_replayed" => "Heimdall had already seen that proof. Nothing was changed; start the unlink again.",
         "step_up_rate_limited" => "Heimdall is limiting proofs for now. Nothing was changed; wait a few minutes and start the unlink again.",
+        "merge_proof_recorded" => "That sign-in is recorded for the merge. It is held in memory for a few minutes and used only when you confirm.",
+        "merge_same_account" => "That sign-in is the account you are already signed in as, not a second one. Nothing was recorded.",
+        "merge_no_account" => "Bifrost has no member account for that sign-in, so there is nothing to merge. Nothing was recorded.",
+        "merge_logins_ambiguous" => "That account holds two logins of one provider, which Bifrost cannot prove one at a time. Nothing was recorded.",
         "list_expired" => "The list was out of date. Nothing was changed; read your linked logins again.",
         "error" => "That could not be completed. Nothing was changed.",
         _ => null
     };
 }
 
-public sealed record HeimdallLinkStep(Uri? Next, string CookieName, string? CookieValue, HeimdallLinkOutcome? Outcome, string? EnrolTicket = null);
+public sealed record HeimdallLinkStep(Uri? Next, string CookieName, string? CookieValue, HeimdallLinkOutcome? Outcome, string? EnrolTicket = null, string? ReturnPath = null);
 
 public sealed record HeimdallConfirmLinkRequest(
     [property: JsonPropertyName("pendingLinkId")] string PendingLinkId);

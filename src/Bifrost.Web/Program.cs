@@ -141,6 +141,7 @@ builder.Services.AddScoped<NativeRegistration>();
 builder.Services.AddHostedService<SealedBallotCloser>();
 builder.Services.AddScoped<Bifrost.Web.Features.Membership.AccountMergeLedger>();
 builder.Services.AddScoped<Bifrost.Web.Features.Membership.AccountMergeSaga>();
+builder.Services.AddSingleton<Bifrost.Web.Features.Membership.MergeProofs>();
 builder.Services.AddHostedService<Bifrost.Web.Features.Membership.AccountMergeSweeper>();
 builder.Services.AddScoped<MotionEveSurfaceService>();
 builder.Services.AddScoped<PatronageService>();
@@ -877,7 +878,7 @@ app.MapPost("/auth/heimdall/complete", async (
             }
 
             httpContext.Response.Cookies.Delete(step.CookieName, HeimdallAttemptCookie.DeleteOptions());
-            return Results.LocalRedirect(HeimdallLinkOutcomes.Redirect(step.Outcome!.Value));
+            return Results.LocalRedirect(HeimdallLinkOutcomes.Redirect(step.Outcome!.Value, step.ReturnPath));
         }
 
         var signIn = await heimdallAuthService.CompleteAsync(
