@@ -323,12 +323,18 @@ public static class HeimdallClientServices
     {
         services.AddHttpClient<HeimdallAuthService>((serviceProvider, client) =>
                 HeimdallAuthService.ConfigureClient(client, serviceProvider.GetRequiredService<IOptions<HeimdallOptions>>().Value))
+            .WithoutRedirects()
             .RedactLoggedHeaders(HeimdallAuthService.RedactsHeader);
         services.AddHttpClient<HeimdallMemberClient>((serviceProvider, client) =>
                 HeimdallMemberClient.ConfigureClient(client, serviceProvider.GetRequiredService<IOptions<HeimdallOptions>>().Value))
+            .WithoutRedirects()
             .RedactLoggedHeaders(HeimdallAuthService.RedactsHeader);
         services.AddHeimdallIdentityMoveClient();
     }
+
+    /// <summary>A 3xx from Heimdall is its answer: following it would carry the app secret or a member's bearer to another origin.</summary>
+    public static IHttpClientBuilder WithoutRedirects(this IHttpClientBuilder builder) =>
+        builder.ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false, PooledConnectionLifetime = TimeSpan.FromMinutes(2) });
 
     /// <summary>
     /// The mover's HttpClient: Heimdall's base address and app secret from HeimdallAuthService.ConfigureClient (the one secret path), the
@@ -340,6 +346,6 @@ public static class HeimdallClientServices
                 HeimdallAuthService.ConfigureClient(client, serviceProvider.GetRequiredService<IOptions<HeimdallOptions>>().Value);
                 client.Timeout = HeimdallIdentityMoveClient.Timeout;
             })
-            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false, PooledConnectionLifetime = TimeSpan.FromMinutes(2) })
+            .WithoutRedirects()
             .RedactLoggedHeaders(HeimdallAuthService.RedactsHeader);
 }
