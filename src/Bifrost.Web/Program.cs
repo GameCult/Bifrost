@@ -158,6 +158,13 @@ builder.Services.AddHttpClient<HeimdallAuthService>((serviceProvider, client) =>
 builder.Services.AddHttpClient<HeimdallMemberClient>((serviceProvider, client) =>
     HeimdallMemberClient.ConfigureClient(client, serviceProvider.GetRequiredService<IOptions<HeimdallOptions>>().Value))
     .RedactLoggedHeaders(HeimdallAuthService.RedactsHeader);
+// The mover route is an app-secret call like HeimdallAuthService's: same ConfigureClient, same header redaction.
+builder.Services.AddHttpClient<HeimdallIdentityMoveClient>((serviceProvider, client) =>
+    {
+        HeimdallAuthService.ConfigureClient(client, serviceProvider.GetRequiredService<IOptions<HeimdallOptions>>().Value);
+        client.Timeout = HeimdallIdentityMoveClient.Timeout;
+    })
+    .RedactLoggedHeaders(HeimdallAuthService.RedactsHeader);
 builder.Services.AddSingleton<LinkedAccountsSnapshots>();
 builder.Services.AddSingleton<Bifrost.Web.Features.Passkeys.PasskeyRelyingParty>();
 builder.Services.AddSingleton<Bifrost.Web.Features.Passkeys.PasskeyCeremonies>();
