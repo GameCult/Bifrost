@@ -373,6 +373,12 @@ public sealed class HeimdallAuthService(
     /// <summary>What the attempt this browser holds for the nonce is for, or null when it holds none.</summary>
     public HeimdallAttemptPurpose? PurposeOf(string? cookieValue, string? nonce) => Unprotect(cookieValue, nonce)?.Purpose;
 
+    /// <summary>The page a merge-proof attempt began on, which a refused completion goes back to; null for every other attempt.</summary>
+    public string? MergeReturnPathOf(string? cookieValue, string? nonce) =>
+        Unprotect(cookieValue, nonce) is { Purpose: HeimdallAttemptPurpose.MergeProveSelf or HeimdallAttemptPurpose.MergeProveOther } attempt
+            ? attempt.ReturnPath.Value
+            : null;
+
     /// <summary>Redeems the code of an attempt and verifies the token it carries. The token is returned to the caller's stack frame and nowhere else.</summary>
     private async Task<(HeimdallVerifiedIdentity Identity, string AccessToken, HeimdallRedeemResponse Redeemed)> RedeemVerifiedAsync(
         string callbackBaseUrl, HeimdallAttempt attempt, string? code, CancellationToken cancellationToken)
@@ -572,12 +578,69 @@ public sealed class HeimdallAuthService(
 
             case HeimdallAttemptPurpose.MergeProveSelf:
             case HeimdallAttemptPurpose.MergeProveOther:
-                throw new NotImplementedException();
+                return new HeimdallLinkStep(
+                    null, cookieName, null, await RecordMergeProofAsync(callbackBaseUrl, attempt, code, cancellationToken), ReturnPath: attempt.ReturnPath.Value);
 
             default:
                 throw new HeimdallAuthException("Heimdall completion is not a link attempt.");
         }
     }
+
+    /// <summary>
+    /// Completes a merge-proof sign-in: redeems the code, reads the proven account's logins with its bearer and hands both to
+    /// <see cref="MergeProofs"/>, the one place a bearer is kept. Self must prove the session's account (RedeemOwnerAsync). Other must
+    /// prove a different account that has a member account here, found by its Heimdall account id and nothing else. Every refusal
+    /// returns before Heimdall is asked for a list, and the bearer leaves scope with this call.
+    /// </summary>
+    private async Task<HeimdallLinkOutcome> RecordMergeProofAsync(
+        string callbackBaseUrl, HeimdallAttempt attempt, string? code, CancellationToken cancellationToken)
+    {
+        var self = attempt.Purpose == HeimdallAttemptPurpose.MergeProveSelf;
+        var (identity, bearer, redeemed) = self
+            ? await RedeemOwnerWithBodyAsync(callbackBaseUrl, attempt, code, cancellationToken)
+            : await RedeemVerifiedAsync(callbackBaseUrl, attempt, code, cancellationToken);
+        if (redeemed.Provider is not null && !string.Equals(redeemed.Provider, attempt.Provider, StringComparison.Ordinal))
+        {
+            throw new HeimdallAuthException("Heimdall completion came through another provider.");
+        }
+
+        if (!self && string.Equals(identity.AccountId, attempt.ExpectedAccountId, StringComparison.Ordinal))
+        {
+            return HeimdallLinkOutcome.MergeSameAccount;
+        }
+
+        var actorId = await UserAccountIdOfAsync(attempt.ExpectedAccountId!, cancellationToken);
+        var sideId = self ? actorId : await UserAccountIdOfAsync(identity.AccountId, cancellationToken);
+        if (actorId is null || sideId is null)
+        {
+            return HeimdallLinkOutcome.MergeNoAccount;
+        }
+
+        var listed = await memberClient.ListAsync(bearer, cancellationToken);
+        if (listed.Call != HeimdallMemberCall.Ok)
+        {
+            return OutcomeOf(listed.Call);
+        }
+
+        return mergeProofs.Put(
+            actorId.Value,
+            self ? MergeSide.Self : MergeSide.Other,
+            new MergeProof(bearer, identity.AccountId, attempt.Provider),
+            sideId.Value,
+            listed.Identities!) switch
+        {
+            PutOutcome.Stored => HeimdallLinkOutcome.MergeProofRecorded,
+            PutOutcome.AmbiguousLogins => HeimdallLinkOutcome.MergeLoginsAmbiguous,
+            _ => HeimdallLinkOutcome.Error
+        };
+    }
+
+    /// <summary>The member account that holds this Heimdall account id (an equality on the id, never on a name or email), or null.</summary>
+    private async Task<Guid?> UserAccountIdOfAsync(string heimdallAccountId, CancellationToken cancellationToken) =>
+        await dbContext.UserAccounts
+            .Where(x => x.HeimdallAccountId == heimdallAccountId)
+            .Select(x => (Guid?)x.Id)
+            .SingleOrDefaultAsync(cancellationToken);
 
     /// <summary>
     /// Heimdall's unlink with a bearer that carries fresh proof, and what the list becomes. Only Heimdall's definitive refusals leave

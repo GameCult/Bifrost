@@ -900,7 +900,7 @@ app.MapPost("/auth/heimdall/complete", async (
         }
 
         return linking
-            ? Results.LocalRedirect(HeimdallLinkOutcomes.Redirect(HeimdallLinkOutcome.Error))
+            ? Results.LocalRedirect(HeimdallLinkOutcomes.Redirect(HeimdallLinkOutcome.Error, heimdallAuthService.MergeReturnPathOf(held?.Value, attempt)))
             : Results.Redirect(HeimdallAuthService.ErrorRedirect);
     }
 }).AllowAnonymous();
