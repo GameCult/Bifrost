@@ -79,7 +79,7 @@ Two actions (`heimdall-body:ruling:merge-stuck-end-only-typed-id`), both `Accoun
 | Fail the merge (`FailForward`) | Confirmed, stuck | `Failed`, `FailureCode` and `LastOutcome` `operator_failed`, proofs wiped. The folded account is free again; the pair can be confirmed anew. |
 | Give up the undo (`AbandonUndo`) | UndoRequested, stuck | back to `Committed`, `LastOutcome` `undo_operator_abandoned`, proofs wiped, the grace as it was. The merge stands; the logins stay with the survivor. |
 
-HeimdallMoved and Committed are never settleable: Heimdall answered Moved with a matching receipt there, and the saga rolls forward. A settle and the sweeper's `AdvanceAsync` meet at the `State` concurrency token; the loser changes nothing and the other transition stands (answered `lost`).
+HeimdallMoved and Committed are never settleable: Heimdall answered Moved with a matching receipt there, and the saga rolls forward. A settle and the sweeper's `AdvanceAsync` meet at the `State` concurrency token; the loser changes nothing and the other transition stands (answered `lost`). A settle does not fence a replay already in flight to Heimdall, so read `identity_moves` first and read it again after.
 
 Before ending a merge, read Heimdall's `identity_moves` row by the stored move id. If Heimdall did move the logins, failing the merge leaves them moved with no Bifrost merge to match: repair or reverse at Heimdall first. For `receipt_mismatch`, repair Heimdall's or Bifrost's account link before failing. Adopting a move Heimdall made (writing HeimdallMoved from a receipt) stays manual SQL until follow-up `merge-operator-adopt-moved`; the page never does it.
 

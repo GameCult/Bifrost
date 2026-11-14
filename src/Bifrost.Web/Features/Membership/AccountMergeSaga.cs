@@ -432,7 +432,7 @@ public sealed partial class AccountMergeSaga(
     // ---- operator settle ----
 
     /// <summary>The Heimdall answers no replay can change: the one the saga recorded and stopped on, the key ring's loss, and a move Heimdall holds but will not confirm.</summary>
-    public static readonly string[] SettleableOutcomes = [ReceiptMismatch, ProofsUnreadable, MoveIdConflict];
+    public static readonly IReadOnlyList<string> SettleableOutcomes = [ReceiptMismatch, ProofsUnreadable, MoveIdConflict];
 
     /// <summary>
     /// Whether an operator may end this merge's leg: in flight (Confirmed or UndoRequested) and stopped on one of the closed
