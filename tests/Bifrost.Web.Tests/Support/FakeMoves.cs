@@ -137,25 +137,65 @@ public sealed class FakeMoves(Func<DateTimeOffset> now)
 
     private static readonly System.Text.RegularExpressions.Regex MoveIdShape = new("^[A-Za-z0-9_-]{16,64}$");
 
+    /// <summary>
+    /// Heimdall's route schema (app.ts, the identity-moves route): moveId pattern, 1 to 8 fromProofs of 1 to 8192 chars, toProof, 1 to 32
+    /// unique non-empty identityIds, reversesMoveId pattern; and oneOf: a forward move has toProof and no reversesMoveId, a reversal has
+    /// reversesMoveId and neither toProof nor identityIds. Unknown properties are stripped. Anything else is a 400.
+    /// </summary>
     private static Move? Parse(string body)
     {
         try
         {
             var root = JsonDocument.Parse(body).RootElement;
-            string? Text(string name) => root.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
-            string[]? List(string name) => root.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Array
-                ? v.EnumerateArray().Select(x => x.ValueKind == JsonValueKind.String ? x.GetString()! : null!).ToArray()
-                : null;
-            var from = List("fromProofs");
-            var ids = List("identityIds");
-            if (Text("moveId") is not { } id || !MoveIdShape.IsMatch(id)
-                || from is not { Length: >= 1 and <= 8 } || from.Any(x => x is null)
-                || ids is { Length: 0 or > 32 } || (ids is not null && ids.Any(x => x is null)))
+            if (root.ValueKind != JsonValueKind.Object)
             {
                 return null;
             }
 
-            return new Move(id, from, Text("toProof"), ids, Text("reversesMoveId"));
+            var bad = false;
+            string? Text(string name, int min, int max, bool pattern)
+            {
+                if (!root.TryGetProperty(name, out var v))
+                {
+                    return null;
+                }
+
+                if (v.ValueKind != JsonValueKind.String || v.GetString() is not { } t || t.Length < min || t.Length > max || (pattern && !MoveIdShape.IsMatch(t)))
+                {
+                    bad = true;
+                    return null;
+                }
+
+                return t;
+            }
+
+            string[]? List(string name, int max, int maxLength, bool unique)
+            {
+                if (!root.TryGetProperty(name, out var v))
+                {
+                    return null;
+                }
+
+                if (v.ValueKind != JsonValueKind.Array || v.GetArrayLength() is 0 || v.GetArrayLength() > max
+                    || v.EnumerateArray().Any(x => x.ValueKind != JsonValueKind.String || x.GetString() is not { Length: > 0 } t || t.Length > maxLength))
+                {
+                    bad = true;
+                    return null;
+                }
+
+                var items = v.EnumerateArray().Select(x => x.GetString()!).ToArray();
+                bad |= unique && items.Distinct().Count() != items.Length;
+                return items;
+            }
+
+            var id = Text("moveId", 16, 64, true);
+            var from = List("fromProofs", 8, 8192, false);
+            var to = Text("toProof", 1, 8192, false);
+            var ids = List("identityIds", 32, int.MaxValue, true);
+            var reverses = Text("reversesMoveId", 16, 64, true);
+            var forward = to is not null && reverses is null;
+            var reversal = reverses is not null && to is null && ids is null;
+            return bad || id is null || from is null || !(forward || reversal) ? null : new Move(id, from, to, ids, reverses);
         }
         catch (JsonException)
         {
@@ -163,59 +203,62 @@ public sealed class FakeMoves(Func<DateTimeOffset> now)
         }
     }
 
+    /// <summary>moveIdentitiesRoute then decideMove at 4fe367a, in their order; each comment names the check.</summary>
     private (HttpResponseMessage? Refusal, string? Receipt) Decide(Move move)
     {
         var at = now().ToUnixTimeSeconds();
         var reversal = move.ReversesMoveId is not null;
 
-        // Replay: registry match of app and accounts, liveness not checked.
-        var known = move.FromProofs.Select(Known).ToArray();
+        // Replay: the stored move answers before any proof is judged live; proofs need only be signed for the stored accounts.
         if (_moves.TryGetValue(move.MoveId, out var stored))
         {
-            if (known.Any(x => x is null) || known.Select(x => x!.Account).Distinct().Count() != 1)
-            {
-                return (Refuse(HttpStatusCode.Forbidden, "proof_invalid", proof: "from"), null);
-            }
-
-            var toKnown = move.ToProof is null ? null : Known(move.ToProof);
-            if (move.ToProof is not null && toKnown is null)
-            {
-                return (Refuse(HttpStatusCode.Forbidden, "proof_invalid", proof: "to"), null);
-            }
-
-            return known[0]!.Account == stored.From && toKnown?.Account == (reversal ? null : stored.To) && move.ReversesMoveId == stored.ReversesMoveId
-                ? (null, stored.Receipt)
-                : (Refuse(HttpStatusCode.Conflict, "move_id_conflict"), null);
+            var same = move.ReversesMoveId == stored.ReversesMoveId
+                       && move.FromProofs.All(x => Known(x)?.Account == stored.From)
+                       && (reversal ? move.ToProof is null : Known(move.ToProof!)?.Account == stored.To);
+            return same ? (null, stored.Receipt) : (Refuse(HttpStatusCode.Conflict, "move_id_conflict"), null);
         }
 
         StoredMove? forward = null;
-        if (reversal && !(_moves.TryGetValue(move.ReversesMoveId!, out forward) && forward.ReversesMoveId is null && !forward.Reversed
-                          && (known[0] is not { } holder || holder.Account == forward.To)))
+        if (reversal && !(_moves.TryGetValue(move.ReversesMoveId!, out forward) && forward.ReversesMoveId is null))
         {
             return (Refuse(HttpStatusCode.Conflict, "not_reversible"), null);
         }
 
-        // proof_invalid: not a live bearer of this app, or fromProofs naming two accounts.
-        var from = move.FromProofs.Select(Live).ToArray();
-        if (from.Any(x => x is null) || from.Select(x => x!.Account).Distinct().Count() != 1)
+        var from = new List<Claims>();
+        foreach (var token in move.FromProofs)
+        {
+            if (Live(token) is not { } claims)
+            {
+                return (Refuse(HttpStatusCode.Forbidden, "proof_invalid", proof: "from"), null);
+            }
+
+            from.Add(claims);
+        }
+
+        var source = from[0].Account;
+        if (from.Any(x => x.Account != source))
         {
             return (Refuse(HttpStatusCode.Forbidden, "proof_invalid", proof: "from"), null);
         }
 
-        var to = move.ToProof is null ? null : Live(move.ToProof);
-        if (move.ToProof is not null && to is null)
+        Claims? to = null;
+        if (!reversal && (to = Live(move.ToProof!)) is null)
         {
             return (Refuse(HttpStatusCode.Forbidden, "proof_invalid", proof: "to"), null);
         }
 
-        var source = from[0]!.Account;
-        if (to is not null && to.Account == source)
+        if (reversal && source != forward!.To)
+        {
+            return (Refuse(HttpStatusCode.Conflict, "not_reversible"), null);
+        }
+
+        var destination = to?.Account ?? forward!.From;
+        if (source == destination)
         {
             return (Refuse(HttpStatusCode.Conflict, "same_account"), null);
         }
 
-        // proof_stale: weak 300 s by auth_at, strong 600 s by step_up_at, the host clock.
-        if (from.Any(x => Tier(x!, at) is null))
+        if (from.Any(x => Tier(x, at) is null))
         {
             return (Refuse(HttpStatusCode.Forbidden, "proof_stale", proof: "from"), null);
         }
@@ -225,26 +268,44 @@ public sealed class FakeMoves(Func<DateTimeOffset> now)
             return (Refuse(HttpStatusCode.Forbidden, "proof_stale", proof: "to"), null);
         }
 
-        var held = Logins.GetValueOrDefault(source) ?? [];
-        var carried = reversal ? forward!.Carried.ToArray() : move.IdentityIds ?? held.Select(x => x.Id).ToArray();
-        var whole = from.Any(x => Tier(x!, at) == "strong" && x!.StepUpMethod == "bifrost-passkey");
-        if (!whole && carried.Any(id => from.All(x => x!.AuthIdentityId != id)))
+        // proofCovers: a strong passkey proof speaks for the account, else the login the sign-in came through, else nothing.
+        var coverage = from.Select(x => Tier(x, at) == "strong" && x.StepUpMethod == "bifrost-passkey" ? "account" : x.AuthIdentityId).ToArray();
+        if (coverage.All(x => x is null))
         {
             return (Refuse(HttpStatusCode.Forbidden, "identity_not_proved"), null);
         }
 
-        var destination = reversal ? forward!.From : to!.Account;
-        if (!reversal && (IsAlias(source) || IsAlias(destination)))
+        // decideMove: reversal or alias, the logins chosen (held ones only), coverage of them, then the destination's providers.
+        var held = Logins.GetValueOrDefault(source) ?? [];
+        if (reversal)
+        {
+            if (forward!.Reversed || forward.Carried.Any(id => held.All(x => x.Id != id)))
+            {
+                return (Refuse(HttpStatusCode.Conflict, "not_reversible"), null);
+            }
+        }
+        else if (IsAlias(source) || IsAlias(destination))
         {
             return (Refuse(HttpStatusCode.Conflict, "already_moved"), null);
         }
 
-        if (carried.Any(id => held.All(x => x.Id != id)))
+        var wanted = reversal ? forward!.Carried : move.IdentityIds;
+        if (wanted is not null && wanted.Any(id => held.All(x => x.Id != id)))
         {
             return (Refuse(HttpStatusCode.NotFound, "identity_not_found"), null);
         }
 
-        var moving = held.Where(x => carried.Contains(x.Id)).ToList();
+        var moving = held.Where(x => wanted is null || wanted.Contains(x.Id)).ToList();
+        if (moving.Count == 0)
+        {
+            return (Refuse(HttpStatusCode.NotFound, "identity_not_found"), null);
+        }
+
+        if (!coverage.Contains("account") && moving.Any(x => !coverage.Contains(x.Id)))
+        {
+            return (Refuse(HttpStatusCode.Forbidden, "identity_not_proved"), null);
+        }
+
         var there = Logins.GetValueOrDefault(destination) ?? [];
         if (moving.FirstOrDefault(x => there.Any(y => y.Provider == x.Provider)) is { } clash)
         {
@@ -259,22 +320,27 @@ public sealed class FakeMoves(Func<DateTimeOffset> now)
             _revoked.Add(claims.Sid);
         }
 
-        var strong = from.Any(x => Tier(x!, at) == "strong");
-        var receipt = JsonSerializer.Serialize(new Dictionary<string, object?>
+        var strong = from.Any(x => Tier(x, at) == "strong");
+        var receipt = new Dictionary<string, object?>
         {
             ["moveId"] = move.MoveId,
             ["accountId"] = destination,
             ["movedIdentityIds"] = moving.Select(x => x.Id).ToArray(),
-            ["proof"] = new Dictionary<string, object?> { ["from"] = strong ? "strong" : "weak", ["to"] = to is null ? null : Tier(to, at) },
-            ["reversesMoveId"] = move.ReversesMoveId
-        }.Where(x => x.Key != "reversesMoveId" || x.Value is not null).ToDictionary());
-        _moves[move.MoveId] = new StoredMove(move.MoveId, source, destination, move.ReversesMoveId, moving.Select(x => x.Id).ToArray(), receipt);
+            ["proof"] = new Dictionary<string, object?> { ["from"] = strong ? "strong" : "weak", ["to"] = to is null ? null : Tier(to, at) }
+        };
+        if (move.ReversesMoveId is not null)
+        {
+            receipt["reversesMoveId"] = move.ReversesMoveId;
+        }
+
+        var json = JsonSerializer.Serialize(receipt);
+        _moves[move.MoveId] = new StoredMove(move.MoveId, source, destination, move.ReversesMoveId, moving.Select(x => x.Id).ToArray(), json);
         if (forward is not null)
         {
             forward.Reversed = true;
         }
 
-        return (null, receipt);
+        return (null, json);
     }
 
     private bool IsAlias(string account) =>
@@ -285,8 +351,10 @@ public sealed class FakeMoves(Func<DateTimeOffset> now)
     private Claims? Live(string token) =>
         Known(token) is { } claims && !_revoked.Contains(claims.Sid) && claims.Exp > now().ToUnixTimeSeconds() ? claims : null;
 
+    /// <summary>proofTier: strong inside 600 s of step_up_at, else weak inside 300 s of auth_at; a future-dated claim proves nothing.</summary>
     private static string? Tier(Claims claims, long at) =>
-        claims.StepUpAt is { } stepUp && at - stepUp <= StrongSeconds ? "strong" : at - claims.AuthAt <= WeakSeconds ? "weak" : null;
+        claims.StepUpAt is { } stepUp && stepUp <= at && at - stepUp <= StrongSeconds ? "strong"
+        : claims.AuthAt <= at && at - claims.AuthAt <= WeakSeconds ? "weak" : null;
 
     private static HttpResponseMessage Json(HttpStatusCode status, string json) =>
         new(status) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
