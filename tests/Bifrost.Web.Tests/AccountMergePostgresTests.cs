@@ -728,7 +728,7 @@ public sealed class AccountMergePostgresTests(MergePostgres postgres) : IClassFi
         public FakeHeimdall Fake { get; }
 
         public AccountMergeSaga Saga(AccountMergeLedgerTests.World world, BifrostDbContext db) =>
-            new(db, world.Ledger(db), _mover, _keys, world.Clock, NullLogger<AccountMergeSaga>.Instance);
+            new(db, world.Ledger(db), _mover, _keys, new AuditTrailService(db, world.Clock), world.Clock, NullLogger<AccountMergeSaga>.Instance);
 
         /// <summary>A world account with one login at the fake Heimdall and a weak proof through it.</summary>
         public MergeProof Proof(UserAccount account, string provider) =>

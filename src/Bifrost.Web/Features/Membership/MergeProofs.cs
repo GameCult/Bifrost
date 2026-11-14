@@ -186,6 +186,8 @@ public sealed class MergeProofs(TimeProvider timeProvider)
         }
     }
 
+    public void PruneExpired() => throw new NotImplementedException();
+
     private static List<string> UnprovedProviders(Side side, IEnumerable<string> providers) =>
         [.. providers.Distinct(StringComparer.Ordinal).Where(x => !side.Proofs.ContainsKey(x))];
 

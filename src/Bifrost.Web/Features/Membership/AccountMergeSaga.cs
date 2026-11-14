@@ -5,6 +5,7 @@ using System.Text.RegularExpressions;
 using Bifrost.Web.Data;
 using Bifrost.Web.Domain;
 using Bifrost.Web.Features.Heimdall;
+using Bifrost.Web.Features.Shared;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
@@ -70,6 +71,31 @@ public abstract record UndoOutcome
     public sealed record ProofAccountMismatch : UndoOutcome;
 }
 
+/// <summary>The two ways an operator may end a stuck leg: the forward move is failed, or the undo is given up and the merge stands.</summary>
+public enum SettleChoice
+{
+    FailForward,
+    AbandonUndo
+}
+
+/// <summary>The closed answer to an operator's settle. Only Settled wrote.</summary>
+public abstract record SettleOutcome
+{
+    private SettleOutcome()
+    {
+    }
+
+    public sealed record Settled : SettleOutcome;
+
+    /// <summary>The merge is missing, in another state than the choice ends, or not stuck on one of the settleable outcomes.</summary>
+    public sealed record NotStuck : SettleOutcome;
+
+    public sealed record WrongMoveId : SettleOutcome;
+
+    /// <summary>The State token went to another writer first; the other transition stands and nothing was changed.</summary>
+    public sealed record Lost : SettleOutcome;
+}
+
 /// <summary>
 /// The one owner of an account merge's lifecycle outside the ledger's Committed, Final and Undone, and the only caller of
 /// <see cref="HeimdallIdentityMoveClient"/>. It inserts Confirmed (the consent record, with the Heimdall bearers sealed and the move
@@ -86,12 +112,16 @@ public sealed partial class AccountMergeSaga(
     AccountMergeLedger ledger,
     HeimdallIdentityMoveClient mover,
     IDataProtectionProvider dataProtection,
+    AuditTrailService audit,
     TimeProvider timeProvider,
     ILogger<AccountMergeSaga> logger)
 {
     public const string MergeInFlight = "merge_in_flight";
     public const string ReceiptMismatch = "receipt_mismatch";
     public const string ProofsUnreadable = "proofs_unreadable";
+    public const string MoveIdConflict = "move_id_conflict";
+    public const string OperatorFailed = "operator_failed";
+    public const string UndoOperatorAbandoned = "undo_operator_abandoned";
 
     private const string LiveMergeIndex = "UX_AccountMerges_FoldedUserAccountId_Live";
     private const int MaxProofs = 8;
@@ -398,6 +428,12 @@ public sealed partial class AccountMergeSaga(
 
         return advanced;
     }
+
+    // ---- operator settle ----
+
+    public Task<SettleOutcome> SettleStuckAsync(
+        Guid mergeId, SettleChoice choice, string typedMoveId, Guid operatorUserAccountId, CancellationToken cancellationToken) =>
+        throw new NotImplementedException();
 
     // ---- helpers ----
 
