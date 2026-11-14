@@ -200,6 +200,11 @@ public sealed class FakeHeimdall : HttpMessageHandler
 
     public Exception? JwksFailure { get; set; }
 
+    /// <summary>The account model and route of POST /v1/apps/bifrost/identity-moves (the host's clock is <see cref="Now"/>).</summary>
+    public FakeMoves Moves { get; }
+
+    public FakeHeimdall() => Moves = new FakeMoves(() => Now());
+
     public List<string> StartBodies { get; } = [];
 
     public List<string?> StartSecrets { get; } = [];
@@ -606,6 +611,11 @@ public sealed class FakeHeimdall : HttpMessageHandler
             return StepUpRoute(request, await request.Content!.ReadAsStringAsync(cancellationToken));
         }
 
+        if (request.Method == HttpMethod.Post && path == "/v1/apps/bifrost/identity-moves")
+        {
+            return Moves.Route(request, await request.Content!.ReadAsStringAsync(cancellationToken), RequiredAppSecret);
+        }
+
         if (path.StartsWith("/v1/me/identities", StringComparison.Ordinal))
         {
             return MemberRoute(request, path);
@@ -807,6 +817,7 @@ public sealed class HeimdallHost : TestWebApplicationFactory
             services.AddHttpClient(HeimdallTokenVerifier.ClientName).ConfigurePrimaryHttpMessageHandler(() => Heimdall);
             services.AddHttpClient<HeimdallAuthService>().ConfigurePrimaryHttpMessageHandler(() => Heimdall);
             services.AddHttpClient<HeimdallMemberClient>().ConfigurePrimaryHttpMessageHandler(() => Heimdall);
+            services.AddHttpClient<HeimdallIdentityMoveClient>().ConfigurePrimaryHttpMessageHandler(() => Heimdall);
         });
     }
 
