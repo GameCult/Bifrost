@@ -33,7 +33,7 @@ public enum HeimdallProofTier
 public sealed record HeimdallMoveReceipt(
     string MoveId, string AccountId, IReadOnlyList<string> MovedIdentityIds, HeimdallProofTier ProofFrom, HeimdallProofTier? ProofTo, string? ReversesMoveId);
 
-/// <summary>Heimdall's fixed refusal codes for a move, plus the one local class: Heimdall's schema 400.</summary>
+/// <summary>Heimdall's fixed refusal codes for a move, plus invalid_request, Heimdall's own schema 400.</summary>
 public enum HeimdallMoveRefusal
 {
     AppAuthRequired,
@@ -128,12 +128,6 @@ public sealed partial class HeimdallIdentityMoveClient(
                 return new HeimdallMoveOutcome.Unknown($"HTTP {status}");
             }
 
-            // Fastify's schema 400 answers before the route runs, so it carries no Heimdall code and applied nothing.
-            if (status == 400)
-            {
-                return new HeimdallMoveOutcome.Refused(HeimdallMoveRefusal.RequestInvalid);
-            }
-
             return Refused(await HeimdallRefusal.ReadAsync(response, token), status);
         }
         catch (Exception) when (!cancellationToken.IsCancellationRequested)
@@ -144,7 +138,7 @@ public sealed partial class HeimdallIdentityMoveClient(
     }
 
     /// <summary>
-    /// Refused only for the coded refusals Heimdall's move route emits (4fe367a moveIdentitiesRoute). A 4xx without one of those codes
+    /// Refused only for the coded refusals Heimdall's move route emits (4fe367a moveIdentitiesRoute, and its error handler's invalid_request 400). A 4xx without one of those codes
     /// (a gateway's HTML 404, a 408, a code a later Heimdall adds) proves nothing was applied, so it is Unknown. move_id_conflict is
     /// Unknown too: a committed move answers it when its proofs no longer verify.
     /// </summary>
@@ -167,6 +161,8 @@ public sealed partial class HeimdallIdentityMoveClient(
             "already_moved" => HeimdallMoveRefusal.AlreadyMoved,
             "provider_conflict" => HeimdallMoveRefusal.ProviderConflict,
             "identity_not_found" => HeimdallMoveRefusal.IdentityNotFound,
+            // Heimdall's error handler gives its own 400 this code; an nginx or other edge 400 has none, so it is not Heimdall's refusal.
+            "invalid_request" when status == 400 => HeimdallMoveRefusal.RequestInvalid,
             _ => (HeimdallMoveRefusal?)null
         };
         if (code is not { } known)

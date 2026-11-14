@@ -71,7 +71,7 @@ public sealed class FakeHeimdallMoverTests
         };
         foreach (var json in bad)
         {
-            Assert.Equal(HttpStatusCode.BadRequest, (await Post(host, json)).Status);
+            Assert.Equal((HttpStatusCode.BadRequest, "invalid_request"), await Post(host, json));
         }
 
         Assert.Single(moves.Stored);

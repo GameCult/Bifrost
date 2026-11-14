@@ -292,7 +292,7 @@ public sealed class HeimdallIdentityMoveClientTests
     }
 
     [Fact]
-    public async Task A_400_is_RequestInvalid_a_definitive_refusal_that_moves_nothing()
+    public async Task A_400_carrying_Heimdalls_invalid_request_code_is_RequestInvalid_a_definitive_refusal_that_moves_nothing()
     {
         using var host = new HeimdallHost();
         var moves = host.Heimdall.Moves;
@@ -307,6 +307,11 @@ public sealed class HeimdallIdentityMoveClientTests
     [Theory]
     [InlineData(HttpStatusCode.NotFound, "<html><body>404 Not Found</body></html>")]
     [InlineData(HttpStatusCode.NotFound, "")]
+    [InlineData(HttpStatusCode.BadRequest, "<html><head><title>400 Bad Request</title></head><body>nginx</body></html>")]
+    [InlineData(HttpStatusCode.BadRequest, "")]
+    [InlineData(HttpStatusCode.BadRequest, """{"statusCode":400,"error":"Bad Request","message":"x"}""")]
+    [InlineData(HttpStatusCode.BadRequest, """{"message":"no error field"}""")]
+    [InlineData(HttpStatusCode.Conflict, """{"error":"invalid_request"}""")]
     [InlineData(HttpStatusCode.RequestTimeout, "")]
     [InlineData(HttpStatusCode.RequestTimeout, """{"error":"request_timeout"}""")]
     [InlineData(HttpStatusCode.Gone, "")]

@@ -102,7 +102,7 @@ public sealed class FakeMoves(Func<DateTimeOffset> now)
 
         if (Parse(body) is not { } move)
         {
-            return Json(HttpStatusCode.BadRequest, """{"statusCode":400,"error":"Bad Request","message":"body does not match the schema"}""");
+            return Json(HttpStatusCode.BadRequest, """{"error":"invalid_request","detail":"body: must match the schema"}""");
         }
 
         if (MoveStatus is { } forced)
@@ -110,7 +110,7 @@ public sealed class FakeMoves(Func<DateTimeOffset> now)
             return forced == HttpStatusCode.NotFound
                 ? new HttpResponseMessage(forced)
                 : Json(forced, forced == HttpStatusCode.BadRequest
-                    ? """{"statusCode":400,"error":"Bad Request"}"""
+                    ? """{"error":"invalid_request","detail":"body: must match the schema"}"""
                     : """{"error":"server_error","detail":"HEIMDALL FREE TEXT"}""");
         }
 
