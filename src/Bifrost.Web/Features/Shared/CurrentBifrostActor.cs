@@ -1,9 +1,13 @@
 using Bifrost.Web.Domain;
+using Bifrost.Web.Features.Membership;
 
 namespace Bifrost.Web.Features.Shared;
 
 public sealed record CurrentBifrostActor(bool IsAuthenticated, UserAccount? UserAccount)
 {
+    /// <summary>Set when the account behind this sign-in is frozen or folded by an account merge; the actor then has no account.</summary>
+    public MergeStanding? Merge { get; init; }
+
     public static readonly CurrentBifrostActor Anonymous = new(false, null);
 
     public Bifrost.Web.Domain.Membership? Membership => UserAccount?.Membership;

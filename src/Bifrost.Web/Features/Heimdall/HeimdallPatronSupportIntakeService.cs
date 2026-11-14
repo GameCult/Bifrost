@@ -64,23 +64,22 @@ public sealed class HeimdallPatronSupportIntakeService(
                     x.ProviderEventId == request.ProviderEventId.Trim(),
                 cancellationToken);
 
-        if (existingEvent is not null)
-        {
-            return HeimdallPatronSupportIntakeResult.Processed(
-                $"Already processed {request.Provider} patron support event {request.ProviderEventId}.",
-                existingEvent.Id);
-        }
-
         var user = await dbContext.UserAccounts
             .AsNoTracking()
             .SingleOrDefaultAsync(x => x.HeimdallAccountId == request.HeimdallAccountId.Trim(), cancellationToken);
 
         if (user is null)
         {
-            return HeimdallPatronSupportIntakeResult.BadRequest(
-                $"No Bifrost account is linked to Heimdall account {request.HeimdallAccountId}.");
+            return existingEvent is not null
+                ? HeimdallPatronSupportIntakeResult.Processed(
+                    $"Already processed {request.Provider} patron support event {request.ProviderEventId}.",
+                    existingEvent.Id)
+                : HeimdallPatronSupportIntakeResult.BadRequest(
+                    $"No Bifrost account is linked to Heimdall account {request.HeimdallAccountId}.");
         }
 
+        // The write gate behind RecordSupportEventAsync routes a folded account's event to its survivor and journals it, and on a
+        // provider retry returns the stored event, journalling it if it sits on the survivor and was left unjournalled.
         var supportEvent = await patronageService.RecordSupportEventAsync(
             actorUserAccountId: null,
             userAccountId: user.Id,
@@ -98,7 +97,9 @@ public sealed class HeimdallPatronSupportIntakeService(
             cancellationToken);
 
         return HeimdallPatronSupportIntakeResult.Processed(
-            $"Processed {request.Provider} patron support event {request.ProviderEventId}.",
+            existingEvent is not null
+                ? $"Already processed {request.Provider} patron support event {request.ProviderEventId}."
+                : $"Processed {request.Provider} patron support event {request.ProviderEventId}.",
             supportEvent.Id);
     }
 

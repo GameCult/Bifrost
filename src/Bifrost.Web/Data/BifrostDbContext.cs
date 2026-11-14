@@ -81,6 +81,10 @@ public sealed class BifrostDbContext(DbContextOptions<BifrostDbContext> options)
 
     public DbSet<ConceptAppraisal> ConceptAppraisals => Set<ConceptAppraisal>();
 
+    public DbSet<AccountMerge> AccountMerges => Set<AccountMerge>();
+
+    public DbSet<AccountMergeEntry> AccountMergeEntries => Set<AccountMergeEntry>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<UserAccount>(entity =>
@@ -137,6 +141,10 @@ public sealed class BifrostDbContext(DbContextOptions<BifrostDbContext> options)
             entity.Property(x => x.Label).HasMaxLength(120);
             entity.Property(x => x.Weight).HasPrecision(18, 2);
             entity.HasIndex(x => new { x.MembershipId, x.Kind, x.IsCurrent });
+            entity.HasIndex(x => x.MembershipId)
+                .IsUnique()
+                .HasDatabaseName("UX_TierSnapshots_MembershipId_CurrentPatron")
+                .HasFilter("\"Kind\" = 'Patron' AND \"IsCurrent\"");
             entity.HasOne(x => x.Membership)
                 .WithMany(x => x.TierSnapshots)
                 .HasForeignKey(x => x.MembershipId);
@@ -301,6 +309,8 @@ public sealed class BifrostDbContext(DbContextOptions<BifrostDbContext> options)
         modelBuilder.Entity<Vote>(entity =>
         {
             entity.HasIndex(x => new { x.MotionId, x.UserAccountId }).IsUnique();
+            // A merge voids a vote by stamping it; every tally reads through this filter, and only AccountMergeLedger ignores it.
+            entity.HasQueryFilter(x => x.VoidedByMergeId == null);
             entity.Property(x => x.Choice).HasConversion<string>();
             entity.Property(x => x.Weight).HasPrecision(18, 2);
             entity.HasOne(x => x.Motion)
@@ -607,6 +617,7 @@ public sealed class BifrostDbContext(DbContextOptions<BifrostDbContext> options)
             entity.Property(x => x.NetworkTag).HasMaxLength(64);
             entity.Property(x => x.Stance).HasConversion<string>().HasMaxLength(16);
             entity.Property(x => x.VoterClass).HasConversion<string>().HasMaxLength(16);
+            entity.HasQueryFilter(x => x.VoidedByMergeId == null);
             entity.HasIndex(x => new { x.SubjectId, x.VoterKey }).IsUnique();
             entity.HasIndex(x => new { x.NetworkTag, x.CastAtUtc });
             entity.HasOne(x => x.Subject)
@@ -617,6 +628,53 @@ public sealed class BifrostDbContext(DbContextOptions<BifrostDbContext> options)
                 .WithMany()
                 .HasForeignKey(x => x.UserAccountId)
                 .OnDelete(DeleteBehavior.SetNull);
+        });
+
+        modelBuilder.Entity<AccountMerge>(entity =>
+        {
+            // State is the token: a transition computed from a stale read (the sweeper's Final over a saga's UndoRequested) fails its save.
+            entity.Property(x => x.State).HasConversion<string>().HasMaxLength(24).IsConcurrencyToken();
+            entity.Property(x => x.FailureCode).HasMaxLength(64);
+            entity.Property(x => x.HeimdallMoveId).HasMaxLength(64);
+            entity.Property(x => x.HeimdallReverseMoveId).HasMaxLength(64);
+            entity.Property(x => x.PreviewDigest).HasMaxLength(64);
+            entity.Property(x => x.SurvivorProofProvider).HasMaxLength(32);
+            entity.Property(x => x.FoldedProofProviders).HasMaxLength(120);
+            entity.Property(x => x.ProofFromTier).HasMaxLength(8);
+            entity.Property(x => x.ProofToTier).HasMaxLength(8);
+            entity.Property(x => x.LastOutcome).HasMaxLength(64);
+            // Heimdall's idempotency keys: one merge, one forward key and one reverse key, and no key shared by two merges.
+            entity.HasIndex(x => x.HeimdallMoveId).IsUnique().HasFilter("\"HeimdallMoveId\" IS NOT NULL");
+            entity.HasIndex(x => x.HeimdallReverseMoveId).IsUnique().HasFilter("\"HeimdallReverseMoveId\" IS NOT NULL");
+            entity.HasIndex(x => new { x.FoldedUserAccountId, x.State });
+            // An account is folded once: the DB refuses a second live merge folding it. The cross-role case (a survivor that is also
+            // folded) cannot be one unique index; the migration's trigger refuses it.
+            entity.HasIndex(x => x.FoldedUserAccountId)
+                .IsUnique()
+                .HasDatabaseName("UX_AccountMerges_FoldedUserAccountId_Live")
+                .HasFilter("\"State\" IN ('Confirmed', 'HeimdallMoved', 'Committed', 'Final', 'UndoRequested', 'HeimdallReversed')");
+            entity.HasIndex(x => new { x.SurvivorUserAccountId, x.State });
+            entity.HasIndex(x => new { x.State, x.GraceEndsUtc });
+            entity.HasOne<UserAccount>()
+                .WithMany()
+                .HasForeignKey(x => x.SurvivorUserAccountId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<UserAccount>()
+                .WithMany()
+                .HasForeignKey(x => x.FoldedUserAccountId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<AccountMergeEntry>(entity =>
+        {
+            entity.Property(x => x.Kind).HasConversion<string>().HasMaxLength(24);
+            entity.Property(x => x.Action).HasConversion<string>().HasMaxLength(24);
+            entity.Property(x => x.PriorText).HasMaxLength(120);
+            entity.HasIndex(x => new { x.MergeId, x.Seq }).IsUnique();
+            entity.HasOne(x => x.Merge)
+                .WithMany(x => x.Entries)
+                .HasForeignKey(x => x.MergeId)
+                .OnDelete(DeleteBehavior.Restrict);
         });
     }
 }

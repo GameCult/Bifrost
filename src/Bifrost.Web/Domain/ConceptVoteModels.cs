@@ -46,5 +46,10 @@ public sealed class ConceptAppraisal
 
     public DateTimeOffset CastAtUtc { get; set; }
 
+    /// <summary>Set by the account merge ledger when a merge removes this appraisal from every tally; the model's query filter then hides the row.</summary>
+    public Guid? VoidedByMergeId { get; set; }
+
+    public DateTimeOffset? VoidedUtc { get; set; }
+
     public ConceptSubject? Subject { get; set; }
 }

@@ -66,7 +66,7 @@ public sealed class StripeWebhookService(
 
         var patronageAccount = await ResolvePatronageAccountAsync(session, stripeOptions, cancellationToken);
 
-        if (patronageAccount?.Membership is null || patronageAccount.Membership.Status == MembershipStatus.Suspended)
+        if (patronageAccount is null)
         {
             return StripeWebhookResult.NotConfigured(
                 "Stripe checkout session is not linked to an unsuspended Bifrost patron account.");
@@ -83,22 +83,32 @@ public sealed class StripeWebhookService(
             ? "USD"
             : session.Currency.ToUpperInvariant();
 
-        await patronageService.RecordSupportEventAsync(
-            actorUserAccountId: null,
-            patronageAccount.Id,
-            PatronSupportEventKind.OneTimeDonation,
-            amount,
-            currencyCode,
-            session.Id,
-            ExternalPatronProvider.Stripe,
-            stripeEvent.Id,
-            session.Customer,
-            string.Empty,
-            DateTimeOffset.FromUnixTimeSeconds(stripeEvent.Created),
-            isCurrentRecurringSupport: false,
-            BuildNotes(session),
-            cancellationToken,
-            projectId.ProjectId);
+        // A checkout opened by an account that has since folded pays the survivor: the write gate behind RecordSupportEventAsync routes it.
+        PatronSupportEvent supportEvent;
+        try
+        {
+            supportEvent = await patronageService.RecordSupportEventAsync(
+                actorUserAccountId: null,
+                patronageAccount.Id,
+                PatronSupportEventKind.OneTimeDonation,
+                amount,
+                currencyCode,
+                session.Id,
+                ExternalPatronProvider.Stripe,
+                stripeEvent.Id,
+                session.Customer,
+                string.Empty,
+                DateTimeOffset.FromUnixTimeSeconds(stripeEvent.Created),
+                isCurrentRecurringSupport: false,
+                BuildNotes(session),
+                cancellationToken,
+                projectId.ProjectId);
+        }
+        catch (PatronSupportRefusedException)
+        {
+            return StripeWebhookResult.NotConfigured(
+                "Stripe checkout session is not linked to an unsuspended Bifrost patron account.");
+        }
 
         return StripeWebhookResult.Processed("Stripe patronage support event recorded.");
     }

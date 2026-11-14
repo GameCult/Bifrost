@@ -122,6 +122,33 @@ public sealed class OidcIssuerTests : IClassFixture<OidcWebApplicationFactory>
     }
 
     [Theory]
+    [InlineData(AccountMergeState.Confirmed)]
+    [InlineData(AccountMergeState.HeimdallMoved)]
+    [InlineData(AccountMergeState.Committed)]
+    [InlineData(AccountMergeState.Final)]
+    public async Task A_folded_or_frozen_account_is_refused_with_access_denied_and_no_code(AccountMergeState state)
+    {
+        var (client, identity) = await SignedInAsync(MembershipStatus.Active, "Folded One");
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<Bifrost.Web.Data.BifrostDbContext>();
+            db.AccountMerges.Add(new AccountMerge
+            {
+                SurvivorUserAccountId = Guid.NewGuid(), FoldedUserAccountId = _factory.AccountId(identity), State = state, CreatedUtc = DateTimeOffset.UtcNow
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var request = NewRequest();
+        var final = await DriveAsync(client, request);
+
+        var redirect = AssertRedirectToClient(final, request.State);
+        Assert.Equal("access_denied", redirect["error"]);
+        Assert.Equal(Bifrost.Web.Features.Oidc.OidcEndpoints.MergedDescription, redirect["error_description"]);
+        Assert.False(redirect.ContainsKey("code"));
+    }
+
+    [Theory]
     [InlineData(MembershipStatus.Authenticated)]
     [InlineData(MembershipStatus.PendingApproval)]
     public async Task A_non_member_gets_a_chat_only_token_and_writes_no_membership_or_vote(MembershipStatus status)

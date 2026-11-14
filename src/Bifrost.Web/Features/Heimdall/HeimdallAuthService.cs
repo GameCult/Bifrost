@@ -803,74 +803,87 @@ public sealed class HeimdallAuthService(
                 .ThenInclude(x => x.TierSnapshots)
             .SingleOrDefaultAsync(x => x.HeimdallAccountId == accountId, cancellationToken);
 
-        if (userAccount is null)
+        // An existing account is written as that account, through the merge ledger's write gate: a merge cannot fold it between the standing
+        // read and the save. A new account has no merge to race.
+        return userAccount is null
+            ? await PersistAsync(null)
+            : await AccountMergeLedger.WriteAsAsync(dbContext, userAccount.Id, PersistAsync, cancellationToken);
+
+        async Task<UserAccount> PersistAsync(MergeStanding? standing)
         {
-            userAccount = new UserAccount
+            if (userAccount is null)
             {
-                HeimdallAccountId = accountId,
-                DisplayName = displayName,
-                CreatedAtUtc = now,
-                LastSeenAtUtc = now,
-                MemberProfile = new MemberProfile
+                userAccount = new UserAccount
                 {
+                    HeimdallAccountId = accountId,
+                    DisplayName = displayName,
+                    CreatedAtUtc = now,
+                    LastSeenAtUtc = now,
+                    MemberProfile = new MemberProfile
+                    {
+                        Nickname = displayName,
+                        Headline = $"Verified through Heimdall {provider}",
+                        UpdatedAtUtc = now
+                    },
+                    Membership = new Bifrost.Web.Domain.Membership
+                    {
+                        Status = grantMemberAccess ? MembershipStatus.Active : MembershipStatus.Authenticated,
+                        CreatedAtUtc = now,
+                        ApprovedAtUtc = grantMemberAccess ? now : null,
+                        Notes = grantMemberAccess
+                            ? "Activated by Heimdall member access claim"
+                            : $"Identity verified through Heimdall {provider}"
+                    }
+                };
+                dbContext.UserAccounts.Add(userAccount);
+            }
+            else
+            {
+                userAccount.DisplayName = displayName;
+                userAccount.LastSeenAtUtc = now;
+                userAccount.MemberProfile ??= new MemberProfile
+                {
+                    UserAccountId = userAccount.Id,
                     Nickname = displayName,
                     Headline = $"Verified through Heimdall {provider}",
                     UpdatedAtUtc = now
-                },
-                Membership = new Bifrost.Web.Domain.Membership
+                };
+                if (userAccount.Membership is null && standing is null)
                 {
-                    Status = grantMemberAccess ? MembershipStatus.Active : MembershipStatus.Authenticated,
-                    CreatedAtUtc = now,
-                    ApprovedAtUtc = grantMemberAccess ? now : null,
-                    Notes = grantMemberAccess
-                        ? "Activated by Heimdall member access claim"
-                        : $"Identity verified through Heimdall {provider}"
+                    // Added explicitly: a row with a preset key assigned to a tracked account is taken for an existing one and the save fails.
+                    userAccount.Membership = new Bifrost.Web.Domain.Membership { UserAccountId = userAccount.Id, CreatedAtUtc = now };
+                    dbContext.Memberships.Add(userAccount.Membership);
                 }
-            };
-            dbContext.UserAccounts.Add(userAccount);
-        }
-        else
-        {
-            userAccount.DisplayName = displayName;
-            userAccount.LastSeenAtUtc = now;
-            userAccount.MemberProfile ??= new MemberProfile
-            {
-                UserAccountId = userAccount.Id,
-                Nickname = displayName,
-                Headline = $"Verified through Heimdall {provider}",
-                UpdatedAtUtc = now
-            };
-            userAccount.Membership ??= new Bifrost.Web.Domain.Membership
-            {
-                UserAccountId = userAccount.Id,
-                CreatedAtUtc = now
-            };
-            // A suspension is an admin's decision: the claim neither lifts it nor, absent, imposes it.
-            if (grantMemberAccess && userAccount.Membership.Status != MembershipStatus.Suspended)
-            {
-                userAccount.Membership.Status = MembershipStatus.Active;
-                userAccount.Membership.ApprovedAtUtc ??= now;
+
+                // A suspension is an admin's decision: the claim neither lifts it nor, absent, imposes it. A merged row is terminal: the claim never reactivates it.
+                // A folded account, or one a merge has frozen, is an alias of its survivor: sign-in neither creates nor activates a membership for it.
+                if (grantMemberAccess && standing is null && userAccount.Membership is { IsMerged: false, Status: not MembershipStatus.Suspended })
+                {
+                    userAccount.Membership.Status = MembershipStatus.Active;
+                    userAccount.Membership.ApprovedAtUtc ??= now;
+                }
             }
-        }
 
-        userAccount.MemberProfile!.Nickname = displayName;
-        userAccount.MemberProfile.UpdatedAtUtc = now;
-        await bifrostIdentityService.EnsureIdentityAsync(
-            userAccount,
-            displayName,
-            cancellationToken);
-        if (grantMemberAccess && userAccount.Membership!.Status == MembershipStatus.Active)
-        {
-            ApplicationBootstrapper.EnsureRole(
-                userAccount.Membership!,
-                MemberRole.StandardMember,
-                null,
-                now,
-                "Heimdall member access");
-        }
+            userAccount.MemberProfile!.Nickname = displayName;
+            userAccount.MemberProfile.UpdatedAtUtc = now;
+            await bifrostIdentityService.EnsureIdentityAsync(
+                userAccount,
+                displayName,
+                cancellationToken);
+            if (grantMemberAccess && userAccount.Membership is { Status: MembershipStatus.Active })
+            {
+                ApplicationBootstrapper.EnsureRole(
+                    userAccount.Membership,
+                    MemberRole.StandardMember,
+                    null,
+                    now,
+                    "Heimdall member access");
+            }
 
-        await dbContext.SaveChangesAsync(cancellationToken);
-        return userAccount;
+            await dbContext.SaveChangesAsync(cancellationToken);
+
+            return userAccount!;
+        }
     }
 
     private static HeimdallEntitlementPolicy BuildDiscordPolicy(HeimdallOptions options)

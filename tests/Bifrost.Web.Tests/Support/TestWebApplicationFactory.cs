@@ -20,6 +20,9 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
     private static readonly InMemoryDatabaseRoot _databaseRoot = new();
     private readonly string _databaseName = $"bifrost-tests-{Guid.NewGuid():N}";
 
+    /// <summary>Armed by a test to crash a chosen save; every context of this host carries it.</summary>
+    public FaultOnSave Fault { get; } = new();
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Testing");
@@ -60,7 +63,7 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
 
             services.AddDbContext<BifrostDbContext>(options =>
             {
-                options.UseInMemoryDatabase(_databaseName, _databaseRoot);
+                options.UseInMemoryDatabase(_databaseName, _databaseRoot).AddInterceptors(Fault);
             });
 
             services.AddAuthentication(options =>

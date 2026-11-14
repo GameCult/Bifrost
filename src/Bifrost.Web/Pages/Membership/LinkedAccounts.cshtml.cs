@@ -6,6 +6,7 @@ using Bifrost.Web.Features.Passkeys;
 using Bifrost.Web.Features.Shared;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.Filters;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.Extensions.Options;
 
@@ -23,6 +24,7 @@ public sealed class LinkedAccountsModel(
     HeimdallAuthService heimdallAuthService,
     LinkedAccountsSnapshots snapshots,
     PasskeyService passkeys,
+    ICurrentBifrostActorAccessor actors,
     IOptions<BifrostHostOptions> hostOptions,
     ILogger<LinkedAccountsModel> logger) : PageModel
 {
@@ -32,6 +34,21 @@ public sealed class LinkedAccountsModel(
         ["patreon"] = "Patreon",
         ["google"] = "Google"
     };
+
+    /// <summary>
+    /// A folded or frozen account manages no logins and enrols no passkey: the page's handlers all begin a Heimdall flow on the
+    /// account's raw claim, so the one gate is here, on the actor accessor's standing, before any handler runs.
+    /// </summary>
+    public override async Task OnPageHandlerExecutionAsync(PageHandlerExecutingContext context, PageHandlerExecutionDelegate next)
+    {
+        if ((await actors.GetAsync(context.HttpContext.RequestAborted)).Merge is not null)
+        {
+            context.Result = Forbid();
+            return;
+        }
+
+        await base.OnPageHandlerExecutionAsync(context, next);
+    }
 
     private string? AccountId => User.FindFirstValue(BifrostClaimTypes.HeimdallAccountId) is { Length: > 0 } id ? id : null;
 

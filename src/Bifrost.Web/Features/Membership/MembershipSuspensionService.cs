@@ -49,6 +49,12 @@ public sealed class MembershipSuspensionService(BifrostDbContext dbContext, Audi
             return SuspensionOutcome.NoSuchAccount;
         }
 
+        // A merged account is terminal: only the merge ledger leaves that status, so neither suspending nor lifting applies.
+        if (membership.IsMerged)
+        {
+            return SuspensionOutcome.NotApplicable;
+        }
+
         // An admin cannot suspend themselves or another platform admin here (the same derivation that makes an actor an admin):
         // bootstrap admins are re-promoted to Active at sign-in by configuration, so the suspension would be undone without a receipt.
         if (suspend && (user.Id == actor.UserAccount.Id || new CurrentBifrostActor(true, user).IsPlatformAdmin))

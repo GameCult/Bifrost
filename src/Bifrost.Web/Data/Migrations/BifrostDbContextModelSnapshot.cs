@@ -22,6 +22,177 @@ namespace Bifrost.Web.Data.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
+            modelBuilder.Entity("Bifrost.Web.Domain.AccountMerge", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("Attempts")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset?>("CommittedUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("ConfirmedByUserAccountId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset?>("ConfirmedUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset>("CreatedUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("FailedUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("FailureCode")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<DateTimeOffset?>("FinalizedUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("FoldedProofProviders")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)");
+
+                    b.Property<Guid>("FoldedUserAccountId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset?>("GraceEndsUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("HeimdallMoveId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("HeimdallReverseMoveId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("LastOutcome")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("MovedIdentityIds")
+                        .HasColumnType("text");
+
+                    b.Property<DateTimeOffset?>("NextAttemptUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("PreviewDigest")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("ProofFromTier")
+                        .HasMaxLength(8)
+                        .HasColumnType("character varying(8)");
+
+                    b.Property<string>("ProofToTier")
+                        .HasMaxLength(8)
+                        .HasColumnType("character varying(8)");
+
+                    b.Property<DateTimeOffset?>("ReversedUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("SealedProofs")
+                        .HasColumnType("text");
+
+                    b.Property<string>("State")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .HasMaxLength(24)
+                        .HasColumnType("character varying(24)");
+
+                    b.Property<string>("SurvivorProofProvider")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<Guid>("SurvivorUserAccountId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset?>("UndoneUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("UndoRequestedUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("FoldedUserAccountId")
+                        .IsUnique()
+                        .HasDatabaseName("UX_AccountMerges_FoldedUserAccountId_Live")
+                        .HasFilter("\"State\" IN ('Confirmed', 'HeimdallMoved', 'Committed', 'Final', 'UndoRequested', 'HeimdallReversed')");
+
+                    b.HasIndex("FoldedUserAccountId", "State");
+
+                    b.HasIndex("HeimdallMoveId")
+                        .IsUnique()
+                        .HasFilter("\"HeimdallMoveId\" IS NOT NULL");
+
+                    b.HasIndex("HeimdallReverseMoveId")
+                        .IsUnique()
+                        .HasFilter("\"HeimdallReverseMoveId\" IS NOT NULL");
+
+                    b.HasIndex("State", "GraceEndsUtc");
+
+                    b.HasIndex("SurvivorUserAccountId", "State");
+
+                    b.ToTable("AccountMerges");
+                });
+
+            modelBuilder.Entity("Bifrost.Web.Domain.AccountMergeEntry", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Action")
+                        .IsRequired()
+                        .HasMaxLength(24)
+                        .HasColumnType("character varying(24)");
+
+                    b.Property<DateTimeOffset>("AtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(24)
+                        .HasColumnType("character varying(24)");
+
+                    b.Property<Guid>("MergeId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset?>("PriorAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("PriorText")
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)");
+
+                    b.Property<Guid?>("PriorUserAccountId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("RecordId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("Seq")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("MergeId", "Seq")
+                        .IsUnique();
+
+                    b.ToTable("AccountMergeEntries");
+                });
+
             modelBuilder.Entity("Bifrost.Web.Domain.AgentDispatchRun", b =>
                 {
                     b.Property<Guid>("Id")
@@ -436,6 +607,12 @@ namespace Bifrost.Web.Data.Migrations
 
                     b.Property<Guid?>("UserAccountId")
                         .HasColumnType("uuid");
+
+                    b.Property<Guid?>("VoidedByMergeId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset?>("VoidedUtc")
+                        .HasColumnType("timestamp with time zone");
 
                     b.Property<string>("VoterClass")
                         .IsRequired()
@@ -1336,6 +1513,11 @@ namespace Bifrost.Web.Data.Migrations
 
                     b.HasIndex("MembershipId", "Kind", "IsCurrent");
 
+                    b.HasIndex("MembershipId")
+                        .IsUnique()
+                        .HasDatabaseName("UX_TierSnapshots_MembershipId_CurrentPatron")
+                        .HasFilter("\"Kind\" = 'Patron' AND \"IsCurrent\"");
+
                     b.ToTable("TierSnapshots");
                 });
 
@@ -1675,6 +1857,12 @@ namespace Bifrost.Web.Data.Migrations
 
                     b.Property<Guid>("UserAccountId")
                         .HasColumnType("uuid");
+
+                    b.Property<Guid?>("VoidedByMergeId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset?>("VoidedUtc")
+                        .HasColumnType("timestamp with time zone");
 
                     b.Property<decimal>("Weight")
                         .HasPrecision(18, 2)
@@ -2061,6 +2249,32 @@ namespace Bifrost.Web.Data.Migrations
                     b.HasIndex("ApplicationId", "Status", "Subject", "Type");
 
                     b.ToTable("OpenIddictTokens", (string)null);
+                });
+
+            modelBuilder.Entity("Bifrost.Web.Domain.AccountMerge", b =>
+                {
+                    b.HasOne("Bifrost.Web.Domain.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("FoldedUserAccountId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Bifrost.Web.Domain.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("SurvivorUserAccountId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Bifrost.Web.Domain.AccountMergeEntry", b =>
+                {
+                    b.HasOne("Bifrost.Web.Domain.AccountMerge", "Merge")
+                        .WithMany("Entries")
+                        .HasForeignKey("MergeId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Merge");
                 });
 
             modelBuilder.Entity("Bifrost.Web.Domain.AgentDispatchRun", b =>
@@ -2600,6 +2814,11 @@ namespace Bifrost.Web.Data.Migrations
                     b.Navigation("Application");
 
                     b.Navigation("Authorization");
+                });
+
+            modelBuilder.Entity("Bifrost.Web.Domain.AccountMerge", b =>
+                {
+                    b.Navigation("Entries");
                 });
 
             modelBuilder.Entity("Bifrost.Web.Domain.Membership", b =>

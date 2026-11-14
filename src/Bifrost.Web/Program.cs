@@ -139,6 +139,9 @@ builder.Services.AddSingleton<RegistrationChallengeService>();
 builder.Services.AddSingleton<RegistrationRateLimit>();
 builder.Services.AddScoped<NativeRegistration>();
 builder.Services.AddHostedService<SealedBallotCloser>();
+builder.Services.AddScoped<Bifrost.Web.Features.Membership.AccountMergeLedger>();
+builder.Services.AddScoped<Bifrost.Web.Features.Membership.AccountMergeSaga>();
+builder.Services.AddHostedService<Bifrost.Web.Features.Membership.AccountMergeSweeper>();
 builder.Services.AddScoped<MotionEveSurfaceService>();
 builder.Services.AddScoped<PatronageService>();
 builder.Services.AddScoped<StripeWebhookService>();
@@ -158,6 +161,8 @@ builder.Services.AddHttpClient<HeimdallAuthService>((serviceProvider, client) =>
 builder.Services.AddHttpClient<HeimdallMemberClient>((serviceProvider, client) =>
     HeimdallMemberClient.ConfigureClient(client, serviceProvider.GetRequiredService<IOptions<HeimdallOptions>>().Value))
     .RedactLoggedHeaders(HeimdallAuthService.RedactsHeader);
+// The mover route is an app-secret call like HeimdallAuthService's: same ConfigureClient, same header redaction, no redirects.
+builder.Services.AddHeimdallIdentityMoveClient();
 builder.Services.AddSingleton<LinkedAccountsSnapshots>();
 builder.Services.AddSingleton<Bifrost.Web.Features.Passkeys.PasskeyRelyingParty>();
 builder.Services.AddSingleton<Bifrost.Web.Features.Passkeys.PasskeyCeremonies>();
@@ -854,7 +859,10 @@ app.MapPost("/auth/heimdall/complete", async (
                 held.Value.Value,
                 form?["code"].ToString(),
                 form?["pendingLinkId"].ToString(),
-                httpContext.User.FindFirstValue(BifrostClaimTypes.HeimdallAccountId),
+                // A folded or frozen account links nothing: the actor accessor's standing decides, not the raw claim.
+                (await httpContext.RequestServices.GetRequiredService<ICurrentBifrostActorAccessor>().GetAsync(cancellationToken)).Merge is null
+                    ? httpContext.User.FindFirstValue(BifrostClaimTypes.HeimdallAccountId)
+                    : null,
                 cancellationToken);
             if (step.Next is not null)
             {

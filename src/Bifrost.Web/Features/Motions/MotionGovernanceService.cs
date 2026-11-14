@@ -1,5 +1,6 @@
 using Bifrost.Web.Data;
 using Bifrost.Web.Domain;
+using Bifrost.Web.Features.Membership;
 using Bifrost.Web.Features.Shared;
 using Microsoft.EntityFrameworkCore;
 
@@ -52,6 +53,7 @@ public sealed class MotionGovernanceService(
         CancellationToken cancellationToken)
     {
         var actorUser = actor.UserAccount ?? throw new UnauthorizedAccessException("A linked Bifrost actor is required.");
+
         var motion = await dbContext.Motions
             .Include(x => x.Votes)
             .SingleAsync(x => x.Id == motionId, cancellationToken);
@@ -61,28 +63,44 @@ public sealed class MotionGovernanceService(
             return;
         }
 
-        var vote = motion.Votes.SingleOrDefault(x => x.UserAccountId == actorUser.Id);
-        if (vote is null)
+        // An actor resolved before a merge froze this account must not write a vote after it: the write gate reads standing at the write.
+        var wrote = await AccountMergeLedger.WriteAsAsync(dbContext, actorUser.Id, async standing =>
         {
-            dbContext.Votes.Add(new Vote
+            if (standing is not null)
             {
-                MotionId = motionId,
-                UserAccountId = actorUser.Id,
-                Choice = choice,
-                Weight = actor.EffectiveVotingWeight,
-                Comment = comment?.Trim() ?? string.Empty,
-                CastAtUtc = timeProvider.GetUtcNow()
-            });
-        }
-        else
+                return false;
+            }
+
+            var vote = motion.Votes.SingleOrDefault(x => x.UserAccountId == actorUser.Id);
+            if (vote is null)
+            {
+                dbContext.Votes.Add(new Vote
+                {
+                    MotionId = motionId,
+                    UserAccountId = actorUser.Id,
+                    Choice = choice,
+                    Weight = actor.EffectiveVotingWeight,
+                    Comment = comment?.Trim() ?? string.Empty,
+                    CastAtUtc = timeProvider.GetUtcNow()
+                });
+            }
+            else
+            {
+                vote.Choice = choice;
+                vote.Weight = actor.EffectiveVotingWeight;
+                vote.Comment = comment?.Trim() ?? string.Empty;
+                vote.CastAtUtc = timeProvider.GetUtcNow();
+            }
+
+            await dbContext.SaveChangesAsync(cancellationToken);
+            return true;
+        }, cancellationToken);
+
+        if (!wrote)
         {
-            vote.Choice = choice;
-            vote.Weight = actor.EffectiveVotingWeight;
-            vote.Comment = comment?.Trim() ?? string.Empty;
-            vote.CastAtUtc = timeProvider.GetUtcNow();
+            return;
         }
 
-        await dbContext.SaveChangesAsync(cancellationToken);
         await auditTrailService.RecordAsync(
             actorUser.Id,
             nameof(Motion),

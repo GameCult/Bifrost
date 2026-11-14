@@ -2,6 +2,7 @@ using System.Net;
 using Bifrost.Web.Configuration;
 using Bifrost.Web.Data;
 using Bifrost.Web.Domain;
+using Bifrost.Web.Features.Membership;
 using Bifrost.Web.Features.Shared;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -80,13 +81,42 @@ public sealed class ConceptAppraisalService(
             ? string.Empty
             : NetworkPrefix.Tag(client, opts.IPv4PrefixLength, opts.IPv6PrefixLength, opts.NetworkTagSecret);
 
+        // A voter resolved before a merge froze the account must not write an appraisal after it: the write gate reads standing at the write.
+        Task<CastResult> Write() => voter.UserAccountId is { } voterAccountId
+            ? AccountMergeLedger.WriteAsAsync(
+                dbContext,
+                voterAccountId,
+                standing => standing is null ? WriteAppraisalAsync(subject, voter, stance, tag, cancellationToken) : Task.FromResult(CastResult.NoVoter),
+                cancellationToken)
+            : WriteAppraisalAsync(subject, voter, stance, tag, cancellationToken);
+
+        try
+        {
+            return await Write();
+        }
+        catch (DbUpdateException ex) when (ex.InnerException is PostgresException { SqlState: UniqueViolation })
+        {
+            // A concurrent cast by the same voter won the insert (and the failed save aborted the gate's transaction): go through the
+            // gate again, which now finds their row and applies this stance to it, once.
+            dbContext.ChangeTracker.Clear();
+            if (await FindAppraisalAsync(subject.Id, voter.Key, cancellationToken) is null)
+            {
+                throw;
+            }
+
+            return await Write();
+        }
+    }
+
+    private async Task<CastResult> WriteAppraisalAsync(ConceptSubject subject, VoterIdentity voter, ConceptStance stance, string tag, CancellationToken cancellationToken)
+    {
         var existing = await FindAppraisalAsync(subject.Id, voter.Key, cancellationToken);
         if (existing is not null)
         {
             return await ApplyStanceAsync(existing, stance, tag, cancellationToken);
         }
 
-        var row = new ConceptAppraisal
+        dbContext.ConceptAppraisals.Add(new ConceptAppraisal
         {
             SubjectId = subject.Id,
             VoterKey = voter.Key,
@@ -95,26 +125,9 @@ public sealed class ConceptAppraisalService(
             UserAccountId = voter.UserAccountId,
             NetworkTag = tag,
             CastAtUtc = timeProvider.GetUtcNow()
-        };
-        dbContext.ConceptAppraisals.Add(row);
-
-        try
-        {
-            await dbContext.SaveChangesAsync(cancellationToken);
-            return CastResult.Recorded;
-        }
-        catch (DbUpdateException ex) when (ex.InnerException is PostgresException { SqlState: UniqueViolation })
-        {
-            // A concurrent cast by the same voter won the insert: apply this stance to their row, once.
-            dbContext.Entry(row).State = EntityState.Detached;
-            var winner = await FindAppraisalAsync(subject.Id, voter.Key, cancellationToken);
-            if (winner is null)
-            {
-                throw;
-            }
-
-            return await ApplyStanceAsync(winner, stance, tag, cancellationToken);
-        }
+        });
+        await dbContext.SaveChangesAsync(cancellationToken);
+        return CastResult.Recorded;
     }
 
     public async Task<bool> RetractAsync(
