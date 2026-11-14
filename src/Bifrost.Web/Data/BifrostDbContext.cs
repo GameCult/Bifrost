@@ -81,6 +81,10 @@ public sealed class BifrostDbContext(DbContextOptions<BifrostDbContext> options)
 
     public DbSet<ConceptAppraisal> ConceptAppraisals => Set<ConceptAppraisal>();
 
+    public DbSet<AccountMerge> AccountMerges => Set<AccountMerge>();
+
+    public DbSet<AccountMergeEntry> AccountMergeEntries => Set<AccountMergeEntry>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<UserAccount>(entity =>
@@ -301,6 +305,8 @@ public sealed class BifrostDbContext(DbContextOptions<BifrostDbContext> options)
         modelBuilder.Entity<Vote>(entity =>
         {
             entity.HasIndex(x => new { x.MotionId, x.UserAccountId }).IsUnique();
+            // A merge voids a vote by stamping it; every tally reads through this filter, and only AccountMergeLedger ignores it.
+            entity.HasQueryFilter(x => x.VoidedByMergeId == null);
             entity.Property(x => x.Choice).HasConversion<string>();
             entity.Property(x => x.Weight).HasPrecision(18, 2);
             entity.HasOne(x => x.Motion)
@@ -607,6 +613,7 @@ public sealed class BifrostDbContext(DbContextOptions<BifrostDbContext> options)
             entity.Property(x => x.NetworkTag).HasMaxLength(64);
             entity.Property(x => x.Stance).HasConversion<string>().HasMaxLength(16);
             entity.Property(x => x.VoterClass).HasConversion<string>().HasMaxLength(16);
+            entity.HasQueryFilter(x => x.VoidedByMergeId == null);
             entity.HasIndex(x => new { x.SubjectId, x.VoterKey }).IsUnique();
             entity.HasIndex(x => new { x.NetworkTag, x.CastAtUtc });
             entity.HasOne(x => x.Subject)
@@ -617,6 +624,35 @@ public sealed class BifrostDbContext(DbContextOptions<BifrostDbContext> options)
                 .WithMany()
                 .HasForeignKey(x => x.UserAccountId)
                 .OnDelete(DeleteBehavior.SetNull);
+        });
+
+        modelBuilder.Entity<AccountMerge>(entity =>
+        {
+            entity.Property(x => x.State).HasConversion<string>().HasMaxLength(24);
+            entity.Property(x => x.FailureCode).HasMaxLength(64);
+            entity.HasIndex(x => new { x.FoldedUserAccountId, x.State });
+            entity.HasIndex(x => new { x.SurvivorUserAccountId, x.State });
+            entity.HasIndex(x => new { x.State, x.GraceEndsUtc });
+            entity.HasOne<UserAccount>()
+                .WithMany()
+                .HasForeignKey(x => x.SurvivorUserAccountId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<UserAccount>()
+                .WithMany()
+                .HasForeignKey(x => x.FoldedUserAccountId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<AccountMergeEntry>(entity =>
+        {
+            entity.Property(x => x.Kind).HasConversion<string>().HasMaxLength(24);
+            entity.Property(x => x.Action).HasConversion<string>().HasMaxLength(24);
+            entity.Property(x => x.PriorText).HasMaxLength(120);
+            entity.HasIndex(x => new { x.MergeId, x.Seq }).IsUnique();
+            entity.HasOne(x => x.Merge)
+                .WithMany(x => x.Entries)
+                .HasForeignKey(x => x.MergeId)
+                .OnDelete(DeleteBehavior.Restrict);
         });
     }
 }

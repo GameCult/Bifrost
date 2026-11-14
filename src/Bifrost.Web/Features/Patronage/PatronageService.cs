@@ -146,35 +146,7 @@ public sealed class PatronageService(
             throw new InvalidOperationException("Cannot refresh patron tier for a user without membership.");
         }
 
-        var summary = CalculatePatronPoints(user.PatronSupportEvents, timeProvider.GetUtcNow());
-        var tier = PatronTierPolicy.ResolveTier(summary.EffectivePoints);
-        var now = timeProvider.GetUtcNow();
-
-        var currentPatronSnapshots = await dbContext.TierSnapshots
-            .Where(x => x.MembershipId == user.Membership.Id &&
-                x.Kind == TierSnapshotKind.Patron &&
-                x.IsCurrent)
-            .ToListAsync(cancellationToken);
-
-        foreach (var snapshot in currentPatronSnapshots)
-        {
-            snapshot.IsCurrent = false;
-        }
-
-        if (tier is not null)
-        {
-            dbContext.TierSnapshots.Add(new TierSnapshot
-            {
-                MembershipId = user.Membership.Id,
-                Kind = TierSnapshotKind.Patron,
-                Label = PatronTierPolicy.SnapshotLabel(tier),
-                Weight = tier.VotingWeight,
-                IsCurrent = true,
-                EffectiveFromUtc = now,
-                CapturedAtUtc = now,
-                Notes = PatronTierPolicy.SnapshotNote(summary.EffectivePoints, now)
-            });
-        }
+        var (summary, tier) = await StageTierSnapshotAsync(user.Membership, user.PatronSupportEvents, timeProvider.GetUtcNow(), cancellationToken);
 
         await dbContext.SaveChangesAsync(cancellationToken);
         await auditTrailService.RecordAsync(
@@ -188,6 +160,49 @@ public sealed class PatronageService(
             cancellationToken);
 
         return summary with { TierLabel = tier?.Label ?? string.Empty, VotingWeight = tier?.VotingWeight ?? 0m };
+    }
+
+    /// <summary>
+    /// Derives the membership's patron tier from the events once and stages it on the tracker: demotes the current Patron snapshots
+    /// and adds the new one. It never saves and never clears the tracker, so a caller can stage it inside a larger single save
+    /// (the account merge ledger does).
+    /// </summary>
+    public async Task<(PatronPointSummary Summary, PatronTierDefinition? Tier)> StageTierSnapshotAsync(
+        Bifrost.Web.Domain.Membership membership,
+        IEnumerable<PatronSupportEvent> events,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        var summary = CalculatePatronPoints(events, now);
+        var tier = PatronTierPolicy.ResolveTier(summary.EffectivePoints);
+
+        var currentPatronSnapshots = await dbContext.TierSnapshots
+            .Where(x => x.MembershipId == membership.Id &&
+                x.Kind == TierSnapshotKind.Patron &&
+                x.IsCurrent)
+            .ToListAsync(cancellationToken);
+
+        foreach (var snapshot in currentPatronSnapshots)
+        {
+            snapshot.IsCurrent = false;
+        }
+
+        if (tier is not null)
+        {
+            dbContext.TierSnapshots.Add(new TierSnapshot
+            {
+                MembershipId = membership.Id,
+                Kind = TierSnapshotKind.Patron,
+                Label = PatronTierPolicy.SnapshotLabel(tier),
+                Weight = tier.VotingWeight,
+                IsCurrent = true,
+                EffectiveFromUtc = now,
+                CapturedAtUtc = now,
+                Notes = PatronTierPolicy.SnapshotNote(summary.EffectivePoints, now)
+            });
+        }
+
+        return (summary, tier);
     }
 
     public static PatronPointSummary CalculatePatronPoints(

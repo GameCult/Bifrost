@@ -5,6 +5,7 @@ using System.Text.Json.Serialization;
 using Bifrost.Web.Configuration;
 using Bifrost.Web.Data;
 using Bifrost.Web.Domain;
+using Bifrost.Web.Features.Membership;
 using Bifrost.Web.Features.Patronage;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -14,6 +15,7 @@ namespace Bifrost.Web.Features.Heimdall;
 public sealed class HeimdallPatronSupportIntakeService(
     BifrostDbContext dbContext,
     PatronageService patronageService,
+    AccountMergeLedger mergeLedger,
     IOptions<HeimdallOptions> heimdallOptions)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
@@ -83,7 +85,7 @@ public sealed class HeimdallPatronSupportIntakeService(
 
         var supportEvent = await patronageService.RecordSupportEventAsync(
             actorUserAccountId: null,
-            userAccountId: user.Id,
+            userAccountId: await mergeLedger.ResolveAsync(user.Id, cancellationToken), // a folded account's events record on the survivor
             request.Kind,
             request.Amount,
             request.CurrencyCode,

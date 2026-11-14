@@ -7,7 +7,9 @@ public enum MembershipStatus
     Authenticated,
     PendingApproval,
     Active,
-    Suspended
+    Suspended,
+    /// <summary>Terminal status of a folded membership; written only by the account merge ledger, never read to decide standing.</summary>
+    Merged
 }
 
 public enum MemberRole
@@ -775,6 +777,11 @@ public sealed class Vote
     public string Comment { get; set; } = string.Empty;
 
     public DateTimeOffset CastAtUtc { get; set; }
+
+    /// <summary>Set by the account merge ledger when a merge removes this vote from every tally; the model's query filter then hides the row.</summary>
+    public Guid? VoidedByMergeId { get; set; }
+
+    public DateTimeOffset? VoidedUtc { get; set; }
 
     public Motion Motion { get; set; } = null!;
 

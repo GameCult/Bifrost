@@ -12,7 +12,8 @@ public interface ICurrentBifrostActorAccessor
 
 public sealed class CurrentBifrostActorAccessor(
     IHttpContextAccessor httpContextAccessor,
-    BifrostDbContext dbContext) : ICurrentBifrostActorAccessor
+    BifrostDbContext dbContext,
+    AccountMergeLedger ledger) : ICurrentBifrostActorAccessor
 {
     private const string CacheKey = "Bifrost.CurrentActor";
 
@@ -45,18 +46,41 @@ public sealed class CurrentBifrostActorAccessor(
             return Cache(httpContext, CurrentBifrostActor.Anonymous);
         }
 
-        var userAccount = await dbContext.UserAccounts
+        // One credential names one row: identity first, then Heimdall id, then GitHub id; the first hit wins. Two rows matching
+        // one principal (a merge can leave a login on either side) must never throw or pick by luck.
+        var accounts = dbContext.UserAccounts
             .AsNoTracking()
             .Include(x => x.MemberProfile)
             .Include(x => x.Membership!)
                 .ThenInclude(x => x.RoleAssignments)
             .Include(x => x.Membership!)
-                .ThenInclude(x => x.TierSnapshots)
-            .SingleOrDefaultAsync(
-                x => (!string.IsNullOrWhiteSpace(normalizedBifrostIdentity) && x.NormalizedBifrostIdentity == normalizedBifrostIdentity) ||
-                     (!string.IsNullOrWhiteSpace(heimdallAccountId) && x.HeimdallAccountId == heimdallAccountId) ||
-                     (hasGitHubUserId && x.GitHubUserId == gitHubUserId),
-                cancellationToken);
+                .ThenInclude(x => x.TierSnapshots);
+
+        Bifrost.Web.Domain.UserAccount? userAccount = null;
+        if (!string.IsNullOrWhiteSpace(normalizedBifrostIdentity))
+        {
+            userAccount = await accounts.SingleOrDefaultAsync(x => x.NormalizedBifrostIdentity == normalizedBifrostIdentity, cancellationToken);
+        }
+
+        if (userAccount is null && !string.IsNullOrWhiteSpace(heimdallAccountId))
+        {
+            userAccount = await accounts.SingleOrDefaultAsync(x => x.HeimdallAccountId == heimdallAccountId, cancellationToken);
+        }
+
+        if (userAccount is null && hasGitHubUserId)
+        {
+            userAccount = await accounts.SingleOrDefaultAsync(x => x.GitHubUserId == gitHubUserId, cancellationToken);
+        }
+
+        // A folded or frozen account acts as nobody on every route: this is the one gate (merge ledger standing, derived per request).
+        if (userAccount is not null)
+        {
+            var standing = await ledger.StandingAsync(userAccount.Id, cancellationToken);
+            if (standing is not null)
+            {
+                return Cache(httpContext, new CurrentBifrostActor(true, null) { Merge = standing });
+            }
+        }
 
         return Cache(httpContext, new CurrentBifrostActor(true, userAccount));
     }

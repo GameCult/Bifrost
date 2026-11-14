@@ -66,3 +66,5 @@ A link refused because the login already belongs to another account (`409 identi
 Several exits leave the held attempt cookie (`__Host-bifrost_heimdall_<slot>`, HttpOnly, so script cannot clear it) in the browser until its ten minutes end: the complete page's redirect when Discord or Patreon refuses a link because the login belongs to another account, every other `heimdall_status=error` redirect, and a return with no code or no attempt. The script redirects without posting anything; clearing the cookie would need a server route reached by GET or a post from the failure path, which the hardened script deliberately does not do.
 
 A start takes a free slot, else overwrites the slot that expires first, live or dead (`ChooseSlot`, two slots). So three member starts within ten minutes can cost a still-live older attempt, which then finds no cookie and is refused; the member starts again.
+
+See [account-merge.md](account-merge.md) for what a merge does to Bifrost records, the states it moves through and how a folded account stands.

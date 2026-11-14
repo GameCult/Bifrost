@@ -96,6 +96,34 @@ public sealed class OidcLogoutTests
     }
 
     [Fact]
+    public async Task A_folded_subject_gets_one_signed_logout_and_loses_the_authorizations_while_the_survivor_keeps_them()
+    {
+        using var factory = new OidcLogoutFactory();
+        var (folded, _) = await factory.GrantAsync(MembershipStatus.Active);
+        var (survivor, _) = await factory.GrantAsync(MembershipStatus.Active);
+        var foldedSubject = factory.AccountId(folded).ToString("D");
+        var survivorSubject = factory.AccountId(survivor).ToString("D");
+        Assert.True(factory.ValidAuthorizations(foldedSubject) > 0);
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<Bifrost.Web.Data.BifrostDbContext>();
+            db.AccountMerges.Add(new AccountMerge
+            {
+                SurvivorUserAccountId = factory.AccountId(survivor), FoldedUserAccountId = factory.AccountId(folded),
+                State = AccountMergeState.Committed, CreatedUtc = DateTimeOffset.UtcNow
+            });
+            await db.SaveChangesAsync();
+        }
+
+        await factory.Reconciler.ReconcileOnceAsync(CancellationToken.None);
+
+        var token = new JsonWebToken(Assert.Single(factory.Mas.LogoutTokens()));
+        Assert.Equal(foldedSubject, token.Subject);
+        Assert.Equal(0, factory.ValidAuthorizations(foldedSubject));
+        Assert.True(factory.ValidAuthorizations(survivorSubject) > 0);
+    }
+
+    [Fact]
     public async Task Two_logouts_for_one_subject_carry_different_jti()
     {
         using var factory = new OidcLogoutFactory();

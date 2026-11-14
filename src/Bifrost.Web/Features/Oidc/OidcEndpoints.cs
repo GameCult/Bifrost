@@ -23,6 +23,7 @@ namespace Bifrost.Web.Features.Oidc;
 public static class OidcEndpoints
 {
     public const string SuspendedDescription = "The account is suspended.";
+    public const string MergedDescription = "The account is part of an account merge and can no longer sign in.";
     public const string NoIdentityDescription = "The account has no Bifrost identity.";
     public const string ReservedIdentityDescription = "The account's Bifrost identity is reserved.";
     public const string ConsentRequiredDescription = "Agreement to the training notice in force is needed to speak in a recorded room.";
@@ -56,7 +57,7 @@ public static class OidcEndpoints
         // every member or governance surface keeps asking for Active itself (the Active-member policy, IsActiveMember, ActiveMemberIdAsync).
         if (actor.UserAccount is null)
         {
-            return Deny(Errors.AccessDenied, NoIdentityDescription);
+            return Deny(Errors.AccessDenied, actor.Merge is not null ? MergedDescription : NoIdentityDescription);
         }
 
         if (actor.Membership?.Status == MembershipStatus.Suspended)
@@ -174,6 +175,12 @@ public static class OidcEndpoints
         if (account is null || account.Membership?.Status == MembershipStatus.Suspended)
         {
             return SuspendedDescription;
+        }
+
+        // A folded or frozen subject's chat sessions end: token, userinfo and the logout reconciler all read this one refusal.
+        if (await AccountMergeLedger.StandingAsync(db, accountId, cancellationToken) is not null)
+        {
+            return MergedDescription;
         }
 
         return deskToken || await ConsentEndpoints.HasLiveReceiptAsync(db, accountId, cancellationToken) ? null : ConsentRequiredDescription;
