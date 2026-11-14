@@ -313,8 +313,23 @@ public sealed partial class HeimdallIdentityMoveClient(
     }
 }
 
-public static class HeimdallIdentityMoveClientServices
+public static class HeimdallClientServices
 {
+    /// <summary>
+    /// Every Heimdall client Bifrost owns. The auth client carries the app secret, the member client only the member's bearer and
+    /// the mover the app secret and its call deadline; all share the header redaction.
+    /// </summary>
+    public static void AddHeimdallClients(this IServiceCollection services)
+    {
+        services.AddHttpClient<HeimdallAuthService>((serviceProvider, client) =>
+                HeimdallAuthService.ConfigureClient(client, serviceProvider.GetRequiredService<IOptions<HeimdallOptions>>().Value))
+            .RedactLoggedHeaders(HeimdallAuthService.RedactsHeader);
+        services.AddHttpClient<HeimdallMemberClient>((serviceProvider, client) =>
+                HeimdallMemberClient.ConfigureClient(client, serviceProvider.GetRequiredService<IOptions<HeimdallOptions>>().Value))
+            .RedactLoggedHeaders(HeimdallAuthService.RedactsHeader);
+        services.AddHeimdallIdentityMoveClient();
+    }
+
     /// <summary>
     /// The mover's HttpClient: Heimdall's base address and app secret from HeimdallAuthService.ConfigureClient (the one secret path), the
     /// call deadline, no redirects (a 3xx must never carry the secret or the proofs to another origin), and the shared header redaction.

@@ -154,15 +154,8 @@ builder.Services.AddScoped<ReadinessService>();
 builder.Services.AddScoped<ApplicationBootstrapper>();
 builder.Services.AddSingleton<StartupConfigurationValidator>();
 builder.Services.AddScoped<IAuthorizationHandler, ActiveMemberAuthorizationHandler>();
-builder.Services.AddHttpClient<HeimdallAuthService>((serviceProvider, client) =>
-    HeimdallAuthService.ConfigureClient(client, serviceProvider.GetRequiredService<IOptions<HeimdallOptions>>().Value))
-    .RedactLoggedHeaders(HeimdallAuthService.RedactsHeader);
-// Heimdall's member routes take only the member's bearer: this client carries no app secret.
-builder.Services.AddHttpClient<HeimdallMemberClient>((serviceProvider, client) =>
-    HeimdallMemberClient.ConfigureClient(client, serviceProvider.GetRequiredService<IOptions<HeimdallOptions>>().Value))
-    .RedactLoggedHeaders(HeimdallAuthService.RedactsHeader);
-// The mover route is an app-secret call like HeimdallAuthService's: same ConfigureClient, same header redaction, no redirects.
-builder.Services.AddHeimdallIdentityMoveClient();
+// The app-secret and member-bearer clients and the mover: no redirects (see HeimdallClientServices).
+builder.Services.AddHeimdallClients();
 builder.Services.AddSingleton<LinkedAccountsSnapshots>();
 builder.Services.AddSingleton<Bifrost.Web.Features.Passkeys.PasskeyRelyingParty>();
 builder.Services.AddSingleton<Bifrost.Web.Features.Passkeys.PasskeyCeremonies>();
