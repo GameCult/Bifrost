@@ -292,21 +292,68 @@ public sealed class HeimdallIdentityMoveClientTests
     }
 
     [Fact]
-    public async Task A_missing_route_is_Unrecognized_and_a_400_is_RequestInvalid_both_definitive_refusals()
+    public async Task A_400_is_RequestInvalid_a_definitive_refusal_that_moves_nothing()
     {
         using var host = new HeimdallHost();
         var moves = host.Heimdall.Moves;
         var (source, _) = AccountWith(moves, "discord");
         var (destination, _) = AccountWith(moves, "twitch");
-        var request = Forward(moves, source, destination);
-
-        moves.MoveStatus = HttpStatusCode.NotFound;
-        Assert.Equal(new Refused(HeimdallMoveRefusal.Unrecognized), await Move(host, request));
         moves.MoveStatus = HttpStatusCode.BadRequest;
-        Assert.Equal(new Refused(HeimdallMoveRefusal.RequestInvalid), await Move(host, request));
-        moves.MoveStatus = (HttpStatusCode)418;
-        Assert.Equal(new Refused(HeimdallMoveRefusal.Unrecognized), await Move(host, request));
+
+        Assert.Equal(new Refused(HeimdallMoveRefusal.RequestInvalid), await Move(host, Forward(moves, source, destination)));
         Assert.Empty(moves.Stored);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.NotFound, "<html><body>404 Not Found</body></html>")]
+    [InlineData(HttpStatusCode.NotFound, "")]
+    [InlineData(HttpStatusCode.RequestTimeout, "")]
+    [InlineData(HttpStatusCode.RequestTimeout, """{"error":"request_timeout"}""")]
+    [InlineData(HttpStatusCode.Gone, "")]
+    [InlineData(HttpStatusCode.UnavailableForLegalReasons, "")]
+    [InlineData(HttpStatusCode.Unauthorized, """{"error":"weird_code"}""")]
+    [InlineData(HttpStatusCode.Forbidden, """{"message":"no error field"}""")]
+    [InlineData((HttpStatusCode)418, """{"error":"app_auth_required_sort_of"}""")]
+    public async Task A_4xx_without_one_of_Heimdalls_move_codes_is_Unknown_because_it_proves_nothing_was_applied_no_more_than_a_gateway_does(
+        HttpStatusCode status, string body)
+    {
+        Assert.IsType<Unknown>(await Answered(body, Plain, status));
+    }
+
+    [Fact]
+    public async Task A_404_with_no_body_from_the_route_is_Unknown_not_identity_not_found()
+    {
+        using var host = new HeimdallHost();
+        var moves = host.Heimdall.Moves;
+        var (source, _) = AccountWith(moves, "discord");
+        var (destination, _) = AccountWith(moves, "twitch");
+        moves.MoveStatus = HttpStatusCode.NotFound;
+
+        Assert.IsType<Unknown>(await Move(host, Forward(moves, source, destination)));
+    }
+
+    [Fact]
+    public async Task An_exception_of_any_kind_from_the_pipeline_is_Unknown_and_only_the_callers_cancellation_propagates()
+    {
+        Exception[] thrown =
+        [
+            new InvalidOperationException("handler"), new ObjectDisposedException("connection"),
+            new System.Security.Authentication.AuthenticationException("tls"), new InvalidDataException("zip"), new UriFormatException("uri"),
+            new HttpRequestException("down"), new IOException("reset"), new TaskCanceledException("deadline")
+        ];
+        foreach (var error in thrown)
+        {
+            var client = new HeimdallIdentityMoveClient(
+                new HttpClient(new Throwing(error)) { BaseAddress = new Uri("https://heimdall.test") },
+                Options.Create(new HeimdallOptions()), NullLogger<HeimdallIdentityMoveClient>.Instance);
+
+            Assert.IsType<Unknown>(await client.MoveAsync(Plain, CancellationToken.None));
+        }
+    }
+
+    private sealed class Throwing(Exception error) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) => throw error;
     }
 
     // ---- unknown outcomes ----
@@ -475,7 +522,13 @@ public sealed class HeimdallIdentityMoveClientTests
             new(good, proofs, IdentityIds: ["i"], ReversesMoveId: NewMoveId()),
             new(good, proofs, "t", []),
             new(good, proofs, "t", Enumerable.Repeat("i", 33).ToArray()),
-            new(good, [""], "t")
+            new(good, [""], "t"),
+            new(good + "\n", proofs, "t"),
+            new(good, proofs, ReversesMoveId: good + "\n"),
+            new("move-0123456789abcdef\n", proofs, "t"),
+            new(new string('a', 65), proofs, "t"),
+            new(new string('a', 15), proofs, "t"),
+            new(good, proofs, ReversesMoveId: new string('a', 65))
         };
 
         foreach (var request in broken)
@@ -543,7 +596,9 @@ public sealed class HeimdallIdentityMoveClientTests
         var (destination, _) = AccountWith(moves, "twitch");
         var proofs = Enumerable.Range(0, 8).Select(_ => moves.Issue(source, stepUpMethod: Passkey)).ToArray();
 
-        var receipt = Receipt(await Move(host, new(NewMoveId(), proofs, moves.Issue(destination), ids)));
+        var longest = new string('m', 64);
+        var receipt = Receipt(await Move(host, new(longest, proofs, moves.Issue(destination), ids)));
+        Assert.Equal(longest, receipt.MoveId);
 
         Assert.Equal(ids, receipt.MovedIdentityIds);
         Assert.Equal(8, JsonDocument.Parse(moves.Requests[0].Body).RootElement.GetProperty("fromProofs").GetArrayLength());

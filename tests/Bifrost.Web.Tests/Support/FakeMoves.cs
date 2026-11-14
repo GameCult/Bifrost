@@ -135,7 +135,7 @@ public sealed class FakeMoves(Func<DateTimeOffset> now)
 
     private sealed record Move(string MoveId, string[] FromProofs, string? ToProof, string[]? IdentityIds, string? ReversesMoveId);
 
-    private static readonly System.Text.RegularExpressions.Regex MoveIdShape = new("^[A-Za-z0-9_-]{16,64}$");
+    private static readonly System.Text.RegularExpressions.Regex MoveIdShape = new(@"^[A-Za-z0-9_-]{16,64}\z");
 
     /// <summary>
     /// Heimdall's route schema (app.ts, the identity-moves route): moveId pattern, 1 to 8 fromProofs of 1 to 8192 chars, toProof, 1 to 32

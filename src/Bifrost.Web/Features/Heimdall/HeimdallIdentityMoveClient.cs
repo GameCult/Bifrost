@@ -33,7 +33,7 @@ public enum HeimdallProofTier
 public sealed record HeimdallMoveReceipt(
     string MoveId, string AccountId, IReadOnlyList<string> MovedIdentityIds, HeimdallProofTier ProofFrom, HeimdallProofTier? ProofTo, string? ReversesMoveId);
 
-/// <summary>Heimdall's fixed refusal codes for a move, plus the two local classes: a 400, and a 4xx this client does not know.</summary>
+/// <summary>Heimdall's fixed refusal codes for a move, plus the one local class: Heimdall's schema 400.</summary>
 public enum HeimdallMoveRefusal
 {
     AppAuthRequired,
@@ -46,8 +46,7 @@ public enum HeimdallMoveRefusal
     AlreadyMoved,
     ProviderConflict,
     IdentityNotFound,
-    RequestInvalid,
-    Unrecognized
+    RequestInvalid
 }
 
 public enum HeimdallProofSide
@@ -90,7 +89,8 @@ public sealed partial class HeimdallIdentityMoveClient(
     private const int MaxReceiptBytes = 64 * 1024;
     private const int MaxProofLength = 8192;
 
-    [GeneratedRegex("^[A-Za-z0-9_-]{16,64}$")]
+    // \z, not $: $ also matches before a final line feed, which Heimdall's schema pattern refuses with a 400.
+    [GeneratedRegex("^[A-Za-z0-9_-]{16,64}\\z")]
     private static partial Regex MoveIdShape();
 
     public async Task<HeimdallMoveOutcome> MoveAsync(HeimdallMoveRequest request, CancellationToken cancellationToken)
@@ -128,19 +128,28 @@ public sealed partial class HeimdallIdentityMoveClient(
                 return new HeimdallMoveOutcome.Unknown($"HTTP {status}");
             }
 
-            var refusal = await HeimdallRefusal.ReadAsync(response, token);
-            return status == 400 ? new HeimdallMoveOutcome.Refused(HeimdallMoveRefusal.RequestInvalid) : Refused(refusal);
+            // Fastify's schema 400 answers before the route runs, so it carries no Heimdall code and applied nothing.
+            if (status == 400)
+            {
+                return new HeimdallMoveOutcome.Refused(HeimdallMoveRefusal.RequestInvalid);
+            }
+
+            return Refused(await HeimdallRefusal.ReadAsync(response, token), status);
         }
-        catch (Exception error) when (error is HttpRequestException or IOException or JsonException or NotSupportedException or OperationCanceledException
-                                      && !cancellationToken.IsCancellationRequested)
+        catch (Exception) when (!cancellationToken.IsCancellationRequested)
         {
+            // Whatever the pipeline throws after the request may have gone out is not a refusal; only the caller's own cancellation propagates.
             return new HeimdallMoveOutcome.Unknown("transport");
         }
     }
 
-    private static HeimdallMoveOutcome Refused(HeimdallRefusalBody? refusal)
+    /// <summary>
+    /// Refused only for the coded refusals Heimdall's move route emits (4fe367a moveIdentitiesRoute). A 4xx without one of those codes
+    /// (a gateway's HTML 404, a 408, a code a later Heimdall adds) proves nothing was applied, so it is Unknown. move_id_conflict is
+    /// Unknown too: a committed move answers it when its proofs no longer verify.
+    /// </summary>
+    private static HeimdallMoveOutcome Refused(HeimdallRefusalBody? refusal, int status)
     {
-        // Not a refusal: a committed move answers 409 move_id_conflict when its proofs no longer verify, so it proves nothing about the move.
         if (refusal?.Code == "move_id_conflict")
         {
             return new HeimdallMoveOutcome.Unknown("move_id_conflict");
@@ -158,18 +167,23 @@ public sealed partial class HeimdallIdentityMoveClient(
             "already_moved" => HeimdallMoveRefusal.AlreadyMoved,
             "provider_conflict" => HeimdallMoveRefusal.ProviderConflict,
             "identity_not_found" => HeimdallMoveRefusal.IdentityNotFound,
-            _ => HeimdallMoveRefusal.Unrecognized
+            _ => (HeimdallMoveRefusal?)null
         };
-        return code switch
+        if (code is not { } known)
         {
-            HeimdallMoveRefusal.ProofInvalid or HeimdallMoveRefusal.ProofStale => new HeimdallMoveOutcome.Refused(code, Side: refusal?.Proof switch
+            return new HeimdallMoveOutcome.Unknown($"HTTP {status} without a Heimdall refusal code");
+        }
+
+        return known switch
+        {
+            HeimdallMoveRefusal.ProofInvalid or HeimdallMoveRefusal.ProofStale => new HeimdallMoveOutcome.Refused(known, Side: refusal?.Proof switch
             {
                 "from" => HeimdallProofSide.From,
                 "to" => HeimdallProofSide.To,
                 _ => null
             }),
-            HeimdallMoveRefusal.ProviderConflict => new HeimdallMoveOutcome.Refused(code, Provider: refusal?.Provider),
-            _ => new HeimdallMoveOutcome.Refused(code)
+            HeimdallMoveRefusal.ProviderConflict => new HeimdallMoveOutcome.Refused(known, Provider: refusal?.Provider),
+            _ => new HeimdallMoveOutcome.Refused(known)
         };
     }
 

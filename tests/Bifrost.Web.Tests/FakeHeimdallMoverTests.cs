@@ -63,6 +63,9 @@ public sealed class FakeHeimdallMoverTests
             Move(Id(), Enumerable.Repeat("p", 9).ToArray(), "x"),
             Move(Id(), [new string('p', 8193)], "x"),
             Move("short", [strong()], "x"),
+            Move(Id() + "\n", [strong()], "x"),
+            Move(new string('a', 65), [strong()], "x"),
+            Move(Id(), [strong()], reverses: Id() + "\n"),
             """{"moveId":"move-0123456789abcdef","fromProofs":"p","toProof":"x"}""",
             "[]"
         };
