@@ -215,6 +215,20 @@ public sealed class MergeProofsTests
     }
 
     [Fact]
+    public void PruneExpired_drops_an_expired_bearer_with_no_other_access_and_keeps_a_live_one()
+    {
+        PutSelf("discord", Login("discord"));
+        _clock.Advance(MergeProofs.ProofLifetime);
+        _proofs.PruneExpired();
+        Assert.Equal(0, HeldProofs());
+
+        PutSelf("discord", Login("discord"));
+        _clock.Advance(MergeProofs.ProofLifetime - TimeSpan.FromSeconds(1));
+        _proofs.PruneExpired();
+        Assert.Equal(1, HeldProofs());
+    }
+
+    [Fact]
     public void Two_sides_holding_a_login_of_one_provider_are_a_conflict_named_by_provider_only_in_both_directions()
     {
         PutSelf("discord", Login("discord"), Login("twitch"));

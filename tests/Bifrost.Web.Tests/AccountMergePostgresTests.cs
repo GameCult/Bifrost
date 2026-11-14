@@ -728,7 +728,7 @@ public sealed class AccountMergePostgresTests(MergePostgres postgres) : IClassFi
         public FakeHeimdall Fake { get; }
 
         public AccountMergeSaga Saga(AccountMergeLedgerTests.World world, BifrostDbContext db) =>
-            new(db, world.Ledger(db), _mover, _keys, world.Clock, NullLogger<AccountMergeSaga>.Instance);
+            new(db, world.Ledger(db), _mover, _keys, new AuditTrailService(db, world.Clock), world.Clock, NullLogger<AccountMergeSaga>.Instance);
 
         /// <summary>A world account with one login at the fake Heimdall and a weak proof through it.</summary>
         public MergeProof Proof(UserAccount account, string provider) =>
@@ -863,6 +863,89 @@ public sealed class AccountMergePostgresTests(MergePostgres postgres) : IClassFi
 
         await exclusive!.WaitAsync(TimeSpan.FromSeconds(30));
         Assert.True(blocked);
+    }
+
+    /// <summary>A Confirmed merge with sealed proofs, stopped on the given outcome, and the operator who will settle it.</summary>
+    private async Task<(AccountMergeLedgerTests.World World, Heimdall Heimdall, Guid Id, string MoveId, Guid Operator)> StuckConfirmedAsync(string outcome)
+    {
+        var world = await postgres.NewWorldAsync();
+        var survivor = await world.AccountAsync("survivor");
+        var folded = await world.AccountAsync("folded");
+        var operatorId = (await world.AccountAsync("operator")).Id;
+        var heimdall = new Heimdall(world);
+        Guid id;
+        await using (var db = world.Db())
+        {
+            var digest = (await world.Ledger(db).PlanAsync(survivor.Id, folded.Id, default)).Digest(survivor.Id, folded.Id);
+            id = Assert.IsType<ConfirmOutcome.Confirmed>(await heimdall.Saga(world, db).ConfirmAsync(
+                new ConfirmMergeRequest(survivor.Id, survivor.Id, folded.Id, digest, heimdall.Proof(survivor, "twitch"), [heimdall.Proof(folded, "discord")]), default)).MergeId;
+        }
+
+        await ExecuteAsync(world, $"UPDATE \"AccountMerges\" SET \"State\" = 'Confirmed', \"LastOutcome\" = '{outcome}' WHERE \"Id\" = '{id}'");
+        await using var read = world.Db();
+        var merge = await read.AccountMerges.AsNoTracking().SingleAsync();
+        Assert.NotNull(merge.SealedProofs);
+        return (world, heimdall, id, merge.HeimdallMoveId!, operatorId);
+    }
+
+    [PostgresFact]
+    public async Task A_settle_that_loses_to_a_rival_state_write_inside_its_save_window_writes_nothing_and_no_audit_row()
+    {
+        var (world, heimdall, id, moveId, operatorId) = await StuckConfirmedAsync("move_id_conflict");
+        var settler = AccountMergeLedgerTests.World.OnPostgres(ConnectionOf(world), new BeforeFirstSave(() =>
+            ExecuteAsync(world, $"UPDATE \"AccountMerges\" SET \"State\" = 'HeimdallMoved' WHERE \"Id\" = '{id}'")));
+        await using (var db = settler.Db())
+        {
+            Assert.IsType<SettleOutcome.Lost>(await heimdall.Saga(settler, db).SettleStuckAsync(id, SettleChoice.FailForward, moveId, operatorId, default));
+        }
+
+        await using var read = world.Db();
+        var merge = await read.AccountMerges.AsNoTracking().SingleAsync();
+        Assert.Equal(AccountMergeState.HeimdallMoved, merge.State);
+        Assert.NotNull(merge.SealedProofs);
+        Assert.Equal("move_id_conflict", merge.LastOutcome);
+        Assert.Equal(0, await read.AuditEvents.CountAsync());
+    }
+
+    [PostgresFact]
+    public async Task A_settle_whose_audit_insert_fails_rolls_the_transition_back()
+    {
+        var (world, heimdall, id, moveId, operatorId) = await StuckConfirmedAsync("receipt_mismatch");
+        await ExecuteAsync(world, """
+            CREATE FUNCTION fail_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected audit fault'; END $$;
+            CREATE TRIGGER fail_audit BEFORE INSERT ON "AuditEvents" FOR EACH ROW EXECUTE FUNCTION fail_audit();
+            """);
+        await using (var db = world.Db())
+        {
+            await Assert.ThrowsAsync<DbUpdateException>(() => heimdall.Saga(world, db).SettleStuckAsync(id, SettleChoice.FailForward, moveId, operatorId, default));
+        }
+
+        await using var read = world.Db();
+        var merge = await read.AccountMerges.AsNoTracking().SingleAsync();
+        Assert.Equal(AccountMergeState.Confirmed, merge.State);
+        Assert.NotNull(merge.SealedProofs);
+        Assert.Equal("receipt_mismatch", merge.LastOutcome);
+        Assert.Equal(0, await read.AuditEvents.CountAsync());
+    }
+
+    [PostgresFact]
+    public async Task Two_concurrent_settles_of_one_stuck_merge_settle_once_lose_once_and_audit_once()
+    {
+        var (world, heimdall, id, moveId, operatorId) = await StuckConfirmedAsync("proofs_unreadable");
+        var racers = AccountMergeLedgerTests.World.OnPostgres(ConnectionOf(world), new FirstSaveRendezvous());
+        async Task<SettleOutcome> Settle()
+        {
+            await using var db = racers.Db();
+            return await heimdall.Saga(racers, db).SettleStuckAsync(id, SettleChoice.FailForward, moveId, operatorId, default);
+        }
+
+        var both = await Task.WhenAll(Task.Run(Settle), Task.Run(Settle));
+
+        Assert.Single(both.OfType<SettleOutcome.Settled>());
+        Assert.Single(both.OfType<SettleOutcome.Lost>());
+        await using var read = world.Db();
+        Assert.Equal(1, await read.AuditEvents.CountAsync());
+        Assert.Equal(AccountMergeState.Failed, (await read.AccountMerges.AsNoTracking().SingleAsync()).State);
     }
 
     [PostgresFact]

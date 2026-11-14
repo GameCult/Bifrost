@@ -1,0 +1,72 @@
+@page
+@using Bifrost.Web.Domain
+@model Bifrost.Web.Pages.App.Merges.IndexModel
+@{
+    ViewData["Title"] = "Stuck merges";
+}
+
+<section class="panel-grid">
+    <article class="panel">
+        <span class="eyebrow">Merges</span>
+        <h1>Stuck account merges</h1>
+        <p class="panel-intro">
+            A merge listed here has stopped advancing on its own. Before ending one, read Heimdall's identity move by the move id shown
+            (docs/account-merge.md, Stuck merges). Ending a merge cannot be undone, and Bifrost never adopts a move Heimdall made.
+        </p>
+
+        @if (!string.IsNullOrEmpty(Model.Notice))
+        {
+            <p class="validation-summary-errors" role="alert">@Model.Notice</p>
+        }
+    </article>
+</section>
+
+<section class="table-panel" style="margin-top: 1.5rem;">
+    @if (Model.Merges.Count == 0)
+    {
+        <div class="empty-state" style="margin: 1.25rem;">No merge is stuck.</div>
+    }
+    else
+    {
+        <div class="table-shell">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Merge</th>
+                        <th>State</th>
+                        <th>Last outcome</th>
+                        <th>Attempts</th>
+                        <th>Move id of this leg</th>
+                        <th>End it</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var merge in Model.Merges)
+                    {
+                        <tr>
+                            <td>@merge.Id</td>
+                            <td>@merge.State</td>
+                            <td>@merge.LastOutcome</td>
+                            <td>@merge.Attempts</td>
+                            <td><code>@merge.MoveId</code></td>
+                            <td>
+                                @if (!merge.CanSettle)
+                                {
+                                    <span>Still being retried; nothing to end.</span>
+                                }
+                                else
+                                {
+                                    <form method="post" asp-page-handler="@(merge.State == AccountMergeState.UndoRequested ? "AbandonUndo" : "FailForward")">
+                                        <input type="hidden" name="mergeId" value="@merge.Id" />
+                                        <input type="text" name="moveId" autocomplete="off" spellcheck="false" aria-label="Type the move id to confirm" />
+                                        <button class="button" type="submit">@(merge.State == AccountMergeState.UndoRequested ? "Give up the undo" : "Fail the merge")</button>
+                                    </form>
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+</section>

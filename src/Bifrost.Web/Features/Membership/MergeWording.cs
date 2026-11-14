@@ -47,6 +47,8 @@ public static class MergeWording
         "moved" => "Heimdall moved the logins.",
         "refused" => "Heimdall refused the merge.",
         "undo_requested" => "Waiting for Heimdall to give the logins back.",
+        "operator_failed" => "A steward ended this merge. Nothing was merged.",
+        "undo_operator_abandoned" => "A steward ended the undo, so the merge stands.",
         "receipt_mismatch" => "Heimdall's answer did not match the merge. An operator must look at it.",
         "proofs_unreadable" => "The stored proofs cannot be read. An operator must look at it.",
         "transport" or "move_id_conflict" or "malformed or mismatched receipt" => "Heimdall could not be reached or gave an answer Bifrost could not use. It will try again.",

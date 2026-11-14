@@ -67,7 +67,7 @@ public static class MergePreview
 
     /// <summary>The block for two accounts that both hold a login of one provider, which Heimdall will not combine. Providers only: no account is named.</summary>
     public static string ProviderConflict(IEnumerable<string> providerNames) =>
-        $"Both accounts hold a {string.Join(" and ", providerNames)} login, and Heimdall will not combine two logins of one provider. Unlink one of them first.";
+        $"Both accounts hold a {string.Join(" and ", providerNames)} login, and Heimdall will not combine two logins of one provider. Unlink one of them first, then prove that account again: the sign-in you gave still carries the old list of its logins.";
 
     /// <summary>What every merge says, whatever the plan: what it cannot carry over, what it asks again, and how long it can be undone.</summary>
     public static IReadOnlyList<string> Statements { get; } =

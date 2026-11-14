@@ -44,6 +44,7 @@ public sealed record MergePlan(
             Field(entry.Kind.ToString());
             Field(entry.Action.ToString());
             // A Created row does not exist yet: its id is minted anew by every plan, so it cannot be part of what the member saw.
+            // Left unpinned on purpose: the mutant that keeps the id in (digest-includes-created-id in tools/merge-saga-mutants.py) is behaviourally equivalent bar one benign case.
             Field(entry.Action == AccountMergeEntryAction.Created ? null : entry.RecordId.ToString("N"));
             Field(entry.PriorUserAccountId?.ToString("N"));
             Field(entry.PriorText);
@@ -737,8 +738,8 @@ public sealed class AccountMergeLedger(
 }
 
 /// <summary>
-/// The one merge loop, every 30 seconds: the saga advances every due in-flight merge (confirm, replay, undo), then the ledger finalizes
-/// merges past their grace. A new scope per tick, a warning on failure, the SealedBallotCloser shape. No second merge hosted service exists.
+/// The one merge loop, every 30 seconds: the proof holder drops expired bearers, the saga advances every due in-flight merge (confirm,
+/// replay, undo), then the ledger finalizes merges past their grace. A new scope per tick, a warning on failure, the SealedBallotCloser shape. No second merge hosted service exists.
 /// </summary>
 public sealed class AccountMergeSweeper(IServiceScopeFactory scopes, TimeProvider clock, ILogger<AccountMergeSweeper> logger) : BackgroundService
 {
@@ -753,6 +754,7 @@ public sealed class AccountMergeSweeper(IServiceScopeFactory scopes, TimeProvide
             {
                 using var scope = scopes.CreateScope();
                 var now = clock.GetUtcNow();
+                scope.ServiceProvider.GetRequiredService<MergeProofs>().PruneExpired();
                 await scope.ServiceProvider.GetRequiredService<AccountMergeSaga>().AdvanceDueAsync(now, stoppingToken);
                 await scope.ServiceProvider.GetRequiredService<AccountMergeLedger>().FinalizeDueAsync(now, stoppingToken);
             }
