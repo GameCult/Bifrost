@@ -359,6 +359,10 @@ public sealed class Membership
 
     public ICollection<TierSnapshot> TierSnapshots { get; set; } = [];
 
+    /// <summary>The folded membership of a landed merge. Terminal: only AccountMergeLedger writes it or leaves it, so every other status writer (sign-in sync, bootstrap, claim, approval, suspension) refuses a merged row.</summary>
+    [NotMapped]
+    public bool IsMerged => Status == MembershipStatus.Merged;
+
     [NotMapped]
     public decimal EffectiveVotingWeight =>
         Status != MembershipStatus.Active

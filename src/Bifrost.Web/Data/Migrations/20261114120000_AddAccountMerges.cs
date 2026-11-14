@@ -106,6 +106,13 @@ namespace Bifrost.Web.Data.Migrations
                 unique: true);
 
             migrationBuilder.CreateIndex(
+                name: "UX_AccountMerges_FoldedUserAccountId_Live",
+                table: "AccountMerges",
+                column: "FoldedUserAccountId",
+                unique: true,
+                filter: "\"State\" IN ('Confirmed', 'HeimdallMoved', 'Committed', 'Final', 'UndoRequested', 'HeimdallReversed')");
+
+            migrationBuilder.CreateIndex(
                 name: "IX_AccountMerges_FoldedUserAccountId_State",
                 table: "AccountMerges",
                 columns: new[] { "FoldedUserAccountId", "State" });
@@ -119,11 +126,50 @@ namespace Bifrost.Web.Data.Migrations
                 name: "IX_AccountMerges_SurvivorUserAccountId_State",
                 table: "AccountMerges",
                 columns: new[] { "SurvivorUserAccountId", "State" });
+
+            // The cross-role guard no single unique index can express: a live merge's survivor is never another live merge's folded
+            // account (no chains), whichever order they arrive in. Advisory locks on both accounts, taken in a fixed order, serialise two
+            // transactions racing over the same account, so the second one's check sees the first's committed row.
+            migrationBuilder.Sql(@"
+CREATE FUNCTION ""AccountMerges_refuse_chain""() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.""State"" IN ('Confirmed', 'HeimdallMoved', 'Committed', 'Final', 'UndoRequested', 'HeimdallReversed') THEN
+        PERFORM pg_advisory_xact_lock(hashtextextended(LEAST(NEW.""SurvivorUserAccountId""::text, NEW.""FoldedUserAccountId""::text), 0));
+        PERFORM pg_advisory_xact_lock(hashtextextended(GREATEST(NEW.""SurvivorUserAccountId""::text, NEW.""FoldedUserAccountId""::text), 0));
+        IF EXISTS (
+            SELECT 1 FROM ""AccountMerges"" m
+            WHERE m.""Id"" <> NEW.""Id""
+              AND m.""State"" IN ('Confirmed', 'HeimdallMoved', 'Committed', 'Final', 'UndoRequested', 'HeimdallReversed')
+              AND (m.""SurvivorUserAccountId"" = NEW.""FoldedUserAccountId"" OR m.""FoldedUserAccountId"" = NEW.""SurvivorUserAccountId""))
+        THEN
+            RAISE EXCEPTION 'account merge chain refused' USING ERRCODE = '23P01';
+        END IF;
+    END IF;
+    RETURN NEW;
+END
+$$;
+CREATE TRIGGER ""AccountMerges_refuse_chain"" BEFORE INSERT OR UPDATE OF ""State"", ""SurvivorUserAccountId"", ""FoldedUserAccountId"" ON ""AccountMerges""
+    FOR EACH ROW EXECUTE FUNCTION ""AccountMerges_refuse_chain""();");
         }
 
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
+            // Voiding lives only in the new build's query filter and these columns: dropping them (or running an older build over them)
+            // counts every voided vote again, and a close in that window records a wrong result for good. Refuse while any is voided;
+            // see docs/account-merge.md (Rollback).
+            migrationBuilder.Sql(@"
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM ""Votes"" WHERE ""VoidedByMergeId"" IS NOT NULL)
+       OR EXISTS (SELECT 1 FROM ""ConceptAppraisals"" WHERE ""VoidedByMergeId"" IS NOT NULL) THEN
+        RAISE EXCEPTION 'AddAccountMerges cannot be reverted while merged votes or appraisals are voided';
+    END IF;
+END
+$$;");
+
+            migrationBuilder.Sql(@"DROP TRIGGER ""AccountMerges_refuse_chain"" ON ""AccountMerges""; DROP FUNCTION ""AccountMerges_refuse_chain""();");
+
             migrationBuilder.DropTable(
                 name: "AccountMergeEntries");
 

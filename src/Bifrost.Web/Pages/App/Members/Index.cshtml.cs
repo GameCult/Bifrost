@@ -37,6 +37,8 @@ public sealed class IndexModel(
     internal const string ApproveSuspendedNotice = "Nothing changed: a suspended account can only be lifted with Unsuspend.";
     /// <summary>Admin-only text for a Suspended row whose reason predates the SuspensionReason column; the old text is never read back from the audit trail.</summary>
     internal const string LegacySuspensionText = "Suspended before reasons were recorded";
+    internal const string ApproveMergedNotice = "Nothing changed: that account was merged into another and cannot be approved.";
+
     internal const string NoMembershipNotice = "Nothing changed: that account has no membership yet.";
     internal const string OwnAdminRoleNotice = "Nothing changed: you cannot remove or change your own platform admin role.";
     internal const string RoleOnSuspendedNotice = "Nothing changed: a suspended account's roles cannot be changed until it is unsuspended.";
@@ -133,6 +135,12 @@ public sealed class IndexModel(
         if (user.Membership.Status == MembershipStatus.Suspended)
         {
             Notice = ApproveSuspendedNotice; // only Unsuspend lifts a suspension
+            return RedirectToPage();
+        }
+
+        if (user.Membership.IsMerged)
+        {
+            Notice = ApproveMergedNotice; // only the merge ledger leaves Merged
             return RedirectToPage();
         }
 

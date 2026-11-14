@@ -66,16 +66,24 @@ public sealed class HeimdallPatronSupportIntakeService(
                     x.ProviderEventId == request.ProviderEventId.Trim(),
                 cancellationToken);
 
+        var user = await dbContext.UserAccounts
+            .AsNoTracking()
+            .SingleOrDefaultAsync(x => x.HeimdallAccountId == request.HeimdallAccountId.Trim(), cancellationToken);
+
+        // A folded account's events record on the survivor and are journalled on the merge, so an undo moves them back.
+        var folded = user is null ? null : await mergeLedger.StandingAsync(user.Id, cancellationToken) as MergeStanding.Folded;
+
         if (existingEvent is not null)
         {
+            if (folded is not null && user is not null)
+            {
+                await mergeLedger.JournalIntakeAsync(folded.MergeId, user.Id, existingEvent.Id, cancellationToken);
+            }
+
             return HeimdallPatronSupportIntakeResult.Processed(
                 $"Already processed {request.Provider} patron support event {request.ProviderEventId}.",
                 existingEvent.Id);
         }
-
-        var user = await dbContext.UserAccounts
-            .AsNoTracking()
-            .SingleOrDefaultAsync(x => x.HeimdallAccountId == request.HeimdallAccountId.Trim(), cancellationToken);
 
         if (user is null)
         {
@@ -85,7 +93,7 @@ public sealed class HeimdallPatronSupportIntakeService(
 
         var supportEvent = await patronageService.RecordSupportEventAsync(
             actorUserAccountId: null,
-            userAccountId: await mergeLedger.ResolveAsync(user.Id, cancellationToken), // a folded account's events record on the survivor
+            userAccountId: folded?.SurvivorId ?? user.Id,
             request.Kind,
             request.Amount,
             request.CurrencyCode,
@@ -98,6 +106,11 @@ public sealed class HeimdallPatronSupportIntakeService(
             request.IsCurrentRecurringSupport,
             request.Notes,
             cancellationToken);
+
+        if (folded is not null)
+        {
+            await mergeLedger.JournalIntakeAsync(folded.MergeId, user.Id, supportEvent.Id, cancellationToken);
+        }
 
         return HeimdallPatronSupportIntakeResult.Processed(
             $"Processed {request.Provider} patron support event {request.ProviderEventId}.",

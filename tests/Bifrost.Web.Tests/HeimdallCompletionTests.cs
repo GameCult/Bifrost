@@ -5,6 +5,7 @@ using System.Text.Json;
 using Bifrost.Web.Domain;
 using Bifrost.Web.Features.Heimdall;
 using Bifrost.Web.Features.Membership;
+using Bifrost.Web.Features.Patronage;
 using Bifrost.Web.Features.Shared;
 using Bifrost.Web.Tests.Support;
 using Microsoft.AspNetCore.Authentication.OAuth;
@@ -886,6 +887,33 @@ public sealed class HeimdallCompletionTests
         var after = (await host.Account(accountId))!.Membership!;
         Assert.Equal(MembershipStatus.Suspended, after.Status);
         Assert.Equal(rolesBefore, after.RoleAssignments.Count);
+    }
+
+    [Fact]
+    public async Task A_merged_account_stays_merged_through_a_sign_in_with_the_member_claim()
+    {
+        using var host = new HeimdallHost();
+        var foldedId = HeimdallShapes.NewAccountId();
+        var survivorId = HeimdallShapes.NewAccountId();
+        Assert.True((await Genuine(host, await host.StartAsync(member: true), foldedId, ["member_access"])).SignedIn);
+        Assert.True((await Genuine(host, await host.StartAsync(member: true), survivorId, ["member_access"])).SignedIn);
+        await host.Db(async db =>
+        {
+            var folded = await db.UserAccounts.SingleAsync(x => x.HeimdallAccountId == foldedId);
+            var survivor = await db.UserAccounts.SingleAsync(x => x.HeimdallAccountId == survivorId);
+            var merge = new AccountMerge { SurvivorUserAccountId = survivor.Id, FoldedUserAccountId = folded.Id, State = AccountMergeState.HeimdallMoved, CreatedUtc = DateTimeOffset.UtcNow };
+            db.AccountMerges.Add(merge);
+            await db.SaveChangesAsync();
+            var clock = TimeProvider.System;
+            await new AccountMergeLedger(db, new PatronageService(db, new AuditTrailService(db, clock), clock), clock).CommitAsync(merge.Id, default);
+            return 0;
+        });
+        Assert.Equal(MembershipStatus.Merged, (await host.Account(foldedId))!.Membership!.Status);
+
+        var again = await Genuine(host, await host.StartAsync(member: true), foldedId, ["member_access"]);
+
+        Assert.True(again.SignedIn); // the login still completes; it is the actor gate that makes it act as nobody
+        Assert.Equal(MembershipStatus.Merged, (await host.Account(foldedId))!.Membership!.Status);
     }
 
     [Fact]

@@ -125,14 +125,11 @@ public sealed class AccountMergeHttpTests(TestWebApplicationFactory factory) : I
         Assert.Equal(1, await VoteRowsAsync(s.Motion));
     }
 
-    [Fact]
-    public async Task Patron_intake_for_a_folded_heimdall_id_records_on_the_survivor()
+    private async Task<HttpStatusCode> IntakeAsync(Seeded s, string eventId)
     {
-        var s = await SeedAsync();
-        await MergeAsync(s, AccountMergeState.Final);
         var payload = JsonSerializer.Serialize(new
         {
-            heimdallAccountId = s.FoldedHeimdallId, provider = "PayPal", providerEventId = $"WH-{Guid.NewGuid():N}", kind = "OneTimeDonation",
+            heimdallAccountId = s.FoldedHeimdallId, provider = "PayPal", providerEventId = eventId, kind = "OneTimeDonation",
             amount = 25m, currencyCode = "USD", externalSupportId = "CAPTURE-1", supportedAtUtc = DateTimeOffset.UtcNow, isCurrentRecurringSupport = false
         });
         using var hasher = new HMACSHA256(Encoding.UTF8.GetBytes("test-heimdall-intake-secret"));
@@ -140,11 +137,151 @@ public sealed class AccountMergeHttpTests(TestWebApplicationFactory factory) : I
         request.Headers.Add("X-Heimdall-Signature-256", "sha256=" + Convert.ToHexString(hasher.ComputeHash(Encoding.UTF8.GetBytes(payload))).ToLowerInvariant());
         request.Content = new StringContent(payload, Encoding.UTF8, "application/json");
         using var client = factory.CreateClient();
-
         using var response = await client.SendAsync(request);
+        return response.StatusCode;
+    }
 
-        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
-        var owners = await WithDb(db => db.PatronSupportEvents.Where(x => x.UserAccountId == s.Survivor || x.UserAccountId == s.Folded).Select(x => x.UserAccountId).ToListAsync());
-        Assert.Equal([s.Survivor], owners);
+    private Task<List<Guid>> EventOwnersAsync(Seeded s) =>
+        WithDb(db => db.PatronSupportEvents.Where(x => x.UserAccountId == s.Survivor || x.UserAccountId == s.Folded).Select(x => x.UserAccountId).ToListAsync());
+
+    /// <summary>Lands the merge through the ledger's own commit, as the saga will: the move done, then the Bifrost records reduced.</summary>
+    private async Task<Guid> CommitMergeAsync(Seeded s)
+    {
+        var merge = await MergeAsync(s, AccountMergeState.HeimdallMoved);
+        await WithDb(async db =>
+        {
+            using var scope = factory.Services.CreateScope();
+            await scope.ServiceProvider.GetRequiredService<Bifrost.Web.Features.Membership.AccountMergeLedger>().CommitAsync(merge, default);
+            return 0;
+        });
+        return merge;
+    }
+
+    [Fact]
+    public async Task Patron_intake_for_a_folded_heimdall_id_records_on_the_survivor()
+    {
+        var s = await SeedAsync();
+        await MergeAsync(s, AccountMergeState.Final);
+
+        Assert.Equal(HttpStatusCode.Accepted, await IntakeAsync(s, $"WH-{Guid.NewGuid():N}"));
+
+        Assert.Equal([s.Survivor], await EventOwnersAsync(s));
+    }
+
+    [Fact]
+    public async Task A_patron_event_that_lands_during_grace_is_journalled_once_and_undo_moves_it_back_to_the_folded_account()
+    {
+        var s = await SeedAsync();
+        var merge = await CommitMergeAsync(s);
+        var eventId = $"WH-{Guid.NewGuid():N}";
+
+        Assert.Equal(HttpStatusCode.Accepted, await IntakeAsync(s, eventId));
+        Assert.Equal(HttpStatusCode.Accepted, await IntakeAsync(s, eventId)); // the provider retries: nothing doubles
+        Assert.Equal([s.Survivor], await EventOwnersAsync(s));
+        Assert.Equal(1, await WithDb(db => db.AccountMergeEntries.CountAsync(x => x.MergeId == merge && x.Kind == AccountMergeEntryKind.PatronSupportEvent)));
+
+        await SetStateAsync(merge, AccountMergeState.HeimdallReversed);
+        await WithDb(async db =>
+        {
+            using var scope = factory.Services.CreateScope();
+            await scope.ServiceProvider.GetRequiredService<Bifrost.Web.Features.Membership.AccountMergeLedger>().UndoLocalAsync(merge, default);
+            return 0;
+        });
+
+        Assert.Equal([s.Folded], await EventOwnersAsync(s));
+    }
+
+    [Fact]
+    public async Task A_folded_bootstrap_admins_sign_in_does_not_reactivate_the_merged_membership_and_an_approval_is_refused()
+    {
+        var s = await SeedAsync();
+        await CommitMergeAsync(s);
+        using var folded = ClientFor(s.FoldedGitHubId, "test-admin"); // the bootstrap login: every request would re-promote it
+
+        using (await folded.GetAsync("/"))
+        {
+        }
+
+        Assert.Equal((MembershipStatus.Merged, false), await WithDb(async db =>
+        {
+            var membership = await db.Memberships.SingleAsync(x => x.UserAccountId == s.Folded);
+            return (membership.Status, membership.IsPlatformAdmin);
+        }));
+
+        using var admin = ClientFor(Random.Shared.NextInt64(1_000_000_000, 2_000_000_000), "test-admin");
+        var token = await TokenAsync(admin);
+        using var approve = await admin.PostAsync("/App/Members?handler=Approve", new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["userAccountId"] = s.Folded.ToString(), ["__RequestVerificationToken"] = token
+        }));
+        Assert.Equal(HttpStatusCode.Redirect, approve.StatusCode);
+        Assert.Equal(MembershipStatus.Merged, await WithDb(async db => (await db.Memberships.SingleAsync(x => x.UserAccountId == s.Folded)).Status));
+    }
+
+    /// <summary>Forbid answers 403 or sends the browser to the access-denied page; either way the page and its Heimdall flows are not served.</summary>
+    private static void AssertRefused(HttpResponseMessage response)
+    {
+        Assert.True(response.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.Found, response.StatusCode.ToString());
+        Assert.DoesNotContain("heimdall", response.Headers.Location?.ToString() ?? "", StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData(AccountMergeState.Confirmed)]
+    [InlineData(AccountMergeState.Committed)]
+    public async Task A_frozen_or_folded_cookie_cannot_reach_the_linked_accounts_page_or_start_one_of_its_flows(AccountMergeState state)
+    {
+        var s = await SeedAsync();
+        using var folded = ClientFor(s.FoldedGitHubId, $"fold-{s.SurvivorGitHubId}");
+        var token = await TokenAsync(folded);
+        using (var control = await folded.GetAsync("/Membership/LinkedAccounts"))
+        {
+            Assert.Equal(HttpStatusCode.OK, control.StatusCode); // before the merge the page is theirs
+        }
+
+        await MergeAsync(s, state);
+
+        using var page = await folded.GetAsync("/Membership/LinkedAccounts");
+        AssertRefused(page);
+        using var refresh = await folded.PostAsync("/Membership/LinkedAccounts?handler=Refresh", new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["via"] = "google", ["__RequestVerificationToken"] = token
+        }));
+        AssertRefused(refresh);
+
+        using var survivor = ClientFor(s.SurvivorGitHubId, $"surv-{s.SurvivorGitHubId}");
+        using var other = await survivor.GetAsync("/Membership/LinkedAccounts");
+        Assert.Equal(HttpStatusCode.OK, other.StatusCode);
+    }
+}
+
+/// <summary>The desk's bearer door judges standing the way the cookie gate and the chat refusal do.</summary>
+public sealed class AccountMergeDeskTests
+{
+    [Theory]
+    [InlineData(AccountMergeState.Confirmed)]
+    [InlineData(AccountMergeState.Committed)]
+    public async Task A_frozen_or_folded_subjects_live_desk_token_is_forbidden(AccountMergeState state)
+    {
+        using var factory = new DeskWebApplicationFactory();
+        DeskReplay.HoldVectorForks(factory.Door);
+        await factory.EnsureAccountAsync(DeskWebApplicationFactory.Alice, true);
+        var token = factory.Token(DeskWebApplicationFactory.Alice, "bifrost-desk", "desk.read");
+        Task<DeskReply> ListAsync() => factory.SendAsync("GET", DeskReplay.Target("list", "gamecult-chat", null), null, token);
+
+        Assert.Equal(200, (await ListAsync()).Status); // the live member, before the merge
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<BifrostDbContext>();
+            var survivor = new UserAccount { BifrostIdentity = "desk-survivor", NormalizedBifrostIdentity = "desk-survivor", GitHubLogin = "desk-survivor", NormalizedGitHubLogin = "desk-survivor" };
+            db.UserAccounts.Add(survivor);
+            db.AccountMerges.Add(new AccountMerge
+            {
+                SurvivorUserAccountId = survivor.Id, FoldedUserAccountId = Guid.Parse(DeskWebApplicationFactory.Alice), State = state, CreatedUtc = DateTimeOffset.UtcNow
+            });
+            await db.SaveChangesAsync();
+        }
+
+        Assert.Equal(403, (await ListAsync()).Status);
     }
 }

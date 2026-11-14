@@ -52,6 +52,7 @@ namespace Bifrost.Web.Data.Migrations
                         .HasColumnType("timestamp with time zone");
 
                     b.Property<string>("State")
+                        .IsConcurrencyToken()
                         .IsRequired()
                         .HasMaxLength(24)
                         .HasColumnType("character varying(24)");
@@ -63,6 +64,11 @@ namespace Bifrost.Web.Data.Migrations
                         .HasColumnType("timestamp with time zone");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("FoldedUserAccountId")
+                        .IsUnique()
+                        .HasDatabaseName("UX_AccountMerges_FoldedUserAccountId_Live")
+                        .HasFilter("\"State\" IN ('Confirmed', 'HeimdallMoved', 'Committed', 'Final', 'UndoRequested', 'HeimdallReversed')");
 
                     b.HasIndex("FoldedUserAccountId", "State");
 

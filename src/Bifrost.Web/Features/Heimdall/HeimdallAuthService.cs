@@ -845,8 +845,8 @@ public sealed class HeimdallAuthService(
                 UserAccountId = userAccount.Id,
                 CreatedAtUtc = now
             };
-            // A suspension is an admin's decision: the claim neither lifts it nor, absent, imposes it.
-            if (grantMemberAccess && userAccount.Membership.Status != MembershipStatus.Suspended)
+            // A suspension is an admin's decision: the claim neither lifts it nor, absent, imposes it. A merged row is terminal: the claim never reactivates it.
+            if (grantMemberAccess && userAccount.Membership.Status != MembershipStatus.Suspended && !userAccount.Membership.IsMerged)
             {
                 userAccount.Membership.Status = MembershipStatus.Active;
                 userAccount.Membership.ApprovedAtUtc ??= now;

@@ -2,6 +2,7 @@ using System.Net;
 using Bifrost.Web.Configuration;
 using Bifrost.Web.Data;
 using Bifrost.Web.Domain;
+using Bifrost.Web.Features.Membership;
 using Bifrost.Web.Features.Shared;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -60,6 +61,13 @@ public sealed class ConceptAppraisalService(
         CancellationToken cancellationToken)
     {
         if (voter is null)
+        {
+            return CastResult.NoVoter;
+        }
+
+        // A voter resolved before a merge froze the account must not write an appraisal after it: standing is read again at the write.
+        if (voter.UserAccountId is { } voterAccountId &&
+            await AccountMergeLedger.StandingAsync(dbContext, voterAccountId, cancellationToken) is not null)
         {
             return CastResult.NoVoter;
         }

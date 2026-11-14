@@ -29,6 +29,7 @@ public enum AccountMergeEntryAction
     Moved,
     Closed,
     Suspended,
+    Created,
     Restored,
     KeptAfterUndo
 }
@@ -81,7 +82,7 @@ public sealed class AccountMergeEntry
 
     public Guid? PriorUserAccountId { get; set; }
 
-    /// <summary>The prior status or prior voter key.</summary>
+    /// <summary>What the record held before: the prior status; for a moved vote its weight; for a moved appraisal its voter class and key (class|key).</summary>
     public string? PriorText { get; set; }
 
     /// <summary>The cast time of a moved vote or appraisal, so undo can tell whether the survivor re-cast it.</summary>

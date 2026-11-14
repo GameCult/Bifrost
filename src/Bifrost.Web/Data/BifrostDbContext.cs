@@ -628,9 +628,16 @@ public sealed class BifrostDbContext(DbContextOptions<BifrostDbContext> options)
 
         modelBuilder.Entity<AccountMerge>(entity =>
         {
-            entity.Property(x => x.State).HasConversion<string>().HasMaxLength(24);
+            // State is the token: a transition computed from a stale read (the sweeper's Final over a saga's UndoRequested) fails its save.
+            entity.Property(x => x.State).HasConversion<string>().HasMaxLength(24).IsConcurrencyToken();
             entity.Property(x => x.FailureCode).HasMaxLength(64);
             entity.HasIndex(x => new { x.FoldedUserAccountId, x.State });
+            // An account is folded once: the DB refuses a second live merge folding it. The cross-role case (a survivor that is also
+            // folded) cannot be one unique index; the migration's trigger refuses it.
+            entity.HasIndex(x => x.FoldedUserAccountId)
+                .IsUnique()
+                .HasDatabaseName("UX_AccountMerges_FoldedUserAccountId_Live")
+                .HasFilter("\"State\" IN ('Confirmed', 'HeimdallMoved', 'Committed', 'Final', 'UndoRequested', 'HeimdallReversed')");
             entity.HasIndex(x => new { x.SurvivorUserAccountId, x.State });
             entity.HasIndex(x => new { x.State, x.GraceEndsUtc });
             entity.HasOne<UserAccount>()

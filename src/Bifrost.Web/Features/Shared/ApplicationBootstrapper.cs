@@ -55,12 +55,18 @@ public sealed class ApplicationBootstrapper(
     }
 
     /// <summary>
-    /// The one bootstrap-admin promotion, used at startup and at sign-in. A Suspended account is left exactly as it is (an admin's
+    /// The one bootstrap-admin promotion, used at startup and at sign-in. A Merged or Suspended account is left exactly as it is (an admin's
     /// decision; only the suspension service lifts it) and the refusal is logged by account id. Returns whether it promoted.
     /// </summary>
     public static bool TryPromoteBootstrapAdmin(UserAccount account, DateTimeOffset now, ILogger logger)
     {
         var membership = account.Membership!;
+        if (membership.IsMerged)
+        {
+            logger.LogWarning("Bootstrap admin promotion skipped for merged account {UserAccountId}.", account.Id);
+            return false;
+        }
+
         if (membership.Status == MembershipStatus.Suspended)
         {
             logger.LogWarning("Bootstrap admin promotion skipped for suspended account {UserAccountId}.", account.Id);

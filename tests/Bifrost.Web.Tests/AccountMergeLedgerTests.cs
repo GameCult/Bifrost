@@ -18,29 +18,44 @@ namespace Bifrost.Web.Tests;
 /// </summary>
 public sealed class AccountMergeLedgerTests
 {
-    private static readonly DateTimeOffset T0 = new(2026, 11, 14, 12, 0, 0, TimeSpan.Zero);
+    public static readonly DateTimeOffset T0 = new(2026, 11, 14, 12, 0, 0, TimeSpan.Zero);
 
-    private sealed class Clock(DateTimeOffset start) : TimeProvider
+    public sealed class Clock(DateTimeOffset start) : TimeProvider
     {
         public DateTimeOffset Now { get; set; } = start;
 
         public override DateTimeOffset GetUtcNow() => Now;
     }
 
-    private sealed class World
+    /// <summary>The merge fixtures. In memory by default; <see cref="OnPostgres"/> points the same fixtures at a real database, where unique indexes, transactions, tokens and triggers exist.</summary>
+    public sealed class World
     {
         private readonly string _name = $"merge-{Guid.NewGuid():N}";
         private readonly SaveChangesInterceptor[] _interceptors;
+        private readonly string? _postgres;
 
         public World(params SaveChangesInterceptor[] interceptors) => _interceptors = interceptors;
 
+        private World(string postgres, SaveChangesInterceptor[] interceptors) : this(interceptors) => _postgres = postgres;
+
+        public static World OnPostgres(string connectionString, params SaveChangesInterceptor[] interceptors) => new(connectionString, interceptors);
+
         public Clock Clock { get; } = new(T0);
 
-        public BifrostDbContext Db() => new(new DbContextOptionsBuilder<BifrostDbContext>()
-            .UseInMemoryDatabase(_name)
-            .AddInterceptors(_interceptors)
-            .ConfigureWarnings(x => x.Ignore(InMemoryEventId.TransactionIgnoredWarning))
-            .Options);
+        public BifrostDbContext Db()
+        {
+            var options = new DbContextOptionsBuilder<BifrostDbContext>().AddInterceptors(_interceptors);
+            if (_postgres is null)
+            {
+                options.UseInMemoryDatabase(_name).ConfigureWarnings(x => x.Ignore(InMemoryEventId.TransactionIgnoredWarning));
+            }
+            else
+            {
+                options.UseNpgsql(_postgres);
+            }
+
+            return new BifrostDbContext(options.Options);
+        }
 
         public AccountMergeLedger Ledger(BifrostDbContext db) => new(db, new PatronageService(db, new AuditTrailService(db, Clock), Clock), Clock);
 
@@ -449,22 +464,6 @@ public sealed class AccountMergeLedgerTests
 
         await using var db = world.Db();
         Assert.Null(await world.Ledger(db).StandingAsync(folded.Id, default));
-        Assert.Equal(folded.Id, await world.Ledger(db).ResolveAsync(folded.Id, default));
-    }
-
-    [Fact]
-    public async Task Resolve_follows_folded_links_to_the_end()
-    {
-        var world = new World();
-        var a = await world.AccountAsync("acct-a");
-        var b = await world.AccountAsync("acct-b");
-        var c = await world.AccountAsync("acct-c");
-        await world.MergeAsync(b, a, AccountMergeState.Final);
-        await world.MergeAsync(c, b, AccountMergeState.Committed);
-
-        await using var db = world.Db();
-        Assert.Equal(c.Id, await world.Ledger(db).ResolveAsync(a.Id, default));
-        Assert.Equal(c.Id, await world.Ledger(db).ResolveAsync(c.Id, default));
     }
 
     // ---- plan ----
@@ -494,7 +493,7 @@ public sealed class AccountMergeLedgerTests
     }
 
     public static IEnumerable<object[]> BlockCases() =>
-        new[] { "same_account", "mind_account", "native_account", "merge_in_flight", "survivor_is_folded", "already_folded", "folded_survivor_in_grace", "sealed_ballot_pending" }
+        new[] { "same_account", "mind_account", "native_account", "merge_in_flight", "survivor_is_folded", "already_folded", "folded_is_survivor", "sealed_ballot_pending" }
             .Select(x => new object[] { x });
 
     [Theory]
@@ -528,8 +527,8 @@ public sealed class AccountMergeLedgerTests
             case "already_folded":
                 await world.MergeAsync(other, folded, AccountMergeState.Committed);
                 break;
-            case "folded_survivor_in_grace":
-                await world.MergeAsync(folded, other, AccountMergeState.Committed);
+            case "folded_is_survivor":
+                await world.MergeAsync(folded, other, AccountMergeState.Final);
                 break;
             case "sealed_ballot_pending":
                 var motion = await world.MotionAsync(kind: MotionKind.SealedBallot);
@@ -721,5 +720,367 @@ public sealed class AccountMergeLedgerTests
         var final = await read.AccountMerges.SingleAsync(x => x.Id == dueMerge.Id);
         Assert.Equal((AccountMergeState.Final, T0.AddDays(7)), (final.State, final.FinalizedUtc));
         Assert.Equal(AccountMergeState.Committed, (await read.AccountMerges.SingleAsync(x => x.Id == youngMerge.Id)).State);
+    }
+
+    // ---- verdict cut-merge-ledger.s1: the rules each fix decides ----
+
+    [Theory]
+    [InlineData(AccountMergeState.Confirmed)]
+    [InlineData(AccountMergeState.HeimdallMoved)]
+    [InlineData(AccountMergeState.UndoRequested)]
+    [InlineData(AccountMergeState.HeimdallReversed)]
+    public async Task Plan_blocks_while_either_account_is_in_a_merge_in_flight(AccountMergeState state)
+    {
+        foreach (var survivorSide in new[] { true, false })
+        {
+            var world = new World();
+            var survivor = await world.AccountAsync("survivor");
+            var folded = await world.AccountAsync("folded");
+            var other = await world.AccountAsync("other");
+            await (survivorSide ? world.MergeAsync(survivor, other, state) : world.MergeAsync(other, folded, state));
+
+            await using var read = world.Db();
+            Assert.Contains("merge_in_flight", (await world.Ledger(read).PlanAsync(survivor.Id, folded.Id, default)).Blocks);
+        }
+    }
+
+    [Theory]
+    [InlineData(AccountMergeState.Committed)]
+    [InlineData(AccountMergeState.Final)]
+    public async Task A_landed_merges_survivor_cannot_itself_fold_so_an_alias_is_never_a_chain(AccountMergeState state)
+    {
+        var world = new World();
+        var a = await world.AccountAsync("acct-a");
+        var b = await world.AccountAsync("acct-b");
+        var c = await world.AccountAsync("acct-c");
+        await world.MergeAsync(b, a, state);
+
+        await using var read = world.Db();
+        Assert.Contains("folded_is_survivor", (await world.Ledger(read).PlanAsync(c.Id, b.Id, default)).Blocks);
+        Assert.Empty((await world.Ledger(read).PlanAsync(b.Id, c.Id, default)).Blocks); // the other direction is an ordinary merge
+        Assert.Equal(b.Id, ((MergeStanding.Folded)(await world.Ledger(read).StandingAsync(a.Id, default))!).SurvivorId);
+    }
+
+    private static async Task DropMembershipAsync(World world, UserAccount account)
+    {
+        await using var db = world.Db();
+        db.Memberships.Remove(await db.Memberships.SingleAsync(x => x.UserAccountId == account.Id));
+        await db.SaveChangesAsync();
+    }
+
+    [Fact]
+    public async Task A_suspension_is_not_laundered_into_a_survivor_without_a_membership_and_undo_removes_the_row_it_made()
+    {
+        var world = new World();
+        var survivor = await world.AccountAsync("survivor");
+        await DropMembershipAsync(world, survivor);
+        var folded = await world.AccountAsync("folded", MembershipStatus.Suspended);
+        var merge = await world.MergeAsync(survivor, folded);
+
+        await using (var db = world.Db())
+        {
+            var plan = await world.Ledger(db).PlanAsync(survivor.Id, folded.Id, default);
+            Assert.Contains(plan.Entries, e => e is { Kind: AccountMergeEntryKind.Standing, Action: AccountMergeEntryAction.Created });
+            Assert.Empty(db.Memberships.Where(x => x.UserAccountId == survivor.Id)); // a plan writes nothing
+        }
+
+        await world.CommitAsync(merge);
+
+        var carried = await world.MembershipOfAsync(survivor);
+        Assert.Equal(MembershipStatus.Suspended, carried.Status);
+        Assert.Equal(AccountMergeLedger.SuspensionReason(merge.Id), carried.SuspensionReason);
+        Assert.False((await world.ActorAsync(survivor.Id)).IsActiveMember);
+
+        await world.SetStateAsync(merge, AccountMergeState.HeimdallReversed);
+        await using (var db = world.Db())
+        {
+            await world.Ledger(db).UndoLocalAsync(merge.Id, default);
+        }
+
+        await using var read = world.Db();
+        Assert.Empty(read.Memberships.Where(x => x.UserAccountId == survivor.Id));
+        Assert.Contains(await world.JournalAsync(merge), e => e is { Kind: AccountMergeEntryKind.Standing, Action: AccountMergeEntryAction.Restored });
+    }
+
+    [Fact]
+    public async Task Undo_keeps_the_membership_a_merge_made_for_a_suspension_once_an_admin_has_taken_it_over()
+    {
+        var world = new World();
+        var survivor = await world.AccountAsync("survivor");
+        await DropMembershipAsync(world, survivor);
+        var folded = await world.AccountAsync("folded", MembershipStatus.Suspended);
+        var merge = await world.CommitAsync(await world.MergeAsync(survivor, folded));
+        await using (var db = world.Db())
+        {
+            (await db.Memberships.SingleAsync(x => x.UserAccountId == survivor.Id)).SuspensionReason = "steward decision";
+            await db.SaveChangesAsync();
+        }
+
+        await world.SetStateAsync(merge, AccountMergeState.HeimdallReversed);
+        await using (var db = world.Db())
+        {
+            await world.Ledger(db).UndoLocalAsync(merge.Id, default);
+        }
+
+        Assert.Equal(MembershipStatus.Suspended, (await world.MembershipOfAsync(survivor)).Status);
+        Assert.Contains(await world.JournalAsync(merge), e => e is { Kind: AccountMergeEntryKind.Standing, Action: AccountMergeEntryAction.KeptAfterUndo });
+    }
+
+    [Fact]
+    public async Task A_moved_vote_carries_the_survivors_weight_not_the_folded_accounts_and_undo_restores_it()
+    {
+        var world = new World();
+        var survivor = await world.AccountAsync("survivor");
+        var folded = await world.AccountAsync("folded");
+        var moderator = await world.AccountAsync("mod", moderator: true);
+        var motion = await world.MotionAsync();
+        await world.VoteAsync(motion, folded, VoteChoice.For, 5m);
+
+        var merge = await world.CommitAsync(await world.MergeAsync(survivor, folded));
+
+        var moved = Assert.Single(await world.AllVotesAsync(motion));
+        Assert.Equal((survivor.Id, 1m), (moved.UserAccountId, moved.Weight));
+        Assert.Equal(1m, (await world.StateOfAsync(motion, moderator)).VotesFor);
+
+        await world.SetStateAsync(merge, AccountMergeState.HeimdallReversed);
+        await using (var db = world.Db())
+        {
+            await world.Ledger(db).UndoLocalAsync(merge.Id, default);
+        }
+
+        var back = Assert.Single(await world.AllVotesAsync(motion));
+        Assert.Equal((folded.Id, 5m), (back.UserAccountId, back.Weight));
+    }
+
+    [Fact]
+    public async Task A_moved_vote_takes_the_survivors_weight_after_the_patron_tiers_were_derived_again()
+    {
+        var world = new World();
+        var survivor = await world.AccountAsync("survivor");
+        var folded = await world.AccountAsync("folded");
+        var motion = await world.MotionAsync();
+        await world.VoteAsync(motion, folded, VoteChoice.For, 1m);
+        await using (var db = world.Db())
+        {
+            db.PatronSupportEvents.Add(new PatronSupportEvent
+            {
+                UserAccountId = folded.Id, Kind = PatronSupportEventKind.RecurringSupportSnapshot, IsCurrentRecurringSupport = true, Amount = 100m,
+                ProviderEventId = "e1", SupportedAtUtc = T0, RecordedAtUtc = T0
+            });
+            await db.SaveChangesAsync();
+        }
+
+        await world.CommitAsync(await world.MergeAsync(survivor, folded));
+
+        var weight = (await world.MembershipOfAsync(survivor)).EffectiveVotingWeight;
+        Assert.Equal(2m, weight);
+        Assert.Equal(weight, Assert.Single(await world.AllVotesAsync(motion)).Weight);
+    }
+
+    private static async Task<(Guid Both, Guid OnlyFolded)> SeedAppraisalsAsync(World world, UserAccount survivor, UserAccount folded, VoterClass foldedClass)
+    {
+        await using var db = world.Db();
+        var both = new ConceptSubject { Collection = "c", Key = "both", Title = "Both", RegisteredAtUtc = T0 };
+        var only = new ConceptSubject { Collection = "c", Key = "only-folded", Title = "Only folded", RegisteredAtUtc = T0 };
+        db.ConceptSubjects.AddRange(both, only);
+        ConceptAppraisal Row(ConceptSubject subject, UserAccount who, ConceptStance stance, VoterClass voterClass) => new()
+        {
+            SubjectId = subject.Id, UserAccountId = who.Id, VoterKey = "account:" + who.Id.ToString("N"), Stance = stance, VoterClass = voterClass, CastAtUtc = T0
+        };
+        db.ConceptAppraisals.AddRange(Row(both, survivor, ConceptStance.Up, VoterClass.Member), Row(both, folded, ConceptStance.Down, foldedClass), Row(only, folded, ConceptStance.Down, foldedClass));
+        await db.SaveChangesAsync();
+        return (both.Id, only.Id);
+    }
+
+    [Fact]
+    public async Task A_lone_folded_appraisal_is_voided_when_the_survivor_is_not_active()
+    {
+        var world = new World();
+        var survivor = await world.AccountAsync("survivor", MembershipStatus.PendingApproval);
+        var folded = await world.AccountAsync("folded");
+        var (_, onlyFolded) = await SeedAppraisalsAsync(world, survivor, folded, VoterClass.Member);
+
+        var merge = await world.CommitAsync(await world.MergeAsync(survivor, folded));
+
+        await using var read = world.Db();
+        var row = await read.ConceptAppraisals.IgnoreQueryFilters().SingleAsync(x => x.SubjectId == onlyFolded);
+        Assert.Equal((merge.Id, folded.Id), (row.VoidedByMergeId, row.UserAccountId));
+        Assert.Equal(0, (await world.Concepts(read).GetTalliesAsync("c", default))["only-folded"].Down);
+    }
+
+    [Fact]
+    public async Task A_moved_appraisal_takes_the_member_class_and_undo_gives_back_the_class_and_key_unless_the_survivor_recast_it()
+    {
+        var world = new World();
+        var survivor = await world.AccountAsync("survivor");
+        var folded = await world.AccountAsync("folded");
+        var (_, onlyFolded) = await SeedAppraisalsAsync(world, survivor, folded, VoterClass.Account);
+        var survivorKey = "account:" + survivor.Id.ToString("N");
+        var merge = await world.CommitAsync(await world.MergeAsync(survivor, folded));
+
+        await using (var read = world.Db())
+        {
+            var moved = await read.ConceptAppraisals.SingleAsync(x => x.SubjectId == onlyFolded);
+            Assert.Equal((survivor.Id, survivorKey, VoterClass.Member), (moved.UserAccountId, moved.VoterKey, moved.VoterClass));
+        }
+
+        await world.SetStateAsync(merge, AccountMergeState.HeimdallReversed);
+        await using (var db = world.Db())
+        {
+            await world.Ledger(db).UndoLocalAsync(merge.Id, default);
+        }
+
+        await using (var read = world.Db())
+        {
+            var back = await read.ConceptAppraisals.SingleAsync(x => x.SubjectId == onlyFolded);
+            Assert.Equal((folded.Id, "account:" + folded.Id.ToString("N"), VoterClass.Account), (back.UserAccountId, back.VoterKey, back.VoterClass));
+        }
+
+        // Again, but the survivor re-casts the moved appraisal before the undo: it is theirs now and stays.
+        var folded2 = await world.AccountAsync("folded2");
+        await using (var db = world.Db())
+        {
+            db.ConceptAppraisals.Add(new ConceptAppraisal
+            {
+                SubjectId = onlyFolded, UserAccountId = folded2.Id, VoterKey = "account:" + folded2.Id.ToString("N"), Stance = ConceptStance.Down,
+                VoterClass = VoterClass.Account, CastAtUtc = T0
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var second = await world.CommitAsync(await world.MergeAsync(survivor, folded2));
+        world.Clock.Now = T0.AddDays(1);
+        await using (var db = world.Db())
+        {
+            var voter = new VoterIdentity(survivorKey, VoterClass.Member, survivor.Id);
+            Assert.Equal(CastResult.Changed, await world.Concepts(db).CastAsync("c", "only-folded", voter, ConceptStance.Up, null, default));
+        }
+
+        await world.SetStateAsync(second, AccountMergeState.HeimdallReversed);
+        await using (var db = world.Db())
+        {
+            await world.Ledger(db).UndoLocalAsync(second.Id, default);
+        }
+
+        await using var after = world.Db();
+        var kept = await after.ConceptAppraisals.SingleAsync(x => x.SubjectId == onlyFolded && x.UserAccountId == survivor.Id);
+        Assert.Equal((survivorKey, ConceptStance.Up), (kept.VoterKey, kept.Stance));
+        Assert.Contains(await world.JournalAsync(second), e => e is { Kind: AccountMergeEntryKind.ConceptAppraisal, Action: AccountMergeEntryAction.KeptAfterUndo });
+    }
+
+    [Fact]
+    public async Task Closed_motions_keep_their_votes_with_their_owners_and_journal_nothing_for_them()
+    {
+        var world = new World();
+        var survivor = await world.AccountAsync("survivor");
+        var folded = await world.AccountAsync("folded");
+        var closed = await world.MotionAsync(status: MotionStatus.Passed);
+        await world.VoteAsync(closed, survivor, VoteChoice.For, 1m);
+        await world.VoteAsync(closed, folded, VoteChoice.For, 2m);
+        var lone = await world.MotionAsync(status: MotionStatus.Failed);
+        await world.VoteAsync(lone, folded, VoteChoice.Against, 2m);
+
+        var merge = await world.CommitAsync(await world.MergeAsync(survivor, folded));
+
+        Assert.Equal(new[] { folded.Id, survivor.Id }.Order(), (await world.AllVotesAsync(closed)).Select(x => x.UserAccountId).Order());
+        var loneVote = Assert.Single(await world.AllVotesAsync(lone));
+        Assert.Equal((folded.Id, 2m), (loneVote.UserAccountId, loneVote.Weight)); // not re-pointed, not re-weighed
+        Assert.DoesNotContain(await world.JournalAsync(merge), e => e.Kind == AccountMergeEntryKind.Vote);
+    }
+
+    [Theory]
+    [InlineData(AccountMergeState.Committed)]
+    [InlineData(AccountMergeState.Final)]
+    public async Task Commit_on_a_landed_merge_returns_the_receipt_and_writes_nothing(AccountMergeState state)
+    {
+        var world = new World();
+        var survivor = await world.AccountAsync("survivor");
+        var folded = await world.AccountAsync("folded");
+        var merge = await world.MergeAsync(survivor, folded, state);
+
+        var receipt = await world.CommitAsync(merge);
+
+        Assert.Equal((merge.Id, state), (receipt.Id, receipt.State));
+        Assert.Empty(await world.JournalAsync(merge));
+        Assert.Equal(MembershipStatus.Active, (await world.MembershipOfAsync(folded)).Status);
+    }
+
+    [Fact]
+    public async Task Undo_is_refused_for_a_merge_that_was_ever_finalized()
+    {
+        var world = new World();
+        var survivor = await world.AccountAsync("survivor");
+        var folded = await world.AccountAsync("folded");
+        var merge = await world.CommitAsync(await world.MergeAsync(survivor, folded));
+        await using (var db = world.Db())
+        {
+            var row = await db.AccountMerges.SingleAsync(x => x.Id == merge.Id);
+            row.State = AccountMergeState.HeimdallReversed;
+            row.FinalizedUtc = T0.AddDays(8);
+            await db.SaveChangesAsync();
+        }
+
+        await using var undo = world.Db();
+        await Assert.ThrowsAsync<InvalidOperationException>(() => world.Ledger(undo).UndoLocalAsync(merge.Id, default));
+        Assert.Equal(MembershipStatus.Merged, (await world.MembershipOfAsync(folded)).Status);
+    }
+
+    [Fact]
+    public async Task A_vote_and_an_appraisal_from_an_actor_resolved_before_the_account_froze_write_nothing()
+    {
+        var world = new World();
+        var survivor = await world.AccountAsync("survivor");
+        var folded = await world.AccountAsync("folded");
+        var motion = await world.MotionAsync();
+        var staleActor = await world.ActorAsync(folded.Id); // a request resolved this before the merge was confirmed
+        await using (var db = world.Db())
+        {
+            db.ConceptSubjects.Add(new ConceptSubject { Collection = "c", Key = "k", Title = "K", RegisteredAtUtc = T0 });
+            await db.SaveChangesAsync();
+        }
+
+        await world.MergeAsync(survivor, folded, AccountMergeState.Confirmed);
+
+        await using (var db = world.Db())
+        {
+            await world.Motions(db).CastVoteAsync(staleActor, motion.Id, VoteChoice.For, null, default);
+            Assert.Equal(CastResult.NoVoter, await world.Concepts(db).CastAsync("c", "k", VoterIdentity.For(staleActor, null), ConceptStance.Up, null, default));
+        }
+
+        Assert.Empty(await world.AllVotesAsync(motion));
+        await using var read = world.Db();
+        Assert.Empty(read.ConceptAppraisals.IgnoreQueryFilters());
+
+        // The survivor, not frozen, still writes.
+        await using var control = world.Db();
+        await world.Motions(control).CastVoteAsync(await world.ActorAsync(survivor.Id), motion.Id, VoteChoice.For, null, default);
+        Assert.Single(await world.AllVotesAsync(motion));
+    }
+
+    [Fact]
+    public async Task A_merged_membership_is_never_rewritten_by_the_bootstrap_promotion_or_by_suspension()
+    {
+        var world = new World();
+        var survivor = await world.AccountAsync("survivor");
+        var folded = await world.AccountAsync("folded");
+        var admin = await world.AccountAsync("admin", roles: MemberRole.PlatformAdmin);
+        await world.CommitAsync(await world.MergeAsync(survivor, folded));
+
+        await using (var db = world.Db())
+        {
+            var account = await db.UserAccounts.Include(x => x.Membership!).ThenInclude(x => x.RoleAssignments).SingleAsync(x => x.Id == folded.Id);
+            Assert.False(ApplicationBootstrapper.TryPromoteBootstrapAdmin(account, T0, Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance));
+            Assert.Equal((MembershipStatus.Merged, false), (account.Membership!.Status, account.Membership.IsPlatformAdmin));
+        }
+
+        await using (var db = world.Db())
+        {
+            var suspension = new MembershipSuspensionService(db, new AuditTrailService(db, world.Clock));
+            var actor = await world.ActorAsync(admin.Id);
+            Assert.Equal(SuspensionOutcome.NotApplicable, await suspension.SuspendAsync(actor, folded.Id, "reason", default));
+            Assert.Equal(SuspensionOutcome.NotApplicable, await suspension.UnsuspendAsync(actor, folded.Id, "reason", default));
+        }
+
+        Assert.Equal(MembershipStatus.Merged, (await world.MembershipOfAsync(folded)).Status);
     }
 }

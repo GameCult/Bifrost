@@ -194,6 +194,12 @@ public static class OidcEndpoints
             return null;
         }
 
+        // A folded or frozen subject's live token acts as nobody on the desk too: the same standing the cookie gate and ChatRefusalAsync read.
+        if (await AccountMergeLedger.StandingAsync(db, accountId, cancellationToken) is not null)
+        {
+            return null;
+        }
+
         var account = await db.UserAccounts.AsNoTracking()
             .Include(x => x.Membership)
             .SingleOrDefaultAsync(x => x.Id == accountId, cancellationToken);

@@ -1,3 +1,4 @@
+using System.Globalization;
 using Bifrost.Web.Data;
 using Bifrost.Web.Domain;
 using Bifrost.Web.Features.Patronage;
@@ -29,7 +30,7 @@ public sealed record MergePlan(
 
 /// <summary>
 /// The one owner of what an account merge does to Bifrost records and of how an account stands under one: the plan, the Committed
-/// save, the undo save, the Final transition, StandingAsync and ResolveAsync. A merge only reduces: nothing is deleted, votes and
+/// save, the undo save, the Final transition and StandingAsync. A merge only reduces: nothing is deleted, votes and
 /// appraisals are stamped void (the model's query filter then removes them from every tally) or re-pointed, and every change is
 /// journalled in AccountMergeEntry. Design: /opt/commons/handoff/heimdall-account-merge-design-20261113.md sections 3, 5, 7.
 /// </summary>
@@ -39,8 +40,6 @@ public sealed class AccountMergeLedger(
     TimeProvider timeProvider)
 {
     public static readonly TimeSpan Grace = TimeSpan.FromDays(7);
-
-    private const int MaxHops = 8;
 
     private static readonly AccountMergeState[] FrozenStates = [AccountMergeState.Confirmed, AccountMergeState.HeimdallMoved];
 
@@ -69,23 +68,6 @@ public sealed class AccountMergeLedger(
             : FrozenStates.Contains(merge.State)
                 ? new MergeStanding.Frozen(merge.Id)
                 : new MergeStanding.Folded(merge.Id, merge.SurvivorUserAccountId);
-    }
-
-    /// <summary>Follows Folded links to the account that now carries the person. Each account is folded once, so the hop cap is only a guard.</summary>
-    public async Task<Guid> ResolveAsync(Guid userAccountId, CancellationToken cancellationToken)
-    {
-        var current = userAccountId;
-        for (var hop = 0; hop < MaxHops; hop++)
-        {
-            if (await StandingAsync(current, cancellationToken) is not MergeStanding.Folded folded)
-            {
-                return current;
-            }
-
-            current = folded.SurvivorId;
-        }
-
-        return current;
     }
 
     /// <summary>Writes nothing. <paramref name="exceptMergeId"/> lets the saga re-plan a merge it already holds without it blocking itself.</summary>
@@ -155,12 +137,12 @@ public sealed class AccountMergeLedger(
             blocks.Add("already_folded");
         }
 
-        // Heimdall could no longer reverse a merge this account survived once it is folded into another.
+        // One hop only: a landed merge's survivor never folds into a third account, so an alias is never a chain.
         if (await dbContext.AccountMerges.AnyAsync(
-                x => x.Id != exceptMergeId && x.State == AccountMergeState.Committed && x.SurvivorUserAccountId == foldedId,
+                x => x.Id != exceptMergeId && FoldedStates.Contains(x.State) && x.SurvivorUserAccountId == foldedId,
                 cancellationToken))
         {
-            blocks.Add("folded_survivor_in_grace");
+            blocks.Add("folded_is_survivor");
         }
 
         if (await dbContext.SealedBallots.AnyAsync(
@@ -212,6 +194,7 @@ public sealed class AccountMergeLedger(
                 await RestageTiersAsync(reduction.Survivor, reduction.Folded, now, cancellationToken);
             }
 
+            reduction.ReweighMovedVotes();
             merge.State = AccountMergeState.Committed;
             merge.CommittedUtc = now;
             merge.GraceEndsUtc = now + Grace;
@@ -240,6 +223,11 @@ public sealed class AccountMergeLedger(
             throw new InvalidOperationException($"Merge {mergeId} is {merge.State}; only a HeimdallReversed merge can be undone locally.");
         }
 
+        if (merge.FinalizedUtc is not null)
+        {
+            throw new InvalidOperationException($"Merge {mergeId} is Final; a merge is never undone past Final.");
+        }
+
         try
         {
             var now = timeProvider.GetUtcNow();
@@ -264,7 +252,7 @@ public sealed class AccountMergeLedger(
                     AtUtc = now
                 });
 
-            foreach (var entry in journal.Where(x => x.Action is AccountMergeEntryAction.Voided or AccountMergeEntryAction.Moved or AccountMergeEntryAction.Closed or AccountMergeEntryAction.Suspended))
+            foreach (var entry in journal.Where(x => x.Action is AccountMergeEntryAction.Voided or AccountMergeEntryAction.Moved or AccountMergeEntryAction.Closed or AccountMergeEntryAction.Suspended or AccountMergeEntryAction.Created))
             {
                 switch (entry.Kind, entry.Action)
                 {
@@ -288,6 +276,10 @@ public sealed class AccountMergeLedger(
                         if (restore)
                         {
                             vote!.UserAccountId = entry.PriorUserAccountId!.Value;
+                            if (decimal.TryParse(entry.PriorText, NumberStyles.Number, CultureInfo.InvariantCulture, out var priorWeight))
+                            {
+                                vote.Weight = priorWeight;
+                            }
                         }
 
                         Record(entry, restore);
@@ -313,7 +305,9 @@ public sealed class AccountMergeLedger(
                         if (restore)
                         {
                             row!.UserAccountId = entry.PriorUserAccountId!.Value;
-                            row.VoterKey = entry.PriorText ?? row.VoterKey;
+                            var (priorClass, priorKey) = ParseAppraisalPrior(entry.PriorText);
+                            row.VoterKey = priorKey ?? row.VoterKey;
+                            row.VoterClass = priorClass ?? row.VoterClass;
                         }
 
                         Record(entry, restore);
@@ -340,6 +334,19 @@ public sealed class AccountMergeLedger(
                         {
                             survivor.Membership!.Status = Enum.Parse<MembershipStatus>(entry.PriorText!);
                             survivor.Membership.SuspensionReason = null;
+                        }
+
+                        Record(entry, restore);
+                        break;
+                    }
+                    case (AccountMergeEntryKind.Standing, AccountMergeEntryAction.Created):
+                    {
+                        // The membership this merge made to carry a suspension goes with the merge, unless an admin has taken it over since.
+                        var created = await dbContext.Memberships.SingleOrDefaultAsync(x => x.Id == entry.RecordId, cancellationToken);
+                        var restore = created is { Status: MembershipStatus.Suspended } && created.SuspensionReason == SuspensionReason(mergeId);
+                        if (restore)
+                        {
+                            dbContext.Memberships.Remove(created!);
                         }
 
                         Record(entry, restore);
@@ -378,20 +385,62 @@ public sealed class AccountMergeLedger(
         }
     }
 
-    /// <summary>Committed merges whose grace has ended become Final; returns how many. Undo is never allowed past Final.</summary>
+    /// <summary>
+    /// Committed merges whose grace has ended become Final; returns how many this call finalized. Undo is never allowed past Final.
+    /// State is the merge's concurrency token, so a merge another writer moved first (UndoRequested) fails its save and is left to that
+    /// transition: a stale Committed read can never overwrite it.
+    /// </summary>
     public async Task<int> FinalizeDueAsync(DateTimeOffset now, CancellationToken cancellationToken)
     {
-        var due = await dbContext.AccountMerges
+        var dueIds = await dbContext.AccountMerges.AsNoTracking()
             .Where(x => x.State == AccountMergeState.Committed && x.GraceEndsUtc <= now)
+            .Select(x => x.Id)
             .ToListAsync(cancellationToken);
-        foreach (var merge in due)
+        var finalized = 0;
+        foreach (var id in dueIds)
         {
+            var merge = await dbContext.AccountMerges.SingleAsync(x => x.Id == id, cancellationToken);
+            if (merge.State != AccountMergeState.Committed)
+            {
+                continue;
+            }
+
             merge.State = AccountMergeState.Final;
             merge.FinalizedUtc = now;
+            try
+            {
+                await dbContext.SaveChangesAsync(cancellationToken);
+                finalized++;
+            }
+            catch (DbUpdateConcurrencyException)
+            {
+                dbContext.ChangeTracker.Clear();
+            }
         }
 
+        return finalized;
+    }
+
+    /// <summary>
+    /// Journals a patron event that landed on a folded account's survivor during grace, so undo moves it back with the rest. Idempotent:
+    /// the intake calls it again when the provider retries an event it already processed.
+    /// </summary>
+    public async Task JournalIntakeAsync(Guid mergeId, Guid foldedUserAccountId, Guid supportEventId, CancellationToken cancellationToken)
+    {
+        if (await dbContext.AccountMergeEntries.AnyAsync(
+                x => x.MergeId == mergeId && x.Kind == AccountMergeEntryKind.PatronSupportEvent && x.RecordId == supportEventId,
+                cancellationToken))
+        {
+            return;
+        }
+
+        var seq = await dbContext.AccountMergeEntries.Where(x => x.MergeId == mergeId).MaxAsync(x => (int?)x.Seq, cancellationToken) ?? 0;
+        dbContext.AccountMergeEntries.Add(Journal(
+            mergeId,
+            seq + 1,
+            new MergePlanEntry(AccountMergeEntryKind.PatronSupportEvent, AccountMergeEntryAction.Moved, supportEventId, foldedUserAccountId),
+            timeProvider.GetUtcNow()));
         await dbContext.SaveChangesAsync(cancellationToken);
-        return due.Count;
     }
 
     private sealed class Reduction(
@@ -399,6 +448,7 @@ public sealed class AccountMergeLedger(
         UserAccount folded,
         List<MergePlanEntry> entries,
         List<Action<Guid, DateTimeOffset>> effects,
+        List<Vote> movedVotes,
         bool movedPatronEvents)
     {
         public UserAccount Survivor { get; } = survivor;
@@ -410,6 +460,15 @@ public sealed class AccountMergeLedger(
         public bool MovedPatronEvents { get; } = movedPatronEvents;
 
         public Guid MergeId { get; set; }
+
+        /// <summary>A moved vote carries the survivor's weight, derived once from the survivor's tiers as they stand after the restage, never the folded account's.</summary>
+        public void ReweighMovedVotes()
+        {
+            foreach (var vote in movedVotes)
+            {
+                vote.Weight = Survivor.Membership!.EffectiveVotingWeight;
+            }
+        }
 
         public void Apply(DateTimeOffset now)
         {
@@ -428,25 +487,43 @@ public sealed class AccountMergeLedger(
     /// </summary>
     private async Task<Reduction> ReduceAsync(Guid survivorId, Guid foldedId, CancellationToken cancellationToken, Guid? mergeId = null)
     {
-        var survivor = await dbContext.UserAccounts.Include(x => x.Membership).Include(x => x.PatronSupportEvents)
+        var survivor = await dbContext.UserAccounts.Include(x => x.Membership!).ThenInclude(x => x.TierSnapshots).Include(x => x.PatronSupportEvents)
             .SingleAsync(x => x.Id == survivorId, cancellationToken);
-        var folded = await dbContext.UserAccounts.Include(x => x.Membership).Include(x => x.PatronSupportEvents)
+        var folded = await dbContext.UserAccounts.Include(x => x.Membership!).ThenInclude(x => x.TierSnapshots).Include(x => x.PatronSupportEvents)
             .SingleAsync(x => x.Id == foldedId, cancellationToken);
 
         var entries = new List<MergePlanEntry>();
         var effects = new List<Action<Guid, DateTimeOffset>>();
+        var movedVotes = new List<Vote>();
 
         var foldedSuspended = folded.Membership?.Status == MembershipStatus.Suspended;
         var survivorSuspendedNow = survivor.Membership?.Status == MembershipStatus.Suspended;
         var survivorStanding = survivor.Membership?.Status;
-        if (foldedSuspended && !survivorSuspendedNow && survivor.Membership is { } survivorMembership)
+        if (foldedSuspended && !survivorSuspendedNow)
         {
-            entries.Add(new MergePlanEntry(AccountMergeEntryKind.Standing, AccountMergeEntryAction.Suspended, survivorMembership.Id, null, survivorMembership.Status.ToString()));
-            effects.Add((id, _) =>
+            if (survivor.Membership is { } survivorMembership)
             {
-                survivorMembership.Status = MembershipStatus.Suspended;
-                survivorMembership.SuspensionReason = SuspensionReason(id);
-            });
+                entries.Add(new MergePlanEntry(AccountMergeEntryKind.Standing, AccountMergeEntryAction.Suspended, survivorMembership.Id, null, survivorMembership.Status.ToString()));
+                effects.Add((id, _) =>
+                {
+                    survivorMembership.Status = MembershipStatus.Suspended;
+                    survivorMembership.SuspensionReason = SuspensionReason(id);
+                });
+            }
+            else
+            {
+                // The chat tier holds no membership, and an absent one chats: without a row the suspension would be gone. The row is journalled so undo removes it.
+                var created = new Bifrost.Web.Domain.Membership { UserAccountId = survivor.Id, Status = MembershipStatus.Suspended };
+                entries.Add(new MergePlanEntry(AccountMergeEntryKind.Standing, AccountMergeEntryAction.Created, created.Id));
+                effects.Add((id, now) =>
+                {
+                    created.SuspensionReason = SuspensionReason(id);
+                    created.CreatedAtUtc = now;
+                    created.Notes = "Created by an account merge to carry the folded account's suspension.";
+                    dbContext.Memberships.Add(created);
+                });
+            }
+
             survivorStanding = MembershipStatus.Suspended;
         }
 
@@ -478,7 +555,8 @@ public sealed class AccountMergeLedger(
             }
             else
             {
-                entries.Add(new MergePlanEntry(AccountMergeEntryKind.Vote, AccountMergeEntryAction.Moved, vote.Id, vote.UserAccountId, null, vote.CastAtUtc));
+                entries.Add(new MergePlanEntry(AccountMergeEntryKind.Vote, AccountMergeEntryAction.Moved, vote.Id, vote.UserAccountId, vote.Weight.ToString(CultureInfo.InvariantCulture), vote.CastAtUtc));
+                movedVotes.Add(vote);
                 effects.Add((_, _) => vote.UserAccountId = survivorId);
             }
         }
@@ -502,11 +580,12 @@ public sealed class AccountMergeLedger(
             }
             else
             {
-                entries.Add(new MergePlanEntry(AccountMergeEntryKind.ConceptAppraisal, AccountMergeEntryAction.Moved, appraisal.Id, appraisal.UserAccountId, appraisal.VoterKey, appraisal.CastAtUtc));
+                entries.Add(new MergePlanEntry(AccountMergeEntryKind.ConceptAppraisal, AccountMergeEntryAction.Moved, appraisal.Id, appraisal.UserAccountId, $"{appraisal.VoterClass}|{appraisal.VoterKey}", appraisal.CastAtUtc));
                 effects.Add((_, _) =>
                 {
                     appraisal.UserAccountId = survivorId;
                     appraisal.VoterKey = survivorKey;
+                    appraisal.VoterClass = VoterClass.Member; // the survivor is Active here, which is what makes an account a Member voter
                 });
             }
         }
@@ -518,7 +597,7 @@ public sealed class AccountMergeLedger(
             effects.Add((_, _) => supportEvent.UserAccountId = survivorId);
         }
 
-        var reduction = new Reduction(survivor, folded, entries, effects, foldedEvents.Count > 0);
+        var reduction = new Reduction(survivor, folded, entries, effects, movedVotes, foldedEvents.Count > 0);
         if (mergeId is { } m)
         {
             reduction.MergeId = m;
@@ -538,7 +617,7 @@ public sealed class AccountMergeLedger(
 
     private async Task StageIfMembershipAsync(Bifrost.Web.Domain.Membership? membership, IEnumerable<PatronSupportEvent> events, DateTimeOffset now, CancellationToken cancellationToken)
     {
-        if (membership is not null)
+        if (membership is not null && dbContext.Entry(membership).State != EntityState.Deleted)
         {
             await patronageService.StageTierSnapshotAsync(membership, events, now, cancellationToken);
         }
@@ -558,6 +637,12 @@ public sealed class AccountMergeLedger(
     };
 
     private static string AppraisalKey(Guid accountId) => "account:" + accountId.ToString("N");
+
+    private static (VoterClass? Class, string? Key) ParseAppraisalPrior(string? prior)
+    {
+        var split = prior?.IndexOf('|') ?? -1;
+        return split > 0 && Enum.TryParse<VoterClass>(prior![..split], out var voterClass) ? (voterClass, prior[(split + 1)..]) : (null, null);
+    }
 }
 
 /// <summary>Finalizes merges past their grace every five minutes. Copies the SealedBallotCloser shape: a new scope per tick, a warning on failure.</summary>

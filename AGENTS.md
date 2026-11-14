@@ -80,3 +80,11 @@ Then start the first implementation milestone:
 - work items
 - motions
 - ledgers
+
+## Live Postgres tests
+
+Most tests run on the in-memory EF provider, which enforces no unique index, transaction, concurrency token or trigger. The tests that need a real server (`tests/Bifrost.Web.Tests/AccountMergePostgresTests.cs`: commit atomicity, the `(MergeId, Seq)` unique index, the sweeper racing the saga, overlapping merges refused by the database, the migration's rollback guard) run only when `BIFROST_TEST_PG` holds a connection string with no `Database=`, for a role that may create databases; otherwise they are skipped with that reason. Each test creates its own database, builds it through the real migrations and the class drops it, so point the variable at a disposable server:
+
+```bash
+BIFROST_TEST_PG='Host=127.0.0.1;Port=54329;Username=postgres' dotnet test tests/Bifrost.Web.Tests --filter FullyQualifiedName~AccountMergePostgresTests
+```

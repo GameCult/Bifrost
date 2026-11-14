@@ -856,7 +856,10 @@ app.MapPost("/auth/heimdall/complete", async (
                 held.Value.Value,
                 form?["code"].ToString(),
                 form?["pendingLinkId"].ToString(),
-                httpContext.User.FindFirstValue(BifrostClaimTypes.HeimdallAccountId),
+                // A folded or frozen account links nothing: the actor accessor's standing decides, not the raw claim.
+                (await httpContext.RequestServices.GetRequiredService<ICurrentBifrostActorAccessor>().GetAsync(cancellationToken)).Merge is null
+                    ? httpContext.User.FindFirstValue(BifrostClaimTypes.HeimdallAccountId)
+                    : null,
                 cancellationToken);
             if (step.Next is not null)
             {
