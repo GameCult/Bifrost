@@ -17,6 +17,9 @@ public sealed class StatusModel(
     /// <summary>Whether this session belongs to a Heimdall account whose logins the Linked accounts page can manage.</summary>
     public bool CanManageLogins => User.FindFirstValue(BifrostClaimTypes.HeimdallAccountId) is { Length: > 0 };
 
+    /// <summary>Whether this account is in, or was in, a merge: the link to Merge status is shown only then.</summary>
+    public bool HasMerges { get; private set; }
+
     public CurrentBifrostActor Actor { get; private set; } = CurrentBifrostActor.Anonymous;
 
     public MembershipInvitation? Invitation { get; private set; }
@@ -50,6 +53,9 @@ public sealed class StatusModel(
     public async Task OnGetAsync(CancellationToken cancellationToken)
     {
         Actor = await actorAccessor.GetAsync(cancellationToken);
+        HasMerges = Actor.Merge is not null
+            || (Actor.UserAccount is { } account
+                && await dbContext.AccountMerges.AnyAsync(x => x.SurvivorUserAccountId == account.Id || x.FoldedUserAccountId == account.Id, cancellationToken));
 
         if (Actor.UserAccount is null)
         {

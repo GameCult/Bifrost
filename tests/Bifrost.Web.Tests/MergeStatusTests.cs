@@ -16,7 +16,7 @@ namespace Bifrost.Web.Tests;
 /// </summary>
 public sealed class MergeStatusTests
 {
-    private static string Enc(string text) => WebUtility.HtmlEncode(text);
+    private static string Enc(string text) => System.Text.Encodings.Web.HtmlEncoder.Default.Encode(text);
 
     private static int Notices(string html) => Regex.Matches(html, "class=\"merge-notice\"").Count;
 
@@ -113,6 +113,8 @@ public sealed class MergeStatusTests
         var final = await Html(w, w.SurvivorSession);
         Assert.Equal(AccountMergeState.Final, (await rig.MergeAsync(w.MergeId)).State);
         Assert.Equal(0, Notices(final));
+        Assert.Contains("/Membership/MergeStatus", await Html(w, w.SurvivorSession, "/Membership/Status"));
+        Assert.DoesNotContain("/Membership/MergeStatus", await Html(w, w.StrangerSession, "/Membership/Status"));
         Assert.Contains(Enc(MergeWording.State(AccountMergeState.Final)), final);
 
         foreach (var state in new[] { AccountMergeState.Undone, AccountMergeState.Failed })

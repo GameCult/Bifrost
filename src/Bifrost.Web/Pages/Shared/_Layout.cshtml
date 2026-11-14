@@ -57,6 +57,11 @@
             </div>
         </header>
 
+        @if (User.Identity?.IsAuthenticated == true)
+        {
+            @await Component.InvokeAsync("MergeNotice")
+        }
+
         <main class="page-frame">
             @RenderBody()
         </main>
