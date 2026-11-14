@@ -312,6 +312,8 @@ public sealed class HeimdallIdentityMoveClientTests
     [InlineData(HttpStatusCode.BadRequest, """{"statusCode":400,"error":"Bad Request","message":"x"}""")]
     [InlineData(HttpStatusCode.BadRequest, """{"message":"no error field"}""")]
     [InlineData(HttpStatusCode.Conflict, """{"error":"invalid_request"}""")]
+    [InlineData(HttpStatusCode.RequestEntityTooLarge, """{"error":"invalid_request"}""")] // Heimdall's own 413 for a body over its limit; the client's rule is exactly 400
+    [InlineData(HttpStatusCode.UnsupportedMediaType, """{"error":"invalid_request"}""")]
     [InlineData(HttpStatusCode.RequestTimeout, "")]
     [InlineData(HttpStatusCode.RequestTimeout, """{"error":"request_timeout"}""")]
     [InlineData(HttpStatusCode.Gone, "")]
