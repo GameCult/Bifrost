@@ -139,8 +139,12 @@ builder.Services.AddSingleton<RegistrationChallengeService>();
 builder.Services.AddSingleton<RegistrationRateLimit>();
 builder.Services.AddScoped<NativeRegistration>();
 builder.Services.AddHostedService<SealedBallotCloser>();
+builder.Services.AddOptions<AccountMergeOptions>().BindConfiguration(AccountMergeOptions.SectionName);
 builder.Services.AddScoped<Bifrost.Web.Features.Membership.AccountMergeLedger>();
 builder.Services.AddScoped<Bifrost.Web.Features.Membership.AccountMergeSaga>();
+builder.Services.AddScoped<Bifrost.Web.Features.Membership.MergeNoticeFeed>();
+builder.Services.AddOptions<ChatNoticesOptions>().BindConfiguration(ChatNoticesOptions.SectionName);
+builder.Services.AddSingleton<Bifrost.Web.Features.Membership.MergeProofs>();
 builder.Services.AddHostedService<Bifrost.Web.Features.Membership.AccountMergeSweeper>();
 builder.Services.AddScoped<MotionEveSurfaceService>();
 builder.Services.AddScoped<PatronageService>();
@@ -154,15 +158,8 @@ builder.Services.AddScoped<ReadinessService>();
 builder.Services.AddScoped<ApplicationBootstrapper>();
 builder.Services.AddSingleton<StartupConfigurationValidator>();
 builder.Services.AddScoped<IAuthorizationHandler, ActiveMemberAuthorizationHandler>();
-builder.Services.AddHttpClient<HeimdallAuthService>((serviceProvider, client) =>
-    HeimdallAuthService.ConfigureClient(client, serviceProvider.GetRequiredService<IOptions<HeimdallOptions>>().Value))
-    .RedactLoggedHeaders(HeimdallAuthService.RedactsHeader);
-// Heimdall's member routes take only the member's bearer: this client carries no app secret.
-builder.Services.AddHttpClient<HeimdallMemberClient>((serviceProvider, client) =>
-    HeimdallMemberClient.ConfigureClient(client, serviceProvider.GetRequiredService<IOptions<HeimdallOptions>>().Value))
-    .RedactLoggedHeaders(HeimdallAuthService.RedactsHeader);
-// The mover route is an app-secret call like HeimdallAuthService's: same ConfigureClient, same header redaction, no redirects.
-builder.Services.AddHeimdallIdentityMoveClient();
+// The app-secret and member-bearer clients and the mover: no redirects (see HeimdallClientServices).
+builder.Services.AddHeimdallClients();
 builder.Services.AddSingleton<LinkedAccountsSnapshots>();
 builder.Services.AddSingleton<Bifrost.Web.Features.Passkeys.PasskeyRelyingParty>();
 builder.Services.AddSingleton<Bifrost.Web.Features.Passkeys.PasskeyCeremonies>();
@@ -826,6 +823,8 @@ app.MapPost("/api/sealed-motions/{id:guid}/mind", async (
         : await SealedCall(async () => await service.HandleAsync(id, envelope, ct));
 }).AllowAnonymous();
 
+MergeNoticeEndpoints.Map(app);
+
 app.MapGet("/auth/heimdall/complete", (HttpContext httpContext) =>
 {
     httpContext.Response.Headers.CacheControl = "no-store";
@@ -884,7 +883,7 @@ app.MapPost("/auth/heimdall/complete", async (
             }
 
             httpContext.Response.Cookies.Delete(step.CookieName, HeimdallAttemptCookie.DeleteOptions());
-            return Results.LocalRedirect(HeimdallLinkOutcomes.Redirect(step.Outcome!.Value));
+            return Results.LocalRedirect(HeimdallLinkOutcomes.Redirect(step.Outcome!.Value, step.ReturnPath));
         }
 
         var signIn = await heimdallAuthService.CompleteAsync(
@@ -906,7 +905,7 @@ app.MapPost("/auth/heimdall/complete", async (
         }
 
         return linking
-            ? Results.LocalRedirect(HeimdallLinkOutcomes.Redirect(HeimdallLinkOutcome.Error))
+            ? Results.LocalRedirect(HeimdallLinkOutcomes.Redirect(HeimdallLinkOutcome.Error, heimdallAuthService.MergeReturnPathOf(held?.Value, attempt)))
             : Results.Redirect(HeimdallAuthService.ErrorRedirect);
     }
 }).AllowAnonymous();

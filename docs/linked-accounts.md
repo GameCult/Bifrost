@@ -47,7 +47,7 @@ A link refused because the login already belongs to another account (`409 identi
 
 ## Not here
 
-- Merging two accounts. A refused link ends there; nothing is moved or merged.
+- Merging two accounts. A refused link ends there; nothing is moved or merged. Merging is the separate Merge accounts page, behind the `AccountMerge:Enabled` flag (`docs/account-merge.md`, Pages and flags).
 - Step-up through Discord, Patreon or Twitch. Heimdall does not offer it to the `bifrost` profile.
 - Linking Twitch or GitHub: not admitted by the `bifrost` profile, and Heimdall's GitHub runtime is not implemented.
 - A list of other apps' logins, grants or consent receipts (Heimdall's grants page).

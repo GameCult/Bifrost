@@ -407,6 +407,7 @@ public sealed class AccountMergePostgresTests(MergePostgres postgres) : IClassFi
         {
             var error = await Assert.ThrowsAnyAsync<Exception>(() => db.GetService<IMigrator>().MigrateAsync("20261113120000_AddPasskeyCredentials"));
             Assert.Contains("roll-forward only", Pg(error).MessageText);
+            // The acks migration reverts first (it holds only acks); the saga migration is the one that refuses.
             Assert.Equal("20261114130000_AddAccountMergeSaga", (await db.Database.GetAppliedMigrationsAsync()).Last());
         }
 
@@ -415,7 +416,7 @@ public sealed class AccountMergePostgresTests(MergePostgres postgres) : IClassFi
         await down.GetService<IMigrator>().MigrateAsync("20261113120000_AddPasskeyCredentials");
         Assert.Equal("20261113120000_AddPasskeyCredentials", (await down.Database.GetAppliedMigrationsAsync()).Last());
         await down.GetService<IMigrator>().MigrateAsync(); // and up again, trigger and index and all
-        Assert.Equal("20261114130000_AddAccountMergeSaga", (await down.Database.GetAppliedMigrationsAsync()).Last());
+        Assert.Equal("20261114140000_AddAccountMergeNoticeAcks", (await down.Database.GetAppliedMigrationsAsync()).Last());
     }
 
     // ---- restage and intake journal ----
@@ -873,6 +874,7 @@ public sealed class AccountMergePostgresTests(MergePostgres postgres) : IClassFi
         {
             var error = await Assert.ThrowsAnyAsync<Exception>(() => db.GetService<IMigrator>().MigrateAsync("20261114120000_AddAccountMerges"));
             Assert.Contains("AddAccountMergeSaga cannot be reverted", Pg(error).MessageText);
+            // The acks migration reverts first (it holds only acks); the saga migration is the one that refuses.
             Assert.Equal("20261114130000_AddAccountMergeSaga", (await db.Database.GetAppliedMigrationsAsync()).Last());
         }
 

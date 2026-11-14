@@ -77,12 +77,12 @@ public sealed class FakeMoves(Func<DateTimeOffset> now)
 
     /// <summary>
     /// Issues a live bearer of <paramref name="account"/> for the bifrost app. A weak proof is a sign-in through <paramref name="authIdentityId"/>
-    /// at <paramref name="authAgo"/> before now; a step-up (<paramref name="stepUpMethod"/>) adds step_up_at at <paramref name="stepUpAgo"/> before now.
+    /// at <paramref name="authAgo"/> before now (<paramref name="bearer"/> registers a token another fake minted, such as the sign-in's JWT, so one string is a proof at both); a step-up (<paramref name="stepUpMethod"/>) adds step_up_at at <paramref name="stepUpAgo"/> before now.
     /// </summary>
-    public string Issue(string account, string? authIdentityId = null, string? stepUpMethod = null, int authAgo = 0, int? stepUpAgo = null, string aud = App)
+    public string Issue(string account, string? authIdentityId = null, string? stepUpMethod = null, int authAgo = 0, int? stepUpAgo = null, string aud = App, string? bearer = null)
     {
         var at = now().ToUnixTimeSeconds();
-        var token = "bearer-" + Guid.NewGuid().ToString("N");
+        var token = bearer ?? "bearer-" + Guid.NewGuid().ToString("N");
         _tokens[token] = new Claims(
             account, Guid.NewGuid().ToString(), aud, at - authAgo, authIdentityId,
             stepUpMethod is null ? null : at - (stepUpAgo ?? 0), stepUpMethod, at + Lifetime);

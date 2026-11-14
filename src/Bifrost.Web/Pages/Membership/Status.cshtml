@@ -32,6 +32,14 @@
         </div>
     }
 
+    @if (Model.HasMerges)
+    {
+        <div class="panel-actions">
+            <a class="button secondary" asp-page="/Membership/MergeStatus">Merge status</a>
+            <span class="muted">See an account merge and, for seven days, undo it.</span>
+        </div>
+    }
+
     @if (Model.Invitation is not null)
     {
         <div class="callout success">

@@ -1083,4 +1083,39 @@ public sealed class AccountMergeLedgerTests
 
         Assert.Equal(MembershipStatus.Merged, (await world.MembershipOfAsync(folded)).Status);
     }
+
+    [Fact]
+    public async Task The_digest_names_the_survivor_so_two_memberless_survivors_with_identical_records_digest_differently()
+    {
+        // A memberless survivor leaves no entry that mentions it: the plan for (A, folded) and for (C, folded) is the same list of
+        // entries, so only the pair the digest is made for can tell them apart (heimdall-body:finding:cut-merge-saga.s2.digest-pair-binding-unpinned).
+        var world = new World();
+        var folded = await world.AccountAsync("folded");
+        var a = await MemberlessAsync(world, "survivor-a");
+        var c = await MemberlessAsync(world, "survivor-c");
+
+        await using var db = world.Db();
+        var forA = await world.Ledger(db).PlanAsync(a.Id, folded.Id, default);
+        var forC = await world.Ledger(db).PlanAsync(c.Id, folded.Id, default);
+
+        Assert.Empty(forA.Blocks);
+        Assert.Empty(forC.Blocks);
+        Assert.Equal(forA.Entries.Select(x => (x.Kind, x.Action, x.PriorText)), forC.Entries.Select(x => (x.Kind, x.Action, x.PriorText)));
+        Assert.NotEqual(forA.Digest(a.Id, folded.Id), forC.Digest(c.Id, folded.Id));
+        Assert.NotEqual(forA.Digest(a.Id, folded.Id), forA.Digest(c.Id, folded.Id)); // a digest made for one pair does not confirm the other
+        Assert.Equal(forA.Digest(a.Id, folded.Id), (await world.Ledger(db).PlanAsync(a.Id, folded.Id, default)).Digest(a.Id, folded.Id));
+    }
+
+    private static async Task<UserAccount> MemberlessAsync(World world, string name)
+    {
+        await using var db = world.Db();
+        var account = new UserAccount
+        {
+            DisplayName = name, BifrostIdentity = name, NormalizedBifrostIdentity = name, HeimdallAccountId = $"hd-{name}-{Guid.NewGuid():N}",
+            CreatedAtUtc = T0, LastSeenAtUtc = T0
+        };
+        db.UserAccounts.Add(account);
+        await db.SaveChangesAsync();
+        return account;
+    }
 }

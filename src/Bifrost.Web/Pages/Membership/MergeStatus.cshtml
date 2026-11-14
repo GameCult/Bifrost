@@ -1,0 +1,100 @@
+@page
+@model Bifrost.Web.Pages.Membership.MergeStatusModel
+@{
+    ViewData["Title"] = "Merge status";
+}
+
+<section class="panel">
+    <span class="eyebrow">Account merge</span>
+    <h1>Merge status</h1>
+    <p class="panel-intro">
+        A merge folds one account into another. The account it kept can undo it for seven days, with a fresh sign-in for
+        every login that moved.
+    </p>
+
+    @if (Model.ResultMessage is not null)
+    {
+        <div class="callout">@Model.ResultMessage</div>
+    }
+
+    @if (Model.UndoMessage is not null)
+    {
+        <div class="callout">@Model.UndoMessage</div>
+    }
+
+    @if (Model.Merges.Count == 0)
+    {
+        <p class="muted">There is no merge to show for this account.</p>
+    }
+
+    @foreach (var merge in Model.Merges)
+    {
+        <article class="status-banner">
+            <strong>@merge.State</strong>
+            @if (merge.Why is not null)
+            {
+                <p class="muted">@merge.Why</p>
+            }
+            @if (merge.Outcome is not null)
+            {
+                <p class="muted">@merge.Outcome</p>
+            }
+            <ul>
+                @if (merge.Confirmed is not null)
+                {
+                    <li>Confirmed @merge.Confirmed</li>
+                }
+                @if (merge.Committed is not null)
+                {
+                    <li>Merged @merge.Committed</li>
+                }
+                @if (merge.GraceEnds is not null)
+                {
+                    <li>Undo window ends @merge.GraceEnds</li>
+                }
+                @if (merge.Final is not null)
+                {
+                    <li>Final @merge.Final</li>
+                }
+                @if (merge.SurvivorProofs.Count > 0)
+                {
+                    <li>Kept account proved with: @string.Join(", ", merge.SurvivorProofs)</li>
+                }
+                @if (merge.FoldedProofs.Count > 0)
+                {
+                    <li>Folded account proved with: @string.Join(", ", merge.FoldedProofs)</li>
+                }
+            </ul>
+            @if (merge.DaysLeft is not null)
+            {
+                <p><span class="pill warning">@merge.DaysLeft</span></p>
+            }
+            @if (merge.TierNote is not null)
+            {
+                <p class="muted">@merge.TierNote</p>
+            }
+
+            @if (merge.CanUndo)
+            {
+                @if (merge.Ready)
+                {
+                    <form method="post" asp-page-handler="Undo">
+                        <input type="hidden" name="mergeId" value="@merge.Id" />
+                        <button class="button" type="submit">Undo this merge</button>
+                    </form>
+                }
+                else
+                {
+                    <p class="muted">To undo, sign in again through each login that moved. The sign-ins are held in memory for a few minutes.</p>
+                    @foreach (var provider in merge.NeedProof)
+                    {
+                        <form method="post" asp-page-handler="ProveForUndo">
+                            <input type="hidden" name="via" value="@provider" />
+                            <button class="button secondary" type="submit">Sign in with @Bifrost.Web.Pages.Membership.LinkedAccountsModel.ProviderName(provider)</button>
+                        </form>
+                    }
+                }
+            }
+        </article>
+    }
+</section>

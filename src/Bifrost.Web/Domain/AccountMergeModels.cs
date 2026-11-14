@@ -134,3 +134,32 @@ public sealed class AccountMergeEntry
 
     public AccountMerge Merge { get; set; } = null!;
 }
+
+/// <summary>What a merge notice tells its reader: the merge committed, was undone, or can no longer be undone. Stored as a string.</summary>
+public enum AccountMergeNoticeKind
+{
+    Merged,
+    Undone,
+    Final
+}
+
+/// <summary>Who reads the notice feed. A closed set: a new reader is a new constant (and its own token), never a string from a request. Stored as a string.</summary>
+public enum AccountMergeNoticeTarget
+{
+    Chat
+}
+
+/// <summary>
+/// The one fact a notice reader adds: it has seen this notice. The notice itself is derived from the merge row on every read
+/// (MergeNoticeFeed) and has no stored status; nothing but the feed writes this row.
+/// </summary>
+public sealed class AccountMergeNoticeAck
+{
+    public Guid MergeId { get; set; }
+
+    public AccountMergeNoticeKind Kind { get; set; }
+
+    public AccountMergeNoticeTarget Target { get; set; }
+
+    public DateTimeOffset AckedUtc { get; set; }
+}
