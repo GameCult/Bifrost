@@ -431,9 +431,66 @@ public sealed partial class AccountMergeSaga(
 
     // ---- operator settle ----
 
-    public Task<SettleOutcome> SettleStuckAsync(
-        Guid mergeId, SettleChoice choice, string typedMoveId, Guid operatorUserAccountId, CancellationToken cancellationToken) =>
-        throw new NotImplementedException();
+    /// <summary>The Heimdall answers no replay can change: the one the saga recorded and stopped on, the key ring's loss, and a move Heimdall holds but will not confirm.</summary>
+    public static readonly string[] SettleableOutcomes = [ReceiptMismatch, ProofsUnreadable, MoveIdConflict];
+
+    /// <summary>
+    /// Whether an operator may end this merge's leg: in flight (Confirmed or UndoRequested) and stopped on one of the closed
+    /// outcomes. Derived from the row on every read; there is no stuck flag.
+    /// </summary>
+    public static bool IsSettleable(AccountMerge merge) =>
+        merge.State is AccountMergeState.Confirmed or AccountMergeState.UndoRequested && SettleableOutcomes.Contains(merge.LastOutcome);
+
+    /// <summary>
+    /// A platform admin's end of a stuck leg (ruling merge-stuck-end-only-typed-id): FailForward turns a stuck Confirmed merge into
+    /// Failed, AbandonUndo returns a stuck UndoRequested merge to Committed with its grace. Only with the leg's stored move id typed back.
+    /// Never adopts or invents a Heimdall receipt; a merge Heimdall moved (HeimdallMoved, Committed) is never settleable. One save
+    /// guarded by State carries the transition and its audit row (choice only): the loser of a race with <see cref="AdvanceAsync"/>
+    /// answers Lost and changes nothing. The caller has checked the operator's authority.
+    /// </summary>
+    public async Task<SettleOutcome> SettleStuckAsync(
+        Guid mergeId, SettleChoice choice, string typedMoveId, Guid operatorUserAccountId, CancellationToken cancellationToken)
+    {
+        var forward = choice == SettleChoice.FailForward;
+        var merge = await LoadAsync(mergeId, cancellationToken);
+        if (merge is null || merge.State != (forward ? AccountMergeState.Confirmed : AccountMergeState.UndoRequested) || !IsSettleable(merge))
+        {
+            return new SettleOutcome.NotStuck();
+        }
+
+        if (!string.Equals(typedMoveId, forward ? merge.HeimdallMoveId : merge.HeimdallReverseMoveId, StringComparison.Ordinal))
+        {
+            return new SettleOutcome.WrongMoveId();
+        }
+
+        merge.SealedProofs = null;
+        merge.NextAttemptUtc = null;
+        if (forward)
+        {
+            merge.State = AccountMergeState.Failed;
+            merge.FailedUtc = timeProvider.GetUtcNow();
+            merge.FailureCode = OperatorFailed;
+            merge.LastOutcome = OperatorFailed;
+        }
+        else
+        {
+            merge.State = AccountMergeState.Committed;
+            merge.LastOutcome = UndoOperatorAbandoned;
+        }
+
+        try
+        {
+            await audit.RecordAsync(operatorUserAccountId, nameof(AccountMerge), merge.Id, "merge.settled", choice.ToString(), cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            dbContext.ChangeTracker.Clear();
+            return new SettleOutcome.Lost();
+        }
+
+        logger.LogInformation("Account merge {MergeId} {State}: settled by an operator ({Choice})", merge.Id, merge.State, choice);
+        return new SettleOutcome.Settled();
+    }
 
     // ---- helpers ----
 

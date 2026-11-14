@@ -737,8 +737,8 @@ public sealed class AccountMergeLedger(
 }
 
 /// <summary>
-/// The one merge loop, every 30 seconds: the saga advances every due in-flight merge (confirm, replay, undo), then the ledger finalizes
-/// merges past their grace. A new scope per tick, a warning on failure, the SealedBallotCloser shape. No second merge hosted service exists.
+/// The one merge loop, every 30 seconds: the proof holder drops expired bearers, the saga advances every due in-flight merge (confirm,
+/// replay, undo), then the ledger finalizes merges past their grace. A new scope per tick, a warning on failure, the SealedBallotCloser shape. No second merge hosted service exists.
 /// </summary>
 public sealed class AccountMergeSweeper(IServiceScopeFactory scopes, TimeProvider clock, ILogger<AccountMergeSweeper> logger) : BackgroundService
 {
@@ -753,6 +753,7 @@ public sealed class AccountMergeSweeper(IServiceScopeFactory scopes, TimeProvide
             {
                 using var scope = scopes.CreateScope();
                 var now = clock.GetUtcNow();
+                scope.ServiceProvider.GetRequiredService<MergeProofs>().PruneExpired();
                 await scope.ServiceProvider.GetRequiredService<AccountMergeSaga>().AdvanceDueAsync(now, stoppingToken);
                 await scope.ServiceProvider.GetRequiredService<AccountMergeLedger>().FinalizeDueAsync(now, stoppingToken);
             }

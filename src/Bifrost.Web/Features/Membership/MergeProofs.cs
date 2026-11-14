@@ -61,7 +61,7 @@ public abstract record UndoPeekResult
 /// the member proves again. It decides nothing about the merge: the saga owns consent, the move and the lifecycle, and Heimdall judges
 /// each proof's tier and freshness. <see cref="ProofLifetime"/> is only a margin under Heimdall's 300 s weak window, so a stale proof
 /// is not sent to fail a merge. Provider is the only proof bookkeeping Bifrost has (the redeem names the provider, not the identity),
-/// so a login list holding two logins of one provider is refused, and two sides holding a login of one provider are a conflict Peek names before consent. Every access drops expired bearers. Peek never consumes: the caller <see cref="Clear"/>s once the saga
+/// so a login list holding two logins of one provider is refused, and two sides holding a login of one provider are a conflict Peek names before consent. Every access, and the merge sweeper's tick, drops expired bearers. Peek never consumes: the caller <see cref="Clear"/>s once the saga
 /// has taken the proofs, so a refusal that wrote nothing does not cost a re-proof.
 /// </summary>
 public sealed class MergeProofs(TimeProvider timeProvider)
@@ -186,7 +186,14 @@ public sealed class MergeProofs(TimeProvider timeProvider)
         }
     }
 
-    public void PruneExpired() => throw new NotImplementedException();
+    /// <summary>Drops every expired bearer without any member touching the page; the merge sweeper's tick calls it, so none outlives <see cref="ProofLifetime"/> plus one tick.</summary>
+    public void PruneExpired()
+    {
+        lock (_gate)
+        {
+            Prune(timeProvider.GetUtcNow());
+        }
+    }
 
     private static List<string> UnprovedProviders(Side side, IEnumerable<string> providers) =>
         [.. providers.Distinct(StringComparer.Ordinal).Where(x => !side.Proofs.ContainsKey(x))];

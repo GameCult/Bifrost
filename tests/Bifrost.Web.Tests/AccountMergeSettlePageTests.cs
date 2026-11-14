@@ -52,12 +52,12 @@ public sealed class AccountMergeSettlePageTests
         public Task<(HttpResponseMessage Response, string Html)> Get(string session, string query = "") => MergePage.GetAsync(Rig.Host, session, query, Url);
 
         public async Task<HttpResponseMessage> Post(string session, string handler, string mergeId, string moveId, MergePage.Antiforgery? token = null) =>
-            await MergePage.PostAsync(Rig.Host, session, token ?? await MergePage.TokenAsync(Rig.Host, session, MergePage.Url), handler,
+            await MergePage.PostAsync(Rig.Host, session, token ?? await MergePage.TokenAsync(Rig.Host, session, HeimdallHost.LinkedAccountsUrl), handler,
                 new Dictionary<string, string> { ["mergeId"] = mergeId, ["moveId"] = moveId }, Url);
     }
 
     private static bool Refused(HttpResponseMessage response) =>
-        response.StatusCode == HttpStatusCode.Forbidden || (response.StatusCode == HttpStatusCode.Redirect && (response.Headers.Location?.OriginalString.Contains("AccessDenied", StringComparison.OrdinalIgnoreCase) ?? false));
+        response.StatusCode == HttpStatusCode.Forbidden || (response.StatusCode == HttpStatusCode.Redirect && (response.Headers.Location?.OriginalString.Contains("/Membership/Status?ReturnUrl=", StringComparison.Ordinal) ?? false));
 
     [Fact]
     public async Task A_member_who_is_not_a_platform_admin_is_refused_on_the_listing_and_on_both_posts_and_nothing_changes()
@@ -67,7 +67,7 @@ public sealed class AccountMergeSettlePageTests
         var requests = w.Rig.Moves.Requests.Count;
 
         var (get, html) = await w.Get(w.MemberSession);
-        Assert.True(Refused(get), $"listing gave {(int)get.StatusCode}");
+        Assert.True(Refused(get), $"listing gave {(int)get.StatusCode} {MergePage.Location(get)}");
         Assert.DoesNotContain(merge.HeimdallMoveId!, html);
         Assert.True(Refused(await w.Post(w.MemberSession, "FailForward", w.Forward.Id.ToString(), merge.HeimdallMoveId!)));
         Assert.True(Refused(await w.Post(w.MemberSession, "AbandonUndo", w.Forward.Id.ToString(), merge.HeimdallMoveId!)));
