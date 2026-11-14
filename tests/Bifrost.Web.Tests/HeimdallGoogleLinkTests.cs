@@ -556,7 +556,7 @@ public sealed class HeimdallGoogleLinkTests
     }
 
     [Theory]
-    [InlineData("9")]
+    [InlineData("11")]
     [InlineData("-1")]
     [InlineData("99")]
     public async Task An_attempt_cookie_with_an_undefined_purpose_is_no_attempt_and_asks_Heimdall_for_nothing(string purpose)
