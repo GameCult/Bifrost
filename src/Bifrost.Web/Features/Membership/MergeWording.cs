@@ -67,6 +67,9 @@ public static class MergeWording
         _ => string.Empty
     };
 
+    /// <summary>Skeleton: the words for a closed confirm code on the merge page. Written with the page.</summary>
+    public static string Confirm(string code) => string.Empty;
+
     public static string UndoCode(UndoOutcome outcome) => outcome switch
     {
         UndoOutcome.Requested => "requested",

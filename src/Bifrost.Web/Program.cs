@@ -139,6 +139,7 @@ builder.Services.AddSingleton<RegistrationChallengeService>();
 builder.Services.AddSingleton<RegistrationRateLimit>();
 builder.Services.AddScoped<NativeRegistration>();
 builder.Services.AddHostedService<SealedBallotCloser>();
+builder.Services.AddOptions<AccountMergeOptions>().BindConfiguration(AccountMergeOptions.SectionName);
 builder.Services.AddScoped<Bifrost.Web.Features.Membership.AccountMergeLedger>();
 builder.Services.AddScoped<Bifrost.Web.Features.Membership.AccountMergeSaga>();
 builder.Services.AddSingleton<Bifrost.Web.Features.Membership.MergeProofs>();
