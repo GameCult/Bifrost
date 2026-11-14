@@ -18,6 +18,17 @@ public sealed class MergePreviewTests
         new([], [.. entries], left ?? new Dictionary<string, int>());
 
     [Fact]
+    public void The_provider_conflict_names_the_providers_and_says_to_prove_that_side_again_after_unlinking()
+    {
+        // The conflict is read from the login list held with the proofs, which unlinking does not change until the member proves again.
+        var words = MergePreview.ProviderConflict(["Discord", "Twitch"]);
+
+        Assert.Contains("Discord and Twitch", words);
+        Assert.Contains("Unlink", words);
+        Assert.Contains("prove that account again", words);
+    }
+
+    [Fact]
     public void Every_block_code_has_its_own_words_and_none_names_an_account()
     {
         var words = BlockCodes.Select(MergePreview.Block).ToList();

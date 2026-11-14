@@ -44,6 +44,17 @@ public sealed class MergeWordingTests
     public void Every_outcome_the_saga_stores_has_words(string outcome) => Assert.False(string.IsNullOrWhiteSpace(MergeWording.Outcome(outcome)), outcome);
 
     [Theory]
+    [InlineData("operator_failed", "ended")]
+    [InlineData("undo_operator_abandoned", "merge stands")]
+    public void An_operators_settle_has_its_own_words_not_the_retry_line(string outcome, string says)
+    {
+        var words = MergeWording.Outcome(outcome);
+
+        Assert.Contains(says, words);
+        Assert.DoesNotContain("try again", words);
+    }
+
+    [Theory]
     [InlineData("HTTP 502")]
     [InlineData("HEIMDALL FREE TEXT")]
     [InlineData("undo_made_up_code")]
