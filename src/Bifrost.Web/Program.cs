@@ -142,6 +142,8 @@ builder.Services.AddHostedService<SealedBallotCloser>();
 builder.Services.AddOptions<AccountMergeOptions>().BindConfiguration(AccountMergeOptions.SectionName);
 builder.Services.AddScoped<Bifrost.Web.Features.Membership.AccountMergeLedger>();
 builder.Services.AddScoped<Bifrost.Web.Features.Membership.AccountMergeSaga>();
+builder.Services.AddScoped<Bifrost.Web.Features.Membership.MergeNoticeFeed>();
+builder.Services.AddOptions<ChatNoticesOptions>().BindConfiguration(ChatNoticesOptions.SectionName);
 builder.Services.AddSingleton<Bifrost.Web.Features.Membership.MergeProofs>();
 builder.Services.AddHostedService<Bifrost.Web.Features.Membership.AccountMergeSweeper>();
 builder.Services.AddScoped<MotionEveSurfaceService>();
@@ -820,6 +822,8 @@ app.MapPost("/api/sealed-motions/{id:guid}/mind", async (
         ? Results.Text("{\"error\":\"The envelope is malformed.\"}", "application/json", statusCode: StatusCodes.Status400BadRequest)
         : await SealedCall(async () => await service.HandleAsync(id, envelope, ct));
 }).AllowAnonymous();
+
+MergeNoticeEndpoints.Map(app);
 
 app.MapGet("/auth/heimdall/complete", (HttpContext httpContext) =>
 {

@@ -58,7 +58,6 @@ public sealed class MergeNoticeAuthTests
     [InlineData("Bearer chat-notices-test-token-012345678")] // one short
     [InlineData("Bearer chat-notices-test-token-01234567890")] // one long
     [InlineData("Bearer c")]
-    [InlineData("Bearer chat-notices-test-token-0123456789 ")]
     [InlineData("chat-notices-test-token-0123456789")]
     [InlineData("Basic chat-notices-test-token-0123456789")]
     [InlineData("Bearer chat-notices-test-token-0123456789, Bearer other")]

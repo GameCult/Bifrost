@@ -83,6 +83,29 @@ Its stage is derived on every request from `MergeProofs.Snapshot` and the `keep`
 
 Deploy: set `AccountMerge__Enabled` only after Heimdall's identity-moves route is deployed and probed. A Confirmed merge against a Heimdall without it stays Unknown and keeps the folded account frozen.
 
+## Notices
+
+The chat host learns of merges by pulling, never by being pushed to: Bifrost has no event receiver and no outbox. `MergeNoticeFeed` derives the notices from the `AccountMerges` row on every read (merged: `CommittedUtc` set; undone: `UndoneUtc` set; final: `FinalizedUtc` set), so a notice cannot disagree with its merge, and a Failed, Frozen or Confirmed merge (no `CommittedUtc`) yields none. The only stored fact is the reader's ack, one `AccountMergeNoticeAcks` row per (merge, kind, target), written by nothing else (migration `AddAccountMergeNoticeAcks`; the table holds only acks, so its `Down` drops it). The feed never writes a merge column.
+
+```
+GET  /api/merge-notices/chat?after=<iso>&limit=<n>   -> 200 JSON array, oldest first by (occurred_at, merge_id, kind)
+POST /api/merge-notices/chat/ack  {"merge_id": "...", "type": "merged"}   -> 204
+```
+
+Payload, exactly these keys: `type` (`merged`, `undone`, `final`), `merge_id`, `occurred_at` (the matching timestamp, ISO 8601 UTC), `grace_ends_at`, `old_subject` (the folded `UserAccount.Id`, format D, the OIDC `sub` the chat session knew), `new_subject` (the survivor's), `old_preferred_username`, `new_preferred_username` (`NormalizedBifrostIdentity`). `limit` defaults to 50 and is capped at 200. Acks are the cursor: a read returns every unacked notice; `after` only narrows the scan to notices strictly later than that time, so a reader must not skip unacked ones by it. An ack is idempotent (a repeat is 204); an ack for a (merge, kind) the feed would not emit now, such as `undone` for a merge not undone, is 404; a malformed body or unknown `type` is 400.
+
+Auth: `Authorization: Bearer <token>`, compared in constant time after SHA-256 of both sides against `ChatNotices:Token` (environment `ChatNotices__Token`). An empty token turns both routes off (404). A missing or wrong bearer is 401 with an empty body. No cookie, no CORS, `Cache-Control: no-store`. Startup does not require the token.
+
+```
+curl -sS -H "Authorization: Bearer $TOKEN" "$BIFROST/api/merge-notices/chat?limit=50"
+curl -sS -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"merge_id":"<merge_id>","type":"merged"}' "$BIFROST/api/merge-notices/chat/ack"
+```
+
+The feed carries no email, display name, Heimdall id, Matrix id or history flag. It is information for the chat operator's side; back-channel logout (`OidcLogoutReconciler`) stays what ends chat sessions. Chat-side rules that bind Bifrost already hold: undo is refused past Final, and `preferred_username` never changes. A later reader (StreamPixels) adds a target constant and its own token over the same derivation.
+
+Deploy: set `ChatNotices__Token` on Bifrost and hand the same value to the chat host's timer script (the secret's path is the chat steward's).
+
 ## Merged is terminal
 
 Only the ledger writes `Membership.Status = Merged` or leaves it. The other status writers refuse a merged row (`Membership.IsMerged`): the bootstrap-admin promotion (startup and every GitHub sign-in, which is the one status write sign-in sync makes on an existing account) skips it, the Heimdall member-access claim does not activate it, member approval refuses it and the suspension service reports `NotApplicable`. Folded standing itself is still derived from the merge state, never from this status.

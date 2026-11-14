@@ -407,7 +407,8 @@ public sealed class AccountMergePostgresTests(MergePostgres postgres) : IClassFi
         {
             var error = await Assert.ThrowsAnyAsync<Exception>(() => db.GetService<IMigrator>().MigrateAsync("20261113120000_AddPasskeyCredentials"));
             Assert.Contains("roll-forward only", Pg(error).MessageText);
-            Assert.Equal("20261114140000_AddAccountMergeNoticeAcks", (await db.Database.GetAppliedMigrationsAsync()).Last());
+            // The acks migration reverts first (it holds only acks); the saga migration is the one that refuses.
+            Assert.Equal("20261114130000_AddAccountMergeSaga", (await db.Database.GetAppliedMigrationsAsync()).Last());
         }
 
         await ExecuteAsync(world, "DELETE FROM \"AccountMergeEntries\"; DELETE FROM \"AccountMerges\"");
@@ -873,7 +874,8 @@ public sealed class AccountMergePostgresTests(MergePostgres postgres) : IClassFi
         {
             var error = await Assert.ThrowsAnyAsync<Exception>(() => db.GetService<IMigrator>().MigrateAsync("20261114120000_AddAccountMerges"));
             Assert.Contains("AddAccountMergeSaga cannot be reverted", Pg(error).MessageText);
-            Assert.Equal("20261114140000_AddAccountMergeNoticeAcks", (await db.Database.GetAppliedMigrationsAsync()).Last());
+            // The acks migration reverts first (it holds only acks); the saga migration is the one that refuses.
+            Assert.Equal("20261114130000_AddAccountMergeSaga", (await db.Database.GetAppliedMigrationsAsync()).Last());
         }
 
         await ExecuteAsync(world, "DELETE FROM \"AccountMerges\"");
