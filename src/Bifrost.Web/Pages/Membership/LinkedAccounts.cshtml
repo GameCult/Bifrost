@@ -61,7 +61,23 @@
                         {
                             <span class="muted">linked @linkedAt.UtcDateTime.ToString("dd MMM yyyy") UTC</span>
                         }
-                        @if (Model.CanProve)
+                        @if (Model.HasStrongPasskey)
+                        {
+                            @if (Model.PasskeysAvailable)
+                            {
+                            <form method="post" asp-page-handler="UnlinkPasskey" class="inline-actions" data-passkey-unlink>
+                                <input type="hidden" name="identityId" value="@identity.Id" />
+                                <input type="hidden" name="id" />
+                                <input type="hidden" name="rawId" />
+                                <input type="hidden" name="authenticatorData" />
+                                <input type="hidden" name="clientDataJson" />
+                                <input type="hidden" name="signature" />
+                                <input type="hidden" name="userHandle" />
+                                <button class="button secondary" type="submit">Unlink with passkey</button>
+                            </form>
+                            }
+                        }
+                        else if (Model.HasGoogle)
                         {
                             <form method="post" asp-page-handler="Unlink" class="inline-actions">
                                 <input type="hidden" name="identityId" value="@identity.Id" />
@@ -76,23 +92,111 @@
                 <p class="muted">This is your only login. Heimdall will not remove the last one.</p>
             }
 
-            @if (!Model.CanProve)
+            @if (Model.HasStrongPasskey && !Model.PasskeysAvailable)
             {
-                <p class="muted">
-                    Unlinking needs a fresh Google sign-in as proof. Discord and Patreon cannot give that proof, and no Google login
-                    is linked to this account, so nothing can be unlinked from here yet. Linking Google first makes it possible
-                    once Heimdall has Google set up.
+                <p class="callout warning">
+                    This account has a passkey, so unlinking needs it, but passkeys are not available on this server right now (a
+                    configuration fault the operator must fix), so nothing can be unlinked from here at the moment. Nothing is lost:
+                    try again later. If you cannot wait, revoke your passkeys below; unlinking then falls back to a fresh Google sign-in,
+                    if a Google login is linked to this account.
                 </p>
+            }
+            else if (Model.HasStrongPasskey)
+            {
+                <p class="muted">Unlinking asks for one of your passkeys, then signs you in to Heimdall once more and removes only the login you picked.</p>
+            }
+            else if (Model.HasGoogle)
+            {
+                <p class="muted">Unlinking asks you to sign in with Google again as proof, then removes only the login you picked. A passkey, once it has cooled off, is stronger proof and takes over from Google.</p>
             }
             else
             {
-                <p class="muted">Unlinking asks you to sign in with Google again as proof, then removes only the login you picked.</p>
+                <p class="muted">
+                    Unlinking needs strong proof, and none is available. Add a passkey below@(Model.NextStrongAt is { } waiting
+                        ? $" (your newest one counts from {waiting.UtcDateTime:dd MMM yyyy HH:mm} UTC)"
+                        : " (it counts after a 48 hour cooling-off)"),
+                    or link a Google login once Heimdall has Google set up. Discord and Patreon cannot give that proof.
+                </p>
             }
 
             <form method="post" asp-page-handler="Refresh" class="panel-actions">
                 <button class="button secondary" type="submit">Read the list again</button>
             </form>
         }
+
+        <h2>Passkeys</h2>
+        @if (!Model.PasskeysAvailable)
+        {
+            <p class="muted">Passkeys are not available on this server right now, so none can be added or used. You can still revoke the ones listed.</p>
+        }
+        @if (Model.PasskeysAvailable)
+        {
+            <p class="muted">
+                A passkey is the strong proof for unlinking a login: it stays on your device, and a site that is not Bifrost cannot use it.
+                A new passkey is added only right after you sign in to Heimdall again, and it counts as strong proof 48 hours later, so
+                someone who borrows your open browser cannot add one and use it at once. You can revoke a passkey here at any time.
+            </p>
+        }
+        @if (Model.Passkeys.Count > 0)
+        {
+            <ul>
+                @foreach (var key in Model.Passkeys)
+                {
+                    <li>
+                        <strong>@key.Label</strong>
+                        @if (key.IsStrong)
+                        {
+                            <span class="muted">active</span>
+                        }
+                        else
+                        {
+                            <span class="muted">cooling off until @key.StrongFromUtc.UtcDateTime.ToString("dd MMM yyyy HH:mm") UTC; cannot unlink yet</span>
+                        }
+                        <span class="muted">added @key.CreatedUtc.UtcDateTime.ToString("dd MMM yyyy") UTC</span>
+                        @if (key.LastUsedUtc is { } used)
+                        {
+                            <span class="muted">last used @used.UtcDateTime.ToString("dd MMM yyyy") UTC</span>
+                        }
+                        <form method="post" asp-page-handler="PasskeyRevoke" class="inline-actions">
+                            <input type="hidden" name="credentialId" value="@key.Id" />
+                            <button class="button secondary" type="submit">Revoke</button>
+                        </form>
+                    </li>
+                }
+            </ul>
+        }
+
+        @if (Model.PasskeysAvailable)
+        {
+            if (Model.PasskeyLimitReached)
+            {
+                <p class="muted">This is the most passkeys an account can hold. Revoke one to add another.</p>
+            }
+            else if (Model.CanEnrol)
+            {
+                <form method="post" asp-page-handler="PasskeyEnrol" id="passkey-enrol" data-passkey-enrol>
+                    <input type="hidden" name="id" />
+                    <input type="hidden" name="rawId" />
+                    <input type="hidden" name="attestationObject" />
+                    <input type="hidden" name="clientDataJson" />
+                    <input type="hidden" name="transports" />
+                    <label>Name for this passkey <input type="text" name="label" maxlength="40" value="Passkey" /></label>
+                    <button class="button" type="submit">Add a passkey</button>
+                </form>
+                <noscript><p class="muted">Adding a passkey needs JavaScript.</p></noscript>
+            }
+            else if (Model.Identities is not null)
+            {
+                <form method="post" asp-page-handler="PasskeyEnrolStart" class="panel-actions">
+                    <button class="button secondary" type="submit">Sign in again to add a passkey</button>
+                </form>
+            }
+            else
+            {
+                <p class="muted">Read your linked logins first; adding a passkey then asks you to sign in to Heimdall once more.</p>
+            }
+        }
+        <p id="passkey-status" class="muted" role="status"></p>
 
         @if (Model.Identities is not null)
         {
@@ -117,3 +221,10 @@
         <a class="button secondary" asp-page="/Membership/Status">Back to membership status</a>
     </div>
 </section>
+
+@section Scripts {
+    @if (Model.HasHeimdallAccount && Model.PasskeysAvailable)
+    {
+        <script src="~/js/passkeys.js" asp-append-version="true"></script>
+    }
+}

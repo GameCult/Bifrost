@@ -12,6 +12,7 @@ public static class BifrostCookies
     public const string Antiforgery = HostPrefix + "bifrost_antiforgery";
     public const string Voter = HostPrefix + "bifrost_voter";
     public const string HeimdallAttemptPrefix = HostPrefix + "bifrost_heimdall_";
+    public const string PasskeyTicket = HostPrefix + "bifrost_passkey_ticket";
 
     public const string Path = "/";
 }

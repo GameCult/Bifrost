@@ -268,6 +268,119 @@ public sealed class FakeHeimdall : HttpMessageHandler
     /// <summary>When set, an unlink is applied and then answered with this status (200 answers a body that is not JSON): a lost answer.</summary>
     public HttpStatusCode? UnlinkApplyThenFail { get; set; }
 
+    /// <summary>Every step-up assertion that reached the route: the app secret header, the Authorization header and the raw body.</summary>
+    public List<(string? Secret, string? Authorization, string Body)> StepUps { get; } = [];
+
+    /// <summary>When set, the step-up route refuses with this status and the contract's error code for it, after the schema and secret checks.</summary>
+    public HttpStatusCode? StepUpStatus { get; set; }
+
+    /// <summary>When true the step-up route throws, as an unreachable Heimdall does.</summary>
+    public bool StepUpDown { get; set; }
+
+    private readonly HashSet<string> _stepUpNonces = new(StringComparer.Ordinal);
+
+    private static readonly System.Text.RegularExpressions.Regex NonceShape = new("^[A-Za-z0-9_-]{16,128}$");
+
+    /// <summary>
+    /// POST /v1/apps/bifrost/step-up as Heimdall's service-contract.md describes it: schema (method 1..64, nonce pattern) before the
+    /// secret; then the app secret; then the bearer (live, for the same app); then the method set; then single-use per session and
+    /// nonce; a 201 token that copies the bearer's claims and adds step_up_at and step_up_method.
+    /// </summary>
+    private HttpResponseMessage StepUpRoute(HttpRequestMessage request, string body)
+    {
+        static HttpResponseMessage Json(HttpStatusCode status, string json) =>
+            new(status) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
+        static HttpResponseMessage Refuse(HttpStatusCode status, string error) => Json(status, $$"""{"error":"{{error}}"}""");
+        var secret = request.Headers.TryGetValues("x-heimdall-app-secret", out var values) ? values.Single() : null;
+        var authorization = request.Headers.Authorization?.ToString();
+        StepUps.Add((secret, authorization, body));
+        if (StepUpDown)
+        {
+            throw new HttpRequestException("Heimdall is down");
+        }
+
+        string? method = null;
+        string? nonce = null;
+        try
+        {
+            var root = JsonDocument.Parse(body).RootElement;
+            method = root.TryGetProperty("method", out var m) && m.ValueKind == JsonValueKind.String ? m.GetString() : null;
+            nonce = root.TryGetProperty("nonce", out var n) && n.ValueKind == JsonValueKind.String ? n.GetString() : null;
+        }
+        catch (JsonException)
+        {
+        }
+
+        if (method is not { Length: >= 1 and <= 64 } || nonce is null || !NonceShape.IsMatch(nonce))
+        {
+            return Json(HttpStatusCode.BadRequest, """{"statusCode":400,"error":"Bad Request","message":"body does not match the schema"}""");
+        }
+
+        if (secret != RequiredAppSecret)
+        {
+            return Refuse(HttpStatusCode.Unauthorized, "app_auth_required");
+        }
+
+        if (StepUpStatus is { } forced)
+        {
+            return forced switch
+            {
+                HttpStatusCode.Forbidden => Refuse(forced, "step_up_assertion_not_permitted"),
+                HttpStatusCode.TooManyRequests => Refuse(forced, "step_up_rate_limited"),
+                HttpStatusCode.Unauthorized => Refuse(forced, "sign_in_required"),
+                HttpStatusCode.Conflict => Refuse(forced, "step_up_nonce_replayed"),
+                _ => Json(forced, """{"error":"server_error","detail":"HEIMDALL FREE TEXT"}""")
+            };
+        }
+
+        Dictionary<string, JsonElement>? claims = null;
+        try
+        {
+            var token = authorization is not null && authorization.StartsWith("Bearer ", StringComparison.Ordinal) ? authorization["Bearer ".Length..] : null;
+            var parts = token?.Split('.');
+            if (parts is { Length: 3 })
+            {
+                claims = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(WebEncoders.Base64UrlDecode(parts[1]));
+            }
+        }
+        catch (Exception error) when (error is JsonException or FormatException)
+        {
+        }
+
+        if (claims is null || !claims.TryGetValue("exp", out var exp) || exp.GetInt64() <= Now().ToUnixTimeSeconds() || !claims.TryGetValue("sid", out var sid))
+        {
+            return Refuse(HttpStatusCode.Unauthorized, "sign_in_required");
+        }
+
+        if (claims["app"].GetProperty("slug").GetString() != "bifrost")
+        {
+            return Refuse(HttpStatusCode.Forbidden, "bearer_app_mismatch");
+        }
+
+        if (method is not ("bifrost-passkey" or "bifrost-email-code"))
+        {
+            return Refuse(HttpStatusCode.BadRequest, "unknown_step_up_method");
+        }
+
+        if (!_stepUpNonces.Add(sid.GetString() + ":" + nonce))
+        {
+            return Refuse(HttpStatusCode.Conflict, "step_up_nonce_replayed");
+        }
+
+        var minted = claims.ToDictionary(x => x.Key, x => (object?)x.Value);
+        minted["jti"] = Guid.NewGuid().ToString();
+        minted["step_up_at"] = Now().ToUnixTimeSeconds();
+        minted["step_up_method"] = method;
+        return Json(
+            HttpStatusCode.Created,
+            JsonSerializer.Serialize(new
+            {
+                accessToken = Published[0].Sign(minted),
+                claimSet = new { },
+                stepUp = new { at = Now().ToUnixTimeSeconds(), method, validForSeconds = 600 }
+            }));
+    }
+
     /// <summary>Throws instead of answering a member route, as an unreachable Heimdall does.</summary>
     public Exception? MemberFailure { get; set; }
 
@@ -486,6 +599,11 @@ public sealed class FakeHeimdall : HttpMessageHandler
             var content = new ByteArrayContent(Encoding.UTF8.GetBytes(StartBody));
             content.Headers.TryAddWithoutValidation("Content-Type", StartContentType ?? "application/json");
             return new HttpResponseMessage(StartStatus) { Content = content };
+        }
+
+        if (request.Method == HttpMethod.Post && path == "/v1/apps/bifrost/step-up")
+        {
+            return StepUpRoute(request, await request.Content!.ReadAsStringAsync(cancellationToken));
         }
 
         if (path.StartsWith("/v1/me/identities", StringComparison.Ordinal))

@@ -1470,6 +1470,59 @@ namespace Bifrost.Web.Data.Migrations
                     b.ToTable("ConsentReceipts");
                 });
 
+            modelBuilder.Entity("Bifrost.Web.Domain.PasskeyCredential", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid?>("AaGuid")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("CreatedUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<byte[]>("CredentialId")
+                        .IsRequired()
+                        .HasColumnType("bytea");
+
+                    b.Property<string>("Label")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTimeOffset?>("LastUsedUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<byte[]>("PublicKey")
+                        .IsRequired()
+                        .HasColumnType("bytea");
+
+                    b.Property<DateTimeOffset?>("RevokedUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long>("SignCount")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTimeOffset>("StrongFromUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Transports")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<Guid>("UserAccountId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CredentialId")
+                        .IsUnique();
+
+                    b.HasIndex("UserAccountId");
+
+                    b.ToTable("PasskeyCredentials");
+                });
+
             modelBuilder.Entity("Bifrost.Web.Domain.MindKey", b =>
                 {
                     b.Property<Guid>("Id")
@@ -2173,6 +2226,17 @@ namespace Bifrost.Web.Data.Migrations
                 });
 
             modelBuilder.Entity("Bifrost.Web.Domain.ConsentReceipt", b =>
+                {
+                    b.HasOne("Bifrost.Web.Domain.UserAccount", "UserAccount")
+                        .WithMany()
+                        .HasForeignKey("UserAccountId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("UserAccount");
+                });
+
+            modelBuilder.Entity("Bifrost.Web.Domain.PasskeyCredential", b =>
                 {
                     b.HasOne("Bifrost.Web.Domain.UserAccount", "UserAccount")
                         .WithMany()

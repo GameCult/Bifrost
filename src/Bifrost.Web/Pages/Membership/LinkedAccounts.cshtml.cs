@@ -2,6 +2,8 @@ using System.Security.Claims;
 using Bifrost.Web.Configuration;
 using Bifrost.Web.Features.Heimdall;
 using Bifrost.Web.Features.Membership;
+using Bifrost.Web.Features.Passkeys;
+using Bifrost.Web.Features.Shared;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
@@ -20,6 +22,7 @@ namespace Bifrost.Web.Pages.Membership;
 public sealed class LinkedAccountsModel(
     HeimdallAuthService heimdallAuthService,
     LinkedAccountsSnapshots snapshots,
+    PasskeyService passkeys,
     IOptions<BifrostHostOptions> hostOptions,
     ILogger<LinkedAccountsModel> logger) : PageModel
 {
@@ -41,17 +44,41 @@ public sealed class LinkedAccountsModel(
     /// <summary>The logins the last read found, or null when there is none or it has expired.</summary>
     public IReadOnlyList<LinkedIdentitySummary>? Identities { get; private set; }
 
-    /// <summary>Whether a fresh Google sign-in can be had for this account: unlinking needs one, and only Google can give it.</summary>
-    public bool CanProve => Identities?.Any(x => x.Provider == HeimdallAuthService.StepUpProvider) == true;
+    /// <summary>Whether a fresh Google sign-in can be had for this account: without a strong passkey, unlinking needs one, and only Google can give it.</summary>
+    public bool HasGoogle => Identities?.Any(x => x.Provider == HeimdallAuthService.StepUpProvider) == true;
+
+    /// <summary>The account's passkeys that are not revoked, with their cooling-off state.</summary>
+    public IReadOnlyList<PasskeyView> Passkeys { get; private set; } = [];
+
+    /// <summary>Whether a passkey past its cooling-off exists: unlinking then needs it and no longer accepts Google as the proof.</summary>
+    public bool HasStrongPasskey => Passkeys.Any(x => x.IsStrong);
+
+    /// <summary>When the first passkey still cooling off becomes strong.</summary>
+    public DateTimeOffset? NextStrongAt => Passkeys.Where(x => !x.IsStrong).Select(x => (DateTimeOffset?)x.StrongFromUtc).Min();
+
+    /// <summary>Whether this browser holds a live ticket from a fresh sign-in, so a passkey can be added now.</summary>
+    public bool CanEnrol { get; private set; }
+
+    /// <summary>Whether this server can run passkey ceremonies at all (https and the host it expects).</summary>
+    public bool PasskeysAvailable => passkeys.IsAvailable;
+
+    public bool PasskeyLimitReached => Passkeys.Count >= PasskeyService.MaxActive;
+
+    public bool CanUnlink => HasStrongPasskey || HasGoogle;
 
     public IReadOnlyList<string> LinkableProviders => HeimdallAuthService.LinkableProviders;
 
     public static string ProviderName(string provider) => ProviderNames.GetValueOrDefault(provider, provider);
 
-    public void OnGet()
+    public async Task OnGetAsync(CancellationToken cancellationToken)
     {
         ResultMessage = HeimdallLinkOutcomes.Wording(Request.Query[HeimdallLinkOutcomes.ResultParameter].ToString());
         Identities = AccountId is { } id ? snapshots.Get(id) : null;
+        if (AccountId is { } account)
+        {
+            Passkeys = await passkeys.ListAsync(account, cancellationToken);
+            CanEnrol = passkeys.HasTicket(account, Request.Cookies[BifrostCookies.PasskeyTicket]);
+        }
     }
 
     /// <summary>Reads the account's logins: an ordinary Heimdall sign-in, then the list inside its completion.</summary>
@@ -92,23 +119,154 @@ public sealed class LinkedAccountsModel(
     /// Unlinks one login with fresh proof. The identity must be on the list this account was last shown and the account must
     /// hold a Google login to prove with; otherwise Heimdall is not asked, and the page says so.
     /// </summary>
-    public Task<IActionResult> OnPostUnlinkAsync(string? identityId, CancellationToken cancellationToken)
+    public async Task<IActionResult> OnPostUnlinkAsync(string? identityId, CancellationToken cancellationToken)
     {
         var shown = AccountId is { } id ? snapshots.Get(id) : null;
         if (shown is null || identityId is null || !shown.Any(x => x.Id == identityId))
         {
-            return Task.FromResult(Done(HeimdallLinkOutcome.ListExpired));
+            return Done(HeimdallLinkOutcome.ListExpired);
+        }
+
+        // A strong passkey replaces Google as the proof: a member who has one is never asked for the weaker one.
+        if (await passkeys.HasStrongAsync(AccountId!, cancellationToken))
+        {
+            return Done(HeimdallLinkOutcome.PasskeyRequired);
         }
 
         if (!shown.Any(x => x.Provider == HeimdallAuthService.StepUpProvider))
         {
-            return Task.FromResult(Done(HeimdallLinkOutcome.ProofUnavailable));
+            return Done(HeimdallLinkOutcome.ProofUnavailable);
         }
 
-        return BeginAsync(
+        return await BeginAsync(
             (account, ct) => heimdallAuthService.StartUnlinkAsync(account, identityId, hostOptions.Value.PublicBaseUrl, Request.Cookies, ct),
             HeimdallLinkOutcome.ProofUnavailable,
             cancellationToken);
+    }
+
+    /// <summary>Begins the fresh sign-in whose completion issues the enrolment ticket. Needs a current list: the proof provider is never guessed.</summary>
+    public async Task<IActionResult> OnPostPasskeyEnrolStartAsync(CancellationToken cancellationToken)
+    {
+        if (AccountId is not { } id)
+        {
+            return Done(HeimdallLinkOutcome.Error);
+        }
+
+        if (snapshots.Get(id) is null)
+        {
+            return Done(HeimdallLinkOutcome.ListExpired);
+        }
+
+        if (await passkeys.PreflightEnrolStartAsync(id, cancellationToken) is { } refused)
+        {
+            return Done(refused);
+        }
+
+        return await BeginAsync(
+            (account, ct) => heimdallAuthService.StartEnrolProofAsync(account, hostOptions.Value.PublicBaseUrl, Request.Cookies, ct),
+            HeimdallLinkOutcome.Error,
+            cancellationToken);
+    }
+
+    /// <summary>The WebAuthn creation options for the ticket this browser holds, as JSON for the page's script.</summary>
+    public async Task<IActionResult> OnPostPasskeyEnrolOptionsAsync(CancellationToken cancellationToken)
+    {
+        if (AccountId is not { } id)
+        {
+            return Options(HeimdallLinkOutcome.Error, null);
+        }
+
+        var (refusal, json) = await passkeys.BeginEnrolAsync(id, Request.Cookies[BifrostCookies.PasskeyTicket], cancellationToken);
+        return Options(refusal, json);
+    }
+
+    /// <summary>Verifies the registration the script posted. The ticket cookie is spent whatever the outcome.</summary>
+    public async Task<IActionResult> OnPostPasskeyEnrolAsync(
+        string? id, string? rawId, string? attestationObject, string? clientDataJson, string? transports, string? label, CancellationToken cancellationToken)
+    {
+        if (AccountId is not { } account)
+        {
+            return Done(HeimdallLinkOutcome.Error);
+        }
+
+        var outcome = await passkeys.EnrolAsync(
+            account, Request.Cookies[BifrostCookies.PasskeyTicket],
+            new PasskeyFields(id, rawId, null, clientDataJson, null, null, attestationObject, transports), label, cancellationToken);
+        Response.Cookies.Delete(BifrostCookies.PasskeyTicket, HeimdallAttemptCookie.DeleteOptions());
+        return Done(outcome);
+    }
+
+    public async Task<IActionResult> OnPostPasskeyRevokeAsync(Guid credentialId, CancellationToken cancellationToken) =>
+        AccountId is { } id ? Done(await passkeys.RevokeAsync(id, credentialId, cancellationToken)) : Done(HeimdallLinkOutcome.Error);
+
+    /// <summary>The WebAuthn request options for unlinking one identity, as JSON for the page's script.</summary>
+    public async Task<IActionResult> OnPostPasskeyChallengeAsync(string? identityId, CancellationToken cancellationToken)
+    {
+        if (AccountId is not { } id)
+        {
+            return Options(HeimdallLinkOutcome.Error, null);
+        }
+
+        if (snapshots.Get(id) is not { } shown || identityId is null || !shown.Any(x => x.Id == identityId))
+        {
+            return Options(HeimdallLinkOutcome.ListExpired, null);
+        }
+
+        var (refusal, json) = await passkeys.BeginAssertionAsync(id, identityId, cancellationToken);
+        return Options(refusal, json);
+    }
+
+    /// <summary>
+    /// Unlinks one login on a passkey assertion. The assertion is verified here; only then does Bifrost start the fresh Heimdall sign-in
+    /// whose completion asks Heimdall for the step-up and unlinks. A refused or unverifiable assertion starts no sign-in.
+    /// </summary>
+    public async Task<IActionResult> OnPostUnlinkPasskeyAsync(
+        string? identityId, string? id, string? rawId, string? authenticatorData, string? clientDataJson, string? signature, string? userHandle,
+        CancellationToken cancellationToken)
+    {
+        var shown = AccountId is { } account ? snapshots.Get(account) : null;
+        if (shown is null || identityId is null || !shown.Any(x => x.Id == identityId))
+        {
+            return Done(HeimdallLinkOutcome.ListExpired);
+        }
+
+        var (refusal, factId) = await passkeys.VerifyAssertionAsync(
+            AccountId!, identityId, new PasskeyFields(id, rawId, authenticatorData, clientDataJson, signature, userHandle, null, null), cancellationToken);
+        if (refusal is { } failed)
+        {
+            return Done(failed);
+        }
+
+        try
+        {
+            var started = await heimdallAuthService.StartUnlinkPasskeyAsync(
+                AccountId!, identityId, factId!, hostOptions.Value.PublicBaseUrl, Request.Cookies, cancellationToken);
+            Response.Cookies.Append(started.CookieName, started.CookieValue, HeimdallAttemptCookie.Options());
+            return Redirect(started.AuthorizationUrl.ToString());
+        }
+        catch (HeimdallAuthException error)
+        {
+            logger.LogWarning("Linked accounts start refused: {Reason}", error.Message);
+            passkeys.DiscardFact(factId);
+            return Done(HeimdallLinkOutcome.ProofUnavailable);
+        }
+    }
+
+    /// <summary>JSON for the page's script: the options, or only a closed outcome code with the status that fits.</summary>
+    private IActionResult Options(HeimdallLinkOutcome? refusal, string? json)
+    {
+        if (refusal is null && json is not null)
+        {
+            return Content(json, "application/json");
+        }
+
+        var status = refusal == HeimdallLinkOutcome.RateLimited ? StatusCodes.Status429TooManyRequests : StatusCodes.Status400BadRequest;
+        return new ContentResult
+        {
+            StatusCode = status,
+            ContentType = "application/json",
+            Content = "{\"error\":\"" + HeimdallLinkOutcomes.Code(refusal ?? HeimdallLinkOutcome.Error) + "\"}"
+        };
     }
 
     private IActionResult Done(HeimdallLinkOutcome outcome) =>

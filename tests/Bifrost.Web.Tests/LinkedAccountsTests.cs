@@ -587,8 +587,9 @@ public sealed class LinkedAccountsTests
         var post = await host.StartUnlinkAsync(member.Session, (string)host.Heimdall.Identities[0]["id"]!);
 
         Assert.DoesNotContain(">Unlink<", html);
-        Assert.Contains("fresh Google sign-in", html);
-        Assert.Contains("no Google login", html);
+        Assert.Contains("Unlinking needs strong proof", html);
+        Assert.Contains("Add a passkey below", html);
+        Assert.Contains("link a Google login", html);
         Assert.Equal(starts, host.Heimdall.StartBodies.Count);
         Assert.Equal(Page + "?result=proof_unavailable", Location(post.Response));
         Assert.Null(post.Cookie);
