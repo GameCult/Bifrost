@@ -46,11 +46,11 @@ public sealed class MergeAccountsPageTests
 
         public MergeProofs Proofs => Host.Services.GetRequiredService<MergeProofs>();
 
-        public static async Task<World> Make(bool enabled = true)
+        public static async Task<World> Make(bool enabled = true, string[]? otherProviders = null)
         {
             var rig = new Rig(realSessions: true, accountMerge: enabled);
             var me = await rig.AccountAsync("quill-9f3a", "discord");
-            var other = await rig.AccountAsync(OtherName, "patreon", "google");
+            var other = await rig.AccountAsync(OtherName, otherProviders ?? ["patreon", "google"]);
             var session = await rig.Host.SignInSessionAsync(me.HeimdallId, "discord");
             var myName = await rig.InScopeAsync(async sp => (await sp.GetRequiredService<BifrostDbContext>().UserAccounts.AsNoTracking().SingleAsync(x => x.Id == me.Id)).DisplayName);
             var world = new World { Rig = rig, Me = me, Other = other, Session = session, MyName = myName };
@@ -347,6 +347,46 @@ public sealed class MergeAccountsPageTests
 
         Assert.Contains(Enc(MergePreview.Block("merge_in_flight")), page);
         Assert.DoesNotContain("consentSelf", page);
+    }
+
+    [Theory]
+    [InlineData("self")]
+    [InlineData("other")]
+    public async Task Two_accounts_holding_a_login_of_one_provider_are_blocked_before_consent_and_the_block_names_only_the_provider(string keep)
+    {
+        using var w = await World.Make(otherProviders: ["discord", "patreon"]);
+        await w.ProveSelf();
+        await w.ProveOther("discord");
+        await w.ProveOther("patreon");
+
+        var page = await w.Page($"?keep={keep}");
+
+        Assert.Contains("Both accounts hold a Discord login", page);
+        Assert.DoesNotContain("consentSelf", page);
+        Assert.DoesNotContain("name=\"digest\"", page);
+        Assert.DoesNotContain("ProveRemaining", page);
+        var words = Regex.Match(page, "Both accounts hold a[^<]*").Value;
+        Assert.DoesNotContain(OtherName, words);
+        Assert.DoesNotContain(w.MyName, words);
+        Assert.DoesNotContain(w.Other.HeimdallId, words);
+    }
+
+    [Fact]
+    public async Task A_confirm_for_accounts_holding_one_providers_login_is_Blocked_writes_nothing_and_keeps_the_proofs()
+    {
+        using var w = await World.Make(otherProviders: ["discord", "patreon"]);
+        await w.ProveSelf();
+        await w.ProveOther("discord");
+        await w.ProveOther("patreon");
+        var digest = await w.Rig.DigestAsync(w.Me, w.Other);
+
+        var response = await w.Confirm("self", digest);
+
+        Assert.Equal(Where("self", "blocked"), MergePage.Location(response));
+        Assert.Equal(0, await w.Rig.MergeCountAsync());
+        Assert.NotNull(w.Proofs.Snapshot(w.Me.Id).Self);
+        Assert.NotNull(w.Proofs.Snapshot(w.Me.Id).Other);
+        Assert.Empty(w.Rig.Moves.Requests);
     }
 
     // ---- confirm ----

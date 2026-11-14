@@ -196,4 +196,21 @@ public sealed class MergeProofsTests
         Assert.DoesNotContain(_selfAccount, printed);
         Assert.DoesNotContain(_otherAccount, printed);
     }
+
+    /// <summary>Actors with anything in memory: pruning drops a side with no proof and an actor with no side.</summary>
+    private int HeldProofs() =>
+        ((System.Collections.IDictionary)typeof(MergeProofs).GetField("_held", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(_proofs)!)
+        .Count;
+
+    [Fact]
+    public void An_expired_bearer_is_dropped_by_any_later_access_even_one_for_another_actor()
+    {
+        PutSelf("discord", Login("discord"));
+        Assert.Equal(1, HeldProofs());
+        _clock.Advance(MergeProofs.ProofLifetime + TimeSpan.FromSeconds(1));
+
+        _proofs.Clear(Guid.NewGuid());
+
+        Assert.Equal(0, HeldProofs());
+    }
 }

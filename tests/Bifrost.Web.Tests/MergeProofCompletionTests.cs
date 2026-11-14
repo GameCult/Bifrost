@@ -61,6 +61,26 @@ public sealed class MergeProofCompletionTests
         }
     }
 
+    [Theory]
+    [InlineData(MergeSide.Self)]
+    [InlineData(MergeSide.Other)]
+    public async Task A_completion_through_another_provider_than_the_attempts_records_no_proof(MergeSide side)
+    {
+        using var host = new HeimdallHost(realSessions: true);
+        var me = await SignedIn(host);
+        var other = await SignedIn(host);
+        SetList(host, "discord", "patreon");
+        var proved = side == MergeSide.Self ? me : other;
+        var attempt = await Begin(host, me, side, via: "discord");
+
+        var done = await Finish(host, me, attempt, proved.Account, host.Token(proved.Account), provider: "patreon");
+
+        Assert.NotEqual(Page + "?result=merge_proof_recorded", Location(done));
+        var held = Proofs(host).Snapshot(me.UserAccountId);
+        Assert.Null(held.Self);
+        Assert.Null(held.Other);
+    }
+
     [Fact]
     public async Task A_self_proof_for_the_signed_in_account_is_held_and_the_browser_goes_back_with_a_closed_code()
     {

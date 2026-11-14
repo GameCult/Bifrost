@@ -73,6 +73,12 @@ public sealed class MergePreviewTests
         Assert.Contains(MergePreview.Statements, x => x.Contains(statement, StringComparison.Ordinal));
     }
 
+    [Fact]
+    public void The_statements_promise_no_passkey_because_no_page_offers_one()
+    {
+        Assert.DoesNotContain(MergePreview.Statements, x => x.Contains("passkey", StringComparison.OrdinalIgnoreCase));
+    }
+
     [Theory]
     [InlineData("blocked")]
     [InlineData("preview_stale")]

@@ -86,6 +86,42 @@ public sealed class MergeStatusTests
     }
 
     [Fact]
+    public async Task Past_the_grace_and_before_the_sweeper_there_is_no_notice_and_no_undo_offer()
+    {
+        var w = await Committed();
+        using var rig = w.Rig;
+        var inside = await Html(w, w.SurvivorSession);
+        Assert.Equal(1, Notices(inside));
+        Assert.Contains("To undo, sign in again", inside);
+
+        rig.Clock.Advance(AccountMergeLedger.Grace + TimeSpan.FromHours(1));
+        Assert.Equal(AccountMergeState.Committed, (await rig.MergeAsync(w.MergeId)).State);
+        var late = await Html(w, w.SurvivorSession);
+
+        Assert.Equal(0, Notices(late));
+        Assert.DoesNotContain("To undo, sign in again", late);
+        Assert.DoesNotContain("Undo this merge", late);
+        Assert.DoesNotContain("ProveForUndo", late);
+        Assert.DoesNotContain("can still be undone", late);
+    }
+
+    [Fact]
+    public async Task Once_the_undo_is_requested_no_page_says_the_merge_can_still_be_undone()
+    {
+        var w = await Committed();
+        using var rig = w.Rig;
+        await Edit(w, x => x.State = AccountMergeState.UndoRequested);
+
+        var page = await Html(w, w.SurvivorSession);
+
+        Assert.Equal(1, Notices(page));
+        Assert.DoesNotContain("can still be undone", page);
+        Assert.DoesNotContain("can still undo", page);
+        Assert.Contains("Undo requested", page);
+        Assert.DoesNotContain("To undo, sign in again", page);
+    }
+
+    [Fact]
     public async Task A_strong_proof_merge_says_so_in_its_own_words()
     {
         var w = await Committed();
