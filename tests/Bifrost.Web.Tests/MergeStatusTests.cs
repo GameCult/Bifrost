@@ -126,6 +126,22 @@ public sealed class MergeStatusTests
         }
     }
 
+    [Theory]
+    [InlineData(AccountMergeState.Undone)]
+    [InlineData(AccountMergeState.Failed)]
+    [InlineData(AccountMergeState.Final)]
+    public async Task A_merge_that_ended_has_no_notice_even_with_its_grace_date_still_ahead(AccountMergeState state)
+    {
+        var w = await Committed();
+        using var rig = w.Rig;
+        await Edit(w, x => x.State = state);
+
+        var page = await Html(w, w.SurvivorSession);
+
+        Assert.Equal(0, Notices(page));
+        Assert.Contains(Enc(MergeWording.State(state)), page);
+    }
+
     [Fact]
     public async Task A_failed_merge_says_why_in_closed_words_and_never_echoes_the_stored_text()
     {
