@@ -193,6 +193,27 @@ namespace Bifrost.Web.Data.Migrations
                     b.ToTable("AccountMergeEntries");
                 });
 
+            modelBuilder.Entity("Bifrost.Web.Domain.AccountMergeNoticeAck", b =>
+                {
+                    b.Property<Guid>("MergeId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Kind")
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<string>("Target")
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<DateTimeOffset>("AckedUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("MergeId", "Kind", "Target");
+
+                    b.ToTable("AccountMergeNoticeAcks");
+                });
+
             modelBuilder.Entity("Bifrost.Web.Domain.AgentDispatchRun", b =>
                 {
                     b.Property<Guid>("Id")
@@ -2275,6 +2296,15 @@ namespace Bifrost.Web.Data.Migrations
                         .IsRequired();
 
                     b.Navigation("Merge");
+                });
+
+            modelBuilder.Entity("Bifrost.Web.Domain.AccountMergeNoticeAck", b =>
+                {
+                    b.HasOne("Bifrost.Web.Domain.AccountMerge", null)
+                        .WithMany()
+                        .HasForeignKey("MergeId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("Bifrost.Web.Domain.AgentDispatchRun", b =>

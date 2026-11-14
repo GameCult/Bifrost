@@ -85,6 +85,8 @@ public sealed class BifrostDbContext(DbContextOptions<BifrostDbContext> options)
 
     public DbSet<AccountMergeEntry> AccountMergeEntries => Set<AccountMergeEntry>();
 
+    public DbSet<AccountMergeNoticeAck> AccountMergeNoticeAcks => Set<AccountMergeNoticeAck>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<UserAccount>(entity =>
@@ -673,6 +675,17 @@ public sealed class BifrostDbContext(DbContextOptions<BifrostDbContext> options)
             entity.HasIndex(x => new { x.MergeId, x.Seq }).IsUnique();
             entity.HasOne(x => x.Merge)
                 .WithMany(x => x.Entries)
+                .HasForeignKey(x => x.MergeId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<AccountMergeNoticeAck>(entity =>
+        {
+            entity.HasKey(x => new { x.MergeId, x.Kind, x.Target });
+            entity.Property(x => x.Kind).HasConversion<string>().HasMaxLength(16);
+            entity.Property(x => x.Target).HasConversion<string>().HasMaxLength(16);
+            entity.HasOne<AccountMerge>()
+                .WithMany()
                 .HasForeignKey(x => x.MergeId)
                 .OnDelete(DeleteBehavior.Restrict);
         });
