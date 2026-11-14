@@ -1,5 +1,7 @@
 using Bifrost.Web.Data;
 using Bifrost.Web.Domain;
+using Bifrost.Web.Features.Patronage;
+using Bifrost.Web.Features.Shared;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Infrastructure;
@@ -387,28 +389,136 @@ public sealed class AccountMergePostgresTests(MergePostgres postgres) : IClassFi
     // ---- rollback ----
 
     [PostgresFact]
-    public async Task Reverting_the_migration_is_refused_while_a_merge_has_voided_a_vote_and_allowed_after()
+    public async Task Reverting_the_migration_is_refused_while_any_merge_exists_even_one_that_voided_nothing_and_allowed_after()
+    {
+        var world = await postgres.NewWorldAsync();
+        var survivor = await world.AccountAsync("survivor");
+        var folded = await world.AccountAsync("folded");
+        await world.CommitAsync(await world.MergeAsync(survivor, folded)); // moves and voids nothing: only the Merged membership remains
+
+        await using (var db = world.Db())
+        {
+            var error = await Assert.ThrowsAnyAsync<Exception>(() => db.GetService<IMigrator>().MigrateAsync("20261113120000_AddPasskeyCredentials"));
+            Assert.Contains("roll-forward only", Pg(error).MessageText);
+            Assert.Equal("20261114120000_AddAccountMerges", (await db.Database.GetAppliedMigrationsAsync()).Last());
+        }
+
+        await ExecuteAsync(world, "DELETE FROM \"AccountMergeEntries\"; DELETE FROM \"AccountMerges\"");
+        await using var down = world.Db();
+        await down.GetService<IMigrator>().MigrateAsync("20261113120000_AddPasskeyCredentials");
+        Assert.Equal("20261113120000_AddPasskeyCredentials", (await down.Database.GetAppliedMigrationsAsync()).Last());
+        await down.GetService<IMigrator>().MigrateAsync(); // and up again, trigger and index and all
+        Assert.Equal("20261114120000_AddAccountMerges", (await down.Database.GetAppliedMigrationsAsync()).Last());
+    }
+
+    // ---- restage and intake journal ----
+
+    [PostgresFact]
+    public async Task Two_merges_into_one_survivor_restaging_at_once_leave_one_current_patron_snapshot_and_the_loser_commits_on_retry()
+    {
+        var world = await postgres.NewWorldAsync();
+        var survivor = await world.AccountAsync("survivor");
+        var first = await world.AccountAsync("first");
+        var second = await world.AccountAsync("second");
+        await using (var db = world.Db())
+        {
+            foreach (var who in new[] { first, second })
+            {
+                db.PatronSupportEvents.Add(new PatronSupportEvent
+                {
+                    UserAccountId = who.Id, Kind = PatronSupportEventKind.RecurringSupportSnapshot, IsCurrentRecurringSupport = true, Amount = 1000m,
+                    SupportedAtUtc = AccountMergeLedgerTests.T0, RecordedAtUtc = AccountMergeLedgerTests.T0
+                });
+            }
+
+            await db.SaveChangesAsync();
+        }
+
+        var one = await world.MergeAsync(survivor, first);
+        var two = await world.MergeAsync(survivor, second);
+        var committers = AccountMergeLedgerTests.World.OnPostgres(ConnectionOf(world), new Rendezvous());
+
+        async Task<Exception?> TryCommit(AccountMerge merge)
+        {
+            try
+            {
+                await committers.CommitAsync(merge);
+                return null;
+            }
+            catch (Exception error)
+            {
+                return error;
+            }
+        }
+
+        var results = await Task.WhenAll(Task.Run(() => TryCommit(one)), Task.Run(() => TryCommit(two)));
+
+        Assert.Equal(1, results.Count(x => x is null));
+        Assert.All(results.OfType<Exception>(), e => Assert.Contains(Chain(e), x => x is PostgresException { SqlState: "23505", ConstraintName: "UX_TierSnapshots_MembershipId_CurrentPatron" }));
+        var loser = results[0] is null ? two : one;
+        Assert.Equal(AccountMergeState.Committed, (await world.CommitAsync(loser)).State);
+        await using var read = world.Db();
+        var membership = await read.Memberships.Include(x => x.TierSnapshots).SingleAsync(x => x.UserAccountId == survivor.Id);
+        Assert.Single(membership.TierSnapshots, x => x.Kind == TierSnapshotKind.Patron && x.IsCurrent);
+        Assert.All(await read.PatronSupportEvents.ToListAsync(), e => Assert.Equal(survivor.Id, e.UserAccountId));
+    }
+
+    [PostgresFact]
+    public async Task A_patron_refresh_that_loses_the_restage_race_reads_the_winners_snapshot_and_derives_again()
+    {
+        var world = await postgres.NewWorldAsync();
+        var patron = await world.AccountAsync("patron");
+        await using (var db = world.Db())
+        {
+            db.PatronSupportEvents.Add(new PatronSupportEvent
+            {
+                UserAccountId = patron.Id, Kind = PatronSupportEventKind.RecurringSupportSnapshot, IsCurrentRecurringSupport = true, Amount = 1000m,
+                SupportedAtUtc = AccountMergeLedgerTests.T0, RecordedAtUtc = AccountMergeLedgerTests.T0
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var clock = world.Clock;
+        var rival = AccountMergeLedgerTests.World.OnPostgres(ConnectionOf(world));
+        var loser = AccountMergeLedgerTests.World.OnPostgres(ConnectionOf(world), new BeforeFirstSave(async () =>
+        {
+            await using var rivalDb = rival.Db();
+            await new PatronageService(rivalDb, new AuditTrailService(rivalDb, clock), clock).RefreshPatronTierSnapshotAsync(null, patron.Id, default);
+        }));
+
+        await using (var db = loser.Db())
+        {
+            var summary = await new PatronageService(db, new AuditTrailService(db, clock), clock).RefreshPatronTierSnapshotAsync(null, patron.Id, default);
+            Assert.True(summary.VotingWeight > 0m);
+        }
+
+        await using var read = world.Db();
+        var snapshots = await read.TierSnapshots.Where(x => x.Kind == TierSnapshotKind.Patron).ToListAsync();
+        Assert.Single(snapshots, x => x.IsCurrent);
+        Assert.Equal(2, snapshots.Count); // the winner's, demoted by the retry, and the retry's own
+    }
+
+    [PostgresFact]
+    public async Task A_journalled_patron_intake_takes_the_next_seq_after_the_commits_entries_and_is_idempotent()
     {
         var world = await postgres.NewWorldAsync();
         var survivor = await world.AccountAsync("survivor");
         var folded = await world.AccountAsync("folded");
         var motion = await world.MotionAsync();
-        await world.VoteAsync(motion, survivor, VoteChoice.For);
-        await world.VoteAsync(motion, folded, VoteChoice.Against);
-        await world.CommitAsync(await world.MergeAsync(survivor, folded));
+        await world.VoteAsync(motion, folded, VoteChoice.For);
+        var merge = await world.CommitAsync(await world.MergeAsync(survivor, folded));
+        var committed = (await world.JournalAsync(merge)).Count;
+        Assert.True(committed > 0);
 
-        await using (var db = world.Db())
+        var events = new[] { Guid.NewGuid(), Guid.NewGuid() };
+        foreach (var id in events.Concat(events)) // each twice: the provider retries
         {
-            var error = await Assert.ThrowsAnyAsync<Exception>(() => db.GetService<IMigrator>().MigrateAsync("20261113120000_AddPasskeyCredentials"));
-            Assert.Contains("cannot be reverted", Pg(error).MessageText);
-            Assert.Equal("20261114120000_AddAccountMerges", (await db.Database.GetAppliedMigrationsAsync()).Last());
+            await using var db = world.Db();
+            await world.Ledger(db).JournalIntakeAsync(merge.Id, folded.Id, id, default);
         }
 
-        await ExecuteAsync(world, "UPDATE \"Votes\" SET \"VoidedByMergeId\" = NULL, \"VoidedUtc\" = NULL");
-        await using var down = world.Db();
-        await down.GetService<IMigrator>().MigrateAsync("20261113120000_AddPasskeyCredentials");
-        Assert.Equal("20261113120000_AddPasskeyCredentials", (await down.Database.GetAppliedMigrationsAsync()).Last());
-        await down.GetService<IMigrator>().MigrateAsync(); // and up again, trigger and all
-        Assert.Equal("20261114120000_AddAccountMerges", (await down.Database.GetAppliedMigrationsAsync()).Last());
+        var journal = await world.JournalAsync(merge);
+        Assert.Equal(committed + 2, journal.Count);
+        Assert.Equal(journal.Count, journal.Select(x => x.Seq).Distinct().Count());
     }
 }

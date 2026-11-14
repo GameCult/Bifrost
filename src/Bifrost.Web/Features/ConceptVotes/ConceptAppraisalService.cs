@@ -65,13 +65,6 @@ public sealed class ConceptAppraisalService(
             return CastResult.NoVoter;
         }
 
-        // A voter resolved before a merge froze the account must not write an appraisal after it: standing is read again at the write.
-        if (voter.UserAccountId is { } voterAccountId &&
-            await AccountMergeLedger.StandingAsync(dbContext, voterAccountId, cancellationToken) is not null)
-        {
-            return CastResult.NoVoter;
-        }
-
         var subject = await FindSubjectAsync(collection, key, cancellationToken);
         if (subject is null)
         {
@@ -89,6 +82,14 @@ public sealed class ConceptAppraisalService(
             : NetworkPrefix.Tag(client, opts.IPv4PrefixLength, opts.IPv6PrefixLength, opts.NetworkTagSecret);
 
         var existing = await FindAppraisalAsync(subject.Id, voter.Key, cancellationToken);
+
+        // A voter resolved before a merge froze the account must not write an appraisal after it: standing is read again at the write.
+        if (voter.UserAccountId is { } voterAccountId &&
+            !await AccountMergeLedger.MayWriteAsync(dbContext, voterAccountId, cancellationToken))
+        {
+            return CastResult.NoVoter;
+        }
+
         if (existing is not null)
         {
             return await ApplyStanceAsync(existing, stance, tag, cancellationToken);

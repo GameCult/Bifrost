@@ -191,6 +191,79 @@ public sealed class AccountMergeHttpTests(TestWebApplicationFactory factory) : I
         Assert.Equal([s.Folded], await EventOwnersAsync(s));
     }
 
+    private Task<List<AccountMergeEntry>> PatronJournalAsync(Guid merge) =>
+        WithDb(db => db.AccountMergeEntries.Where(x => x.MergeId == merge).OrderBy(x => x.Seq).ToListAsync());
+
+    [Fact]
+    public async Task A_single_patron_event_during_grace_is_journalled_by_its_own_delivery_and_undo_moves_it_back()
+    {
+        var s = await SeedAsync();
+        var merge = await CommitMergeAsync(s);
+
+        Assert.Equal(HttpStatusCode.Accepted, await IntakeAsync(s, $"WH-{Guid.NewGuid():N}")); // no retry follows
+
+        var journal = await PatronJournalAsync(merge);
+        Assert.Single(journal, x => x.Kind == AccountMergeEntryKind.PatronSupportEvent);
+        Assert.Equal(journal.Count, journal.Select(x => x.Seq).Distinct().Count()); // the new entry takes its own Seq
+        await SetStateAsync(merge, AccountMergeState.HeimdallReversed);
+        await WithDb(async db =>
+        {
+            using var scope = factory.Services.CreateScope();
+            await scope.ServiceProvider.GetRequiredService<Bifrost.Web.Features.Membership.AccountMergeLedger>().UndoLocalAsync(merge, default);
+            return 0;
+        });
+        Assert.Equal([s.Folded], await EventOwnersAsync(s));
+    }
+
+    [Fact]
+    public async Task A_provider_retry_journals_an_event_the_first_delivery_left_unjournalled()
+    {
+        var s = await SeedAsync();
+        var merge = await CommitMergeAsync(s);
+        var eventId = $"WH-{Guid.NewGuid():N}";
+        await WithDb(async db => // the first delivery recorded on the survivor, then died before journalling
+        {
+            db.PatronSupportEvents.Add(new PatronSupportEvent
+            {
+                UserAccountId = s.Survivor, Provider = ExternalPatronProvider.PayPal, ProviderEventId = eventId, ExternalSupportId = "CAPTURE-1",
+                Kind = PatronSupportEventKind.OneTimeDonation, Amount = 25m, SupportedAtUtc = DateTimeOffset.UtcNow, RecordedAtUtc = DateTimeOffset.UtcNow
+            });
+            await db.SaveChangesAsync();
+            return 0;
+        });
+        Assert.DoesNotContain(await PatronJournalAsync(merge), x => x.Kind == AccountMergeEntryKind.PatronSupportEvent);
+
+        Assert.Equal(HttpStatusCode.Accepted, await IntakeAsync(s, eventId));
+
+        Assert.Single(await PatronJournalAsync(merge), x => x.Kind == AccountMergeEntryKind.PatronSupportEvent);
+        Assert.Equal([s.Survivor], await EventOwnersAsync(s));
+    }
+
+    [Fact]
+    public async Task A_stripe_checkout_opened_by_an_account_that_folded_pays_the_survivor_and_is_journalled()
+    {
+        var s = await SeedAsync();
+        var merge = await CommitMergeAsync(s);
+        var payload = JsonSerializer.Serialize(new
+        {
+            id = $"evt_{Guid.NewGuid():N}", type = "checkout.session.completed", created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+            data = new { @object = new { id = $"cs_{Guid.NewGuid():N}", customer = "cus_1", currency = "usd", amount_total = 1900, payment_status = "paid",
+                metadata = new Dictionary<string, string> { ["bifrost_user_account_id"] = s.Folded.ToString("N") } } }
+        });
+        var timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString();
+        using var hasher = new HMACSHA256(Encoding.UTF8.GetBytes("whsec_test_webhook_secret"));
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/patronage/stripe/webhook");
+        request.Headers.Add("Stripe-Signature", $"t={timestamp},v1={Convert.ToHexString(hasher.ComputeHash(Encoding.UTF8.GetBytes($"{timestamp}.{payload}"))).ToLowerInvariant()}");
+        request.Content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var client = factory.CreateClient();
+
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+        Assert.Equal([s.Survivor], await EventOwnersAsync(s));
+        Assert.Single(await PatronJournalAsync(merge), x => x.Kind == AccountMergeEntryKind.PatronSupportEvent);
+    }
+
     [Fact]
     public async Task A_folded_bootstrap_admins_sign_in_does_not_reactivate_the_merged_membership_and_an_approval_is_refused()
     {

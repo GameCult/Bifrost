@@ -7,6 +7,9 @@ using Microsoft.EntityFrameworkCore;
 namespace Bifrost.Web.Features.Membership;
 
 /// <summary>How an account stands under a merge: the folded account of an unfinished merge is Frozen, of a landed one Folded.</summary>
+/// <summary>Where a patron event for an account lands; <see cref="MergeId"/> is set when the account is folded and the event must be journalled.</summary>
+public sealed record SupportTarget(Guid ForAccountId, Guid RecordOnAccountId, Guid? MergeId);
+
 public abstract record MergeStanding(Guid MergeId)
 {
     public sealed record Frozen(Guid MergeId) : MergeStanding(MergeId);
@@ -69,6 +72,25 @@ public sealed class AccountMergeLedger(
                 ? new MergeStanding.Frozen(merge.Id)
                 : new MergeStanding.Folded(merge.Id, merge.SurvivorUserAccountId);
     }
+
+    /// <summary>
+    /// The one standing-at-write rule: an account with a merge standing (frozen or folded) writes nothing as itself. Every writer that
+    /// acts for an account (votes, appraisals, sealed ballots) calls this after loading what it will change and before it mutates,
+    /// so an actor resolved before the merge froze the account cannot write after it. It reads, then the writer saves: the
+    /// microseconds between the two are the window the saga cannot close without a lock or tally-time voiding (docs/account-merge.md).
+    /// </summary>
+    public static async Task<bool> MayWriteAsync(BifrostDbContext db, Guid userAccountId, CancellationToken cancellationToken) =>
+        await StandingAsync(db, userAccountId, cancellationToken) is null;
+
+    /// <summary>
+    /// The one routing of patron support: an event for a folded account lands on its survivor, anything else on the account itself.
+    /// The Heimdall intake and the Stripe webhook both resolve through here, immediately before they record, and journal a folded
+    /// event with <see cref="JournalIntakeAsync"/>.
+    /// </summary>
+    public async Task<SupportTarget> SupportTargetAsync(Guid userAccountId, CancellationToken cancellationToken) =>
+        await StandingAsync(dbContext, userAccountId, cancellationToken) is MergeStanding.Folded folded
+            ? new SupportTarget(userAccountId, folded.SurvivorId, folded.MergeId)
+            : new SupportTarget(userAccountId, userAccountId, null);
 
     /// <summary>Writes nothing. <paramref name="exceptMergeId"/> lets the saga re-plan a merge it already holds without it blocking itself.</summary>
     public async Task<MergePlan> PlanAsync(Guid survivorId, Guid foldedId, CancellationToken cancellationToken, Guid? exceptMergeId = null)

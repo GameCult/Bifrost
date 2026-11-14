@@ -54,17 +54,17 @@ public sealed class MotionGovernanceService(
     {
         var actorUser = actor.UserAccount ?? throw new UnauthorizedAccessException("A linked Bifrost actor is required.");
 
-        // An actor resolved before a merge froze this account must not write a vote after it: standing is read again at the write.
-        if (await AccountMergeLedger.StandingAsync(dbContext, actorUser.Id, cancellationToken) is not null)
-        {
-            return;
-        }
-
         var motion = await dbContext.Motions
             .Include(x => x.Votes)
             .SingleAsync(x => x.Id == motionId, cancellationToken);
 
         if (motion.Status != MotionStatus.Open || motion.Kind != MotionKind.Standard)
+        {
+            return;
+        }
+
+        // An actor resolved before a merge froze this account must not write a vote after it: standing is read again at the write.
+        if (!await AccountMergeLedger.MayWriteAsync(dbContext, actorUser.Id, cancellationToken))
         {
             return;
         }

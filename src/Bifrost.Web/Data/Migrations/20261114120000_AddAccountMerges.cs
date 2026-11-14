@@ -127,6 +127,23 @@ namespace Bifrost.Web.Data.Migrations
                 table: "AccountMerges",
                 columns: new[] { "SurvivorUserAccountId", "State" });
 
+            // One current Patron snapshot per membership: two restages racing (two merges into one survivor, a merge and an intake) would
+            // each demote the old row and add their own, and EffectiveVotingWeight sums the current ones. A pre-existing duplicate keeps
+            // only its newest row current so the index can be built.
+            migrationBuilder.Sql(@"
+UPDATE ""TierSnapshots"" t SET ""IsCurrent"" = false
+WHERE t.""Kind"" = 'Patron' AND t.""IsCurrent"" AND EXISTS (
+    SELECT 1 FROM ""TierSnapshots"" o
+    WHERE o.""MembershipId"" = t.""MembershipId"" AND o.""Kind"" = 'Patron' AND o.""IsCurrent""
+      AND (o.""CapturedAtUtc"" > t.""CapturedAtUtc"" OR (o.""CapturedAtUtc"" = t.""CapturedAtUtc"" AND o.""Id"" > t.""Id"")));");
+
+            migrationBuilder.CreateIndex(
+                name: "UX_TierSnapshots_MembershipId_CurrentPatron",
+                table: "TierSnapshots",
+                column: "MembershipId",
+                unique: true,
+                filter: "\"Kind\" = 'Patron' AND \"IsCurrent\"");
+
             // The cross-role guard no single unique index can express: a live merge's survivor is never another live merge's folded
             // account (no chains), whichever order they arrive in. Advisory locks on both accounts, taken in a fixed order, serialise two
             // transactions racing over the same account, so the second one's check sees the first's committed row.
@@ -155,18 +172,21 @@ CREATE TRIGGER ""AccountMerges_refuse_chain"" BEFORE INSERT OR UPDATE OF ""State
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
-            // Voiding lives only in the new build's query filter and these columns: dropping them (or running an older build over them)
-            // counts every voided vote again, and a close in that window records a wrong result for good. Refuse while any is voided;
-            // see docs/account-merge.md (Rollback).
+            // Roll-forward only (heimdall-body:ruling:merge-roll-forward-only): once any merge exists the Merged membership status
+            // cannot be read by an older build, and voided votes and appraisals would be counted again. Refuse while any merge row
+            // exists; see docs/account-merge.md (Rollback).
             migrationBuilder.Sql(@"
 DO $$
 BEGIN
-    IF EXISTS (SELECT 1 FROM ""Votes"" WHERE ""VoidedByMergeId"" IS NOT NULL)
-       OR EXISTS (SELECT 1 FROM ""ConceptAppraisals"" WHERE ""VoidedByMergeId"" IS NOT NULL) THEN
-        RAISE EXCEPTION 'AddAccountMerges cannot be reverted while merged votes or appraisals are voided';
+    IF EXISTS (SELECT 1 FROM ""AccountMerges"") THEN
+        RAISE EXCEPTION 'AddAccountMerges cannot be reverted once an account merge exists: Bifrost is roll-forward only';
     END IF;
 END
 $$;");
+
+            migrationBuilder.DropIndex(
+                name: "UX_TierSnapshots_MembershipId_CurrentPatron",
+                table: "TierSnapshots");
 
             migrationBuilder.Sql(@"DROP TRIGGER ""AccountMerges_refuse_chain"" ON ""AccountMerges""; DROP FUNCTION ""AccountMerges_refuse_chain""();");
 

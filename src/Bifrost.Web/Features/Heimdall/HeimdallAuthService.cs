@@ -840,11 +840,13 @@ public sealed class HeimdallAuthService(
                 Headline = $"Verified through Heimdall {provider}",
                 UpdatedAtUtc = now
             };
-            userAccount.Membership ??= new Bifrost.Web.Domain.Membership
+            if (userAccount.Membership is null)
             {
-                UserAccountId = userAccount.Id,
-                CreatedAtUtc = now
-            };
+                // Added explicitly: a row with a preset key assigned to a tracked account is taken for an existing one and the save fails.
+                userAccount.Membership = new Bifrost.Web.Domain.Membership { UserAccountId = userAccount.Id, CreatedAtUtc = now };
+                dbContext.Memberships.Add(userAccount.Membership);
+            }
+
             // A suspension is an admin's decision: the claim neither lifts it nor, absent, imposes it. A merged row is terminal: the claim never reactivates it.
             if (grantMemberAccess && userAccount.Membership.Status != MembershipStatus.Suspended && !userAccount.Membership.IsMerged)
             {

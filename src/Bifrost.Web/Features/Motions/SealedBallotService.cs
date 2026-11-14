@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using Bifrost.Web.Data;
 using Bifrost.Web.Domain;
+using Bifrost.Web.Features.Membership;
 using Bifrost.Web.Features.Shared;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -101,6 +102,7 @@ public sealed class SealedBallotService(
 
         var ballot = await dbContext.SealedBallots
             .SingleOrDefaultAsync(x => x.MotionId == motionId && x.UserAccountId == user.Id, cancellationToken);
+        await RequireStandingAsync(user.Id, cancellationToken);
         if (ballot is null)
         {
             ballot = new SealedBallot { MotionId = motionId, UserAccountId = user.Id };
@@ -161,6 +163,7 @@ public sealed class SealedBallotService(
         // another voter's reveal landed first while the window is still open (re-read the row and write again).
         for (var attempt = 0; ; attempt++)
         {
+            await RequireStandingAsync(user.Id, cancellationToken);
             ballot.RevealedCandidate = candidate;
             ballot.RevealedReason = reason;
             ballot.Salt = document.Salt;
@@ -358,6 +361,15 @@ public sealed class SealedBallotService(
     private static IReadOnlyList<string> CandidatesOf(Motion motion) => motion.Candidates.Split('\n');
 
     private static string NameOf(UserAccount user) => user.MemberProfile?.Nickname ?? user.DisplayName;
+
+    // A member resolved before a merge froze the account must not write a ballot after it: standing is read again at the write.
+    private async Task RequireStandingAsync(Guid userAccountId, CancellationToken cancellationToken)
+    {
+        if (!await AccountMergeLedger.MayWriteAsync(dbContext, userAccountId, cancellationToken))
+        {
+            throw new SealedBallotException(SealedBallotFailure.Forbidden, "An active member is required.");
+        }
+    }
 
     private static UserAccount RequireMember(CurrentBifrostActor actor) =>
         actor is { IsActiveMember: true, UserAccount: { } user }

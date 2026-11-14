@@ -83,8 +83,12 @@ Then start the first implementation milestone:
 
 ## Live Postgres tests
 
-Most tests run on the in-memory EF provider, which enforces no unique index, transaction, concurrency token or trigger. The tests that need a real server (`tests/Bifrost.Web.Tests/AccountMergePostgresTests.cs`: commit atomicity, the `(MergeId, Seq)` unique index, the sweeper racing the saga, overlapping merges refused by the database, the migration's rollback guard) run only when `BIFROST_TEST_PG` holds a connection string with no `Database=`, for a role that may create databases; otherwise they are skipped with that reason. Each test creates its own database, builds it through the real migrations and the class drops it, so point the variable at a disposable server:
+Most tests run on the in-memory EF provider, which enforces no unique index, transaction, concurrency token or trigger. The tests that need a real server (`tests/Bifrost.Web.Tests/AccountMergePostgresTests.cs`: commit atomicity, the `(MergeId, Seq)` unique index, the sweeper racing the saga, overlapping merges refused by the database, the one-current-Patron-snapshot index under racing restages, the intake journal `Seq`, the migration's roll-forward-only guard) run only when `BIFROST_TEST_PG` holds a connection string with no `Database=`, for a role that may create databases; otherwise they are skipped with that reason. Each test creates its own database, builds it through the real migrations and the class drops it, so point the variable at a disposable server:
 
 ```bash
 BIFROST_TEST_PG='Host=127.0.0.1;Port=54329;Username=postgres' dotnet test tests/Bifrost.Web.Tests --filter FullyQualifiedName~AccountMergePostgresTests
 ```
+
+## Account merges are roll-forward only
+
+Once any `AccountMerges` row exists, do not deploy a build older than the `AddAccountMerges` migration, and do not revert that migration: an older build cannot read the `Merged` membership status and counts voided votes again. `Down` refuses while any merge row exists. Fix forward (`heimdall-body:ruling:merge-roll-forward-only`, `docs/account-merge.md` Rollback). Any deploy list that names a rollback must say so.

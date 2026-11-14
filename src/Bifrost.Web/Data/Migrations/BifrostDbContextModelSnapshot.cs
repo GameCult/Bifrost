@@ -1445,6 +1445,11 @@ namespace Bifrost.Web.Data.Migrations
 
                     b.HasIndex("MembershipId", "Kind", "IsCurrent");
 
+                    b.HasIndex("MembershipId")
+                        .IsUnique()
+                        .HasDatabaseName("UX_TierSnapshots_MembershipId_CurrentPatron")
+                        .HasFilter("\"Kind\" = 'Patron' AND \"IsCurrent\"");
+
                     b.ToTable("TierSnapshots");
                 });
 

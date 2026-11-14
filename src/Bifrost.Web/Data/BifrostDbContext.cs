@@ -141,6 +141,10 @@ public sealed class BifrostDbContext(DbContextOptions<BifrostDbContext> options)
             entity.Property(x => x.Label).HasMaxLength(120);
             entity.Property(x => x.Weight).HasPrecision(18, 2);
             entity.HasIndex(x => new { x.MembershipId, x.Kind, x.IsCurrent });
+            entity.HasIndex(x => x.MembershipId)
+                .IsUnique()
+                .HasDatabaseName("UX_TierSnapshots_MembershipId_CurrentPatron")
+                .HasFilter("\"Kind\" = 'Patron' AND \"IsCurrent\"");
             entity.HasOne(x => x.Membership)
                 .WithMany(x => x.TierSnapshots)
                 .HasForeignKey(x => x.MembershipId);

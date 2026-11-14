@@ -272,6 +272,45 @@ public sealed class SealedBallotTests
         Assert.Equal(1, await rig.Db.AuditEvents.CountAsync(x => x.Action == "sealed.closed"));
     }
 
+    private static async Task FreezeAsync(Rig rig, CurrentBifrostActor folded)
+    {
+        var survivor = rig.Member("Survivor");
+        rig.Db.AccountMerges.Add(new AccountMerge
+        {
+            SurvivorUserAccountId = survivor.UserAccount!.Id, FoldedUserAccountId = folded.UserAccount!.Id, State = AccountMergeState.Confirmed, CreatedUtc = T0
+        });
+        await rig.Db.SaveChangesAsync();
+    }
+
+    [Fact]
+    public async Task A_commit_from_an_actor_resolved_before_the_account_froze_writes_no_ballot()
+    {
+        var rig = new Rig();
+        var motion = await rig.OpenAsync("Ana", "Bo");
+        var staleActor = rig.Member("Folded"); // resolved before the merge was confirmed
+        await FreezeAsync(rig, staleActor);
+        var refusal = await Assert.ThrowsAsync<SealedBallotException>(() => rig.Cast(staleActor, motion.Id, "Ana", "Mine."));
+
+        Assert.Equal(SealedBallotFailure.Forbidden, refusal.Failure);
+        Assert.Empty(rig.Db.SealedBallots);
+    }
+
+    [Fact]
+    public async Task A_reveal_from_an_actor_resolved_before_the_account_froze_changes_nothing()
+    {
+        var rig = new Rig();
+        var motion = await rig.OpenAsync("Ana", "Bo");
+        var staleActor = rig.Member("Folded");
+        await rig.Cast(staleActor, motion.Id, "Ana", "Mine.");
+        await FreezeAsync(rig, staleActor);
+        rig.Clock.Now = T0.AddMinutes(90);
+
+        var refusal = await Assert.ThrowsAsync<SealedBallotException>(() => rig.Reveal(staleActor, motion.Id, "Ana", "Mine."));
+
+        Assert.Equal(SealedBallotFailure.Forbidden, refusal.Failure);
+        Assert.Null((await rig.Db.SealedBallots.SingleAsync()).RevealedAtUtc);
+    }
+
     // Runs a callback once, just before the first save that closes a motion: the window between the close reading its ballots and writing.
     private sealed class BeforeCloseSave(Func<Task> action) : SaveChangesInterceptor
     {

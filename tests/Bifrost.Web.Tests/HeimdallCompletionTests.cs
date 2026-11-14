@@ -917,6 +917,26 @@ public sealed class HeimdallCompletionTests
     }
 
     [Fact]
+    public async Task A_legacy_account_without_a_membership_row_signs_in_and_gets_one()
+    {
+        using var host = new HeimdallHost();
+        var accountId = HeimdallShapes.NewAccountId();
+        Assert.True((await Genuine(host, await host.StartAsync(member: false), accountId)).SignedIn);
+        await host.Db(async db =>
+        {
+            db.Memberships.RemoveRange(db.Memberships.Where(x => x.UserAccount.HeimdallAccountId == accountId));
+            await db.SaveChangesAsync();
+            return 0;
+        });
+        Assert.Null((await host.Account(accountId))!.Membership);
+
+        var again = await Genuine(host, await host.StartAsync(member: true), accountId, ["member_access"]);
+
+        Assert.True(again.SignedIn);
+        Assert.Equal(MembershipStatus.Active, (await host.Account(accountId))!.Membership!.Status);
+    }
+
+    [Fact]
     public async Task A_chat_only_account_that_later_signs_in_with_member_access_becomes_a_member()
     {
         using var host = new HeimdallHost();

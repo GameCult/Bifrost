@@ -10,6 +10,8 @@ public sealed class PatronageService(
     AuditTrailService auditTrailService,
     TimeProvider timeProvider)
 {
+    private const string CurrentPatronIndex = "UX_TierSnapshots_MembershipId_CurrentPatron";
+
     public async Task<PatronSupportEvent> RecordSupportEventAsync(
         Guid? actorUserAccountId,
         Guid userAccountId,
@@ -134,21 +136,38 @@ public sealed class PatronageService(
         Guid userAccountId,
         CancellationToken cancellationToken)
     {
-        dbContext.ChangeTracker.Clear();
-
-        var user = await dbContext.UserAccounts
-            .Include(x => x.Membership)
-            .Include(x => x.PatronSupportEvents)
-            .SingleAsync(x => x.Id == userAccountId, cancellationToken);
-
-        if (user.Membership is null)
+        // One current Patron snapshot per membership is a database invariant (UX_TierSnapshots_MembershipId_CurrentPatron). A restage that
+        // lost a race to another restage of the same membership reads the winner's snapshot and derives again from the events it now sees.
+        UserAccount user;
+        PatronPointSummary summary;
+        PatronTierDefinition? tier;
+        for (var attempt = 0; ; attempt++)
         {
-            throw new InvalidOperationException("Cannot refresh patron tier for a user without membership.");
+            dbContext.ChangeTracker.Clear();
+
+            user = await dbContext.UserAccounts
+                .Include(x => x.Membership)
+                .Include(x => x.PatronSupportEvents)
+                .SingleAsync(x => x.Id == userAccountId, cancellationToken);
+
+            if (user.Membership is null)
+            {
+                throw new InvalidOperationException("Cannot refresh patron tier for a user without membership.");
+            }
+
+            (summary, tier) = await StageTierSnapshotAsync(user.Membership, user.PatronSupportEvents, timeProvider.GetUtcNow(), cancellationToken);
+
+            try
+            {
+                await dbContext.SaveChangesAsync(cancellationToken);
+                break;
+            }
+            catch (DbUpdateException error) when (attempt < 3 &&
+                error.InnerException is Npgsql.PostgresException { SqlState: Npgsql.PostgresErrorCodes.UniqueViolation, ConstraintName: CurrentPatronIndex })
+            {
+            }
         }
 
-        var (summary, tier) = await StageTierSnapshotAsync(user.Membership, user.PatronSupportEvents, timeProvider.GetUtcNow(), cancellationToken);
-
-        await dbContext.SaveChangesAsync(cancellationToken);
         await auditTrailService.RecordAsync(
             actorUserAccountId,
             nameof(TierSnapshot),
