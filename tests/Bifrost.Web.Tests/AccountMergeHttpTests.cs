@@ -244,6 +244,20 @@ public sealed class AccountMergeHttpTests(TestWebApplicationFactory factory) : I
     {
         var s = await SeedAsync();
         var merge = await CommitMergeAsync(s);
+        using var response = await StripeCheckoutAsync(s);
+
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+        Assert.Equal([s.Survivor], await EventOwnersAsync(s));
+        var entry = Assert.Single(await PatronJournalAsync(merge), x => x.Kind == AccountMergeEntryKind.PatronSupportEvent);
+        Assert.Equal(s.Folded, entry.PriorUserAccountId); // the journal names the folded account as the previous owner
+
+        await SetStateAsync(merge, AccountMergeState.HeimdallReversed);
+        await UndoAsync(merge);
+        Assert.Equal([s.Folded], await EventOwnersAsync(s)); // so an undo sends the donation back where it was opened
+    }
+
+    private async Task<HttpResponseMessage> StripeCheckoutAsync(Seeded s)
+    {
         var payload = JsonSerializer.Serialize(new
         {
             id = $"evt_{Guid.NewGuid():N}", type = "checkout.session.completed", created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
@@ -257,16 +271,7 @@ public sealed class AccountMergeHttpTests(TestWebApplicationFactory factory) : I
         request.Content = new StringContent(payload, Encoding.UTF8, "application/json");
         using var client = factory.CreateClient();
 
-        using var response = await client.SendAsync(request);
-
-        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
-        Assert.Equal([s.Survivor], await EventOwnersAsync(s));
-        var entry = Assert.Single(await PatronJournalAsync(merge), x => x.Kind == AccountMergeEntryKind.PatronSupportEvent);
-        Assert.Equal(s.Folded, entry.PriorUserAccountId); // the journal names the folded account as the previous owner
-
-        await SetStateAsync(merge, AccountMergeState.HeimdallReversed);
-        await UndoAsync(merge);
-        Assert.Equal([s.Folded], await EventOwnersAsync(s)); // so an undo sends the donation back where it was opened
+        return await client.SendAsync(request);
     }
 
     private Task UndoAsync(Guid merge) =>
@@ -276,6 +281,24 @@ public sealed class AccountMergeHttpTests(TestWebApplicationFactory factory) : I
             await scope.ServiceProvider.GetRequiredService<Bifrost.Web.Features.Membership.AccountMergeLedger>().UndoLocalAsync(merge, default);
             return 0;
         });
+
+    [Fact]
+    public async Task A_stripe_checkout_opened_by_an_account_that_folded_into_a_suspended_survivor_is_refused_as_not_configured_and_records_nothing()
+    {
+        var s = await SeedAsync();
+        await CommitMergeAsync(s);
+        await WithDb(async db =>
+        {
+            (await db.Memberships.SingleAsync(x => x.UserAccountId == s.Survivor)).Status = MembershipStatus.Suspended;
+            await db.SaveChangesAsync();
+            return 0;
+        });
+
+        using var response = await StripeCheckoutAsync(s);
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        Assert.Empty(await EventOwnersAsync(s));
+    }
 
     [Fact]
     public async Task The_admin_ledgers_manual_patron_record_for_a_folded_account_lands_on_the_survivor_and_is_journalled()
