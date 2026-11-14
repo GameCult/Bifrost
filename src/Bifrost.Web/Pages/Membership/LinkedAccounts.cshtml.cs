@@ -26,6 +26,7 @@ public sealed class LinkedAccountsModel(
     PasskeyService passkeys,
     ICurrentBifrostActorAccessor actors,
     IOptions<BifrostHostOptions> hostOptions,
+    IOptions<AccountMergeOptions> mergeOptions,
     ILogger<LinkedAccountsModel> logger) : PageModel
 {
     private static readonly Dictionary<string, string> ProviderNames = new(StringComparer.Ordinal)
@@ -51,6 +52,9 @@ public sealed class LinkedAccountsModel(
     }
 
     private string? AccountId => User.FindFirstValue(BifrostClaimTypes.HeimdallAccountId) is { Length: > 0 } id ? id : null;
+
+    /// <summary>Whether the merge page exists on this server (a flag, dark until Heimdall can move logins).</summary>
+    public bool MergeEnabled => mergeOptions.Value.Enabled;
 
     /// <summary>The wording of the outcome the page was sent back with: a closed set, null for anything else.</summary>
     public string? ResultMessage { get; private set; }

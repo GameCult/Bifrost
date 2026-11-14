@@ -215,6 +215,13 @@
                 }
             </div>
         }
+
+        @if (Model.MergeEnabled)
+        {
+            <p class="muted">
+                Hold two accounts? <a asp-page="/Membership/MergeAccounts">Merge two accounts</a>
+            </p>
+        }
     }
 
     <div class="panel-actions">

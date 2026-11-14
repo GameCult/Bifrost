@@ -19,7 +19,6 @@ namespace Bifrost.Web.Tests;
 public sealed class MergeAccountsPageTests
 {
     private const string Url = MergePage.AccountsUrl;
-    private const string MyName = "quill-9f3a";
     private const string OtherName = "banks-2d7c";
 
     private static string Enc(string text) => System.Text.Encodings.Web.HtmlEncoder.Default.Encode(text);
@@ -34,6 +33,9 @@ public sealed class MergeAccountsPageTests
 
         public string Session { get; private init; } = string.Empty;
 
+        /// <summary>The name the account carries after signing in (a sign-in refreshes it from Heimdall).</summary>
+        public string MyName { get; private init; } = string.Empty;
+
         public MergePage.Antiforgery? Token { get; private set; }
 
         public HeimdallHost Host => Rig.Host;
@@ -47,10 +49,11 @@ public sealed class MergeAccountsPageTests
         public static async Task<World> Make(bool enabled = true)
         {
             var rig = new Rig(realSessions: true, accountMerge: enabled);
-            var me = await rig.AccountAsync(MyName, "discord");
+            var me = await rig.AccountAsync("quill-9f3a", "discord");
             var other = await rig.AccountAsync(OtherName, "patreon", "google");
             var session = await rig.Host.SignInSessionAsync(me.HeimdallId, "discord");
-            var world = new World { Rig = rig, Me = me, Other = other, Session = session };
+            var myName = await rig.InScopeAsync(async sp => (await sp.GetRequiredService<BifrostDbContext>().UserAccounts.AsNoTracking().SingleAsync(x => x.Id == me.Id)).DisplayName);
+            var world = new World { Rig = rig, Me = me, Other = other, Session = session, MyName = myName };
             if (enabled)
             {
                 world.Token = await MergePage.TokenAsync(rig.Host, session, Url);
@@ -175,8 +178,12 @@ public sealed class MergeAccountsPageTests
 
         var (response, _) = await w.Get(session: folded);
 
-        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        AssertRefused(response);
     }
+
+    /// <summary>Forbid answers 403 or sends the browser to the access-denied page; either way the page is not served.</summary>
+    private static void AssertRefused(HttpResponseMessage response) =>
+        Assert.True(response.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.Found, response.StatusCode.ToString());
 
     // ---- stages derive from the proofs held ----
 
@@ -229,7 +236,7 @@ public sealed class MergeAccountsPageTests
 
         var page = await w.Page();
 
-        Assert.Contains(MyName, page);
+        Assert.Contains(w.MyName, page);
         Assert.Contains(OtherName, page);
         Assert.Contains("Keep this account", page);
         Assert.Contains("Keep the other account", page);
@@ -456,7 +463,7 @@ public sealed class MergeAccountsPageTests
         Assert.Equal(survivor.Id, merge.SurvivorUserAccountId);
         Assert.Equal(w.Me.Id, merge.ConfirmedByUserAccountId);
         Assert.Equal(digest, merge.PreviewDigest);
-        Assert.NotNull(merge.SealedProofs);
+        Assert.Null(merge.SealedProofs); // spent by the move that landed
         if (keep == "self")
         {
             Assert.Equal("discord", merge.SurvivorProofProvider);
@@ -468,6 +475,23 @@ public sealed class MergeAccountsPageTests
             Assert.Equal("discord", merge.FoldedProofProviders);
         }
 
+        Assert.Equal(new MergeProofsView(null, null), w.Proofs.Snapshot(w.Me.Id));
+    }
+
+    [Fact]
+    public async Task A_confirm_while_Heimdall_is_unreachable_still_lands_on_Merge_status_with_the_row_Confirmed_and_the_proofs_sealed()
+    {
+        using var w = await World.Make();
+        await w.ProveAll();
+        var digest = World.DigestIn(await w.Page("?keep=self"));
+        w.Rig.Moves.MoveDown = new HttpRequestException("down");
+
+        var response = await w.Confirm("self", digest);
+
+        Assert.Equal(MergePage.Url, MergePage.Location(response));
+        var merge = Assert.Single(await w.Rig.InScopeAsync(sp => sp.GetRequiredService<BifrostDbContext>().AccountMerges.AsNoTracking().ToListAsync()));
+        Assert.Equal(AccountMergeState.Confirmed, merge.State);
+        Assert.NotNull(merge.SealedProofs);
         Assert.Equal(new MergeProofsView(null, null), w.Proofs.Snapshot(w.Me.Id));
     }
 
@@ -489,7 +513,7 @@ public sealed class MergeAccountsPageTests
         Assert.Contains("Undo window ends", status);
         Assert.Contains("can still be undone", status);
         var (foldedResponse, _) = await w.Host.GetLinkedAccountsAsync(foldedSession);
-        Assert.Equal(HttpStatusCode.Forbidden, foldedResponse.StatusCode);
+        AssertRefused(foldedResponse);
 
         var everything = string.Join('\n', w.Surface) + status;
         Assert.All(w.Bearers, bearer => Assert.DoesNotContain(bearer, everything));

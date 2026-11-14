@@ -1,0 +1,148 @@
+@page
+@model Bifrost.Web.Pages.Membership.MergeAccountsModel
+@{
+    ViewData["Title"] = "Merge two accounts";
+}
+
+<section class="panel">
+    <span class="eyebrow">Account merge</span>
+    <h1>Merge two accounts</h1>
+    <p class="panel-intro">
+        If one person holds two accounts, they can be merged into one. You prove both accounts with a fresh sign-in each, choose
+        which one stays, see what changes and confirm; nothing is named until both proofs exist, and the other account is only
+        ever the one Heimdall identified from your second sign-in.
+    </p>
+
+    @if (Model.ResultMessage is not null)
+    {
+        <div class="callout" role="status">@Model.ResultMessage</div>
+    }
+
+    @if (Model.ConfirmMessage is not null)
+    {
+        <div class="callout warning" role="status">@Model.ConfirmMessage</div>
+    }
+
+    @if (Model.Stage == Bifrost.Web.Pages.Membership.MergeAccountsModel.MergeStage.Prove)
+    {
+        <h2>Prove both accounts</h2>
+        <p class="muted">
+            Sign-ins are held in memory for a few minutes and then dropped. For each account, name a provider that account holds:
+            signing in through a provider it does not hold would make an unrelated account.
+        </p>
+
+        <h3>This account</h3>
+        @if (Model.SelfProved)
+        {
+            <p>This account is proved.</p>
+        }
+        else
+        {
+            <div class="panel-actions">
+                @foreach (var provider in Model.LinkableProviders)
+                {
+                    <form method="post" asp-page-handler="ProveSelf" class="inline-actions">
+                        <input type="hidden" name="via" value="@provider" />
+                        <button class="button secondary" type="submit">Prove this account with @Bifrost.Web.Pages.Membership.MergeAccountsModel.ProviderName(provider)</button>
+                    </form>
+                }
+            </div>
+        }
+
+        <h3>The other account</h3>
+        @if (Model.OtherProved)
+        {
+            <p>The other account is proved.</p>
+        }
+        else
+        {
+            <div class="panel-actions">
+                @foreach (var provider in Model.LinkableProviders)
+                {
+                    <form method="post" asp-page-handler="ProveOther" class="inline-actions">
+                        <input type="hidden" name="via" value="@provider" />
+                        <button class="button secondary" type="submit">Prove the other account with @Bifrost.Web.Pages.Membership.MergeAccountsModel.ProviderName(provider)</button>
+                    </form>
+                }
+            </div>
+        }
+    }
+    else
+    {
+        <h2>The two accounts</h2>
+        <ul>
+            <li>This account: <strong>@Model.SelfName</strong></li>
+            <li>The other account: <strong>@Model.OtherName</strong></li>
+        </ul>
+
+        @if (Model.Keep is null)
+        {
+            <p>Choose the account that stays. The other one is folded into it.</p>
+            <div class="panel-actions">
+                <a class="button" asp-page="/Membership/MergeAccounts" asp-route-keep="self">Keep this account</a>
+                <a class="button" asp-page="/Membership/MergeAccounts" asp-route-keep="other">Keep the other account</a>
+            </div>
+        }
+        else
+        {
+            <h2>Keep @Model.KeptName</h2>
+            <p>@Model.FoldedName is folded into it.</p>
+            <ul>
+                @foreach (var line in Model.PreviewLines)
+                {
+                    <li>@line</li>
+                }
+            </ul>
+            @foreach (var statement in Model.Statements)
+            {
+                <p class="muted">@statement</p>
+            }
+
+            <p>
+                <a asp-page="/Membership/MergeAccounts" asp-route-keep="@(Model.Keep == "self" ? "other" : "self")">Keep @Model.FoldedName instead</a>
+            </p>
+
+            @if (Model.BlockWords.Count > 0)
+            {
+                <div class="callout warning">
+                    <ul>
+                        @foreach (var words in Model.BlockWords)
+                        {
+                            <li>@words</li>
+                        }
+                    </ul>
+                </div>
+            }
+            else if (Model.Stage == Bifrost.Web.Pages.Membership.MergeAccountsModel.MergeStage.ProveRemaining)
+            {
+                <p>
+                    @Model.FoldedName holds more logins. Sign in once more through each one, so Heimdall knows the whole account agrees.
+                </p>
+                <div class="panel-actions">
+                    @foreach (var provider in Model.ProvidersToProve)
+                    {
+                        <form method="post" asp-page-handler="ProveRemaining" class="inline-actions">
+                            <input type="hidden" name="via" value="@provider" />
+                            <input type="hidden" name="keep" value="@Model.Keep" />
+                            <button class="button secondary" type="submit">Sign in with @Bifrost.Web.Pages.Membership.MergeAccountsModel.ProviderName(provider)</button>
+                        </form>
+                    }
+                </div>
+            }
+            else if (Model.Stage == Bifrost.Web.Pages.Membership.MergeAccountsModel.MergeStage.Confirm)
+            {
+                <form method="post" asp-page-handler="Confirm">
+                    <input type="hidden" name="keep" value="@Model.Keep" />
+                    <input type="hidden" name="digest" value="@Model.Digest" />
+                    <p>
+                        <label><input type="checkbox" name="consentSelf" value="true" /> I agree, for the account @Model.SelfName.</label>
+                    </p>
+                    <p>
+                        <label><input type="checkbox" name="consentOther" value="true" /> I agree, for the account @Model.OtherName.</label>
+                    </p>
+                    <button class="button" type="submit">Merge into @Model.KeptName</button>
+                </form>
+            }
+        }
+    }
+</section>

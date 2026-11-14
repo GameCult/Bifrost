@@ -67,8 +67,18 @@ public static class MergeWording
         _ => string.Empty
     };
 
-    /// <summary>Skeleton: the words for a closed confirm code on the merge page. Written with the page.</summary>
-    public static string Confirm(string code) => string.Empty;
+    /// <summary>The words for a closed code the merge page answers a confirm or a start with; empty for anything else.</summary>
+    public static string Confirm(string code) => code switch
+    {
+        "blocked" => "These accounts cannot be merged now. Nothing was changed.",
+        "preview_stale" => "Something changed since you looked; review the merge again. Nothing was changed and your sign-ins are kept.",
+        "not_party" => "Only one of the two accounts can confirm this merge. Nothing was changed.",
+        "proof_account_mismatch" => "A sign-in was not for the account it was meant for. Nothing was changed.",
+        "proofs_needed" => "Both accounts need a fresh sign-in, one for every login of the account that would be folded. Nothing was changed.",
+        "consent_needed" => "Tick both boxes to confirm. Nothing was changed.",
+        "bad_choice" => "Choose which account to keep. Nothing was changed.",
+        _ => string.Empty
+    };
 
     public static string UndoCode(UndoOutcome outcome) => outcome switch
     {
