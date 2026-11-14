@@ -499,6 +499,29 @@ public sealed class AccountMergePostgresTests(MergePostgres postgres) : IClassFi
     }
 
     [PostgresFact]
+    public async Task The_migration_keeps_only_the_newest_of_duplicate_current_patron_snapshots_before_it_builds_the_index()
+    {
+        var world = await postgres.NewWorldAsync();
+        var patron = await world.AccountAsync("patron");
+        await using var db = world.Db();
+        await db.GetService<IMigrator>().MigrateAsync("20261113120000_AddPasskeyCredentials"); // the index does not exist yet
+        var membership = await db.Memberships.SingleAsync(x => x.UserAccountId == patron.Id);
+        TierSnapshot Snapshot(string label, int minutes) => new()
+        {
+            MembershipId = membership.Id, Kind = TierSnapshotKind.Patron, Label = label, Weight = 1m, IsCurrent = true,
+            EffectiveFromUtc = AccountMergeLedgerTests.T0, CapturedAtUtc = AccountMergeLedgerTests.T0.AddMinutes(minutes)
+        };
+        db.TierSnapshots.AddRange(Snapshot("older", 0), Snapshot("newer", 5));
+        await db.SaveChangesAsync();
+
+        await db.GetService<IMigrator>().MigrateAsync();
+
+        await using var read = world.Db();
+        Assert.Equal("newer", (await read.TierSnapshots.SingleAsync(x => x.IsCurrent)).Label);
+        Assert.Equal(2, await read.TierSnapshots.CountAsync());
+    }
+
+    [PostgresFact]
     public async Task A_journalled_patron_intake_takes_the_next_seq_after_the_commits_entries_and_is_idempotent()
     {
         var world = await postgres.NewWorldAsync();
