@@ -1,12 +1,19 @@
+using Bifrost.Web.Configuration;
 using Bifrost.Web.Data;
 using Bifrost.Web.Domain;
+using Bifrost.Web.Features.Heimdall;
+using Bifrost.Web.Features.Membership;
 using Bifrost.Web.Features.Motions;
 using Bifrost.Web.Features.Patronage;
 using Bifrost.Web.Features.Shared;
+using Bifrost.Web.Tests.Support;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Npgsql;
 
 namespace Bifrost.Web.Tests;
@@ -400,7 +407,7 @@ public sealed class AccountMergePostgresTests(MergePostgres postgres) : IClassFi
         {
             var error = await Assert.ThrowsAnyAsync<Exception>(() => db.GetService<IMigrator>().MigrateAsync("20261113120000_AddPasskeyCredentials"));
             Assert.Contains("roll-forward only", Pg(error).MessageText);
-            Assert.Equal("20261114120000_AddAccountMerges", (await db.Database.GetAppliedMigrationsAsync()).Last());
+            Assert.Equal("20261114130000_AddAccountMergeSaga", (await db.Database.GetAppliedMigrationsAsync()).Last());
         }
 
         await ExecuteAsync(world, "DELETE FROM \"AccountMergeEntries\"; DELETE FROM \"AccountMerges\"");
@@ -408,7 +415,7 @@ public sealed class AccountMergePostgresTests(MergePostgres postgres) : IClassFi
         await down.GetService<IMigrator>().MigrateAsync("20261113120000_AddPasskeyCredentials");
         Assert.Equal("20261113120000_AddPasskeyCredentials", (await down.Database.GetAppliedMigrationsAsync()).Last());
         await down.GetService<IMigrator>().MigrateAsync(); // and up again, trigger and index and all
-        Assert.Equal("20261114120000_AddAccountMerges", (await down.Database.GetAppliedMigrationsAsync()).Last());
+        Assert.Equal("20261114130000_AddAccountMergeSaga", (await down.Database.GetAppliedMigrationsAsync()).Last());
     }
 
     // ---- restage and intake journal ----
@@ -675,5 +682,155 @@ public sealed class AccountMergePostgresTests(MergePostgres postgres) : IClassFi
 
         await freeze!.WaitAsync(TimeSpan.FromSeconds(30));
         Assert.True(blocked);
+    }
+
+    // ---- the saga: races the State token and the live-merge index carry ----
+
+    /// <summary>Holds the first save of each of two contexts until both have arrived: both have read, neither has written.</summary>
+    private sealed class FirstSaveRendezvous : SaveChangesInterceptor
+    {
+        private readonly Barrier _barrier = new(2);
+        private readonly HashSet<Guid> _seen = [];
+
+        public override async ValueTask<InterceptionResult<int>> SavingChangesAsync(DbContextEventData eventData, InterceptionResult<int> result, CancellationToken cancellationToken = default)
+        {
+            bool first;
+            lock (_seen)
+            {
+                first = _seen.Add(eventData.Context!.ContextId.InstanceId);
+            }
+
+            if (first)
+            {
+                await Task.Run(() => _barrier.SignalAndWait(TimeSpan.FromSeconds(30)), cancellationToken);
+            }
+
+            return result;
+        }
+    }
+
+    /// <summary>The fake Heimdall's account model behind the real move client, one key ring for every saga built over it.</summary>
+    private sealed class Heimdall
+    {
+        private readonly EphemeralDataProtectionProvider _keys = new();
+        private readonly HeimdallIdentityMoveClient _mover;
+
+        public Heimdall(AccountMergeLedgerTests.World clockOwner)
+        {
+            Fake = new FakeHeimdall { RequiredAppSecret = HeimdallHost.AppSecret, Now = () => clockOwner.Clock.Now };
+            var options = new HeimdallOptions { BaseUrl = HeimdallShapes.Issuer, AppSecret = HeimdallHost.AppSecret };
+            var client = new HttpClient(Fake);
+            HeimdallAuthService.ConfigureClient(client, options);
+            _mover = new HeimdallIdentityMoveClient(client, Options.Create(options), NullLogger<HeimdallIdentityMoveClient>.Instance);
+        }
+
+        public FakeHeimdall Fake { get; }
+
+        public AccountMergeSaga Saga(AccountMergeLedgerTests.World world, BifrostDbContext db) =>
+            new(db, world.Ledger(db), _mover, _keys, world.Clock, NullLogger<AccountMergeSaga>.Instance);
+
+        /// <summary>A world account with one login at the fake Heimdall and a weak proof through it.</summary>
+        public MergeProof Proof(UserAccount account, string provider) =>
+            new(Fake.Moves.Issue(account.HeimdallAccountId, Fake.Moves.AddLogin(account.HeimdallAccountId, provider)), account.HeimdallAccountId, provider);
+    }
+
+    [PostgresFact]
+    public async Task Two_concurrent_advances_of_one_confirmed_merge_make_one_move_commit_once_and_journal_once()
+    {
+        var world = await postgres.NewWorldAsync();
+        var survivor = await world.AccountAsync("survivor");
+        var folded = await world.AccountAsync("folded");
+        var motion = await world.MotionAsync();
+        await world.VoteAsync(motion, folded, VoteChoice.For);
+        var heimdall = new Heimdall(world);
+        var survivorProof = heimdall.Proof(survivor, "twitch");
+        var foldedProof = heimdall.Proof(folded, "discord");
+        Guid mergeId;
+        await using (var db = world.Db())
+        {
+            var saga = heimdall.Saga(world, db);
+            var digest = (await world.Ledger(db).PlanAsync(survivor.Id, folded.Id, default)).Digest(survivor.Id, folded.Id);
+            mergeId = Assert.IsType<ConfirmOutcome.Confirmed>(await saga.ConfirmAsync(
+                new ConfirmMergeRequest(survivor.Id, survivor.Id, folded.Id, digest, survivorProof, [foldedProof]), default)).MergeId;
+        }
+
+        var racers = AccountMergeLedgerTests.World.OnPostgres(ConnectionOf(world), new FirstSaveRendezvous());
+        async Task<AccountMerge> Advance()
+        {
+            await using var db = racers.Db();
+            return await heimdall.Saga(racers, db).AdvanceAsync(mergeId, default);
+        }
+
+        var both = await Task.WhenAll(Task.Run(Advance), Task.Run(Advance));
+
+        Assert.All(both, x => Assert.Equal(AccountMergeState.Committed, x.State));
+        Assert.Single(heimdall.Fake.Moves.Stored);
+        var journal = await world.JournalAsync(new AccountMerge { Id = mergeId });
+        Assert.Equal(journal.Count, journal.Select(x => x.Seq).Distinct().Count());
+        Assert.Single(journal, x => x.Kind == AccountMergeEntryKind.Vote);
+        Assert.Equal(survivor.Id, Assert.Single(await world.AllVotesAsync(motion)).UserAccountId);
+    }
+
+    [PostgresFact]
+    public async Task Two_confirms_folding_the_same_account_leave_one_row_and_the_other_is_blocked_by_the_database()
+    {
+        var world = await postgres.NewWorldAsync();
+        var first = await world.AccountAsync("first");
+        var second = await world.AccountAsync("second");
+        var folded = await world.AccountAsync("folded");
+        var heimdall = new Heimdall(world);
+        var proofs = new Dictionary<Guid, (MergeProof Survivor, string Digest)>();
+        foreach (var survivor in new[] { first, second })
+        {
+            await using var db = world.Db();
+            proofs[survivor.Id] = (heimdall.Proof(survivor, "twitch"), (await world.Ledger(db).PlanAsync(survivor.Id, folded.Id, default)).Digest(survivor.Id, folded.Id));
+        }
+
+        var foldedProof = heimdall.Proof(folded, "discord");
+        var racers = AccountMergeLedgerTests.World.OnPostgres(ConnectionOf(world), new FirstSaveRendezvous());
+        async Task<ConfirmOutcome> Confirm(UserAccount survivor)
+        {
+            await using var db = racers.Db();
+            return await heimdall.Saga(racers, db).ConfirmAsync(
+                new ConfirmMergeRequest(survivor.Id, survivor.Id, folded.Id, proofs[survivor.Id].Digest, proofs[survivor.Id].Survivor, [foldedProof]), default);
+        }
+
+        var results = await Task.WhenAll(Task.Run(() => Confirm(first)), Task.Run(() => Confirm(second)));
+
+        Assert.Single(results.OfType<ConfirmOutcome.Confirmed>());
+        var blocked = Assert.Single(results.OfType<ConfirmOutcome.Blocked>());
+        Assert.Contains(AccountMergeSaga.MergeInFlight, blocked.Codes);
+        await using var check = world.Db();
+        Assert.Equal(1, await check.AccountMerges.CountAsync());
+    }
+
+    [PostgresFact]
+    public async Task The_saga_migration_adds_and_drops_its_columns_and_keys_and_its_Down_is_refused_while_any_merge_exists()
+    {
+        var world = await postgres.NewWorldAsync();
+        await world.MergeAsync(await world.AccountAsync("survivor"), await world.AccountAsync("folded"), AccountMergeState.Confirmed);
+        await using (var db = world.Db())
+        {
+            var error = await Assert.ThrowsAnyAsync<Exception>(() => db.GetService<IMigrator>().MigrateAsync("20261114120000_AddAccountMerges"));
+            Assert.Contains("AddAccountMergeSaga cannot be reverted", Pg(error).MessageText);
+            Assert.Equal("20261114130000_AddAccountMergeSaga", (await db.Database.GetAppliedMigrationsAsync()).Last());
+        }
+
+        await ExecuteAsync(world, "DELETE FROM \"AccountMerges\"");
+        await using var down = world.Db();
+        await down.GetService<IMigrator>().MigrateAsync("20261114120000_AddAccountMerges");
+        Assert.Equal(0, await ScalarAsync(world, "SELECT count(*) FROM information_schema.columns WHERE table_name = 'AccountMerges' AND column_name IN ('HeimdallMoveId','SealedProofs','Attempts')"));
+        Assert.Equal(0, await ScalarAsync(world, "SELECT count(*) FROM pg_indexes WHERE tablename = 'AccountMerges' AND indexname LIKE 'IX_AccountMerges_Heimdall%'"));
+        await down.GetService<IMigrator>().MigrateAsync();
+        Assert.Equal(3, await ScalarAsync(world, "SELECT count(*) FROM information_schema.columns WHERE table_name = 'AccountMerges' AND column_name IN ('HeimdallMoveId','SealedProofs','Attempts')"));
+        Assert.Equal(2, await ScalarAsync(world, "SELECT count(*) FROM pg_indexes WHERE tablename = 'AccountMerges' AND indexname LIKE 'IX_AccountMerges_Heimdall%'"));
+    }
+
+    private static async Task<long> ScalarAsync(AccountMergeLedgerTests.World world, string sql)
+    {
+        await using var connection = new NpgsqlConnection(ConnectionOf(world));
+        await connection.OpenAsync();
+        await using var command = new NpgsqlCommand(sql, connection);
+        return (long)(await command.ExecuteScalarAsync())!;
     }
 }

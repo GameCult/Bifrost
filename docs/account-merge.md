@@ -1,6 +1,6 @@
 # Account merge ledger
 
-What a merge of two Bifrost accounts does to Bifrost records, who owns it, and how an account stands under one. Design: `/opt/commons/handoff/heimdall-account-merge-design-20261113.md` sections 3, 5 and 7. This is the ledger only: no page, no Heimdall call, and nothing calls `CommitAsync` or `UndoLocalAsync` yet (the saga cut does).
+What a merge of two Bifrost accounts does to Bifrost records, who owns it, and how an account stands under one. Design: `/opt/commons/handoff/heimdall-account-merge-design-20261113.md` sections 3, 5 and 7. The ledger owns what a merge does to Bifrost records; the saga (below) owns the merge's lifecycle around it and every Heimdall call. No page calls the saga yet (cuts D1 and D2), so no merge can be created in production by this code alone.
 
 ## Owner
 
@@ -42,7 +42,31 @@ Left untouched (counted by the plan): consent receipts, passkeys, ledger entries
 
 `UndoLocalAsync(mergeId)` needs `HeimdallReversed` (Undone is a no-op). In one save it replays the journal backward: it un-voids votes whose motion is still Open and appraisals, moves a moved vote or appraisal back only if the survivor did not re-cast it since, restores the folded status, restores the survivor's status only while it is still Suspended with this merge's reason, moves patron events back and derives both tiers again. What it keeps it records as `KeptAfterUndo`; nothing is updated or deleted in the journal, only appended to.
 
-`FinalizeDueAsync(now)` moves Committed merges whose grace has ended to `Final`, one save per merge; `AccountMergeSweeper` runs it every five minutes. `State` is the merge's concurrency token, so a transition computed from a stale read (the sweeper's Final over the saga's UndoRequested, or the reverse) fails its save and the other transition stands; the sweep skips a merge it lost. `UndoLocalAsync` also refuses a merge with `FinalizedUtc` set: undo is never allowed past Final.
+`FinalizeDueAsync(now)` moves Committed merges whose grace has ended to `Final`, one save per merge; `AccountMergeSweeper` runs it every 30 seconds, after the saga's due steps (see Saga). `State` is the merge's concurrency token, so a transition computed from a stale read (the sweeper's Final over the saga's UndoRequested, or the reverse) fails its save and the other transition stands; the sweep skips a merge it lost. `UndoLocalAsync` also refuses a merge with `FinalizedUtc` set: undo is never allowed past Final.
+
+## Saga
+
+`Features/Membership/AccountMergeSaga.cs` is the one owner of the merge row's lifecycle outside the ledger's Committed, Final and Undone, and the only caller of `HeimdallIdentityMoveClient.MoveAsync` (whose closed `Moved`/`Refused`/`Unknown` answer it consumes as is; the client retries nothing). It writes Confirmed, HeimdallMoved, Failed, UndoRequested and HeimdallReversed, the return UndoRequested to Committed, the move ids and the sealed proofs; it never writes a vote, membership or journal row (it calls `CommitAsync` and `UndoLocalAsync`), reads no standing of its own, and never judges a proof's tier or freshness (Heimdall's).
+
+| State | Written by | Key and proofs | A crash here |
+| --- | --- | --- | --- |
+| Confirmed | `ConfirmAsync`: one insert, the consent record | `HeimdallMoveId` minted (random, never derived from the merge id); both sides' Heimdall bearers sealed | Before the insert nothing exists. After it the sweep calls Heimdall with the stored id; a lost answer replays to the same receipt, because Heimdall answers a replay before it judges liveness. |
+| HeimdallMoved | `AdvanceAsync` on `Moved`, one save | proofs wiped; receipt tiers and moved login ids stored | `CommitAsync` is total and idempotent; the sweep retries it. |
+| Failed | `AdvanceAsync` on any `Refused` | proofs wiped; `FailureCode` is Heimdall's code | Terminal. Heimdall applied nothing, Bifrost changed nothing, the folded account stands as before. |
+| Committed | ledger `CommitAsync`, one save with every reduction | grace 7 days | A crash before the save leaves HeimdallMoved. |
+| UndoRequested | `RequestUndoAsync`: the survivor, fresh survivor proofs, inside the grace | `HeimdallReverseMoveId` minted; survivor bearers sealed | The sweep replays the reversal (past the grace too). A refused reversal returns the merge to Committed, proofs wiped, `LastOutcome` `undo_<code>`. |
+| HeimdallReversed | `AdvanceAsync` on the reversal's `Moved` | proofs wiped | `UndoLocalAsync` is retried. |
+| Undone, Final | ledger | | |
+
+`AdvanceAsync(mergeId)` is the one step function: the confirm's inline advance, the sweeper's resume and an undo request all run it, forward move and reversal alike (same seal, same outcome handling, same backoff). Every transition is one save guarded by `State`, the concurrency token; the loser of a race clears its tracker, reloads and continues from the stored state, so two advances make one Heimdall move and one commit. `Proposed` is declared by the ledger and written by nobody in this cut.
+
+`ConfirmAsync` refuses (writing nothing) a third-party actor (`NotParty`), a plan with blocks (`Blocked`, codes only), a plan other than the one the member saw (`PreviewStale`: `MergePlan.Digest(survivorId, foldedId)`, a SHA-256 over a length-prefixed canonical text of the plan), and any proof of another Heimdall account (`ProofAccountMismatch`). A second live merge folding the same account, or a chain, is refused by the database (the live-merge unique index and the chain trigger) and answered `Blocked(merge_in_flight)`. Confirm and the undo request run through `AccountMergeLedger.WriteAsAsync` for the acting member, like every writer that acts for an account.
+
+**Heimdall down.** `Unknown` (a timeout, a 5xx, a 429, an unrecognised 4xx, `move_id_conflict`) never fails a merge: the saga counts `Attempts`, sets `NextAttemptUtc` (15 s, 1 min, 5 min, then 15 min) and replays the same stored id; the folded account stays Frozen until Heimdall answers. Heimdall's answer to a replay of a move it already stored does not depend on the proofs' age, but a move that never reached Heimdall does: an outage longer than the proofs' freshness (300 s for a login's weak proof, 600 s for a passkey's strong one) ends, when Heimdall is back, in `Refused proof_stale` and a Failed merge; the member confirms again with fresh sign-ins. A replay whose proofs no longer verify (Heimdall's key regenerated) answers `move_id_conflict`, stays Unknown and can never settle: that is follow-up `merge-stuck-operator-path`, as is a receipt that names an account other than the destination (`receipt_mismatch`: proofs wiped, no retry) and a sealed payload the key ring can no longer open (`proofs_unreadable`: retried in an hour, state unchanged, because Heimdall may already have moved).
+
+**Sealed proofs.** The saga holds the two Heimdall bearers (`ruling merge-sealed-proofs-until-move-final`) only between Confirmed (or UndoRequested) and Heimdall's final answer: protected with Data Protection (purpose `Bifrost.AccountMerge.Proofs.v1`), never logged, wiped in the save that records Moved or Refused. Logs name the merge id, state, outcome class and refusal code; never a token, account id, identity id or provider user id. Proof coverage is Heimdall's rule (`move-proof-strict-passkey`): a proof through one login moves only that login, and only an asserted passkey speaks for the whole account, so a folded account's every login must be proved (or a passkey asserted) or Heimdall answers `identity_not_proved`. A `moveId` replayed with other identities returns the first receipt (`move-replay-first-receipt`).
+
+`AccountMergeSweeper` is the one merge loop (30 s): per tick, in one scope, `AccountMergeSaga.AdvanceDueAsync` (every in-flight merge whose `NextAttemptUtc` is null or due, oldest first, a failure logged and skipped), then `FinalizeDueAsync`.
 
 ## Merged is terminal
 

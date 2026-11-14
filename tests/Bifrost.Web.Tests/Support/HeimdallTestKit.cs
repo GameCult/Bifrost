@@ -814,6 +814,11 @@ public sealed class HeimdallHost : TestWebApplicationFactory
 
             services.RemoveAll<TimeProvider>();
             services.AddSingleton<TimeProvider>(Clock);
+            // The merge sweeper ticks on the wall clock; a host on a manual clock drives the saga itself (AccountMergeSagaTests runs the sweeper's own loop).
+            foreach (var sweeper in services.Where(x => x.ImplementationType == typeof(Bifrost.Web.Features.Membership.AccountMergeSweeper)).ToList())
+            {
+                services.Remove(sweeper);
+            }
             services.AddHttpClient(HeimdallTokenVerifier.ClientName).ConfigurePrimaryHttpMessageHandler(() => Heimdall);
             services.AddHttpClient<HeimdallAuthService>().ConfigurePrimaryHttpMessageHandler(() => Heimdall);
             services.AddHttpClient<HeimdallMemberClient>().ConfigurePrimaryHttpMessageHandler(() => Heimdall);

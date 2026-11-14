@@ -91,7 +91,16 @@ public sealed class FakeMoves(Func<DateTimeOffset> now)
 
     public bool IsRevoked(string token) => _revoked.Contains(_tokens[token].Sid);
 
+    /// <summary>Heimdall serializes a move by its id; so does the fake, because concurrent callers (the saga tests that race two advances) share its dictionaries.</summary>
     public HttpResponseMessage Route(HttpRequestMessage request, string body, string? requiredSecret)
+    {
+        lock (_moves)
+        {
+            return RouteLocked(request, body, requiredSecret);
+        }
+    }
+
+    private HttpResponseMessage RouteLocked(HttpRequestMessage request, string body, string? requiredSecret)
     {
         var secret = request.Headers.TryGetValues("x-heimdall-app-secret", out var values) ? values.Single() : null;
         Requests.Add((secret, request.Headers.Authorization?.ToString(), body));
