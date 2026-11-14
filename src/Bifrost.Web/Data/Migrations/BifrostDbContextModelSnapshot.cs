@@ -28,7 +28,16 @@ namespace Bifrost.Web.Data.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
+                    b.Property<int>("Attempts")
+                        .HasColumnType("integer");
+
                     b.Property<DateTimeOffset?>("CommittedUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("ConfirmedByUserAccountId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset?>("ConfirmedUtc")
                         .HasColumnType("timestamp with time zone");
 
                     b.Property<DateTimeOffset>("CreatedUtc")
@@ -45,11 +54,54 @@ namespace Bifrost.Web.Data.Migrations
                     b.Property<DateTimeOffset?>("FinalizedUtc")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<string>("FoldedProofProviders")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)");
+
                     b.Property<Guid>("FoldedUserAccountId")
                         .HasColumnType("uuid");
 
                     b.Property<DateTimeOffset?>("GraceEndsUtc")
                         .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("HeimdallMoveId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("HeimdallReverseMoveId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("LastOutcome")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("MovedIdentityIds")
+                        .HasColumnType("text");
+
+                    b.Property<DateTimeOffset?>("NextAttemptUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("PreviewDigest")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("ProofFromTier")
+                        .HasMaxLength(8)
+                        .HasColumnType("character varying(8)");
+
+                    b.Property<string>("ProofToTier")
+                        .HasMaxLength(8)
+                        .HasColumnType("character varying(8)");
+
+                    b.Property<DateTimeOffset?>("ReversedUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("SealedProofs")
+                        .HasColumnType("text");
 
                     b.Property<string>("State")
                         .IsConcurrencyToken()
@@ -57,10 +109,18 @@ namespace Bifrost.Web.Data.Migrations
                         .HasMaxLength(24)
                         .HasColumnType("character varying(24)");
 
+                    b.Property<string>("SurvivorProofProvider")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
                     b.Property<Guid>("SurvivorUserAccountId")
                         .HasColumnType("uuid");
 
                     b.Property<DateTimeOffset?>("UndoneUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("UndoRequestedUtc")
                         .HasColumnType("timestamp with time zone");
 
                     b.HasKey("Id");
@@ -71,6 +131,14 @@ namespace Bifrost.Web.Data.Migrations
                         .HasFilter("\"State\" IN ('Confirmed', 'HeimdallMoved', 'Committed', 'Final', 'UndoRequested', 'HeimdallReversed')");
 
                     b.HasIndex("FoldedUserAccountId", "State");
+
+                    b.HasIndex("HeimdallMoveId")
+                        .IsUnique()
+                        .HasFilter("\"HeimdallMoveId\" IS NOT NULL");
+
+                    b.HasIndex("HeimdallReverseMoveId")
+                        .IsUnique()
+                        .HasFilter("\"HeimdallReverseMoveId\" IS NOT NULL");
 
                     b.HasIndex("State", "GraceEndsUtc");
 

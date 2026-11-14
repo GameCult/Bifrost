@@ -140,6 +140,7 @@ builder.Services.AddSingleton<RegistrationRateLimit>();
 builder.Services.AddScoped<NativeRegistration>();
 builder.Services.AddHostedService<SealedBallotCloser>();
 builder.Services.AddScoped<Bifrost.Web.Features.Membership.AccountMergeLedger>();
+builder.Services.AddScoped<Bifrost.Web.Features.Membership.AccountMergeSaga>();
 builder.Services.AddHostedService<Bifrost.Web.Features.Membership.AccountMergeSweeper>();
 builder.Services.AddScoped<MotionEveSurfaceService>();
 builder.Services.AddScoped<PatronageService>();

@@ -26,7 +26,46 @@ public sealed record MergePlanEntry(
 public sealed record MergePlan(
     IReadOnlyList<string> Blocks,
     IReadOnlyList<MergePlanEntry> Entries,
-    IReadOnlyDictionary<string, int> Left);
+    IReadOnlyDictionary<string, int> Left)
+{
+    /// <summary>
+    /// Lowercase hex SHA-256 over a canonical text of the plan, in plan order (Left by key): what the member saw, comparable at confirm.
+    /// Every field is length-prefixed, so no value can imitate a separator. The plan holds no account ids of its own, so the caller
+    /// names the pair the plan was made for.
+    /// </summary>
+    public string Digest(Guid survivorId, Guid foldedId)
+    {
+        var text = new System.Text.StringBuilder();
+        void Field(string? value) => text.Append(value is null ? "-" : $"{value.Length}:{value}").Append('|');
+        Field(survivorId.ToString("N"));
+        Field(foldedId.ToString("N"));
+        foreach (var entry in Entries)
+        {
+            Field(entry.Kind.ToString());
+            Field(entry.Action.ToString());
+            Field(entry.RecordId.ToString("N"));
+            Field(entry.PriorUserAccountId?.ToString("N"));
+            Field(entry.PriorText);
+            Field(entry.PriorAtUtc?.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture));
+            text.Append('\n');
+        }
+
+        text.Append("left\n");
+        foreach (var (key, count) in Left.OrderBy(x => x.Key, StringComparer.Ordinal))
+        {
+            Field(key);
+            Field(count.ToString(CultureInfo.InvariantCulture));
+        }
+
+        text.Append("\nblocks\n");
+        foreach (var block in Blocks)
+        {
+            Field(block);
+        }
+
+        return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(text.ToString()))).ToLowerInvariant();
+    }
+}
 
 /// <summary>
 /// The one owner of what an account merge does to Bifrost records and of how an account stands under one: the plan, the Committed
@@ -696,18 +735,25 @@ public sealed class AccountMergeLedger(
     }
 }
 
-/// <summary>Finalizes merges past their grace every five minutes. Copies the SealedBallotCloser shape: a new scope per tick, a warning on failure.</summary>
+/// <summary>
+/// The one merge loop, every 30 seconds: the saga advances every due in-flight merge (confirm, replay, undo), then the ledger finalizes
+/// merges past their grace. A new scope per tick, a warning on failure, the SealedBallotCloser shape. No second merge hosted service exists.
+/// </summary>
 public sealed class AccountMergeSweeper(IServiceScopeFactory scopes, TimeProvider clock, ILogger<AccountMergeSweeper> logger) : BackgroundService
 {
+    public static readonly TimeSpan Tick = TimeSpan.FromSeconds(30);
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        using var timer = new PeriodicTimer(TimeSpan.FromMinutes(5));
+        using var timer = new PeriodicTimer(Tick);
         do
         {
             try
             {
                 using var scope = scopes.CreateScope();
-                await scope.ServiceProvider.GetRequiredService<AccountMergeLedger>().FinalizeDueAsync(clock.GetUtcNow(), stoppingToken);
+                var now = clock.GetUtcNow();
+                await scope.ServiceProvider.GetRequiredService<AccountMergeSaga>().AdvanceDueAsync(now, stoppingToken);
+                await scope.ServiceProvider.GetRequiredService<AccountMergeLedger>().FinalizeDueAsync(now, stoppingToken);
             }
             catch (Exception error) when (error is not OperationCanceledException)
             {

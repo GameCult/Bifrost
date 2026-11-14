@@ -87,7 +87,7 @@ public sealed partial class HeimdallIdentityMoveClient(
     private const int MaxMovedIdentities = 256;
     private const int MaxIdentityIdLength = 128;
     private const int MaxReceiptBytes = 64 * 1024;
-    private const int MaxProofLength = 8192;
+    public const int MaxProofLength = 8192;
 
     // \z, not $: $ also matches before a final line feed, which Heimdall's schema pattern refuses with a 400.
     [GeneratedRegex("^[A-Za-z0-9_-]{16,64}\\z")]

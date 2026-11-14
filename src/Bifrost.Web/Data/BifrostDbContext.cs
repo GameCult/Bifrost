@@ -635,6 +635,17 @@ public sealed class BifrostDbContext(DbContextOptions<BifrostDbContext> options)
             // State is the token: a transition computed from a stale read (the sweeper's Final over a saga's UndoRequested) fails its save.
             entity.Property(x => x.State).HasConversion<string>().HasMaxLength(24).IsConcurrencyToken();
             entity.Property(x => x.FailureCode).HasMaxLength(64);
+            entity.Property(x => x.HeimdallMoveId).HasMaxLength(64);
+            entity.Property(x => x.HeimdallReverseMoveId).HasMaxLength(64);
+            entity.Property(x => x.PreviewDigest).HasMaxLength(64);
+            entity.Property(x => x.SurvivorProofProvider).HasMaxLength(32);
+            entity.Property(x => x.FoldedProofProviders).HasMaxLength(120);
+            entity.Property(x => x.ProofFromTier).HasMaxLength(8);
+            entity.Property(x => x.ProofToTier).HasMaxLength(8);
+            entity.Property(x => x.LastOutcome).HasMaxLength(64);
+            // Heimdall's idempotency keys: one merge, one forward key and one reverse key, and no key shared by two merges.
+            entity.HasIndex(x => x.HeimdallMoveId).IsUnique().HasFilter("\"HeimdallMoveId\" IS NOT NULL");
+            entity.HasIndex(x => x.HeimdallReverseMoveId).IsUnique().HasFilter("\"HeimdallReverseMoveId\" IS NOT NULL");
             entity.HasIndex(x => new { x.FoldedUserAccountId, x.State });
             // An account is folded once: the DB refuses a second live merge folding it. The cross-role case (a survivor that is also
             // folded) cannot be one unique index; the migration's trigger refuses it.

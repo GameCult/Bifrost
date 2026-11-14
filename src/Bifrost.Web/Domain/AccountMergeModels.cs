@@ -62,6 +62,48 @@ public sealed class AccountMerge
 
     public string FailureCode { get; set; } = string.Empty;
 
+    // ---- the saga's columns (AccountMergeSaga is their one writer; docs/account-merge.md, Saga) ----
+
+    /// <summary>Heimdall's idempotency key of the forward move: random, minted in the save that enters Confirmed, never derived from <see cref="Id"/>, never re-minted.</summary>
+    public string? HeimdallMoveId { get; set; }
+
+    /// <summary>The same for the reversal, minted in the save that enters UndoRequested.</summary>
+    public string? HeimdallReverseMoveId { get; set; }
+
+    /// <summary>The Heimdall bearers the move or reversal will replay, protected; non-null only from Confirmed/UndoRequested until Heimdall's final answer.</summary>
+    public string? SealedProofs { get; set; }
+
+    /// <summary>Digest of the plan the member saw when confirming (MergePlan.Digest); with the next four columns it is the consent record.</summary>
+    public string PreviewDigest { get; set; } = string.Empty;
+
+    public Guid? ConfirmedByUserAccountId { get; set; }
+
+    public DateTimeOffset? ConfirmedUtc { get; set; }
+
+    public string SurvivorProofProvider { get; set; } = string.Empty;
+
+    /// <summary>The providers of the folded side's proofs, sorted and comma-joined.</summary>
+    public string FoldedProofProviders { get; set; } = string.Empty;
+
+    /// <summary>The proof tiers Heimdall's receipt named (weak or strong); ProofToTier is null for a receipt without one.</summary>
+    public string? ProofFromTier { get; set; }
+
+    public string? ProofToTier { get; set; }
+
+    /// <summary>The logins the forward move carried, a JSON array of Heimdall identity ids, from the receipt.</summary>
+    public string? MovedIdentityIds { get; set; }
+
+    public int Attempts { get; set; }
+
+    public DateTimeOffset? NextAttemptUtc { get; set; }
+
+    /// <summary>The last Heimdall answer's class or refusal code, or the saga's own stall code; never an input value.</summary>
+    public string LastOutcome { get; set; } = string.Empty;
+
+    public DateTimeOffset? UndoRequestedUtc { get; set; }
+
+    public DateTimeOffset? ReversedUtc { get; set; }
+
     public ICollection<AccountMergeEntry> Entries { get; set; } = [];
 }
 
