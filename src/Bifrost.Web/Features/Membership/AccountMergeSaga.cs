@@ -104,7 +104,15 @@ public sealed partial class AccountMergeSaga(
 
     private readonly IDataProtector _seal = dataProtection.CreateProtector("Bifrost.AccountMerge.Proofs.v1");
 
-    private sealed record ProofSeal(List<string> From, string? To);
+    private sealed record ProofSeal(List<string> From, string? To)
+    {
+        // The seal holds live bearers: the generated ToString would print them into any log or exception that holds it.
+        private bool PrintMembers(StringBuilder builder)
+        {
+            builder.Append($"From = {From?.Count}, To = {(To is null ? "none" : "present")}");
+            return true;
+        }
+    }
 
     // ---- confirm ----
 

@@ -43,7 +43,8 @@ public sealed record MergePlan(
         {
             Field(entry.Kind.ToString());
             Field(entry.Action.ToString());
-            Field(entry.RecordId.ToString("N"));
+            // A Created row does not exist yet: its id is minted anew by every plan, so it cannot be part of what the member saw.
+            Field(entry.Action == AccountMergeEntryAction.Created ? null : entry.RecordId.ToString("N"));
             Field(entry.PriorUserAccountId?.ToString("N"));
             Field(entry.PriorText);
             Field(entry.PriorAtUtc?.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture));

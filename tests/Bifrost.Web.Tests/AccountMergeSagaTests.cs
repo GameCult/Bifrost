@@ -635,6 +635,57 @@ public sealed class AccountMergeSagaTests
     }
 
     [Fact]
+    public async Task A_suspended_folded_account_into_a_memberless_survivor_confirms_on_the_digest_the_member_saw_and_commits()
+    {
+        using var rig = new Rig();
+        var survivor = await rig.AccountAsync("survivor", "twitch");
+        var folded = await rig.AccountAsync("folded", "discord");
+        await rig.InScopeAsync(async sp =>
+        {
+            var db = sp.GetRequiredService<BifrostDbContext>();
+            db.Memberships.Remove(await db.Memberships.SingleAsync(x => x.UserAccountId == survivor.Id)); // the chat tier holds no membership
+            (await db.Memberships.SingleAsync(x => x.UserAccountId == folded.Id)).Status = MembershipStatus.Suspended;
+            await db.SaveChangesAsync();
+            return 0;
+        });
+
+        // The member is shown a plan and confirms it: the same unchanged world must show the same digest.
+        Assert.Equal(await rig.DigestAsync(survivor, folded), await rig.DigestAsync(survivor, folded));
+        var id = await rig.ConfirmedAsync(survivor, folded, rig.Weak(survivor, "twitch"), rig.Weak(folded, "discord"));
+
+        Assert.Equal(AccountMergeState.Committed, (await rig.AdvanceAsync(id)).State);
+        var carried = await rig.InScopeAsync(sp => sp.GetRequiredService<BifrostDbContext>().Memberships.SingleAsync(x => x.UserAccountId == survivor.Id));
+        Assert.Equal(MembershipStatus.Suspended, carried.Status);
+    }
+
+    [Fact]
+    public async Task Undo_is_refused_at_the_exact_instant_the_grace_ends_and_allowed_a_second_before()
+    {
+        using var rig = new Rig();
+        var survivor = await rig.AccountAsync("survivor", "twitch");
+        var folded = await rig.AccountAsync("folded", "discord");
+        var id = await rig.ConfirmedAsync(survivor, folded, rig.Weak(survivor, "twitch"), rig.Weak(folded, "discord"));
+        await rig.AdvanceAsync(id);
+        var ends = (await rig.MergeAsync(id)).GraceEndsUtc!.Value;
+
+        rig.Clock.Advance(ends - rig.Clock.Now);
+        Assert.IsType<UndoOutcome.GraceOver>(await RequestUndoAsync(rig, id, survivor, rig.Weak(survivor, "twitch")));
+        rig.Clock.Advance(TimeSpan.FromSeconds(-1));
+        Assert.IsType<UndoOutcome.Requested>(await RequestUndoAsync(rig, id, survivor, rig.Weak(survivor, "twitch")));
+    }
+
+    [Fact]
+    public void The_sealed_proofs_record_prints_no_bearer()
+    {
+        var seal = typeof(AccountMergeSaga).GetNestedType("ProofSeal", System.Reflection.BindingFlags.NonPublic)!;
+        var instance = Activator.CreateInstance(seal, new List<string> { "bearer-folded-secret" }, "bearer-survivor-secret")!;
+
+        var text = instance.ToString()!;
+
+        Assert.DoesNotContain("secret", text);
+    }
+
+    [Fact]
     public async Task An_unknown_answer_to_the_reversal_is_replayed_under_the_same_reverse_id_even_past_the_grace()
     {
         using var rig = new Rig();

@@ -805,6 +805,66 @@ public sealed class AccountMergePostgresTests(MergePostgres postgres) : IClassFi
     }
 
     [PostgresFact]
+    public async Task Two_merges_cannot_share_a_Heimdall_move_id_or_a_reverse_move_id()
+    {
+        var world = await postgres.NewWorldAsync();
+        var survivor = await world.AccountAsync("survivor");
+        var one = await world.MergeAsync(survivor, await world.AccountAsync("one"), AccountMergeState.Confirmed);
+        var two = await world.MergeAsync(survivor, await world.AccountAsync("two"), AccountMergeState.Confirmed);
+
+        foreach (var column in new[] { "HeimdallMoveId", "HeimdallReverseMoveId" })
+        {
+            await ExecuteAsync(world, $"UPDATE \"AccountMerges\" SET \"{column}\" = 'shared-0123456789abcdef' WHERE \"Id\" = '{one.Id}'");
+            var error = await Assert.ThrowsAnyAsync<Exception>(() =>
+                ExecuteAsync(world, $"UPDATE \"AccountMerges\" SET \"{column}\" = 'shared-0123456789abcdef' WHERE \"Id\" = '{two.Id}'"));
+            Assert.Equal("23505", Pg(error).SqlState);
+        }
+    }
+
+    [PostgresFact]
+    public async Task Confirm_holds_the_actors_write_lock_until_its_row_is_saved()
+    {
+        var world = await postgres.NewWorldAsync();
+        var survivor = await world.AccountAsync("survivor");
+        var folded = await world.AccountAsync("folded");
+        var heimdall = new Heimdall(world);
+        var proof = heimdall.Proof(survivor, "twitch");
+        var foldedProof = heimdall.Proof(folded, "discord");
+        string digest;
+        await using (var db = world.Db())
+        {
+            digest = (await world.Ledger(db).PlanAsync(survivor.Id, folded.Id, default)).Digest(survivor.Id, folded.Id);
+        }
+
+        Task? exclusive = null;
+        var blocked = false;
+        var confirmers = AccountMergeLedgerTests.World.OnPostgres(ConnectionOf(world), new BeforeFirstSave(async () =>
+        {
+            // A writer that needs the actor's exclusive lock (a commit freezing it) arrives while the confirm is about to save.
+            exclusive = Task.Run(async () =>
+            {
+                await using var connection = new NpgsqlConnection(ConnectionOf(world));
+                await connection.OpenAsync();
+                await using var transaction = await connection.BeginTransactionAsync();
+                await using var command = new NpgsqlCommand("SELECT pg_advisory_xact_lock(hashtextextended(@key, 0))", connection, transaction);
+                command.Parameters.AddWithValue("key", survivor.Id.ToString());
+                await command.ExecuteNonQueryAsync();
+            });
+            await Task.Delay(1500);
+            blocked = !exclusive.IsCompleted;
+        }));
+
+        await using (var db = confirmers.Db())
+        {
+            Assert.IsType<ConfirmOutcome.Confirmed>(await heimdall.Saga(confirmers, db).ConfirmAsync(
+                new ConfirmMergeRequest(survivor.Id, survivor.Id, folded.Id, digest, proof, [foldedProof]), default));
+        }
+
+        await exclusive!.WaitAsync(TimeSpan.FromSeconds(30));
+        Assert.True(blocked);
+    }
+
+    [PostgresFact]
     public async Task The_saga_migration_adds_and_drops_its_columns_and_keys_and_its_Down_is_refused_while_any_merge_exists()
     {
         var world = await postgres.NewWorldAsync();
