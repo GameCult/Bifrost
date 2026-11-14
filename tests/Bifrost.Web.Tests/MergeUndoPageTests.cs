@@ -38,6 +38,9 @@ public sealed class MergeUndoPageTests
         /// <summary>Everything a response put on the wire: bodies, Location, Set-Cookie. The privacy test reads it at the end.</summary>
         public List<string> Surface { get; } = [];
 
+        /// <summary>Every bearer the test redeemed; none may appear on the surface.</summary>
+        public List<string> Bearers { get; } = [];
+
         public void Dispose() => Rig.Dispose();
 
         public async Task<string> SignInThrough(string provider) => await Host.SignInSessionAsync(OwnerOf(Rig, Folded.Logins[provider]), provider);
@@ -82,7 +85,7 @@ public sealed class MergeUndoPageTests
 
             var bearer = Host.Token(Survivor.HeimdallId);
             Rig.Moves.Issue(Survivor.HeimdallId, Folded.Logins[provider], bearer: bearer);
-            Surface.Add("bearer-under-test " + bearer);
+            Bearers.Add(bearer);
             var done = await Host.PostCompleteAsync(
                 new Dictionary<string, string> { ["attempt"] = attempt.Nonce, ["code"] = Host.CodeFor(attempt, Survivor.HeimdallId, bearer, provider: provider) },
                 $"{Bifrost.Web.Features.Shared.BifrostCookies.Session}={session}; {attempt.CookieName}={attempt.Cookie}");
@@ -241,11 +244,12 @@ public sealed class MergeUndoPageTests
 
         secrets.AddRange(w.Survivor.Logins.Values);
         secrets.AddRange(w.Folded.Logins.Values);
-        secrets.AddRange(w.Surface.Where(x => x.StartsWith("bearer-under-test ")).Select(x => x["bearer-under-test ".Length..]));
+        secrets.AddRange(w.Bearers);
+        Assert.Equal(2, w.Bearers.Count);
         Assert.All(secrets, x => Assert.DoesNotContain(x, everything));
         Assert.DoesNotContain("PUID-CANARY", everything);
         Assert.DoesNotContain("username-canary", everything);
     }
 
-    private static string Enc(string text) => WebUtility.HtmlEncode(text);
+    private static string Enc(string text) => System.Text.Encodings.Web.HtmlEncoder.Default.Encode(text);
 }

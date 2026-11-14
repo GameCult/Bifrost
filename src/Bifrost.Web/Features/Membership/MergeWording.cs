@@ -81,6 +81,9 @@ public static class MergeWording
         ? $"Approved with a passkey; you have until {Date(graceEnds)} to undo."
         : $"Approved with ordinary sign-ins; you have until {Date(graceEnds)} to undo.";
 
+    /// <summary>Whole days from <paramref name="now"/> to <paramref name="end"/>, rounded up, at least one while the window is open.</summary>
+    public static int DaysUntil(DateTimeOffset end, DateTimeOffset now) => Math.Max(1, (int)Math.Ceiling((end - now).TotalDays));
+
     public static string DaysLeft(int days) => days == 1 ? "1 day left" : $"{days} days left";
 
     public static string SurvivorNotice(int days) => $"A merge into your account can still be undone: {DaysLeft(days)}. Review it on Merge status.";
