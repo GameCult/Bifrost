@@ -259,14 +259,16 @@ public sealed class HeimdallIdentityMoveClientTests
         var (d1, _) = AccountWith(moves, "discord");
         Assert.Equal(new Refused(HeimdallMoveRefusal.ProviderConflict, Provider: "discord"), await Move(host, Forward(moves, s1, d1)));
 
-        // move_id_conflict: a used id under other accounts
+        // move_id_conflict is not a refusal: a committed move answers it when its proofs no longer verify, so the caller keeps its proofs.
         var (s2, _) = AccountWith(moves, "patreon");
         var (d2, _) = AccountWith(moves, "twitch");
         var used = Forward(moves, s2, d2);
         Receipt(await Move(host, used));
         var (s3, _) = AccountWith(moves, "patreon");
-        Assert.Equal(new Refused(HeimdallMoveRefusal.MoveIdConflict),
+        Assert.Equal(new Unknown("move_id_conflict"),
             await Move(host, new(used.MoveId, [moves.Issue(s3, stepUpMethod: Passkey)], moves.Issue(d2))));
+        Assert.Equal(new Unknown("move_id_conflict"),
+            await Move(host, new(used.MoveId, ["forged-bearer"], used.ToProof)));
 
         // already_moved: s2 now holds nothing and an unreversed move left it
         Assert.Equal(new Refused(HeimdallMoveRefusal.AlreadyMoved), await Move(host, Forward(moves, s2, d0)));
@@ -348,16 +350,82 @@ public sealed class HeimdallIdentityMoveClientTests
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => ClientOf(host).MoveAsync(request, cancelled.Token));
     }
 
-    private sealed class Stub(string json) : HttpMessageHandler
+    private sealed class Stub(Func<HttpContent> content, HttpStatusCode status = HttpStatusCode.OK) : HttpMessageHandler
     {
+        public Stub(string json, HttpStatusCode status = HttpStatusCode.OK)
+            : this(() => new StringContent(json, Encoding.UTF8, "application/json"), status)
+        {
+        }
+
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
-            Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json, Encoding.UTF8, "application/json") });
+            Task.FromResult(new HttpResponseMessage(status) { Content = content() });
     }
 
-    private static Task<HeimdallMoveOutcome> Answered(string json, HeimdallMoveRequest request) =>
-        new HeimdallIdentityMoveClient(
-            new HttpClient(new Stub(json)) { BaseAddress = new Uri("https://heimdall.test") },
-            Options.Create(new HeimdallOptions()), NullLogger<HeimdallIdentityMoveClient>.Instance).MoveAsync(request, CancellationToken.None);
+    /// <summary>A body that serves a prefix and then stalls, resets, or streams endless filler.</summary>
+    private sealed class Body(string prefix, bool reset = false, long endless = 0) : Stream
+    {
+        private readonly byte[] _prefix = Encoding.UTF8.GetBytes(prefix);
+
+        public long Served { get; private set; }
+
+        public override bool CanRead => true;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position { get => Served; set => throw new NotSupportedException(); }
+
+        public override void Flush()
+        {
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        public override int Read(byte[] buffer, int offset, int count) => ReadAsync(buffer.AsMemory(offset, count)).AsTask().GetAwaiter().GetResult();
+
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            if (Served < _prefix.Length)
+            {
+                var n = (int)Math.Min(buffer.Length, _prefix.Length - Served);
+                _prefix.AsMemory((int)Served, n).CopyTo(buffer);
+                Served += n;
+                return n;
+            }
+
+            if (endless > 0 && Served < _prefix.Length + endless)
+            {
+                var n = (int)Math.Min(buffer.Length, _prefix.Length + endless - Served);
+                buffer.Span[..n].Fill((byte)'a');
+                Served += n;
+                return n;
+            }
+
+            if (reset)
+            {
+                throw new IOException("connection reset mid-body");
+            }
+
+            await Task.Delay(Timeout.Infinite, cancellationToken);
+            return 0;
+        }
+    }
+
+    private static HeimdallIdentityMoveClient Client(HttpMessageHandler handler, TimeSpan? timeout = null) =>
+        new(new HttpClient(handler) { BaseAddress = new Uri("https://heimdall.test"), Timeout = timeout ?? TimeSpan.FromSeconds(30) },
+            Options.Create(new HeimdallOptions()), NullLogger<HeimdallIdentityMoveClient>.Instance);
+
+    private static Task<HeimdallMoveOutcome> Answered(string json, HeimdallMoveRequest request, HttpStatusCode status = HttpStatusCode.OK) =>
+        Client(new Stub(json, status)).MoveAsync(request, CancellationToken.None);
+
+    private static readonly HeimdallMoveRequest Plain = new("move-0123456789abcdef", ["p"], "q");
 
     [Fact]
     public async Task A_200_that_is_not_a_whole_receipt_for_this_request_is_Unknown()
@@ -370,6 +438,7 @@ public sealed class HeimdallIdentityMoveClientTests
 
         // The well formed shapes are accepted, so each refusal below is about its one flaw.
         Assert.IsType<Moved>(await Answered(Body(), forward));
+        Assert.IsType<Moved>(await Answered(Body(ids: "\"not-a-guid-but-an-id\""), forward));
         Assert.IsType<Moved>(await Answered(Body("move-0123456789abcdef", "move-fedcba9876543210", """{"from":"strong","to":null}"""), reversal));
 
         Assert.IsType<Unknown>(await Answered(Body("move-someoneelse12345"), forward));
@@ -380,7 +449,7 @@ public sealed class HeimdallIdentityMoveClientTests
         Assert.IsType<Unknown>(await Answered(Body(proof: """{"from":"strong","to":null}"""), forward));
         Assert.IsType<Unknown>(await Answered(Body(proof: """{"from":"maybe","to":"weak"}"""), forward));
         Assert.IsType<Unknown>(await Answered(Body(ids: ""), forward));
-        Assert.IsType<Unknown>(await Answered(Body(ids: "\"not-a-guid\""), forward));
+        Assert.IsType<Unknown>(await Answered(Body(ids: "123"), forward));
         Assert.IsType<Unknown>(await Answered("""{"moveId":"move-0123456789abcdef"}""", forward));
         Assert.IsType<Unknown>(await Answered("[]", forward));
     }
@@ -417,6 +486,156 @@ public sealed class HeimdallIdentityMoveClientTests
         Assert.Empty(moves.Requests);
     }
 
+    // ---- the wire: bounds, deadline, redirects, secrets ----
+
+    [Fact]
+    public async Task A_body_that_stalls_after_the_headers_is_Unknown_within_the_clients_deadline_for_a_receipt_and_a_refusal()
+    {
+        foreach (var (status, prefix) in new[] { (HttpStatusCode.OK, """{"moveId":"move-0123456789abcdef","""), (HttpStatusCode.Conflict, """{"error":"pro""") })
+        {
+            var client = Client(new Stub(() => new StreamContent(new Body(prefix)), status), TimeSpan.FromMilliseconds(500));
+            var task = client.MoveAsync(Plain, CancellationToken.None);
+            Assert.Same(task, await Task.WhenAny(task, Task.Delay(TimeSpan.FromSeconds(10))));
+            Assert.IsType<Unknown>(await task);
+        }
+    }
+
+    [Fact]
+    public async Task A_connection_reset_while_reading_the_body_is_Unknown_not_an_exception()
+    {
+        var client = Client(new Stub(() => new StreamContent(new Body("""{"moveId":"move-0123456789abcdef",""", reset: true))));
+
+        Assert.IsType<Unknown>(await client.MoveAsync(Plain, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task A_receipt_body_past_64_KiB_is_refused_unread_as_Unknown()
+    {
+        var body = new Body("""{"moveId":"move-0123456789abcdef","accountId":" """, endless: 64L * 1024 * 1024);
+        var client = Client(new Stub(() => new StreamContent(body)));
+
+        Assert.IsType<Unknown>(await client.MoveAsync(Plain, CancellationToken.None));
+        Assert.True(body.Served < 1024 * 1024, $"read {body.Served} bytes");
+    }
+
+    [Fact]
+    public async Task Refusal_qualifiers_are_kept_only_for_the_codes_that_carry_them()
+    {
+        Assert.Equal(new Refused(HeimdallMoveRefusal.SameAccount),
+            await Answered("""{"error":"same_account","proof":"from","provider":"discord"}""", Plain, HttpStatusCode.Conflict));
+        Assert.Equal(new Refused(HeimdallMoveRefusal.AlreadyMoved),
+            await Answered("""{"error":"already_moved","proof":"to"}""", Plain, HttpStatusCode.Conflict));
+        Assert.Equal(new Refused(HeimdallMoveRefusal.ProviderConflict, Provider: "discord"),
+            await Answered("""{"error":"provider_conflict","proof":"to","provider":"discord"}""", Plain, HttpStatusCode.Conflict));
+        Assert.Equal(new Refused(HeimdallMoveRefusal.ProofStale, HeimdallProofSide.To),
+            await Answered("""{"error":"proof_stale","proof":"to","provider":"discord"}""", Plain, HttpStatusCode.Forbidden));
+        Assert.Equal(new Refused(HeimdallMoveRefusal.ProofInvalid),
+            await Answered("""{"error":"proof_invalid","proof":"sideways"}""", Plain, HttpStatusCode.Forbidden));
+    }
+
+    [Fact]
+    public async Task The_largest_legal_request_is_sent_and_moves_what_it_names()
+    {
+        using var host = new HeimdallHost();
+        var moves = host.Heimdall.Moves;
+        var source = NewAccount();
+        var ids = Enumerable.Range(0, 32).Select(_ => moves.AddLogin(source, "discord")).ToArray();
+        var (destination, _) = AccountWith(moves, "twitch");
+        var proofs = Enumerable.Range(0, 8).Select(_ => moves.Issue(source, stepUpMethod: Passkey)).ToArray();
+
+        var receipt = Receipt(await Move(host, new(NewMoveId(), proofs, moves.Issue(destination), ids)));
+
+        Assert.Equal(ids, receipt.MovedIdentityIds);
+        Assert.Equal(8, JsonDocument.Parse(moves.Requests[0].Body).RootElement.GetProperty("fromProofs").GetArrayLength());
+    }
+
+    [Fact]
+    public void A_request_does_not_print_its_proofs()
+    {
+        var request = new HeimdallMoveRequest("move-0123456789abcdef", ["FROM-BEARER-SECRET"], "TO-BEARER-SECRET");
+
+        Assert.DoesNotContain("BEARER-SECRET", request.ToString());
+        Assert.Contains("move-0123456789abcdef", request.ToString());
+    }
+
+    private static ServiceProvider RealRegistration(string baseUrl)
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton(Options.Create(new HeimdallOptions { BaseUrl = baseUrl, AppSecret = "APP-SECRET-VALUE" }));
+        services.AddHeimdallIdentityMoveClient();
+        return services.BuildServiceProvider();
+    }
+
+    [Fact]
+    public void The_registered_client_carries_the_app_secret_and_the_15_second_deadline()
+    {
+        using var provider = RealRegistration("https://heimdall.test");
+        var http = provider.GetRequiredService<IHttpClientFactory>().CreateClient(nameof(HeimdallIdentityMoveClient));
+
+        Assert.Equal(TimeSpan.FromSeconds(15), http.Timeout);
+        Assert.Equal(new Uri("https://heimdall.test"), http.BaseAddress);
+        Assert.Equal("APP-SECRET-VALUE", Assert.Single(http.DefaultRequestHeaders.GetValues(HeimdallAuthService.AppSecretHeader)));
+    }
+
+    [Theory]
+    [InlineData(307)]
+    [InlineData(302)]
+    public async Task A_redirect_is_Unknown_and_nothing_reaches_the_other_origin(int code)
+    {
+        static int FreePort()
+        {
+            var listener = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
+            listener.Start();
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            listener.Stop();
+            return port;
+        }
+
+        int first = FreePort(), second = FreePort();
+        using var origin = new HttpListener();
+        origin.Prefixes.Add($"http://127.0.0.1:{first}/");
+        origin.Start();
+        using var other = new HttpListener();
+        other.Prefixes.Add($"http://127.0.0.1:{second}/");
+        other.Start();
+        var redirected = Task.Run(async () =>
+        {
+            var context = await origin.GetContextAsync();
+            context.Response.StatusCode = code;
+            context.Response.RedirectLocation = $"http://127.0.0.1:{second}/steal";
+            context.Response.Close();
+        });
+        var stolen = new List<string>();
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var context = await other.GetContextAsync();
+                stolen.Add(context.Request.Headers["x-heimdall-app-secret"] + new StreamReader(context.Request.InputStream).ReadToEnd());
+                var forged = Encoding.UTF8.GetBytes($$$"""{"moveId":"move-0123456789abcdef","accountId":"attacker","movedIdentityIds":["{{{Guid.NewGuid()}}}"],"proof":{"from":"weak","to":"weak"}}""");
+                context.Response.StatusCode = 200;
+                await context.Response.OutputStream.WriteAsync(forged);
+                context.Response.Close();
+            }
+            catch (HttpListenerException)
+            {
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+        });
+        using var provider = RealRegistration($"http://127.0.0.1:{first}");
+
+        var outcome = await provider.GetRequiredService<HeimdallIdentityMoveClient>()
+            .MoveAsync(new("move-0123456789abcdef", ["FROM-BEARER"], "TO-BEARER"), CancellationToken.None);
+        await redirected;
+        await Task.Delay(300);
+
+        Assert.IsType<Unknown>(outcome);
+        Assert.Empty(stolen);
+    }
+
     // ---- what the logs hold ----
 
     [Fact]
@@ -434,6 +653,8 @@ public sealed class HeimdallIdentityMoveClientTests
         Assert.Contains("Heimdall identity move: Moved", logs);
         Assert.Contains("Heimdall identity move: Refused", logs);
         Assert.Contains("identity-moves", logs);
+        // Only the secret and bearer headers are redacted: an ordinary header's value is logged, so the shared redaction is what is in force.
+        Assert.Contains("application/json", logs);
         foreach (var secret in new[] { HeimdallHost.AppSecret, source, destination, request.FromProofs[0], request.ToProof!, request.MoveId }.Concat(ids))
         {
             Assert.DoesNotContain(secret, logs);

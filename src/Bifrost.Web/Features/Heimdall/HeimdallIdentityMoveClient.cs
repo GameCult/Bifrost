@@ -13,7 +13,15 @@ namespace Bifrost.Web.Features.Heimdall;
 /// never names an account: the proofs, live Heimdall access tokens, say which accounts are meant.
 /// </summary>
 public sealed record HeimdallMoveRequest(
-    string MoveId, IReadOnlyList<string> FromProofs, string? ToProof = null, IReadOnlyList<string>? IdentityIds = null, string? ReversesMoveId = null);
+    string MoveId, IReadOnlyList<string> FromProofs, string? ToProof = null, IReadOnlyList<string>? IdentityIds = null, string? ReversesMoveId = null)
+{
+    // The proofs are live bearers: the generated ToString would print them into any log or exception that holds the request.
+    private bool PrintMembers(StringBuilder builder)
+    {
+        builder.Append($"MoveId = {MoveId}, FromProofs = {FromProofs?.Count}, ToProof = {(ToProof is null ? "none" : "present")}, ReversesMoveId = {ReversesMoveId}");
+        return true;
+    }
+}
 
 public enum HeimdallProofTier
 {
@@ -37,7 +45,6 @@ public enum HeimdallMoveRefusal
     IdentityNotProved,
     AlreadyMoved,
     ProviderConflict,
-    MoveIdConflict,
     IdentityNotFound,
     RequestInvalid,
     Unrecognized
@@ -51,7 +58,8 @@ public enum HeimdallProofSide
 
 /// <summary>
 /// The closed answer to a move. Moved: the receipt. Refused: Heimdall answered a 4xx before applying anything, so nothing changed.
-/// Unknown: anything else (a 5xx may follow a committed move, a timeout may hide one): the caller replays the same request.
+/// Unknown: anything else (a 5xx may follow a committed move, a timeout may hide one, and so may a 409 move_id_conflict: Heimdall
+/// answers it to a replay of a committed move whose proofs no longer verify): the caller keeps its proofs and replays the same request.
 /// </summary>
 public abstract record HeimdallMoveOutcome
 {
@@ -74,9 +82,13 @@ public abstract record HeimdallMoveOutcome
 public sealed partial class HeimdallIdentityMoveClient(
     HttpClient httpClient, IOptions<HeimdallOptions> heimdallOptions, ILogger<HeimdallIdentityMoveClient> logger)
 {
+    /// <summary>The deadline of one call, headers and body together, set on the HttpClient by <see cref="HeimdallIdentityMoveClientServices"/>.</summary>
     public static readonly TimeSpan Timeout = TimeSpan.FromSeconds(15);
 
     private const int MaxMovedIdentities = 256;
+    private const int MaxIdentityIdLength = 128;
+    private const int MaxReceiptBytes = 64 * 1024;
+    private const int MaxProofLength = 8192;
 
     [GeneratedRegex("^[A-Za-z0-9_-]{16,64}$")]
     private static partial Regex MoveIdShape();
@@ -91,6 +103,10 @@ public sealed partial class HeimdallIdentityMoveClient(
 
     private async Task<HeimdallMoveOutcome> SendAsync(HeimdallMoveRequest request, string body, CancellationToken cancellationToken)
     {
+        // One deadline over the whole call: HttpClient.Timeout ends at the headers, and a stalled body must not outlive it.
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(httpClient.Timeout);
+        var token = deadline.Token;
         try
         {
             using var message = new HttpRequestMessage(
@@ -98,11 +114,11 @@ public sealed partial class HeimdallIdentityMoveClient(
             {
                 Content = new StringContent(body, Encoding.UTF8, "application/json")
             };
-            using var response = await httpClient.SendAsync(message, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            using var response = await httpClient.SendAsync(message, HttpCompletionOption.ResponseHeadersRead, token);
             var status = (int)response.StatusCode;
             if (response.StatusCode == HttpStatusCode.OK)
             {
-                return await ReadReceiptAsync(response, request, cancellationToken) is { } receipt
+                return await ReadReceiptAsync(response, request, token) is { } receipt
                     ? new HeimdallMoveOutcome.Moved(receipt)
                     : new HeimdallMoveOutcome.Unknown("malformed or mismatched receipt");
             }
@@ -112,18 +128,24 @@ public sealed partial class HeimdallIdentityMoveClient(
                 return new HeimdallMoveOutcome.Unknown($"HTTP {status}");
             }
 
-            var refusal = await HeimdallRefusal.ReadAsync(response, cancellationToken);
+            var refusal = await HeimdallRefusal.ReadAsync(response, token);
             return status == 400 ? new HeimdallMoveOutcome.Refused(HeimdallMoveRefusal.RequestInvalid) : Refused(refusal);
         }
-        catch (Exception error) when (error is HttpRequestException or JsonException or NotSupportedException or TaskCanceledException
+        catch (Exception error) when (error is HttpRequestException or IOException or JsonException or NotSupportedException or OperationCanceledException
                                       && !cancellationToken.IsCancellationRequested)
         {
             return new HeimdallMoveOutcome.Unknown("transport");
         }
     }
 
-    private static HeimdallMoveOutcome.Refused Refused(HeimdallRefusalBody? refusal)
+    private static HeimdallMoveOutcome Refused(HeimdallRefusalBody? refusal)
     {
+        // Not a refusal: a committed move answers 409 move_id_conflict when its proofs no longer verify, so it proves nothing about the move.
+        if (refusal?.Code == "move_id_conflict")
+        {
+            return new HeimdallMoveOutcome.Unknown("move_id_conflict");
+        }
+
         var code = refusal?.Code switch
         {
             "app_auth_required" => HeimdallMoveRefusal.AppAuthRequired,
@@ -135,20 +157,19 @@ public sealed partial class HeimdallIdentityMoveClient(
             "identity_not_proved" => HeimdallMoveRefusal.IdentityNotProved,
             "already_moved" => HeimdallMoveRefusal.AlreadyMoved,
             "provider_conflict" => HeimdallMoveRefusal.ProviderConflict,
-            "move_id_conflict" => HeimdallMoveRefusal.MoveIdConflict,
             "identity_not_found" => HeimdallMoveRefusal.IdentityNotFound,
             _ => HeimdallMoveRefusal.Unrecognized
         };
         return code switch
         {
-            HeimdallMoveRefusal.ProofInvalid or HeimdallMoveRefusal.ProofStale => new(code, Side: refusal?.Proof switch
+            HeimdallMoveRefusal.ProofInvalid or HeimdallMoveRefusal.ProofStale => new HeimdallMoveOutcome.Refused(code, Side: refusal?.Proof switch
             {
                 "from" => HeimdallProofSide.From,
                 "to" => HeimdallProofSide.To,
                 _ => null
             }),
-            HeimdallMoveRefusal.ProviderConflict => new(code, Provider: refusal?.Provider),
-            _ => new(code)
+            HeimdallMoveRefusal.ProviderConflict => new HeimdallMoveOutcome.Refused(code, Provider: refusal?.Provider),
+            _ => new HeimdallMoveOutcome.Refused(code)
         };
     }
 
@@ -158,7 +179,20 @@ public sealed partial class HeimdallIdentityMoveClient(
     /// </summary>
     private static async Task<HeimdallMoveReceipt?> ReadReceiptAsync(HttpResponseMessage response, HeimdallMoveRequest request, CancellationToken cancellationToken)
     {
-        using var document = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(cancellationToken), cancellationToken: cancellationToken);
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var buffer = new MemoryStream();
+        var chunk = new byte[4096];
+        while (await stream.ReadAsync(chunk, cancellationToken) is > 0 and var read)
+        {
+            if (buffer.Length + read > MaxReceiptBytes)
+            {
+                return null;
+            }
+
+            buffer.Write(chunk, 0, read);
+        }
+
+        using var document = JsonDocument.Parse(buffer.ToArray());
         var root = document.RootElement;
         if (root.ValueKind != JsonValueKind.Object
             || Text(root, "moveId") != request.MoveId
@@ -177,7 +211,7 @@ public sealed partial class HeimdallIdentityMoveClient(
         var ids = new List<string>();
         foreach (var item in moved.EnumerateArray())
         {
-            if (item.ValueKind != JsonValueKind.String || !Guid.TryParse(item.GetString(), out _))
+            if (item.ValueKind != JsonValueKind.String || item.GetString() is not { Length: > 0 and <= MaxIdentityIdLength })
             {
                 return null;
             }
@@ -212,6 +246,8 @@ public sealed partial class HeimdallIdentityMoveClient(
     private static string? Text(JsonElement item, string name) =>
         item.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
 
+    private static bool IsBadProof(string? proof) => string.IsNullOrEmpty(proof) || proof.Length > MaxProofLength;
+
     /// <summary>The contract's closed body, or ArgumentException before any I/O when the request breaks it.</summary>
     private static string Serialize(HeimdallMoveRequest request)
     {
@@ -220,7 +256,7 @@ public sealed partial class HeimdallIdentityMoveClient(
             throw new ArgumentException("moveId must match ^[A-Za-z0-9_-]{16,64}$", nameof(request));
         }
 
-        if (request.FromProofs is not { Count: >= 1 and <= 8 } || request.FromProofs.Any(string.IsNullOrWhiteSpace))
+        if (request.FromProofs is not { Count: >= 1 and <= 8 } || request.FromProofs.Any(IsBadProof))
         {
             throw new ArgumentException("fromProofs must hold 1 to 8 proofs", nameof(request));
         }
@@ -230,7 +266,7 @@ public sealed partial class HeimdallIdentityMoveClient(
             throw new ArgumentException("exactly one of toProof and reversesMoveId is required", nameof(request));
         }
 
-        if (request.ToProof is not null && string.IsNullOrWhiteSpace(request.ToProof))
+        if (request.ToProof is not null && IsBadProof(request.ToProof))
         {
             throw new ArgumentException("toProof is empty", nameof(request));
         }
@@ -241,9 +277,10 @@ public sealed partial class HeimdallIdentityMoveClient(
         }
 
         if (request.IdentityIds is not null
-            && (request.ToProof is null || request.IdentityIds.Count is < 1 or > 32 || request.IdentityIds.Any(string.IsNullOrWhiteSpace)))
+            && (request.ToProof is null || request.IdentityIds.Count is < 1 or > 32 || request.IdentityIds.Any(string.IsNullOrEmpty)
+                || request.IdentityIds.Distinct().Count() != request.IdentityIds.Count))
         {
-            throw new ArgumentException("identityIds are 1 to 32 and only with toProof", nameof(request));
+            throw new ArgumentException("identityIds are 1 to 32 unique ids and only with toProof", nameof(request));
         }
 
         var body = new Dictionary<string, object?> { ["moveId"] = request.MoveId, ["fromProofs"] = request.FromProofs };
@@ -264,4 +301,20 @@ public sealed partial class HeimdallIdentityMoveClient(
 
         return JsonSerializer.Serialize(body);
     }
+}
+
+public static class HeimdallIdentityMoveClientServices
+{
+    /// <summary>
+    /// The mover's HttpClient: Heimdall's base address and app secret from HeimdallAuthService.ConfigureClient (the one secret path), the
+    /// call deadline, no redirects (a 3xx must never carry the secret or the proofs to another origin), and the shared header redaction.
+    /// </summary>
+    public static IHttpClientBuilder AddHeimdallIdentityMoveClient(this IServiceCollection services) =>
+        services.AddHttpClient<HeimdallIdentityMoveClient>((serviceProvider, client) =>
+            {
+                HeimdallAuthService.ConfigureClient(client, serviceProvider.GetRequiredService<IOptions<HeimdallOptions>>().Value);
+                client.Timeout = HeimdallIdentityMoveClient.Timeout;
+            })
+            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false, PooledConnectionLifetime = TimeSpan.FromMinutes(2) })
+            .RedactLoggedHeaders(HeimdallAuthService.RedactsHeader);
 }
