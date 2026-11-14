@@ -43,13 +43,15 @@ public sealed class MergeNotice(ICurrentBifrostActorAccessor actors, BifrostDbCo
             return null;
         }
 
-        var graceEnds = await dbContext.AccountMerges.AsNoTracking()
+        var open = await dbContext.AccountMerges.AsNoTracking()
             .Where(x => x.SurvivorUserAccountId == account.Id
                 && (x.State == AccountMergeState.Committed || x.State == AccountMergeState.UndoRequested)
                 && x.GraceEndsUtc > now)
             .OrderBy(x => x.GraceEndsUtc)
-            .Select(x => x.GraceEndsUtc)
+            .Select(x => new { x.State, x.GraceEndsUtc })
             .FirstOrDefaultAsync(cancellationToken);
-        return graceEnds is { } end ? MergeWording.SurvivorNotice(MergeWording.DaysUntil(end, now)) : null;
+        return open is null ? null
+            : open.State == AccountMergeState.UndoRequested ? MergeWording.UndoRequestedNotice()
+            : MergeWording.SurvivorNotice(MergeWording.DaysUntil(open.GraceEndsUtc!.Value, now));
     }
 }

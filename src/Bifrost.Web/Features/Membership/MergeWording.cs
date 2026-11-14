@@ -101,6 +101,8 @@ public static class MergeWording
 
     public static string SurvivorNotice(int days) => $"A merge into your account can still be undone: {DaysLeft(days)}. Review it on Merge status.";
 
+    public static string UndoRequestedNotice() => "A merge into your account is being undone: Heimdall is giving the logins back. Review it on Merge status.";
+
     public static string FrozenNotice() => "A merge is in progress; you cannot act until it settles.";
 
     public static string FoldedNotice(DateTimeOffset mergedOn) =>

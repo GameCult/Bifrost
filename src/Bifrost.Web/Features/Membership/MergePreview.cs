@@ -65,6 +65,10 @@ public static class MergePreview
         _ => "These accounts cannot be merged now."
     };
 
+    /// <summary>The block for two accounts that both hold a login of one provider, which Heimdall will not combine. Providers only: no account is named.</summary>
+    public static string ProviderConflict(IEnumerable<string> providerNames) =>
+        $"Both accounts hold a {string.Join(" and ", providerNames)} login, and Heimdall will not combine two logins of one provider. Unlink one of them first.";
+
     /// <summary>What every merge says, whatever the plan: what it cannot carry over, what it asks again, and how long it can be undone.</summary>
     public static IReadOnlyList<string> Statements { get; } =
     [
@@ -74,7 +78,7 @@ public static class MergePreview
         "Roles and admin rights of the other account end; a steward must grant them again.",
         "You will have one membership and one vote per motion: where both accounts voted on an open motion, the kept account's vote counts and the other is set aside. Nothing is added together.",
         "You can undo this for 7 days, from Merge status. After that it is final.",
-        "If you proved an account with ordinary sign-ins rather than a passkey, the merge is approved with ordinary sign-ins, which is the weaker proof, and a notice stays on your account until the 7 days end."
+        "The merge is approved with ordinary sign-ins, which is the weaker proof, and a notice stays on your account until the 7 days end."
     ];
 
     private static string Count(int n, string noun) => n == 1 ? $"1 {noun}" : $"{n} {noun}s";

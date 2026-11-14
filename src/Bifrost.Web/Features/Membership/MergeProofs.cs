@@ -37,6 +37,9 @@ public abstract record PeekResult
 
     /// <summary>Logins whose provider has no live proof, by provider name only.</summary>
     public sealed record LoginsUnproved(IReadOnlyList<string> Providers) : PeekResult;
+
+    /// <summary>Both accounts hold a login of these providers, a pair Heimdall always refuses; by provider name only.</summary>
+    public sealed record ProviderConflict(IReadOnlyList<string> Providers) : PeekResult;
 }
 
 public abstract record UndoPeekResult
@@ -58,7 +61,7 @@ public abstract record UndoPeekResult
 /// the member proves again. It decides nothing about the merge: the saga owns consent, the move and the lifecycle, and Heimdall judges
 /// each proof's tier and freshness. <see cref="ProofLifetime"/> is only a margin under Heimdall's 300 s weak window, so a stale proof
 /// is not sent to fail a merge. Provider is the only proof bookkeeping Bifrost has (the redeem names the provider, not the identity),
-/// so a login list holding two logins of one provider is refused. Peek never consumes: the caller <see cref="Clear"/>s once the saga
+/// so a login list holding two logins of one provider is refused, and two sides holding a login of one provider are a conflict Peek names before consent. Every access drops expired bearers. Peek never consumes: the caller <see cref="Clear"/>s once the saga
 /// has taken the proofs, so a refusal that wrote nothing does not cost a re-proof.
 /// </summary>
 public sealed class MergeProofs(TimeProvider timeProvider)
@@ -136,6 +139,12 @@ public sealed class MergeProofs(TimeProvider timeProvider)
                 return new PeekResult.Expired();
             }
 
+            var shared = survivor.Logins.Select(x => x.Provider).Intersect(folded.Logins.Select(x => x.Provider), StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
+            if (shared.Length > 0)
+            {
+                return new PeekResult.ProviderConflict(shared);
+            }
+
             var unproved = UnprovedProviders(folded, folded.Logins.Select(x => x.Provider));
             return unproved.Count > 0
                 ? new PeekResult.LoginsUnproved(unproved)
@@ -172,6 +181,7 @@ public sealed class MergeProofs(TimeProvider timeProvider)
     {
         lock (_gate)
         {
+            Prune(timeProvider.GetUtcNow());
             _held.Remove(actorId);
         }
     }

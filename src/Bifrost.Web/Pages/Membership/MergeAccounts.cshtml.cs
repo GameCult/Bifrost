@@ -144,6 +144,9 @@ public sealed class MergeAccountsModel(
         BlockWords = [.. plan.Blocks.Select(MergePreview.Block)];
         switch (proofs.Peek(me, survivorSide))
         {
+            case PeekResult.ProviderConflict conflict:
+                BlockWords = [.. BlockWords, MergePreview.ProviderConflict(conflict.Providers.Select(ProviderName))];
+                break;
             case PeekResult.Ready when plan.Blocks.Count == 0:
                 Stage = MergeStage.Confirm;
                 break;
@@ -184,7 +187,13 @@ public sealed class MergeAccountsModel(
 
         var me = (await actors.GetAsync(cancellationToken)).UserAccount!.Id;
         var held = proofs.Snapshot(me);
-        if (held.Self is not { } self || held.Other is not { } other || proofs.Peek(me, survivorSide) is not PeekResult.Ready ready)
+        var peeked = proofs.Peek(me, survivorSide);
+        if (peeked is PeekResult.ProviderConflict)
+        {
+            return Refused(keep, "blocked");
+        }
+
+        if (held.Self is not { } self || held.Other is not { } other || peeked is not PeekResult.Ready ready)
         {
             return Refused(keep, "proofs_needed");
         }

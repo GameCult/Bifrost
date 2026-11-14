@@ -96,13 +96,13 @@ public sealed class MergeProofsTests
     {
         var discord = Login("discord");
         var patreon = Login("patreon");
-        PutSelf("discord", Login("discord"));
+        PutSelf("twitch", Login("twitch"));
         PutOther("discord", discord, patreon);
         _clock.Advance(TimeSpan.FromSeconds(200));
         PutOther("patreon", discord, patreon);
         _clock.Advance(TimeSpan.FromSeconds(100)); // the discord proof is 300 s old, the patreon one 100 s
 
-        var self = PutSelf("discord", Login("discord")); // keeps the self side alive
+        var self = PutSelf("twitch", Login("twitch")); // keeps the self side alive
         var unproved = Assert.IsType<PeekResult.LoginsUnproved>(_proofs.Peek(_actor, MergeSide.Self));
 
         Assert.Equal(PutOutcome.Stored, self);
@@ -212,5 +212,18 @@ public sealed class MergeProofsTests
         _proofs.Clear(Guid.NewGuid());
 
         Assert.Equal(0, HeldProofs());
+    }
+
+    [Fact]
+    public void Two_sides_holding_a_login_of_one_provider_are_a_conflict_named_by_provider_only_in_both_directions()
+    {
+        PutSelf("discord", Login("discord"), Login("twitch"));
+        PutOther("patreon", Login("patreon"), Login("discord"), Login("twitch"));
+
+        foreach (var survivor in new[] { MergeSide.Self, MergeSide.Other })
+        {
+            var conflict = Assert.IsType<PeekResult.ProviderConflict>(_proofs.Peek(_actor, survivor));
+            Assert.Equal(["discord", "twitch"], conflict.Providers);
+        }
     }
 }
