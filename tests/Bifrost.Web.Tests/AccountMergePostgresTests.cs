@@ -121,6 +121,14 @@ public sealed class AccountMergePostgresTests(MergePostgres postgres) : IClassFi
         }
     }
 
+    private static IEnumerable<Exception> Chain(Exception error)
+    {
+        for (var current = error; current is not null; current = current.InnerException!)
+        {
+            yield return current;
+        }
+    }
+
     private static string ConnectionOf(AccountMergeLedgerTests.World world)
     {
         using var db = world.Db();
@@ -214,7 +222,8 @@ public sealed class AccountMergePostgresTests(MergePostgres postgres) : IClassFi
         var results = await Task.WhenAll(Task.Run(TryCommit), Task.Run(TryCommit));
 
         Assert.Equal(1, results.Count(x => x is null));
-        Assert.All(results.OfType<Exception>(), e => Assert.IsAssignableFrom<DbUpdateException>(e)); // the loser: the unique index or the token
+        // The loser is refused by the unique index, the token, or Postgres picking it as the deadlock victim.
+        Assert.All(results.OfType<Exception>(), e => Assert.True(Chain(e).Any(x => x is DbUpdateException), e.ToString()));
         var journal = await world.JournalAsync(merge);
         Assert.Equal(journal.Count, journal.Select(x => x.Seq).Distinct().Count());
         Assert.Equal(1, journal.Count(x => x.Kind == AccountMergeEntryKind.Vote));

@@ -5,6 +5,7 @@ using Bifrost.Web.Features.Heimdall;
 using Bifrost.Web.Features.Shared;
 using Bifrost.Web.Tests.Support;
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Bifrost.Web.Tests;
@@ -240,6 +241,31 @@ public sealed class HeimdallGoogleLinkTests
         Assert.Equal(starts, host.Heimdall.StartBodies.Count);
         Assert.Equal(LinkedPage + "?result=error", Location(b.Response));
         AssertAttemptCleared(b.Response, start);
+    }
+
+    [Fact]
+    public async Task A_link_begun_before_a_merge_froze_the_account_does_not_continue_after_it()
+    {
+        using var host = new HeimdallHost(realSessions: true);
+        var account = HeimdallShapes.NewAccountId();
+        var survivorAccount = HeimdallShapes.NewAccountId();
+        var session = await host.SignInSessionAsync(account);
+        await host.SignInSessionAsync(survivorAccount);
+        var start = await host.StartLinkAsync(session);
+        await host.Db(async db =>
+        {
+            var folded = await db.UserAccounts.SingleAsync(x => x.HeimdallAccountId == account);
+            var survivor = await db.UserAccounts.SingleAsync(x => x.HeimdallAccountId == survivorAccount);
+            db.AccountMerges.Add(new AccountMerge { SurvivorUserAccountId = survivor.Id, FoldedUserAccountId = folded.Id, State = AccountMergeState.Confirmed, CreatedUtc = DateTimeOffset.UtcNow });
+            await db.SaveChangesAsync();
+            return 0;
+        });
+        var starts = host.Heimdall.StartBodies.Count;
+
+        var b = await StepB(host, session, start, account);
+
+        Assert.Equal(starts, host.Heimdall.StartBodies.Count); // no Google link was asked for on the frozen account
+        Assert.Equal(LinkedPage + "?result=error", Location(b.Response));
     }
 
     [Fact]

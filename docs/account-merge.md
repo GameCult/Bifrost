@@ -46,7 +46,7 @@ Left untouched (counted by the plan): consent receipts, passkeys, ledger entries
 
 ## Merged is terminal
 
-Only the ledger writes `Membership.Status = Merged` or leaves it. The other status writers refuse a merged row (`Membership.IsMerged`): GitHub sign-in sync leaves the account untouched, the bootstrap-admin promotion (startup and sign-in) skips it, the Heimdall member-access claim does not activate it, member approval refuses it and the suspension service reports `NotApplicable`. Folded standing itself is still derived from the merge state, never from this status.
+Only the ledger writes `Membership.Status = Merged` or leaves it. The other status writers refuse a merged row (`Membership.IsMerged`): the bootstrap-admin promotion (startup and every GitHub sign-in, which is the one status write sign-in sync makes on an existing account) skips it, the Heimdall member-access claim does not activate it, member approval refuses it and the suspension service reports `NotApplicable`. Folded standing itself is still derived from the merge state, never from this status.
 
 ## Rollback
 

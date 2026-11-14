@@ -67,11 +67,6 @@ public sealed class MembershipSynchronizationService(
 
             dbContext.UserAccounts.Add(userAccount);
         }
-        else if (userAccount.Membership is { IsMerged: true })
-        {
-            // A folded account is terminal: sign-in rewrites nothing on it (the actor gate already makes it act as nobody).
-            return;
-        }
         else
         {
             userAccount.GitHubLogin = gitHubLogin;
