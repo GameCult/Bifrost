@@ -507,10 +507,13 @@ public sealed class AccountMergeSagaTests
         });
 
         var stuck = await rig.AdvanceAsync(id);
-        await rig.AdvanceAsync(id);
+        var again = await rig.AdvanceAsync(id);
 
         Assert.Equal(AccountMergeState.Confirmed, stuck.State);
         Assert.Equal(AccountMergeSaga.ReceiptMismatch, stuck.LastOutcome);
+        // The answer stays what Heimdall gave: a later sweep does not turn it into an hourly "proofs unreadable" retry.
+        Assert.Equal(AccountMergeSaga.ReceiptMismatch, again.LastOutcome);
+        Assert.Null(again.NextAttemptUtc);
         Assert.Null((await rig.MergeAsync(id)).SealedProofs);
         Assert.Single(rig.Moves.Requests);
         Assert.IsType<MergeStanding.Frozen>(await rig.StandingAsync(folded));
