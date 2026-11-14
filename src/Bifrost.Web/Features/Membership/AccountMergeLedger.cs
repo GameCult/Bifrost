@@ -7,9 +7,6 @@ using Microsoft.EntityFrameworkCore;
 namespace Bifrost.Web.Features.Membership;
 
 /// <summary>How an account stands under a merge: the folded account of an unfinished merge is Frozen, of a landed one Folded.</summary>
-/// <summary>Where a patron event for an account lands; <see cref="MergeId"/> is set when the account is folded and the event must be journalled.</summary>
-public sealed record SupportTarget(Guid ForAccountId, Guid RecordOnAccountId, Guid? MergeId);
-
 public abstract record MergeStanding(Guid MergeId)
 {
     public sealed record Frozen(Guid MergeId) : MergeStanding(MergeId);
@@ -74,23 +71,45 @@ public sealed class AccountMergeLedger(
     }
 
     /// <summary>
-    /// The one standing-at-write rule: an account with a merge standing (frozen or folded) writes nothing as itself. Every writer that
-    /// acts for an account (votes, appraisals, sealed ballots) calls this after loading what it will change and before it mutates,
-    /// so an actor resolved before the merge froze the account cannot write after it. It reads, then the writer saves: the
-    /// microseconds between the two are the window the saga cannot close without a lock or tally-time voiding (docs/account-merge.md).
+    /// The one gate every writer that acts for an account passes through (votes, appraisals, sealed ballots, patron events, the Heimdall
+    /// sign-in's membership). On Postgres it holds a shared advisory lock on the account, the key the chain trigger locks exclusively
+    /// when a merge row is inserted or changes state and that <see cref="CommitAsync"/> takes exclusively before it reduces, across the
+    /// standing read and everything <paramref name="write"/> saves, then commits. So a merge cannot freeze or fold the account between a
+    /// writer's standing read and its save: it waits for the writer, and a writer that starts after it reads the new standing. The
+    /// lock covers writes made through this gate and nothing else; it is held until the transaction ends, so a writer must not
+    /// catch a database error inside <paramref name="write"/> and carry on (the transaction is already aborted). On the in-memory
+    /// provider there is no lock and no transaction: the standing is read, then the writer saves.
     /// </summary>
-    public static async Task<bool> MayWriteAsync(BifrostDbContext db, Guid userAccountId, CancellationToken cancellationToken) =>
-        await StandingAsync(db, userAccountId, cancellationToken) is null;
+    public static async Task<T> WriteAsAsync<T>(BifrostDbContext db, Guid userAccountId, Func<MergeStanding?, Task<T>> write, CancellationToken cancellationToken)
+    {
+        await using var transaction = await BeginAsync(db, cancellationToken);
+        await LockAsync(db, userAccountId, exclusive: false, cancellationToken);
+        var result = await write(await StandingAsync(db, userAccountId, cancellationToken));
+        if (transaction is not null)
+        {
+            await transaction.CommitAsync(cancellationToken);
+        }
 
-    /// <summary>
-    /// The one routing of patron support: an event for a folded account lands on its survivor, anything else on the account itself.
-    /// The Heimdall intake and the Stripe webhook both resolve through here, immediately before they record, and journal a folded
-    /// event with <see cref="JournalIntakeAsync"/>.
-    /// </summary>
-    public async Task<SupportTarget> SupportTargetAsync(Guid userAccountId, CancellationToken cancellationToken) =>
-        await StandingAsync(dbContext, userAccountId, cancellationToken) is MergeStanding.Folded folded
-            ? new SupportTarget(userAccountId, folded.SurvivorId, folded.MergeId)
-            : new SupportTarget(userAccountId, userAccountId, null);
+        return result;
+    }
+
+    /// <summary>A transaction for the caller to commit, or null where there is none to open: not Postgres, or one already open (its owner commits).</summary>
+    private static async Task<Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction?> BeginAsync(BifrostDbContext db, CancellationToken cancellationToken) =>
+        db.Database.IsNpgsql() && db.Database.CurrentTransaction is null ? await db.Database.BeginTransactionAsync(cancellationToken) : null;
+
+    /// <summary>The account's lock, on the key the chain trigger uses (hashtextextended of the id's text). A no-op off Postgres.</summary>
+    private static async Task LockAsync(BifrostDbContext db, Guid userAccountId, bool exclusive, CancellationToken cancellationToken)
+    {
+        if (!db.Database.IsNpgsql())
+        {
+            return;
+        }
+
+        var key = userAccountId.ToString();
+        await (exclusive
+            ? db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock(hashtextextended({key}, 0))", cancellationToken)
+            : db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock_shared(hashtextextended({key}, 0))", cancellationToken));
+    }
 
     /// <summary>Writes nothing. <paramref name="exceptMergeId"/> lets the saga re-plan a merge it already holds without it blocking itself.</summary>
     public async Task<MergePlan> PlanAsync(Guid survivorId, Guid foldedId, CancellationToken cancellationToken, Guid? exceptMergeId = null)
@@ -190,6 +209,12 @@ public sealed class AccountMergeLedger(
     public async Task<AccountMerge> CommitAsync(Guid mergeId, CancellationToken cancellationToken)
     {
         var merge = await dbContext.AccountMerges.SingleAsync(x => x.Id == mergeId, cancellationToken);
+
+        // The exclusive lock first, so no writer that read the folded account's standing is still to save when the reduction reads its
+        // rows, then the state again: a commit that waited here found the merge landed and returns its receipt.
+        await using var transaction = await BeginAsync(dbContext, cancellationToken);
+        await LockAsync(dbContext, merge.FoldedUserAccountId, exclusive: true, cancellationToken);
+        await dbContext.Entry(merge).ReloadAsync(cancellationToken);
         if (merge.State is AccountMergeState.Committed or AccountMergeState.Final)
         {
             return merge;
@@ -221,6 +246,11 @@ public sealed class AccountMergeLedger(
             merge.CommittedUtc = now;
             merge.GraceEndsUtc = now + Grace;
             await dbContext.SaveChangesAsync(cancellationToken);
+            if (transaction is not null)
+            {
+                await transaction.CommitAsync(cancellationToken);
+            }
+
             return merge;
         }
         catch
@@ -444,25 +474,24 @@ public sealed class AccountMergeLedger(
     }
 
     /// <summary>
-    /// Journals a patron event that landed on a folded account's survivor during grace, so undo moves it back with the rest. Idempotent:
-    /// the intake calls it again when the provider retries an event it already processed.
+    /// Stages the journal entry for a patron event that is on a folded account's survivor, so undo moves it back with the rest; saved
+    /// with the event by <see cref="PatronageService.RecordSupportEventAsync"/>, the only caller. Idempotent: a provider retry stages nothing.
     /// </summary>
-    public async Task JournalIntakeAsync(Guid mergeId, Guid foldedUserAccountId, Guid supportEventId, CancellationToken cancellationToken)
+    public static async Task StageIntakeJournalAsync(BifrostDbContext db, Guid mergeId, Guid foldedUserAccountId, Guid supportEventId, DateTimeOffset now, CancellationToken cancellationToken)
     {
-        if (await dbContext.AccountMergeEntries.AnyAsync(
+        if (await db.AccountMergeEntries.AnyAsync(
                 x => x.MergeId == mergeId && x.Kind == AccountMergeEntryKind.PatronSupportEvent && x.RecordId == supportEventId,
                 cancellationToken))
         {
             return;
         }
 
-        var seq = await dbContext.AccountMergeEntries.Where(x => x.MergeId == mergeId).MaxAsync(x => (int?)x.Seq, cancellationToken) ?? 0;
-        dbContext.AccountMergeEntries.Add(Journal(
+        var seq = await db.AccountMergeEntries.Where(x => x.MergeId == mergeId).MaxAsync(x => (int?)x.Seq, cancellationToken) ?? 0;
+        db.AccountMergeEntries.Add(Journal(
             mergeId,
             seq + 1,
             new MergePlanEntry(AccountMergeEntryKind.PatronSupportEvent, AccountMergeEntryAction.Moved, supportEventId, foldedUserAccountId),
-            timeProvider.GetUtcNow()));
-        await dbContext.SaveChangesAsync(cancellationToken);
+            now));
     }
 
     private sealed class Reduction(

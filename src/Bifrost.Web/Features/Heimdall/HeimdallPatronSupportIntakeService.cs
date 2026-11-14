@@ -5,7 +5,6 @@ using System.Text.Json.Serialization;
 using Bifrost.Web.Configuration;
 using Bifrost.Web.Data;
 using Bifrost.Web.Domain;
-using Bifrost.Web.Features.Membership;
 using Bifrost.Web.Features.Patronage;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -15,7 +14,6 @@ namespace Bifrost.Web.Features.Heimdall;
 public sealed class HeimdallPatronSupportIntakeService(
     BifrostDbContext dbContext,
     PatronageService patronageService,
-    AccountMergeLedger mergeLedger,
     IOptions<HeimdallOptions> heimdallOptions)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
@@ -70,30 +68,21 @@ public sealed class HeimdallPatronSupportIntakeService(
             .AsNoTracking()
             .SingleOrDefaultAsync(x => x.HeimdallAccountId == request.HeimdallAccountId.Trim(), cancellationToken);
 
-        if (existingEvent is not null)
-        {
-            // A provider retry of an event already processed: journal it if the account has since folded (idempotent).
-            if (user is not null && await mergeLedger.SupportTargetAsync(user.Id, cancellationToken) is { MergeId: { } retriedMergeId })
-            {
-                await mergeLedger.JournalIntakeAsync(retriedMergeId, user.Id, existingEvent.Id, cancellationToken);
-            }
-
-            return HeimdallPatronSupportIntakeResult.Processed(
-                $"Already processed {request.Provider} patron support event {request.ProviderEventId}.",
-                existingEvent.Id);
-        }
-
         if (user is null)
         {
-            return HeimdallPatronSupportIntakeResult.BadRequest(
-                $"No Bifrost account is linked to Heimdall account {request.HeimdallAccountId}.");
+            return existingEvent is not null
+                ? HeimdallPatronSupportIntakeResult.Processed(
+                    $"Already processed {request.Provider} patron support event {request.ProviderEventId}.",
+                    existingEvent.Id)
+                : HeimdallPatronSupportIntakeResult.BadRequest(
+                    $"No Bifrost account is linked to Heimdall account {request.HeimdallAccountId}.");
         }
 
-        // A folded account's events record on the survivor and are journalled on the merge, so an undo moves them back.
-        var target = await mergeLedger.SupportTargetAsync(user.Id, cancellationToken);
+        // The write gate behind RecordSupportEventAsync routes a folded account's event to its survivor and journals it, and on a
+        // provider retry returns the stored event, journalling it if it sits on the survivor and was left unjournalled.
         var supportEvent = await patronageService.RecordSupportEventAsync(
             actorUserAccountId: null,
-            userAccountId: target.RecordOnAccountId,
+            userAccountId: user.Id,
             request.Kind,
             request.Amount,
             request.CurrencyCode,
@@ -107,13 +96,10 @@ public sealed class HeimdallPatronSupportIntakeService(
             request.Notes,
             cancellationToken);
 
-        if (target.MergeId is { } mergeId)
-        {
-            await mergeLedger.JournalIntakeAsync(mergeId, user.Id, supportEvent.Id, cancellationToken);
-        }
-
         return HeimdallPatronSupportIntakeResult.Processed(
-            $"Processed {request.Provider} patron support event {request.ProviderEventId}.",
+            existingEvent is not null
+                ? $"Already processed {request.Provider} patron support event {request.ProviderEventId}."
+                : $"Processed {request.Provider} patron support event {request.ProviderEventId}.",
             supportEvent.Id);
     }
 

@@ -936,6 +936,54 @@ public sealed class HeimdallCompletionTests
         Assert.Equal(MembershipStatus.Active, (await host.Account(accountId))!.Membership!.Status);
     }
 
+    [Theory]
+    [InlineData(AccountMergeState.Confirmed)]
+    [InlineData(AccountMergeState.Committed)]
+    public async Task A_chat_tier_account_without_a_membership_that_a_merge_froze_or_folded_signs_in_without_getting_one(AccountMergeState state)
+    {
+        using var host = new HeimdallHost();
+        var foldedId = HeimdallShapes.NewAccountId();
+        var survivorId = HeimdallShapes.NewAccountId();
+        Assert.True((await Genuine(host, await host.StartAsync(member: false), foldedId)).SignedIn);
+        Assert.True((await Genuine(host, await host.StartAsync(member: false), survivorId)).SignedIn);
+        await MergeAsync(host, survivorId, foldedId, state, dropFoldedMembership: true); // a chat-tier account holds none
+
+        await Genuine(host, await host.StartAsync(member: true), foldedId, ["member_access"]);
+
+        Assert.Null((await host.Account(foldedId))!.Membership);
+        Assert.Equal(0, await host.Db(db => db.Memberships.CountAsync(x => x.UserAccount.HeimdallAccountId == foldedId)));
+    }
+
+    [Fact]
+    public async Task A_frozen_accounts_sign_in_with_member_access_does_not_activate_its_membership()
+    {
+        using var host = new HeimdallHost();
+        var foldedId = HeimdallShapes.NewAccountId();
+        var survivorId = HeimdallShapes.NewAccountId();
+        Assert.True((await Genuine(host, await host.StartAsync(member: false), foldedId)).SignedIn);
+        Assert.True((await Genuine(host, await host.StartAsync(member: false), survivorId)).SignedIn);
+        await MergeAsync(host, survivorId, foldedId, AccountMergeState.HeimdallMoved, dropFoldedMembership: false);
+
+        await Genuine(host, await host.StartAsync(member: true), foldedId, ["member_access"]);
+
+        Assert.Equal(MembershipStatus.Authenticated, (await host.Account(foldedId))!.Membership!.Status);
+    }
+
+    private static Task MergeAsync(HeimdallHost host, string survivorId, string foldedId, AccountMergeState state, bool dropFoldedMembership) =>
+        host.Db(async db =>
+        {
+            if (dropFoldedMembership)
+            {
+                db.Memberships.RemoveRange(db.Memberships.Where(x => x.UserAccount.HeimdallAccountId == foldedId));
+            }
+
+            var folded = await db.UserAccounts.SingleAsync(x => x.HeimdallAccountId == foldedId);
+            var survivor = await db.UserAccounts.SingleAsync(x => x.HeimdallAccountId == survivorId);
+            db.AccountMerges.Add(new AccountMerge { SurvivorUserAccountId = survivor.Id, FoldedUserAccountId = folded.Id, State = state, CreatedUtc = DateTimeOffset.UtcNow });
+            await db.SaveChangesAsync();
+            return 0;
+        });
+
     [Fact]
     public async Task A_chat_only_account_that_later_signs_in_with_member_access_becomes_a_member()
     {

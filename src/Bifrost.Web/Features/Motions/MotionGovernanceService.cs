@@ -63,34 +63,44 @@ public sealed class MotionGovernanceService(
             return;
         }
 
-        // An actor resolved before a merge froze this account must not write a vote after it: standing is read again at the write.
-        if (!await AccountMergeLedger.MayWriteAsync(dbContext, actorUser.Id, cancellationToken))
+        // An actor resolved before a merge froze this account must not write a vote after it: the write gate reads standing at the write.
+        var wrote = await AccountMergeLedger.WriteAsAsync(dbContext, actorUser.Id, async standing =>
+        {
+            if (standing is not null)
+            {
+                return false;
+            }
+
+            var vote = motion.Votes.SingleOrDefault(x => x.UserAccountId == actorUser.Id);
+            if (vote is null)
+            {
+                dbContext.Votes.Add(new Vote
+                {
+                    MotionId = motionId,
+                    UserAccountId = actorUser.Id,
+                    Choice = choice,
+                    Weight = actor.EffectiveVotingWeight,
+                    Comment = comment?.Trim() ?? string.Empty,
+                    CastAtUtc = timeProvider.GetUtcNow()
+                });
+            }
+            else
+            {
+                vote.Choice = choice;
+                vote.Weight = actor.EffectiveVotingWeight;
+                vote.Comment = comment?.Trim() ?? string.Empty;
+                vote.CastAtUtc = timeProvider.GetUtcNow();
+            }
+
+            await dbContext.SaveChangesAsync(cancellationToken);
+            return true;
+        }, cancellationToken);
+
+        if (!wrote)
         {
             return;
         }
 
-        var vote = motion.Votes.SingleOrDefault(x => x.UserAccountId == actorUser.Id);
-        if (vote is null)
-        {
-            dbContext.Votes.Add(new Vote
-            {
-                MotionId = motionId,
-                UserAccountId = actorUser.Id,
-                Choice = choice,
-                Weight = actor.EffectiveVotingWeight,
-                Comment = comment?.Trim() ?? string.Empty,
-                CastAtUtc = timeProvider.GetUtcNow()
-            });
-        }
-        else
-        {
-            vote.Choice = choice;
-            vote.Weight = actor.EffectiveVotingWeight;
-            vote.Comment = comment?.Trim() ?? string.Empty;
-            vote.CastAtUtc = timeProvider.GetUtcNow();
-        }
-
-        await dbContext.SaveChangesAsync(cancellationToken);
         await auditTrailService.RecordAsync(
             actorUser.Id,
             nameof(Motion),

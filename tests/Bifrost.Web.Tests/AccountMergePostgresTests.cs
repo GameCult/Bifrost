@@ -1,5 +1,6 @@
 using Bifrost.Web.Data;
 using Bifrost.Web.Domain;
+using Bifrost.Web.Features.Motions;
 using Bifrost.Web.Features.Patronage;
 using Bifrost.Web.Features.Shared;
 using Microsoft.EntityFrameworkCore;
@@ -206,7 +207,7 @@ public sealed class AccountMergePostgresTests(MergePostgres postgres) : IClassFi
         await world.VoteAsync(motion, survivor, VoteChoice.For);
         await world.VoteAsync(motion, folded, VoteChoice.Against);
         var merge = await world.MergeAsync(survivor, folded);
-        var committers = AccountMergeLedgerTests.World.OnPostgres(ConnectionOf(world), new Rendezvous());
+        var committers = AccountMergeLedgerTests.World.OnPostgres(ConnectionOf(world));
 
         async Task<Exception?> TryCommit()
         {
@@ -223,9 +224,8 @@ public sealed class AccountMergePostgresTests(MergePostgres postgres) : IClassFi
 
         var results = await Task.WhenAll(Task.Run(TryCommit), Task.Run(TryCommit));
 
-        Assert.Equal(1, results.Count(x => x is null));
-        // The loser is refused by the unique index, the token, or Postgres picking it as the deadlock victim.
-        Assert.All(results.OfType<Exception>(), e => Assert.True(Chain(e).Any(x => x is DbUpdateException), e.ToString()));
+        // The second commit waits on the folded account's exclusive lock, then finds the merge landed and returns its receipt.
+        Assert.All(results, e => Assert.Null(e));
         var journal = await world.JournalAsync(merge);
         Assert.Equal(journal.Count, journal.Select(x => x.Seq).Distinct().Count());
         Assert.Equal(1, journal.Count(x => x.Kind == AccountMergeEntryKind.Vote));
@@ -533,15 +533,147 @@ public sealed class AccountMergePostgresTests(MergePostgres postgres) : IClassFi
         var committed = (await world.JournalAsync(merge)).Count;
         Assert.True(committed > 0);
 
-        var events = new[] { Guid.NewGuid(), Guid.NewGuid() };
+        var events = new[] { $"WH-{Guid.NewGuid():N}", $"WH-{Guid.NewGuid():N}" };
         foreach (var id in events.Concat(events)) // each twice: the provider retries
         {
             await using var db = world.Db();
-            await world.Ledger(db).JournalIntakeAsync(merge.Id, folded.Id, id, default);
+            await new PatronageService(db, new AuditTrailService(db, world.Clock), world.Clock).RecordSupportEventAsync(
+                null, folded.Id, PatronSupportEventKind.OneTimeDonation, 1m, "USD", "ext", ExternalPatronProvider.PayPal, id,
+                string.Empty, string.Empty, AccountMergeLedgerTests.T0, false, string.Empty, default);
         }
 
         var journal = await world.JournalAsync(merge);
         Assert.Equal(committed + 2, journal.Count);
         Assert.Equal(journal.Count, journal.Select(x => x.Seq).Distinct().Count());
+    }
+
+    [PostgresTheory]
+    [InlineData(AccountMergeState.Proposed)]
+    [InlineData(AccountMergeState.Confirmed)]
+    [InlineData(AccountMergeState.HeimdallMoved)]
+    [InlineData(AccountMergeState.Final)]
+    [InlineData(AccountMergeState.UndoRequested)]
+    [InlineData(AccountMergeState.HeimdallReversed)]
+    [InlineData(AccountMergeState.Undone)]
+    [InlineData(AccountMergeState.Failed)]
+    public async Task Reverting_the_migration_is_refused_for_a_merge_in_any_state(AccountMergeState state)
+    {
+        var world = await postgres.NewWorldAsync();
+        await world.MergeAsync(await world.AccountAsync("survivor"), await world.AccountAsync("folded"), state);
+
+        await using var db = world.Db();
+        var error = await Assert.ThrowsAnyAsync<Exception>(() => db.GetService<IMigrator>().MigrateAsync("20261113120000_AddPasskeyCredentials"));
+        Assert.Contains("roll-forward only", Pg(error).MessageText);
+    }
+
+    // ---- the write gate ----
+
+    [PostgresFact]
+    public async Task A_vote_that_read_no_merge_saves_before_a_merge_can_freeze_the_account_and_the_commit_then_moves_it()
+    {
+        var world = await postgres.NewWorldAsync();
+        var survivor = await world.AccountAsync("survivor");
+        var folded = await world.AccountAsync("folded");
+        var motion = await world.MotionAsync();
+        var actor = await world.ActorAsync(folded.Id);
+        Task<AccountMerge>? freeze = null;
+        var blocked = false;
+        var voters = AccountMergeLedgerTests.World.OnPostgres(ConnectionOf(world), new BeforeFirstSave(async () =>
+        {
+            // The vote has read its standing (none) and is about to save: the freeze lands here and must wait for the save.
+            freeze = Task.Run(() => world.MergeAsync(survivor, folded, AccountMergeState.Confirmed));
+            await Task.Delay(1500);
+            blocked = !freeze.IsCompleted;
+        }));
+
+        await using (var db = voters.Db())
+        {
+            await voters.Motions(db).CastVoteAsync(actor, motion.Id, VoteChoice.For, null, default);
+        }
+
+        var merge = await freeze!.WaitAsync(TimeSpan.FromSeconds(30));
+        Assert.True(blocked);
+        await world.SetStateAsync(merge, AccountMergeState.HeimdallMoved);
+        await world.CommitAsync(merge);
+
+        var votes = await world.AllVotesAsync(motion);
+        Assert.Equal(survivor.Id, Assert.Single(votes).UserAccountId); // the commit saw the vote and moved it: no second voice stays on the folded account
+        Assert.Single(await world.JournalAsync(merge), x => x.Kind == AccountMergeEntryKind.Vote);
+    }
+
+    [PostgresFact]
+    public async Task A_patron_event_that_read_a_Frozen_account_saves_before_the_commit_reduces_and_the_commit_moves_it()
+    {
+        var world = await postgres.NewWorldAsync();
+        var survivor = await world.AccountAsync("survivor");
+        var folded = await world.AccountAsync("folded");
+        var merge = await world.MergeAsync(survivor, folded); // HeimdallMoved: the folded account is Frozen
+        Task<AccountMerge>? commit = null;
+        var blocked = false;
+        var recorders = AccountMergeLedgerTests.World.OnPostgres(ConnectionOf(world), new BeforeFirstSave(async () =>
+        {
+            commit = Task.Run(() => world.CommitAsync(merge)); // takes the folded account's exclusive lock before it reduces
+            await Task.Delay(1500);
+            blocked = !commit.IsCompleted;
+        }));
+
+        await using (var db = recorders.Db())
+        {
+            await new PatronageService(db, new AuditTrailService(db, recorders.Clock), recorders.Clock).RecordSupportEventAsync(
+                null, folded.Id, PatronSupportEventKind.OneTimeDonation, 1m, "USD", "ext", ExternalPatronProvider.PayPal, "WH-frozen",
+                string.Empty, string.Empty, AccountMergeLedgerTests.T0, false, string.Empty, default);
+        }
+
+        await commit!.WaitAsync(TimeSpan.FromSeconds(30));
+        Assert.True(blocked);
+        await using var read = world.Db();
+        Assert.Equal(survivor.Id, (await read.PatronSupportEvents.SingleAsync()).UserAccountId); // the reduction found the event and moved it
+        Assert.Single(await world.JournalAsync(merge), x => x.Kind == AccountMergeEntryKind.PatronSupportEvent);
+    }
+
+    [PostgresFact]
+    public async Task A_sealed_reveal_that_retries_on_a_conflict_keeps_its_lock_so_no_merge_freezes_the_account_between_attempts()
+    {
+        const string salt = "00112233445566778899aabbccddeeff";
+        var world = await postgres.NewWorldAsync();
+        var survivor = await world.AccountAsync("survivor");
+        var folded = await world.AccountAsync("folded");
+        var other = await world.AccountAsync("other");
+        var moderator = await world.AccountAsync("moderator", moderator: true);
+        SealedBallotService Sealed(AccountMergeLedgerTests.World w, BifrostDbContext db) => new(db, new AuditTrailService(db, w.Clock), w.Clock);
+        SealedBallotDocument Doc(Guid motionId, string reason) => new(SealedBallotDocument.SchemaId, motionId, 1, "Ana", reason, salt);
+
+        await using var setup = world.Db();
+        var motionId = (await Sealed(world, setup).OpenAsync(await world.ActorAsync(moderator.Id),
+            new OpenSealedMotionCommand("Who", "Blind.", ["Ana", "Bo"], AccountMergeLedgerTests.T0.AddHours(1), AccountMergeLedgerTests.T0.AddHours(2)), default)).Id;
+        foreach (var (account, reason) in new[] { (folded, "mine"), (other, "theirs") })
+        {
+            await using var db = world.Db();
+            await Sealed(world, db).CommitAsync(await world.ActorAsync(account.Id), motionId, SealedBallotDocument.Commit(Doc(motionId, reason), account.Id), default);
+        }
+
+        Task<AccountMerge>? freeze = null;
+        var blocked = false;
+        var revealers = AccountMergeLedgerTests.World.OnPostgres(ConnectionOf(world), new BeforeFirstSave(async () =>
+        {
+            // The first attempt has read its standing (none). A freeze starts and must wait; another member's reveal then lands first,
+            // so this attempt's save conflicts on RevealSeq and the reveal retries while the freeze still waits.
+            freeze = Task.Run(() => world.MergeAsync(survivor, folded, AccountMergeState.Confirmed));
+            await using var rival = world.Db();
+            world.Clock.Now = AccountMergeLedgerTests.T0.AddMinutes(90);
+            await Sealed(world, rival).RevealAsync(await world.ActorAsync(other.Id), motionId, Doc(motionId, "theirs"), default);
+            await Task.Delay(1500);
+            blocked = !freeze.IsCompleted;
+        }));
+        revealers.Clock.Now = AccountMergeLedgerTests.T0.AddMinutes(90);
+        var actor = await world.ActorAsync(folded.Id);
+
+        await using (var db = revealers.Db())
+        {
+            Assert.True((await Sealed(revealers, db).RevealAsync(actor, motionId, Doc(motionId, "mine"), default)).Revealed);
+        }
+
+        await freeze!.WaitAsync(TimeSpan.FromSeconds(30));
+        Assert.True(blocked);
     }
 }

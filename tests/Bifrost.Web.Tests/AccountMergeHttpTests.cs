@@ -261,7 +261,63 @@ public sealed class AccountMergeHttpTests(TestWebApplicationFactory factory) : I
 
         Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
         Assert.Equal([s.Survivor], await EventOwnersAsync(s));
-        Assert.Single(await PatronJournalAsync(merge), x => x.Kind == AccountMergeEntryKind.PatronSupportEvent);
+        var entry = Assert.Single(await PatronJournalAsync(merge), x => x.Kind == AccountMergeEntryKind.PatronSupportEvent);
+        Assert.Equal(s.Folded, entry.PriorUserAccountId); // the journal names the folded account as the previous owner
+
+        await SetStateAsync(merge, AccountMergeState.HeimdallReversed);
+        await UndoAsync(merge);
+        Assert.Equal([s.Folded], await EventOwnersAsync(s)); // so an undo sends the donation back where it was opened
+    }
+
+    private Task UndoAsync(Guid merge) =>
+        WithDb(async db =>
+        {
+            using var scope = factory.Services.CreateScope();
+            await scope.ServiceProvider.GetRequiredService<Bifrost.Web.Features.Membership.AccountMergeLedger>().UndoLocalAsync(merge, default);
+            return 0;
+        });
+
+    [Fact]
+    public async Task The_admin_ledgers_manual_patron_record_for_a_folded_account_lands_on_the_survivor_and_is_journalled()
+    {
+        var s = await SeedAsync();
+        var merge = await CommitMergeAsync(s);
+
+        await WithDb(async db =>
+        {
+            using var scope = factory.Services.CreateScope();
+            await scope.ServiceProvider.GetRequiredService<Bifrost.Web.Features.Patronage.PatronageService>().RecordSupportEventAsync(
+                s.Survivor, s.Folded, PatronSupportEventKind.OneTimeDonation, 10m, "USD", "manual-1", ExternalPatronProvider.Manual,
+                string.Empty, string.Empty, string.Empty, DateTimeOffset.UtcNow, false, string.Empty, default); // as Pages/App/Ledger records it
+            return 0;
+        });
+
+        Assert.Equal([s.Survivor], await EventOwnersAsync(s));
+        var entry = Assert.Single(await PatronJournalAsync(merge), x => x.Kind == AccountMergeEntryKind.PatronSupportEvent);
+        Assert.Equal(s.Folded, entry.PriorUserAccountId);
+    }
+
+    [Fact]
+    public async Task A_provider_retry_of_an_event_stranded_on_the_folded_account_journals_nothing_because_nothing_moved()
+    {
+        var s = await SeedAsync();
+        var merge = await CommitMergeAsync(s);
+        var eventId = $"WH-{Guid.NewGuid():N}";
+        await WithDb(async db => // recorded on the folded account by a delivery that straddled the commit
+        {
+            db.PatronSupportEvents.Add(new PatronSupportEvent
+            {
+                UserAccountId = s.Folded, Provider = ExternalPatronProvider.PayPal, ProviderEventId = eventId, ExternalSupportId = "CAPTURE-1",
+                Kind = PatronSupportEventKind.OneTimeDonation, Amount = 25m, SupportedAtUtc = DateTimeOffset.UtcNow, RecordedAtUtc = DateTimeOffset.UtcNow
+            });
+            await db.SaveChangesAsync();
+            return 0;
+        });
+
+        Assert.Equal(HttpStatusCode.Accepted, await IntakeAsync(s, eventId));
+
+        Assert.DoesNotContain(await PatronJournalAsync(merge), x => x.Kind == AccountMergeEntryKind.PatronSupportEvent);
+        Assert.Equal([s.Folded], await EventOwnersAsync(s));
     }
 
     [Fact]

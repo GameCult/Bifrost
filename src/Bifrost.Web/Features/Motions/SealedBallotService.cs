@@ -100,22 +100,27 @@ public sealed class SealedBallotService(
             throw new SealedBallotException(SealedBallotFailure.Invalid, "A commitment is 64 lowercase hex characters (SHA-256).");
         }
 
-        var ballot = await dbContext.SealedBallots
-            .SingleOrDefaultAsync(x => x.MotionId == motionId && x.UserAccountId == user.Id, cancellationToken);
-        await RequireStandingAsync(user.Id, cancellationToken);
-        if (ballot is null)
+        var ballot = await AccountMergeLedger.WriteAsAsync(dbContext, user.Id, async standing =>
         {
-            ballot = new SealedBallot { MotionId = motionId, UserAccountId = user.Id };
-            dbContext.SealedBallots.Add(ballot);
-        }
-        else
-        {
-            ballot.Revision++;
-        }
+            RequireStanding(standing);
+            var written = await dbContext.SealedBallots
+                .SingleOrDefaultAsync(x => x.MotionId == motionId && x.UserAccountId == user.Id, cancellationToken);
+            if (written is null)
+            {
+                written = new SealedBallot { MotionId = motionId, UserAccountId = user.Id };
+                dbContext.SealedBallots.Add(written);
+            }
+            else
+            {
+                written.Revision++;
+            }
 
-        ballot.Commitment = commitment;
-        ballot.CommittedAtUtc = now;
-        await dbContext.SaveChangesAsync(cancellationToken);
+            written.Commitment = commitment;
+            written.CommittedAtUtc = now;
+            await dbContext.SaveChangesAsync(cancellationToken);
+            return written;
+        }, cancellationToken);
+
         await auditTrailService.RecordAsync(
             user.Id, nameof(Motion), motionId, "sealed.committed",
             $"{actor.DisplayName} committed a sealed ballot (revision {ballot.Revision}), commitment {commitment}.",
@@ -161,37 +166,43 @@ public sealed class SealedBallotService(
 
         // RevealSeq and Status are concurrency tokens. A conflict means either the close froze the set (refuse, truthfully) or
         // another voter's reveal landed first while the window is still open (re-read the row and write again).
-        for (var attempt = 0; ; attempt++)
+        // Standing is read once, under the gate's lock, which holds across every attempt: a merge cannot freeze the account between them.
+        await AccountMergeLedger.WriteAsAsync(dbContext, user.Id, async standing =>
         {
-            await RequireStandingAsync(user.Id, cancellationToken);
-            ballot.RevealedCandidate = candidate;
-            ballot.RevealedReason = reason;
-            ballot.Salt = document.Salt;
-            ballot.RevealedAtUtc = now;
-            motion.RevealSeq++;
-            try
+            RequireStanding(standing);
+            for (var attempt = 0; ; attempt++)
             {
-                await dbContext.SaveChangesAsync(cancellationToken);
-                break;
-            }
-            catch (DbUpdateConcurrencyException error)
-            {
-                foreach (var entry in error.Entries)
+                ballot.RevealedCandidate = candidate;
+                ballot.RevealedReason = reason;
+                ballot.Salt = document.Salt;
+                ballot.RevealedAtUtc = now;
+                motion.RevealSeq++;
+                try
                 {
-                    await entry.ReloadAsync(cancellationToken);
+                    await dbContext.SaveChangesAsync(cancellationToken);
+                    break;
                 }
+                catch (DbUpdateConcurrencyException error)
+                {
+                    foreach (var entry in error.Entries)
+                    {
+                        await entry.ReloadAsync(cancellationToken);
+                    }
 
-                if (PhaseOf(motion, now) != SealedPhase.Reveal)
-                {
-                    throw new SealedBallotException(SealedBallotFailure.WrongPhase, "The motion closed; the reveal window is over.");
-                }
+                    if (PhaseOf(motion, now) != SealedPhase.Reveal)
+                    {
+                        throw new SealedBallotException(SealedBallotFailure.WrongPhase, "The motion closed; the reveal window is over.");
+                    }
 
-                if (attempt >= 4)
-                {
-                    throw new SealedBallotException(SealedBallotFailure.WrongPhase, "The reveal is contended; send it again.");
+                    if (attempt >= 4)
+                    {
+                        throw new SealedBallotException(SealedBallotFailure.WrongPhase, "The reveal is contended; send it again.");
+                    }
                 }
             }
-        }
+
+            return true;
+        }, cancellationToken);
 
         await auditTrailService.RecordAsync(
             user.Id, nameof(Motion), motionId, "sealed.revealed",
@@ -362,10 +373,10 @@ public sealed class SealedBallotService(
 
     private static string NameOf(UserAccount user) => user.MemberProfile?.Nickname ?? user.DisplayName;
 
-    // A member resolved before a merge froze the account must not write a ballot after it: standing is read again at the write.
-    private async Task RequireStandingAsync(Guid userAccountId, CancellationToken cancellationToken)
+    // A member resolved before a merge froze the account must not write a ballot after it: the write gate reads standing at the write.
+    private static void RequireStanding(MergeStanding? standing)
     {
-        if (!await AccountMergeLedger.MayWriteAsync(dbContext, userAccountId, cancellationToken))
+        if (standing is not null)
         {
             throw new SealedBallotException(SealedBallotFailure.Forbidden, "An active member is required.");
         }
