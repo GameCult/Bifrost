@@ -42,7 +42,8 @@ public sealed class MergeProofsTests
 
         Assert.Equal("discord", first.Survivor.Provider);
         Assert.Equal("patreon", Assert.Single(first.Folded).Provider);
-        Assert.Equal(first, second);
+        Assert.Equal(first.Survivor, second.Survivor);
+        Assert.Equal(first.Folded, second.Folded);
         Assert.IsType<PeekResult.Expired>(_proofs.Peek(Guid.NewGuid(), MergeSide.Self));
         Assert.Null(_proofs.Snapshot(Guid.NewGuid()).Self);
         Assert.Null(_proofs.Snapshot(Guid.NewGuid()).Other);
