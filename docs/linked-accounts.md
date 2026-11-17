@@ -45,6 +45,10 @@ The unlink completion must also say a step-up was requested (`stepUpRequested`, 
 
 A link refused because the login already belongs to another account (`409 identity_linked_elsewhere` from `links/confirm`; for Discord and Patreon the callback's `link_initiator_mismatch`, carried on by the complete page as a fixed result) is shown as "That login belongs to another account." The other account is never named.
 
+## The ordinary sign-in start
+
+`GET /auth/heimdall/{provider}` (discord, patreon, twitch) is what the sign-in chooser, the index page and external login links point at, and it stays a link. It starts at Heimdall directly only when that breaks nothing: no signed-in session in the browser and a free attempt slot. When the browser holds a session (a sign-in would replace it) or both attempt slots hold a live attempt (a start would overwrite a link or unlink in flight), the GET answers a confirmation page and starts nothing; the page's form posts to the same path (`POST /auth/heimdall/{provider}`, fields `returnUrl`, `access`) with an antiforgery token, which a page on another site can neither read nor send. A POST without the token is `400`. An unknown provider is never rendered: it takes the ordinary refusal redirect.
+
 ## Not here
 
 - Merging two accounts. A refused link ends there; nothing is moved or merged. Merging is the separate Merge accounts page, behind the `AccountMerge:Enabled` flag (`docs/account-merge.md`, Pages and flags).

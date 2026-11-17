@@ -330,7 +330,19 @@ public sealed class HeimdallAuthService(
     /// overwrite each other; the Cookie header holds at most <see cref="HeimdallAttemptCookie.SlotNames"/> attempt
     /// cookies however many starts a browser makes.
     /// </summary>
-    private string ChooseSlot(IEnumerable<KeyValuePair<string, string>> requestCookies)
+    private string ChooseSlot(IEnumerable<KeyValuePair<string, string>> requestCookies) => ChooseSlotCore(requestCookies).Name;
+
+    /// <summary>
+    /// True when a start from this browser would take a slot that holds a live attempt: a navigation that starts one is
+    /// then a way to break the member's link or unlink in flight, so the browser must ask for it with a POST.
+    /// </summary>
+    public bool StartWouldReplaceLiveAttempt(IEnumerable<KeyValuePair<string, string>> requestCookies) =>
+        ChooseSlotCore(requestCookies).ReplacesLive;
+
+    /// <summary>Whether the ordinary sign-in start offers this provider (the GET and POST routes share the answer).</summary>
+    public static bool OffersSignIn(string provider) => AllowedProviders.Contains(provider);
+
+    private (string Name, bool ReplacesLive) ChooseSlotCore(IEnumerable<KeyValuePair<string, string>> requestCookies)
     {
         var cookies = requestCookies.ToLookup(x => x.Key, x => x.Value, StringComparer.Ordinal);
         string? oldest = null;
@@ -340,7 +352,7 @@ public sealed class HeimdallAuthService(
             var live = Read(cookies[name].FirstOrDefault());
             if (live is null)
             {
-                return name;
+                return (name, false);
             }
 
             if (live.ExpiresAt < oldestExpiry)
@@ -350,7 +362,7 @@ public sealed class HeimdallAuthService(
             }
         }
 
-        return oldest!;
+        return (oldest!, true);
     }
 
     /// <summary>

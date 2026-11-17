@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Antiforgery;
 using System.Net.Http.Headers;
 using System.Security.Claims;
 using System.Text.Json;
@@ -572,26 +573,26 @@ app.MapGet("/auth/bifrost/notice", () =>
 
 app.MapConsent();
 
-app.MapGet("/auth/heimdall/{provider}", async (
+// The ordinary sign-in start. A navigation (GET) starts directly only when that harms nothing: no signed-in session to
+// replace and a free attempt slot. Otherwise it answers a page with nothing started, and the visitor confirms with a POST
+// carrying an antiforgery token (a cross-site link can start nothing that would break a session or an attempt in flight).
+// Existing login links, the chooser and the chat tier's sign-in all arrive here anonymously and keep working as GETs.
+async Task<IResult> StartHeimdallSignInAsync(
     string provider,
+    string returnUrl,
+    bool requireMemberAccess,
     HttpContext httpContext,
     HeimdallAuthService heimdallAuthService,
     IOptions<BifrostHostOptions> hostOptions,
     ILogger<HeimdallAuthService> logger,
-    CancellationToken cancellationToken) =>
+    CancellationToken cancellationToken)
 {
     try
     {
-        var returnPath = LocalReturnPath.Parse(httpContext.Request.Query["returnUrl"].ToString());
-        var requireMemberAccess = string.Equals(
-            httpContext.Request.Query["access"].ToString(),
-            "member",
-            StringComparison.OrdinalIgnoreCase);
-
         var start = await heimdallAuthService.StartAsync(
             provider,
             hostOptions.Value.PublicBaseUrl,
-            returnPath,
+            LocalReturnPath.Parse(returnUrl),
             requireMemberAccess,
             httpContext.Request.Cookies,
             cancellationToken);
@@ -604,6 +605,66 @@ app.MapGet("/auth/heimdall/{provider}", async (
         logger.LogWarning("Heimdall start refused: {Reason}", error.Message);
         return Results.Redirect(HeimdallAuthService.ErrorRedirect);
     }
+}
+
+static bool AsksMemberAccess(string? access) => string.Equals(access, "member", StringComparison.OrdinalIgnoreCase);
+
+app.MapGet("/auth/heimdall/{provider}", async (
+    string provider,
+    HttpContext httpContext,
+    HeimdallAuthService heimdallAuthService,
+    IAntiforgery antiforgery,
+    IOptions<BifrostHostOptions> hostOptions,
+    ILogger<HeimdallAuthService> logger,
+    CancellationToken cancellationToken) =>
+{
+    var returnPath = LocalReturnPath.Parse(httpContext.Request.Query["returnUrl"].ToString());
+    var memberAccess = AsksMemberAccess(httpContext.Request.Query["access"].ToString());
+    var signedIn = httpContext.Request.Cookies.ContainsKey(BifrostCookies.Session) && httpContext.User.Identity?.IsAuthenticated == true;
+    if (HeimdallAuthService.OffersSignIn(provider)
+        && (signedIn || heimdallAuthService.StartWouldReplaceLiveAttempt(httpContext.Request.Cookies)))
+    {
+        var tokens = antiforgery.GetAndStoreTokens(httpContext);
+        httpContext.Response.Headers.CacheControl = "no-store";
+        httpContext.Response.Headers["X-Frame-Options"] = "DENY";
+        return Results.Content(
+            HeimdallStartPage.Render(provider.ToLowerInvariant(), returnPath.Value, memberAccess, tokens.FormFieldName, tokens.RequestToken ?? "", signedIn),
+            "text/html",
+            System.Text.Encoding.UTF8);
+    }
+
+    return await StartHeimdallSignInAsync(provider, returnPath.Value, memberAccess, httpContext, heimdallAuthService, hostOptions, logger, cancellationToken);
+}).AllowAnonymous();
+
+app.MapPost("/auth/heimdall/{provider}", async (
+    string provider,
+    HttpContext httpContext,
+    HeimdallAuthService heimdallAuthService,
+    IAntiforgery antiforgery,
+    IOptions<BifrostHostOptions> hostOptions,
+    ILogger<HeimdallAuthService> logger,
+    CancellationToken cancellationToken) =>
+{
+    httpContext.Response.Headers.CacheControl = "no-store";
+    try
+    {
+        await antiforgery.ValidateRequestAsync(httpContext);
+    }
+    catch (AntiforgeryValidationException)
+    {
+        return Results.Text("This request could not be verified. Go back and try again.", statusCode: StatusCodes.Status400BadRequest);
+    }
+
+    var form = await ReadFormOrNullAsync(httpContext.Request, cancellationToken);
+    return await StartHeimdallSignInAsync(
+        provider,
+        form?["returnUrl"].ToString() ?? "",
+        AsksMemberAccess(form?["access"].ToString()),
+        httpContext,
+        heimdallAuthService,
+        hostOptions,
+        logger,
+        cancellationToken);
 }).AllowAnonymous();
 
 app.MapPost("/heimdall/patron-support/events", async (
